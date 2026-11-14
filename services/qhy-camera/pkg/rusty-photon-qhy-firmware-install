@@ -1,9 +1,9 @@
 #!/bin/sh
 # rusty-photon-qhy-firmware-install — fetch the pinned QHYCCD SDK and
-# install the pieces a QHY camera needs at runtime. Per ADR-013 the SDK
-# is proprietary and never bundled in a package; this helper downloads
-# it from qhyccd.com at the operator's explicit request, verifies a
-# pinned sha256, and installs:
+# install the pieces a QHY camera needs at runtime. The SDK is
+# proprietary and its redistribution rights are unresolved, so no package
+# bundles it; this helper downloads it from qhyccd.com at the operator's
+# explicit request, verifies a pinned sha256, and installs:
 #
 #   /lib/firmware/qhy/                  camera firmware images
 #   /etc/udev/rules.d/85-qhyccd.rules   QHYCCD's firmware-upload rules,

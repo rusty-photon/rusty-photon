@@ -20,8 +20,8 @@ Feature: Exposure lifecycle (soft-trigger video capture)
   once ready (E6). AbortExposure stops video capture and discards the frame
   (E7, CanAbortExposure true). There is no data-preserving stop at the SDK
   level, so StopExposure is NOT_IMPLEMENTED and CanStopExposure is false
-  (E8) -- the opposite of zwo-camera's graceful stop, and to be
-  confirmed/revised after real-hardware validation. A mid-exposure SDK error
+  (E8) -- the opposite of zwo-camera's graceful stop; on the real SV605CC
+  no SDK call preserves a partially integrated frame. A mid-exposure SDK error
   or an exceeded GetVideoData deadline transitions to the Error state (E9,
   covered by unit tests against the mock backend seam, not BDD). The
   simulated SV605CC-Simulated camera reports no ST4 port, so CanPulseGuide

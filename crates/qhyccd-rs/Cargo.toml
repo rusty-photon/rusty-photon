@@ -23,24 +23,18 @@ simulation = ["rand", "rayon"]
 
 [dependencies]
 libqhyccd-sys = { version = "0.1.4", path = "libqhyccd-sys" }
-# Shared third-party deps inherit the single workspace pin (Rule 10); identity
-# metadata (version/edition/license/...) stays explicit for the dual-home release
-# cadence (ADR-009). `cargo publish` flattens inherited versions to concrete ones,
-# so standalone publishing is unaffected. Errors are typed via thiserror
-# (`QHYError`). (tracing-subscriber is only used by the examples/ demos, so it is
-# a dev-dependency below — library consumers don't pull it.)
+# Shared deps inherit the workspace pin, which `cargo publish` writes into the
+# packaged manifest (docs/workspace.md § Dual-homed crates inherit shared deps too).
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# Non-poisoning locks (guard the camera handle / simulated state). `parking_lot`
-# is the workspace standard, already used by the consuming camera services; its
-# `RwLock` returns the guard directly, so there is no poison error to model.
+# Non-poisoning locks: `parking_lot`'s `RwLock` returns the guard directly, so
+# there is no poison error to model.
 parking_lot = { workspace = true }
 rand = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Used only by the demo programs in examples/ (FmtSubscriber), not the library,
-# so consumers of qhyccd-rs no longer pull it. Inherits the workspace pin.
+# The examples/ probes' log output (`FmtSubscriber`).
 tracing-subscriber = { workspace = true }
 
 [lints]

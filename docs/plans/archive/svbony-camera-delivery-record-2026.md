@@ -10,8 +10,12 @@ It stood at the top of
 [svbony-camera.md](../../services/svbony-camera.md#svbony-camera-service-design),
 above § Overview; that document states what the service does today, and
 the sections the banners name in quotes are its own — "This phase's
-link-gating shortcut" is its § Bazel links the simulation only — except
-"Real-hardware validation", whose dated account is
+link-gating shortcut" is its § Bazel links the simulation only, and
+"Configuration → Device registration boundary" its § Device
+registration — except "Real-hardware validation" and the two of its
+dated subsections the banners name, "Field rig — connect handshake C1a
+(2026-08-16)" and "Field rig — readout formats (2026-08-05)", whose
+accounts are
 [the record of the validation passes](svbony-camera-hardware-validation-2026.md),
 and "Delivery phasing", which is the
 [archived plan's](svbony-camera.md#delivery-phasing).

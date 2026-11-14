@@ -83,14 +83,15 @@ pub enum ImageType {
 impl ImageType {
     /// Bytes per pixel for this format.
     ///
-    /// The verified SDK ground truth (`docs/plans/archive/svbony-camera.md`) gives
-    /// the buffer-size formula only for 8-bit mono (`w*h`), 16-bit mono
-    /// (`w*h*2`), and RGB24 (`w*h*3`). RAW10/12/14 and Y10/12/14 are
-    /// **assumed** packed into 16-bit containers (2 bytes/pixel) — the
-    /// common convention for sub-16-bit raw sensor readout — and RGB32 is
-    /// **assumed** 4 bytes/pixel. Both assumptions need confirmation against
-    /// a real SV605CC capture (Phase G, hardware validation); this is noted
-    /// rather than silently resolved.
+    /// The SDK header gives the buffer-size formula only for 8-bit mono
+    /// (`w*h`), 16-bit mono (`w*h*2`), and RGB24 (`w*h*3`) (see
+    /// [`crate::sys::SVBGetVideoData`]), and a real SV605CC's `Raw8` and
+    /// `Raw16` frames download at exactly those sizes. RAW10/12/14 and
+    /// Y10/12/14 are **assumed** packed into 16-bit containers (2
+    /// bytes/pixel) — the common convention for sub-16-bit raw sensor
+    /// readout — and RGB32 is **assumed** 4 bytes/pixel. No capture has
+    /// confirmed either assumption, since `svbony-camera` reads frames only
+    /// in `Raw16` and `Raw8`; this is noted rather than silently resolved.
     #[must_use]
     pub const fn bytes_per_pixel(self) -> usize {
         match self {
@@ -360,8 +361,8 @@ pub struct RoiFormat {
 /// `SVBony` has no snap-exposure API: every exposure rides video capture. In
 /// [`CameraMode::Normal`] frames are free-running/continuous; in
 /// [`CameraMode::TrigSoft`] a frame is only produced after
-/// [`Camera::send_soft_trigger`]. See the module docs and
-/// `docs/plans/archive/svbony-camera.md` ("Exposure state machine over video mode").
+/// [`Camera::send_soft_trigger`]. See the module docs and the driver's
+/// [exposure state machine](https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/svbony-camera.md#exposure-the-soft-trigger-video-capture-state-machine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
     /// `SVB_MODE_NORMAL` — free-running video capture.
@@ -740,7 +741,7 @@ impl Camera {
     }
 
     /// Current exposure time in microseconds (`SVB_EXPOSURE`; see
-    /// [`ControlType::Exposure`]'s doc for the unit assumption).
+    /// [`ControlType::Exposure`]'s doc for how the unit was confirmed).
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the control cannot be read.
@@ -784,7 +785,8 @@ impl Camera {
     ///
     /// Actuates hardware — callers must respect the workspace's "no
     /// actuation on connect" tenet (never call this from a connect/reconnect
-    /// path; see `docs/workspace.md`).
+    /// path; see the
+    /// [project tenets](https://github.com/rusty-photon/rusty-photon/blob/main/docs/workspace.md#project-tenets)).
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the value is rejected.
@@ -1143,9 +1145,10 @@ impl Camera {
         }
         #[cfg(feature = "simulation")]
         {
-            // The simulation never literally waits out `timeout_ms` (see
-            // `sim_get_video_data`'s doc comment) — it reports readiness or a
-            // timeout immediately, so the parameter is unused on this path.
+            // The simulation never literally waits out `timeout_ms` (see the
+            // comment on the not-ready branch of `sim_get_video_data`) — it
+            // reports readiness or a timeout immediately, so the parameter is
+            // unused on this path.
             let _ = timeout_ms;
             self.sim_get_video_data(buf, need)?;
         }
@@ -1388,7 +1391,7 @@ const SIM_AMBIENT_TENTHS: i64 = 200;
 #[cfg(feature = "simulation")]
 const SIM_COOLING_STEP_TENTHS: i64 = 10;
 
-/// The fabricated simulated camera. Mirrors the SV605CC (this plan's first
+/// The fabricated simulated camera. Mirrors the SV605CC (the driver's first
 /// hardware target): a cooled, colour (OSC) camera on the Sony IMX533
 /// sensor — 3008×3008, 3.76 µm pixels, 14-bit ADC, no ST4 port, trigger-cam
 /// capable (so the simulation can exercise the soft-trigger flow).
@@ -1420,7 +1423,7 @@ fn sim_camera_property() -> CameraProperty {
 #[cfg(feature = "simulation")]
 const fn sim_camera_property_ex() -> CameraPropertyEx {
     CameraPropertyEx {
-        // The SV605CC has no ST4 port (docs/plans/archive/svbony-camera.md).
+        // The SV605CC has no ST4 port.
         supports_pulse_guide: false,
         supports_control_temp: true,
     }
@@ -1849,9 +1852,9 @@ mod tests {
     #[test]
     fn bytes_per_pixel_matches_every_image_type() {
         // Pins the current mapping (`bytes_per_pixel`'s doc comment flags
-        // RAW10/12/14, Y10/12/14, and RGB32 as assumptions pending hardware
-        // confirmation) so an accidental edit is caught here rather than
-        // only once real hardware disagrees.
+        // RAW10/12/14, Y10/12/14, and RGB32 as unconfirmed assumptions) so an
+        // accidental edit is caught here rather than only once real hardware
+        // disagrees.
         let cases = [
             (ImageType::Raw8, 1),
             (ImageType::Raw10, 2),
@@ -2308,9 +2311,9 @@ mod tests {
         let sdk = Sdk::new().unwrap();
         let cam = sdk.open_camera(0).unwrap();
         // `Gamma` is a real `ControlType` the header defines, but the
-        // simulation's read side (unlike its write side, already covered by
-        // `set_read_only_control_is_rejected`'s sibling case) does not model
-        // it, so it should hit the same catch-all rejection.
+        // simulation's read side does not model it, so it hits the same
+        // catch-all rejection as an unmodelled write
+        // (`set_read_only_control_is_rejected`).
         assert_eq!(
             cam.control_value(ControlType::Gamma).unwrap_err(),
             Error::Svb(SvbError::InvalidControlType)
@@ -2401,7 +2404,8 @@ mod tests {
         cam.start_video_capture().unwrap();
         let mut buf = vec![0u8; cam.frame_buffer_len().unwrap()];
         // No frame armed yet: times out immediately (simulation
-        // simplification — see sim_get_video_data's doc comment).
+        // simplification — see the comment on sim_get_video_data's
+        // not-ready branch).
         assert_eq!(
             cam.get_video_data(&mut buf, 1000).unwrap_err(),
             Error::Svb(SvbError::Timeout)

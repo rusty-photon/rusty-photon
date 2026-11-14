@@ -1,5 +1,4 @@
-//! Binning and ROI steps (`@wip` — `SvbonyCamera`'s bin/ROI `Camera` methods
-//! are `NOT_IMPLEMENTED` stubs until Phase E, docs/plans/archive/svbony-camera.md).
+//! Binning and ROI steps (`binning_and_roi.feature`).
 
 use cucumber::{then, when};
 

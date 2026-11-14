@@ -1,7 +1,7 @@
 //! Exhaustive verification of the delivered ceiling at **every** gain the
 //! camera advertises, for every attached camera.
 //!
-//! [`probe_ceiling`](probe_ceiling) samples four gains. That is enough to show
+//! The `probe_ceiling` example samples four gains. That is enough to show
 //! a clip is not a gain artifact, but not enough to *assert* a ceiling holds
 //! across the whole register. This walks every integer gain from min to max.
 //!
@@ -50,8 +50,9 @@ fn main() {
         // nothing to contribute. Skip rather than let `set_roi_format` panic
         // through `expect` and abort the remaining cameras — this sweep runs
         // for an hour, and losing the cameras after the odd one out would be a
-        // poor trade. (RM3 notes no such ASI model is known; Raw8 is the SDK's
-        // universal baseline. This is cheap insurance, not an observed case.)
+        // poor trade. (RM3 of docs/services/zwo-camera.md: no such ASI model is
+        // known; Raw8 is the SDK's universal baseline. This is cheap
+        // insurance, not an observed case.)
         if !info.supported_video_formats.contains(&ImageType::Raw16) {
             println!(
                 "-- camera {index} ({}) advertises {:?}, no Raw16 — skipped",
@@ -72,8 +73,9 @@ fn main() {
             continue;
         };
 
-        // What the driver publishes (ST3, with the one-step margin) and what a
-        // bare shift would predict. The gap between them is the margin itself.
+        // What the driver publishes (ST3 of docs/services/zwo-camera.md, with
+        // the one-step margin) and what a bare shift would predict. The gap
+        // between them is the margin itself.
         // `expected_shift` is `None` outside the shifted range: there is no
         // packing to disagree with, and `16 - depth` would underflow if the SDK
         // ever reported a depth above the container's own 16.

@@ -163,10 +163,10 @@ async fn camera_reports_unique_id_within(
     device: u32,
     expected: String,
 ) {
-    // The service rebuilds its server on the reload, on the new port it
-    // announces, so each poll asks the management API afresh at the port
-    // announced last, and a poll the rebuild refuses is "not yet"
-    // (testing.md §5.9).
+    // The service rebuilds its server — on a reload, or once a failed scan's
+    // re-scan succeeds (U6) — on the new port it announces, so each poll asks
+    // the management API afresh at the port announced last, and a poll the
+    // rebuild refuses is "not yet" (testing.md §5.9).
     let budget = Duration::from_secs(seconds);
     let start = Instant::now();
     let index = usize::try_from(device).expect("device number fits usize");

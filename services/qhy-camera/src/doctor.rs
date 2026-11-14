@@ -1,15 +1,14 @@
 //! `qhy-camera doctor` — the per-service doctor subcommand: read-only
 //! diagnosis of this service's own config plus what the QHYCCD SDK can see.
 //!
-//! The contract is docs/services/doctor.md §Per-service doctors'. On Windows
+//! The contract is docs/services/doctor.md § The per-service subcommand. On Windows
 //! real-SDK builds it additionally carries the QHYCCD installation
 //! diagnostics: how the delay-loaded `qhyccd.dll` resolves
 //! (`hardware.sdk-dll`), and the loaded SDK version vs. the pinned
-//! build-time version (`hardware.sdk-version` — ABI skew made visible,
-//! ADR-015 accepted risk), with All-in-One driver-pack presence and the
-//! download URL in the failing check's suggestion. Behavioral contracts
-//! DR1–DR5 in `docs/services/qhy-camera.md` § "Windows: qhyccd.dll
-//! resolution".
+//! build-time version (`hardware.sdk-version` — ABI skew, an accepted risk,
+//! made visible), with All-in-One driver-pack presence and the download URL
+//! in the failing check's suggestion. Behavioral contracts DR1–DR6 in
+//! `docs/services/qhy-camera.md` § "Windows: qhyccd.dll resolution".
 //!
 //! Check assembly is pure over plain data so it is unit-testable on every
 //! platform; only the gathering (real `LoadLibrary` + SDK calls) is
@@ -241,9 +240,10 @@ fn needs_operator_attention(checks: &[Check]) -> bool {
     })
 }
 
-/// `hardware.sdk-version`: loaded-vs-pinned. A skew is a warning (ADR-015
-/// accepts the ABI-skew risk); an unreadable version is a failure — the
-/// DLL resolved but the SDK is not usable, which is DR3's unhealthy case.
+/// `hardware.sdk-version`: loaded-vs-pinned. A skew is a warning (ABI skew
+/// against whatever the All-in-One ships is an accepted risk); an unreadable
+/// version is a failure — the DLL resolved but the SDK is not usable, which
+/// is DR3's unhealthy case.
 #[cfg(any(all(windows, not(feature = "simulation")), test))]
 fn sdk_version_check(finding: &SdkVersionFinding) -> Check {
     match finding {

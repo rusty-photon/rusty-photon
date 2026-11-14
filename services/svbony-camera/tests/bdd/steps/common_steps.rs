@@ -48,12 +48,6 @@ async fn exposure_in_flight(world: &mut CameraWorld, _device: u32) {
 }
 
 // --- boolean property reports (used as Given precondition and Then check) ----
-//
-// Every property beyond `Connected` reads a still-`NOT_IMPLEMENTED` `Camera`
-// stub method (Phase E, docs/plans/archive/svbony-camera.md); the steps compile now
-// so the `@wip` feature files that reference them are ready to run the
-// moment each area lands, but only `Connected` is exercised by a non-`@wip`
-// scenario today.
 #[given(regex = r"^camera device (\d+) reports (\w+) as (true|false)$")]
 #[then(regex = r"^camera device (\d+) reports (\w+) as (true|false)$")]
 async fn camera_reports_bool(
@@ -86,9 +80,10 @@ async fn camera_reports_bool(
 /// contract is about a surface as a whole — the capability members (step 10),
 /// or the cache-served ones of a camera that has left the bus (C6) — and one
 /// member answering while its neighbours refuse is the contradiction the check
-/// exists to remove. An outline pays a service start per member, the cost
-/// that pushed `sky-survey-camera`'s suite past its 60s Bazel budget on
-/// Windows. The members stay named in the feature file, per testing.md §2.5.
+/// exists to remove. An outline pays a service start per member, a cost
+/// that takes a camera suite such as `sky-survey-camera`'s past a 60 s Bazel
+/// budget on Windows. The members stay named in the feature file, per
+/// testing.md §2.5.
 #[then(regex = r"^reading these members from camera device (\d+) is rejected with ASCOM (\w+):$")]
 async fn member_reads_rejected(world: &mut CameraWorld, step: &Step, device: u32, code: String) {
     let camera = world.device(device);

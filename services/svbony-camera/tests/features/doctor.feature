@@ -1,8 +1,7 @@
 Feature: Doctor subcommand smoke
   The service binary's own doctor subcommand diagnoses its config file
   read-only through the same typed load path a start would use
-  (docs/services/doctor.md). Not `@wip`: the doctor subcommand is fully
-  implemented as of Phase C/D.
+  (docs/services/doctor.md).
 
   Scenario: A valid config file yields a clean report
     Given this service's valid config file staged for doctor

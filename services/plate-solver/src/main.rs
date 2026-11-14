@@ -94,7 +94,7 @@ fn main() -> ExitCode {
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
-    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    // the final lines flush on SCM Stop. Console mode logs to stderr.
     let _tracing_guard = init_service_tracing("plate-solver", cli.log_level, cli.service);
 
     // Path resolution and config load share one failure arm: both are

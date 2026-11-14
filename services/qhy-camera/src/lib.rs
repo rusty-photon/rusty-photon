@@ -21,8 +21,10 @@
 //!
 //! **Native dependency:** `qhyccd-rs → libqhyccd-sys` links the proprietary QHYCCD
 //! SDK (`static=qhyccd`) + `libusb-1.0`, so this package does not build without
-//! the SDK installed. The `simulation` feature makes the backend hardware-free
-//! (`Sdk::new()` fabricates a QHY178M-Simulated camera) but still links the SDK.
+//! the SDK installed unless `QHYCCD_SKIP_NATIVE_LINK=1` omits the link, which
+//! only a `simulation` build may do. The `simulation` feature makes the backend
+//! hardware-free (`Sdk::new()` fabricates a QHY178M-Simulated camera) and, on
+//! its own, still links the SDK.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -191,11 +193,10 @@ impl ServerBuilder {
     /// With no `usb_devices` list, every camera the USB scan places, in port
     /// order, each probed for a CFW without `InitQHYCCD`, and only those: a
     /// camera the scan cannot place is never opened (see
-    /// [`Self::register_enumerated`], U11). With a list, the list, opening
-    /// nothing (see [`Self::register_list`]). A camera's connect handshake
-    /// happens later, on `set_connected(true)`; the device list is fixed at
-    /// build, so a reload re-enumerates. Zero cameras is not a hard failure
-    /// (C0).
+    /// `register_enumerated`, U11). With a list, the list, opening nothing
+    /// (see `register_list`). A camera's connect handshake happens later, on
+    /// `set_connected(true)`; the device list is fixed at build, so a reload
+    /// re-enumerates. Zero cameras is not a hard failure (C0).
     ///
     /// # Errors
     ///
@@ -879,7 +880,7 @@ pub struct BoundServer {
     rescan: Option<Rescan>,
     /// Held so the SDK is released (its `Drop` calls `ReleaseQHYCCDResource` on
     /// real hardware) only after the HTTP server stops — on shutdown *and*
-    /// reload. `None` when a list's failed scan, or an empty list, opened none.
+    /// reload. `None` when a failed scan, or an empty list, opened none.
     sdk: Option<qhyccd_rs::Sdk>,
 }
 

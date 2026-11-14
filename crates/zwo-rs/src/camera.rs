@@ -206,10 +206,10 @@ impl ImageType {
     }
 
     // `ASI_IMG_TYPE` is a signed `c_int` on every platform (the enum has a
-    // negative `ASI_IMG_END` variant), so unlike the `c_uint`-on-LP64 enums it
-    // never needed the Windows width fix — but use the bindgen alias anyway, to
-    // stay consistent with the other enum mappings (`ControlType` etc.) and track
-    // any future re-typing without touching the call sites.
+    // negative `ASI_IMG_END` variant), so unlike the `c_uint`-on-LP64 enums a
+    // fixed `c_int` would match it everywhere — but use the bindgen alias anyway,
+    // to stay consistent with the other enum mappings (`ControlType` etc.) and
+    // follow a re-typing of the header without touching the call sites.
     #[cfg(not(feature = "simulation"))]
     const fn to_raw(self) -> sys::ASI_IMG_TYPE {
         match self {
@@ -1262,8 +1262,9 @@ impl Camera {
     }
 
     /// A call the SDK answers without reaching a departed camera: the reads,
-    /// and the queued ROI, start-position, start and stop calls. Only a rescan
-    /// that has dropped the camera fails it.
+    /// the download (blank while the departure is hidden), and the queued
+    /// ROI, start-position, start and stop calls. Only a rescan that has
+    /// dropped the camera fails it.
     fn sim_answered(&self) -> Result<()> {
         match self.sim_bus() {
             SimBus::Forgotten { .. } => Err(Error::Asi(AsiError::InvalidId)),
@@ -1271,8 +1272,8 @@ impl Camera {
         }
     }
 
-    /// A call that has to reach the camera: a control write, the download, a
-    /// guide pulse. A hidden departure fails it with `GENERAL_ERROR`.
+    /// A call that has to reach the camera: a control write or a guide pulse.
+    /// A hidden departure fails it with `GENERAL_ERROR`.
     fn sim_reached(&self) -> Result<()> {
         match self.sim_bus() {
             SimBus::Forgotten { .. } => Err(Error::Asi(AsiError::InvalidId)),
@@ -1733,8 +1734,8 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn full_frame_download_fills_buffer() {
-        // Exercises the fast (parallel) frame fill at full-sensor size: the old
-        // byte-at-a-time fill took >10 s here and tripped ConformU's timeout.
+        // Exercises the frame fill at full-sensor size, where a byte-at-a-time
+        // fill would take over 10 s and trip ConformU's timeout.
         let sdk = Sdk::new().unwrap();
         let cam = sdk.open_camera(0).unwrap();
         let need = cam.roi_format().unwrap().buffer_len().unwrap();

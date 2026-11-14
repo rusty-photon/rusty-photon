@@ -5,7 +5,7 @@
 //!    cover the whole header set — bare extern declarations force no linkage, so
 //!    generation is not feature-gated.
 //! 2. Emits the link directives for the system-installed ZWO SDK, **gated per
-//!    device feature** (ADR-014): `camera` → `libASICamera2` (+ `libusb-1.0`),
+//!    device feature**: `camera` → `libASICamera2` (+ `libusb-1.0`),
 //!    `efw` → `libEFWFilter`, `focuser` → `libEAFFocuser`, plus the C++ runtime
 //!    whenever any device SDK is linked.
 //!
@@ -18,7 +18,7 @@
 //! - `ZWO_SDK_LIB_DIR=/path/to/lib` — add an SDK search path.
 //! - `ZWO_SKIP_NATIVE_LINK=1` — omit the native link directives entirely, for
 //!   builds that exercise only the pure-Rust `simulation` path and provision no
-//!   SDK (sanitizer CI). See [`emit_link_directives`].
+//!   SDK (the test and sanitizer CI jobs). See [`emit_link_directives`].
 
 use std::{env, path::PathBuf};
 
@@ -65,13 +65,13 @@ fn emit_link_directives() {
     // references no ASI/EFW/EAF symbols — the real FFI calls are
     // `#[cfg(not(feature = "simulation"))]`, and bare `extern` declarations do
     // not force the linker to resolve a library — so with these directives
-    // omitted the crate links with no native SDK present. Used by the sanitizer
-    // CI job, which exercises only the pure-Rust simulation path and provisions
-    // no SDK. Env-gated, *not* feature-gated: a Cargo feature would be turned on
+    // omitted the crate links with no native SDK present. Used by the CI jobs
+    // that exercise only the pure-Rust simulation path and provision no SDK.
+    // Env-gated, *not* feature-gated: a Cargo feature would be turned on
     // by `--all-features` everywhere and silently stop every such build from
     // linking the real SDK. (The per-device `camera`/`efw`/`focuser` features
     // below are safe as features because they are additive: `--all-features`
-    // simply links every SDK, the pre-split behaviour.)
+    // simply links every SDK.)
     println!("cargo:rerun-if-env-changed=ZWO_SKIP_NATIVE_LINK");
     if env::var_os("ZWO_SKIP_NATIVE_LINK").is_some() {
         println!(
@@ -81,7 +81,7 @@ fn emit_link_directives() {
         return;
     }
 
-    // Per-device link gates (ADR-014). Each ZWO device SDK is an independent
+    // Per-device link gates. Each ZWO device SDK is an independent
     // library with no shared handle, so a consumer links only what it talks to:
     // zwo-camera builds with `camera`, zwo-focuser with `focuser`. With no
     // device feature on there is nothing to link at all.

@@ -1,13 +1,13 @@
 //! Windows delay-load link args for the proprietary `qhyccd.dll`.
 //!
 //! The QHYCCD Windows SDK's `qhyccd.lib` is an IMPORT library: without
-//! intervention a missing `qhyccd.dll` (ADR-013: never redistributed; the
-//! operator's QHY All-in-One pack provides it) kills the process in the
-//! Windows loader BEFORE `main` — no log, just an error dialog. `/DELAYLOAD`
-//! defers binding to the first SDK call, so the startup preflight
-//! (`src/preflight.rs`) can resolve the DLL and fail with an actionable error
-//! instead. See docs/services/qhy-camera.md § "Windows: qhyccd.dll
-//! resolution" (contracts WD1–WD3).
+//! intervention a missing `qhyccd.dll` (never shipped: the SDK's
+//! redistribution rights are unresolved, and the operator's QHY All-in-One
+//! pack provides it) kills the process in the Windows loader BEFORE `main` —
+//! no log, just an error dialog. `/DELAYLOAD` defers binding to the first SDK call, so the
+//! startup preflight (`src/preflight.rs`) can resolve the DLL and fail with an
+//! actionable error instead. See docs/services/qhy-camera.md § "Windows:
+//! qhyccd.dll resolution" (contracts WD1–WD3).
 //!
 //! The args live HERE, in the binary crate's build script — not in
 //! `crates/qhyccd-rs/libqhyccd-sys/build.rs` next to the link directives —

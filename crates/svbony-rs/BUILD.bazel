@@ -10,30 +10,14 @@ exports_files(
 # here: SVBony has only one device (camera) and one SDK library, so there is
 # no per-device `crate_features` union to spell out (unlike zwo-rs's
 # camera/efw/focuser). `libsvbony-sys` is first-party (not in `@cr`), so it is
-# named explicitly; thiserror/tracing come from `all_crate_deps`.
+# named explicitly; thiserror/tracing/rand come from `all_crate_deps`.
 _LIBSVBONY_SYS = "//crates/svbony-rs/libsvbony-sys:libsvbony-sys"
 
-# `rand` is an optional, `simulation`-only Cargo dependency. Unlike zwo-rs
-# (where `zwo-camera`/`zwo-focuser` already enable `zwo-rs/simulation`
-# elsewhere in the workspace, so crate_universe's per-package resolution
-# picks `rand`/`rayon` up into `all_crate_deps` automatically), NO workspace
-# member yet depends on svbony-rs at all (no consuming service exists in
-# this phase — see docs/plans/archive/svbony-camera.md). crate_universe therefore
-# never sees svbony-rs's `simulation` feature activated anywhere in the
-# unified workspace Cargo resolution, and `all_crate_deps` omits `rand` for
-# this package even though it's declared optionally in Cargo.toml. Reference
-# the alias explicitly here until a real consumer exists and this can be
-# dropped in favour of `all_crate_deps` alone.
-_RAND = "@cr//:rand"
-
 # Real SDK variant: no `simulation` feature cfg's out the simulation module
-# (rand) so the real FFI path compiles. NOTE: as of this phase,
-# `libsvbony-sys`'s own `cargo_build_script` bakes in
-# `SVBONY_SKIP_NATIVE_LINK=1` (see its BUILD.bazel) — there is no
-# `install-svbony-sdk` CI provisioning action yet and no service consumes
-# this crate yet, so this "real" variant never actually gets to a final
-# native link under Bazel in this phase. A future `svbony-camera` service's
-# production targets will depend on this.
+# so the real FFI path compiles. `svbony-camera`'s production library depends
+# on this. Under Bazel it never reaches a final native link: libsvbony-sys's
+# build script runs with `SVBONY_SKIP_NATIVE_LINK=1` (see its BUILD.bazel),
+# which is why the real `:svbony-camera` binary is tagged `manual`.
 rust_library(
     name = "svbony-rs",
     srcs = glob(["src/**/*.rs"]),
@@ -47,10 +31,10 @@ rust_library(
 # simulated camera (incl. the soft-trigger video-capture flow and cooling
 # ramp). `testonly = True` makes Bazel reject any production
 # rust_binary/rust_library that links it, enforcing the convention at build
-# time. A future `svbony-camera` service's sim/BDD/ConformU targets will
-# depend on this. (The SDK link directives are still nominally "emitted" by
-# libsvbony-sys's build script — simulation removes the camera, not the link
-# — except this phase's Bazel build_script_env skip; see its BUILD.bazel.)
+# time. `svbony-camera`'s sim library, and the binary, unit-test, BDD and
+# ConformU targets built on it, depend on this. (Under Cargo, simulation
+# removes the camera, not the link; under Bazel neither variant links the
+# SDK — see libsvbony-sys's BUILD.bazel.)
 rust_library(
     name = "svbony-rs_sim",
     testonly = True,
@@ -59,10 +43,7 @@ rust_library(
     crate_name = "svbony_rs",
     edition = "2021",
     visibility = ["//visibility:public"],
-    deps = [
-        _LIBSVBONY_SYS,
-        _RAND,
-    ] + all_crate_deps(normal = True),
+    deps = [_LIBSVBONY_SYS] + all_crate_deps(normal = True),
 )
 
 # The crate's own unit tests, run under Bazel against the sim variant (the

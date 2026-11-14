@@ -2,11 +2,12 @@
 Feature: Cooling
   Cooling is gated on ASI_CAMERA_INFO.IsCoolerCam: CanSetCCDTemperature and
   CanGetCoolerPower are true only when the camera is a cooled model, and the
-  related getters return NOT_IMPLEMENTED otherwise (K1). When cooling is
-  supported, CCDTemperature reads the current sensor temperature (K2),
-  SetCCDTemperature validates the target against [-273.15, 80] and reads it
-  back (K3), and CoolerOn / CoolerPower map to the SDK cooler controls (K4).
-  The simulated ASI2600MM-Pro-Simulated camera has a cooler.
+  related getters return NOT_IMPLEMENTED otherwise (K1). CCDTemperature reads
+  the current sensor temperature whenever the camera advertises that control,
+  cooled or not (K2). When cooling is supported, SetCCDTemperature validates
+  the target against [-273.15, 80] and reads it back (K3), and CoolerOn /
+  CoolerPower map to the SDK cooler controls (K4). The simulated
+  ASI2600MM-Pro-Simulated camera has a cooler.
 
   Background:
     Given the zwo-camera service running with the simulation backend

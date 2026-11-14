@@ -1,7 +1,7 @@
 # Releasing `qhyccd-rs` and `libqhyccd-sys`
 
-These two crates are **dual-homed** (ADR-009): the workspace is the canonical
-development home, but both are still published to crates.io for outside
+These two crates are **dual-homed**: the workspace is the canonical
+development home, and both are published to crates.io for outside
 consumers. The inter-crate dependency carries **both** a `version` and a `path`
 (`libqhyccd-sys = { version = "0.1.4", path = "libqhyccd-sys" }`) — local and
 Bazel builds use the `path`; `cargo publish` rewrites it to the `version`. That
@@ -16,11 +16,10 @@ mechanic dictates the publish **order** and the version-bump rules below.
 
 ## Version-bump rules
 
-- **`libqhyccd-sys` must bump past `0.1.4` before its next publish.** crates.io
-  `0.1.4` was cut *before* the macOS link fix, which is why the deleted
-  `[patch.crates-io]` git override existed (ADR-009, motivation #1). The fix now
-  lives in the in-tree `build.rs`, so the first publish from the monorepo carries
-  it — that is a real change and needs `>= 0.1.5`.
+- **`libqhyccd-sys` must bump past `0.1.4` before its next publish.** The
+  crates.io `0.1.4` never links `libusb-1.0` on macOS, so a link against it fails
+  with `Undefined symbols … _libusb_*`; the in-tree `build.rs` links it. That is
+  a real change and needs `>= 0.1.5`.
 - **Bump `qhyccd-rs`** to cover its `[Unreleased]` `CHANGELOG.md` entries.
 - **If `libqhyccd-sys` is bumped, bump the `version` of the dep in
   `crates/qhyccd-rs/Cargo.toml` to match** — otherwise the published `qhyccd-rs`
@@ -70,10 +69,9 @@ git tag qhyccd-rs-vX.Y.Z && git push --tags
 
 ## After the *first* successful publish-from-subdir
 
-This is the trigger for the last deferred ADR-009 step: **hard-archive the
-standalone `ivonnyssen/qhyccd-rs` repo** (point its README at the monorepo, then
-GitHub → Settings → Archive). Do not archive before a publish-from-monorepo has
-succeeded — that is what proves the release path.
+**Hard-archive the standalone `ivonnyssen/qhyccd-rs` repo** (point its README at
+the monorepo, then GitHub → Settings → Archive). Do not archive before a
+publish-from-monorepo has succeeded — that is what proves the release path.
 
 ## Bazel
 

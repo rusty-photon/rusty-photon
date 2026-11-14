@@ -187,7 +187,7 @@ retelling them. Everything else a record holds is reached through
 | [ui-design/](plans/ui-design/mocks/README.md) | UX exploration, not a delivery plan: self-contained HTML mocks of the activity-stream direction (`7-stream-fold.html`) that [`ui-htmx`](services/ui-htmx.md) builds out. Kept as the reference target for further UI work |
 | [vendor-qhyccd-rs.md](plans/vendor-qhyccd-rs.md) | Vendor `qhyccd-rs` + `libqhyccd-sys` into `crates/` ([ADR-009](decisions/009-vendor-qhyccd-rs.md)) — vendored and consumed by `qhy-camera`, with no `[patch.crates-io]` override. **Remaining is owner-run only**: the first `cargo publish` from the vendored subdirs, then archiving the standalone repo (runbook: [`crates/qhyccd-rs/RELEASING.md`](../crates/qhyccd-rs/RELEASING.md)) |
 | [vendor-zwo-rs.md](plans/vendor-zwo-rs.md) | Vendor `zwo-rs` + `libzwo-sys` into `crates/` ([ADR-010](decisions/010-vendor-zwo-rs.md)) — vendored, with the real (no-simulation) variant green on Linux/macOS/Windows under both Cargo (`native.yml`) and Bazel's two-variant build. **Remaining is owner-run only**: the first crates.io publish (`libzwo-sys`, then `zwo-rs` 0.1.0) and standalone-repo archival (runbook in ADR-010) |
-| [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera Alpaca driver ([`zwo-camera`](services/zwo-camera.md), port 11122) over the vendored `zwo-rs`/`libzwo-sys` FFI ([ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md)). Implemented through Phase G — full ASCOM Camera, ConformU in CI, real-hardware validated; Phase H shipped [`zwo-focuser`](services/zwo-focuser.md) (port 11124, EAF-validated). **Remaining: Phase F** — the EFW filter wheel as its own `zwo-filterwheel` service per [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md) — plus Phase G's tail, the `rp` `CameraConfig` consumer |
+| [zwo-driver.md](plans/zwo-driver.md) | ZWO ASI camera Alpaca driver ([`zwo-camera`](services/zwo-camera.md), port 11122) over the vendored `zwo-rs`/`libzwo-sys` FFI ([ADR-008](decisions/008-zwo-camera-native-sdk-ffi.md)). Implemented through Phase G — full ASCOM Camera, ConformU in CI, real-hardware validated; Phase H shipped [`zwo-focuser`](services/zwo-focuser.md) (port 11124, EAF-validated). **Remaining: Phase F** — the EFW filter wheel as its own `zwo-filterwheel` service per [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md) — and the first crates.io publish of `zwo-rs`/`libzwo-sys` |
 | [zwo-real-hardware-validation.md](plans/zwo-real-hardware-validation.md) | Arrival-day checklist for putting a real ZWO camera + EAF on the Pi field rig: SuperSpeed enumeration, udev/permissions, ConformU against both services, capture + cooler, and roster integration across `sentinel`/`rp`. Both drivers have real-hardware ConformU passes recorded in [docs/validation/](validation/README.md), from dev boxes — the rig-side items are open |
 
 Completed plans move to [`docs/plans/archive/`](plans/archive/) and
@@ -496,19 +496,17 @@ The dual-homed members (`zwo-rs` + `libzwo-sys`, `qhyccd-rs` + `libqhyccd-sys` �
 ADR-009/010 — and `svbony-rs` + `libsvbony-sys`, per
 [docs/plans/archive/svbony-camera.md](plans/archive/svbony-camera.md)) follow the
 same rule: their **shared** third-party dependencies (e.g. `thiserror`,
-`tracing`, and the simulation-only `rand`, shared by all three camera crates,
-and `rayon`, shared by `zwo-rs` and `qhyccd-rs`) inherit from
-`[workspace.dependencies]` with `dep.workspace = true`. This is safe for their
-independent crates.io releases
-because `cargo publish` **flattens** an inherited dependency into a concrete
+`tracing`, and the simulation-only `rand`, shared by all three camera crates)
+inherit from `[workspace.dependencies]` with `dep.workspace = true`. This is
+safe for their independent crates.io releases because `cargo publish`
+**flattens** an inherited dependency into a concrete
 version in the packaged manifest (verified by dry-run). What stays explicit on
 these members is their **package identity metadata** (`version` / `edition` /
 `license` / `authors` / `description` / `keywords` / `categories`) — *not*
 `*.workspace = true` — so they release on their own cadence (the carve-out
 recorded in ADR-009/010). A dep is left crate-local only when it is genuinely
 single-consumer (e.g. `libzwo-sys`'s `bindgen` build-dep) or when the workspace
-pin would force an unwanted feature (e.g. `qhyccd-rs` keeps `tracing-subscriber`
-local to avoid the workspace's `env-filter`).
+pin would force an unwanted feature.
 
 ### Duplicate transitive versions
 

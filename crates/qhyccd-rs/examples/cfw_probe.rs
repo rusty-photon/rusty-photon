@@ -373,7 +373,8 @@ fn powercut(cam: &Camera, args: &[String]) {
         let then: u32 = arg(args, 4, "a slot");
         let at: f64 = arg(args, 5, "seconds after the move");
         // Rested from the last read, so a drop says what the wheel does then,
-        // not that the command followed a read too closely (FW5).
+        // not that the command followed a read too closely (FW5 in
+        // docs/services/qhy-camera.md § FilterWheel).
         let until = moved + Duration::from_secs_f64(at).saturating_sub(RESTED);
         while Instant::now() < until {
             read(cam, "powercut");

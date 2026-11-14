@@ -17,7 +17,7 @@ path = "lib.rs"
 [dependencies]
 
 [features]
-# Removed vendored feature - now uses system-installed SDK
+# None: build.rs links the QHYCCD SDK it finds on the build machine.
 
 [lints]
 workspace = true

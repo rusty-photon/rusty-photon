@@ -4,8 +4,7 @@ Feature: TLS and HTTP Basic Auth smoke
   requires HTTP Basic Auth. Absent both blocks it serves plain unauthenticated
   HTTP. The deep TLS/auth behavior suites for the shared server stack live in
   ppba-driver (Alpaca drivers) and ui-htmx (BFF); this smoke scenario proves
-  the service threads the shared server config into its own serve path. Not
-  `@wip`: TLS/auth wiring is fully implemented as of Phase C/D.
+  the service threads the shared server config into its own serve path.
 
   Scenario: TLS with auth rejects missing credentials with 401 and accepts valid ones
     Given generated TLS certificates for the service

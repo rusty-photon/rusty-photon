@@ -6,11 +6,8 @@ rust-version.workspace = true
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-# Canonical development home is the rusty-photon monorepo, vendored
-# first-party from day one (no external-repo detour, unlike zwo-rs's
-# original history — see docs/plans/archive/svbony-camera.md "The Rust crate gap").
-# Still dual-homed: published to crates.io from crates/svbony-rs (release
-# runbook: RELEASING.md).
+# Dual-homed: developed in the rusty-photon workspace and published to
+# crates.io from crates/svbony-rs (release runbook: RELEASING.md).
 repository = "https://github.com/rusty-photon/rusty-photon"
 documentation = "https://docs.rs/svbony-rs"
 homepage = "https://github.com/rusty-photon/rusty-photon"
@@ -30,19 +27,7 @@ simulation = ["rand"]
 libsvbony-sys = { version = "0.1.0", path = "libsvbony-sys" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# Simulation-only (behind the `simulation` feature); version pinned once at
-# the workspace level (Rule 10). Unlike zwo-rs's Cargo.toml, `rayon` is NOT
-# pulled in here: zwo-rs declares it under `simulation` but its actual
-# fill_noise() no longer uses rayon (see crates/zwo-rs/src/lib.rs's doc
-# comment — a rayon parallel fill was tried and dropped for a seeded
-# xorshift64, which is what this crate's simulation module uses directly), so
-# carrying the rayon dependency here would just be dead weight.
 rand = { workspace = true, optional = true }
-
-# NOTE: no [dev-dependencies] section. zwo-rs declares `mockall` there but
-# never actually uses it in src/ (its tests exercise the `simulation` feature
-# directly, same as this crate's tests) — not carried over here to avoid
-# another unused dependency.
 
 [lints]
 workspace = true

@@ -6,8 +6,8 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-# Vendored first-party QHYCCD SDK binding (ADR-009). Two library variants — the
-# same real/sim split `crates/rp-plate-solver` uses for its mock:
+# Two library variants — the same real/sim split `crates/rp-plate-solver` uses
+# for its mock:
 #   * `qhyccd-rs`      links the REAL static SDK (production).
 #   * `qhyccd-rs_sim`  (testonly) enables the `simulation` feature so
 #     `Sdk::new()` fabricates a pure-Rust QHY178M (no FFI, no USB) for the
@@ -20,7 +20,7 @@ exports_files(
 # exactly as rp-plate-solver's production variant carries mockall. The
 # `libqhyccd-sys` FFI sub-crate is a workspace member depended on explicitly
 # (it is NOT an `all_crate_deps` entry). See docs/services/qhy-camera.md
-# "Native dependency & build gating".
+# § Gating plan, the Bazel row.
 
 _LIBQHYCCD_SYS = "//crates/qhyccd-rs/libqhyccd-sys:libqhyccd-sys"
 
@@ -48,20 +48,17 @@ rust_library(
     deps = [_LIBQHYCCD_SYS] + all_crate_deps(normal = True),
 )
 
-# The crate's own IN-SOURCE unit tests — the `#[cfg(test)]` modules in error.rs,
-# camera.rs (the `ControlType` round-trip), types.rs, and simulation.rs — run
-# under Bazel against the sim variant, mirroring crates/zwo-rs:zwo-rs_unit_test.
-# The `tests/simulation/*` integration suite is a SEPARATE crate, gated by the
-# `qhyccd-rs_integration_test` target below (unlike zwo-rs / svbony-rs, which have
-# no `tests/` dir — all their tests are in-source). Since Phase 4 of the qhyccd-rs
-# convention alignment there is NO FFI-mock layer (the `#[automock]` `src/mocks.rs`
-# and the `src/tests/` mock suite are gone): the real FFI arms are compiled out
-# under `simulation` and the simulated backend is exercised directly, like the
-# siblings. The `simulation` `crate_features` must be set explicitly — rust_test
-# does NOT inherit it from the wrapped `crate` — or the `#[cfg(feature =
-# "simulation")]` tests (the bulk) compile out. The sim variant still links the SDK
-# (simulation removes the camera, not the link), so this runs in the
-# SDK-provisioned bazel.yml / bazel-coverage.yml jobs, like zwo-rs.
+# The crate's own IN-SOURCE unit tests — every `#[cfg(test)]` module under
+# src/ — run against the sim variant, as crates/zwo-rs:zwo-rs_unit_test does.
+# The real FFI arms are compiled out under `simulation`, so the simulated backend
+# is exercised directly. The `tests/simulation/*` integration suite is a SEPARATE
+# crate, gated by the `qhyccd-rs_integration_test` target below (zwo-rs and
+# svbony-rs have no `tests/` dir — all their tests are in-source). The
+# `simulation` `crate_features` must be set explicitly — rust_test does NOT
+# inherit it from the wrapped `crate` — or the simulation module and its tests
+# compile out. The sim variant still links the SDK (simulation removes the
+# camera, not the link), so this runs in the SDK-provisioned bazel.yml /
+# bazel-coverage.yml jobs, like zwo-rs.
 rust_test(
     name = "qhyccd-rs_unit_test",
     size = "medium",
@@ -88,9 +85,7 @@ rust_test(
 # (that attribute is only for the in-source unit tests above). Entry point
 # `tests/simulation_tests.rs` (`#![cfg(feature = "simulation")]`) pulls in the
 # `simulation/` + `common/` submodules; `crate_features` and the sim variant are
-# set for the same reasons as the unit test. This suite previously ran only under
-# `cargo test` (the nightly Cargo safety net); wiring it here puts it in the per-PR
-# Bazel gate + `bazel coverage`.
+# set for the same reasons as the unit test.
 rust_test(
     name = "qhyccd-rs_integration_test",
     size = "medium",
@@ -116,8 +111,8 @@ rust_test(
 )
 
 # Doctests, ONE TARGET PER VARIANT. rules_rust runs no doctests unless a
-# rust_doc_test target declares them, so without these the crate's ~55 examples
-# were only ever compiled by the nightly Cargo safety net.
+# rust_doc_test target declares them; without these only the nightly Cargo safety
+# net would compile the crate's examples.
 #
 # Both variants are covered because the public API forks on the `simulation`
 # feature (`Camera::new` only without it, `Camera::new_simulated` only with it)
@@ -137,30 +132,20 @@ rust_test(
 # these run wherever the unit test does — the SDK-provisioned bazel.yml /
 # bazel-coverage.yml jobs.
 #
-# Windows needed a MAX_PATH fix before these could run there: rust_doc_test
-# spells sysroot inputs relative to the runfiles tree, whose prefix alone costs
-# ~123 chars, so the crate's one RUNNABLE example (the simulated-SDK walkthrough
-# in lib.rs) — the first doctest under Bazel to invoke link.exe — died on
-# `LNK1181: cannot open input file …libpanic_unwind-….rlib` at 261 characters,
-# one over the limit, while libstd-….rlib at 252 in the same directory resolved.
-# //third_party/patches:rustdoc_test_windows_external_repo_path now resolves
-# `--sysroot=` through the runfiles manifest to its execroot target, which puts
-# every std rlib back under the limit. `no_run` examples never link, which is why
-# the all-`no_run` service-lifecycle doc test was always green there.
+# On Windows both run only with the vendored rustdoc patch
+# (third_party/patches/rustdoc_test_windows_external_repo_path.patch): the
+# crate's one RUNNABLE example, the simulated-SDK walkthrough in lib.rs, invokes
+# link.exe, and without the patch its sysroot rlibs' runfiles-relative paths run
+# past MAX_PATH. docs/skills/pre-push.md § test.yml holds the measurements.
 rust_doc_test(
     name = "qhyccd-rs_doc_test",
     crate = ":qhyccd-rs",
 )
 
 # The sim target additionally carries `crate_features`, which rustdoc receives as
-# the two argv elements `--cfg` and `feature="simulation"`. Those embedded quotes
-# cannot ride a batch line — cmd.exe tracks quote state without understanding any
-# escape — so the same patch puts the Windows runner's command in a companion
-# .ps1 invoked via `powershell -File`, where a single-quoted argument carries `"`
-# literally, and re-encodes the quotes as `\"` for PowerShell's native-command
-# marshalling (which would otherwise paste them into the child's command line
-# unescaped for the CRT parser to strip). That is what lets this target run on
-# Windows at all.
+# `--cfg` and `feature="simulation"`. On Windows those embedded quotes cannot
+# ride the runner's batch line, and the same patch's companion .ps1 is what lets
+# this target run there (docs/skills/pre-push.md § test.yml).
 rust_doc_test(
     name = "qhyccd-rs_sim_doc_test",
     crate = ":qhyccd-rs_sim",

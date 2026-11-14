@@ -396,7 +396,7 @@ impl Device for FileMonitorDevice {
         Ok("0.1.0".to_string())
     }
 
-    /// No custom action: the configuration moved to the setup pages.
+    /// No custom action: the device is configured on its setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
         Ok(Vec::new())
     }

@@ -123,8 +123,8 @@ async fn pulse_guide(world: &mut CameraWorld, _device: u32, direction: String, m
 /// read through the same step because the contract is about the surface as a
 /// whole: one of them answering while its neighbours refuse is the
 /// contradiction the check exists to remove. `CCDTemperature` rides along as
-/// the cheapest member that reaches the SDK, which is what finds out that a
-/// camera has left the bus (C6).
+/// the cheapest member that reaches the SDK: on a camera that has left the bus
+/// it still answers, since only a failure asks (C6).
 #[when(regex = r"^I try to read (\w+) from camera device (\d+)$")]
 async fn try_read_exposure_member(world: &mut CameraWorld, member: String, _device: u32) {
     let camera = world.camera();

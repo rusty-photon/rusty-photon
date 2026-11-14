@@ -4,8 +4,8 @@ Feature: Device claims -- without a usb_devices list
   place, numbered in port order (U10). It takes the same passive scan and
   one-to-one join a list does, and only then opens the cameras the join
   placed, each briefly and uninitialised, for its serial. A camera the join
-  cannot place -- one matching records it cannot pair one-to-one, a model the
-  ASI SDK does not know that nothing pairs, a known model with no working
+  cannot place -- one matching records it cannot pair one-to-one, a model this
+  driver does not know that nothing pairs, a known model with no working
   record -- is refused: never opened, never registered, and logged. So is a
   placed camera that cannot be opened for its serial, without failing the
   start. A failed scan registers no camera and opens none; the service

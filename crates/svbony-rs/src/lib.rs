@@ -4,19 +4,19 @@
 //! [`zwo-rs`](https://crates.io/crates/zwo-rs). It wraps the raw,
 //! hand-transcribed FFI in
 //! [`libsvbony-sys`](https://crates.io/crates/libsvbony-sys) in a safe,
-//! ergonomic API. It is consumed by rusty-photon's `svbony-camera` ASCOM
-//! Alpaca driver (a later phase; see `docs/plans/archive/svbony-camera.md`).
+//! ergonomic API. It is consumed by rusty-photon's
+//! [`svbony-camera`](https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/svbony-camera.md)
+//! ASCOM Alpaca driver.
 //!
-//! ## Status
+//! ## Scope
 //!
-//! **Under construction (Phase A/B of the plan).** Enumeration, SDK-version
-//! queries, and the `SVBony` [`Camera`] handle (open/close, [`CameraInfo`],
-//! [`CameraProperty`]/[`CameraPropertyEx`], control caps/get/set, ROI, camera
-//! mode, video-capture exposure primitives incl. the soft-trigger flow, ST4
-//! guiding, pixel size) are wired to the FFI. `SVBony` has only one device
-//! (camera) and one SDK library, so — unlike `zwo-rs` — there is no
-//! per-device Cargo feature union; only the `simulation` feature gates
-//! anything.
+//! Enumeration, SDK-version queries, and the `SVBony` [`Camera`] handle
+//! (open/close, [`CameraInfo`], [`CameraProperty`]/[`CameraPropertyEx`],
+//! control caps/get/set, ROI, camera mode, video-capture exposure primitives
+//! incl. the soft-trigger flow, ST4 guiding, pixel size) are wired to the
+//! FFI. `SVBony` has only one device (camera) and one SDK library, so —
+//! unlike `zwo-rs` — there is no per-device Cargo feature union; only the
+//! `simulation` feature gates anything.
 //!
 //! ## `simulation` feature
 //!
@@ -24,13 +24,13 @@
 //! environment for development and tests. As with those crates, the SDK is
 //! still *linked* when this feature is enabled (see [`sys`]) — it removes the
 //! hardware, not the link. With the feature on, the SDK is never called:
-//! enumeration reports a single fixed simulated camera ([`SIM_CAMERA_COUNT`]).
+//! enumeration reports a single fixed simulated camera (`SIM_CAMERA_COUNT`).
 //! The simulation additionally models the soft-trigger video-capture flow
 //! (`start_video_capture` arms it, `send_soft_trigger` arms a pending frame,
 //! `get_video_data` consumes it) and a cooling ramp that advances one step
 //! per poll (mirroring `zwo-rs`'s EAF focuser position ramp), so the
 //! `svbony-camera` service's exposure state machine can be exercised
-//! sim-side exactly as it will be against real hardware. With
+//! sim-side exactly as it runs against real hardware. With
 //! `Sdk::with_departure_file` a simulated camera can also leave the bus and
 //! come back. As SDK 1.13.4 was measured doing, its handle goes on answering
 //! while it is gone and only its frames stop coming (`get_video_data`
@@ -272,21 +272,20 @@ pub mod simulation {
     //!
     //! Enumeration of the simulated environment is reported by [`crate::Sdk`]
     //! via [`crate::SIM_CAMERA_COUNT`]. Simulated frames and the video-capture
-    //! / cooling-ramp state machines land with the [`crate::Camera`] handle.
+    //! / cooling-ramp state machines live on the [`crate::Camera`] handle.
     use rand::RngExt;
 
     /// Fill `buf` with simulated sensor noise as fast as possible.
     ///
-    /// A full-frame IMX533-class frame is tens of megabytes and this runs in
-    /// unoptimised test/CI builds. `zwo-rs`'s `fill_noise` doc comment records
-    /// the lesson this reuses directly: a per-byte `rand::rng()` lookup and a
-    /// rayon parallel fill both either tripped or risked tripping
-    /// `ConformU`'s 10s `StartExposure` timeout (the parallel fill grabs every
-    /// core, which starves sibling `ConformU` suites sharing a CI job). A
-    /// seeded xorshift64 — a few integer ops per 8 bytes, fast even in debug,
-    /// single-core, no extra deps — avoids both failure modes. Quality is
-    /// irrelevant; this is placeholder sensor noise, seeded per frame so
-    /// frames differ run-to-run.
+    /// A full IMX533 frame is about 18 MB at 16 bits per pixel, and this runs
+    /// in unoptimised test/CI builds. A per-byte `rand::rng()` lookup is slow
+    /// enough there to risk `ConformU`'s 10 s `StartExposure` timeout, and a
+    /// rayon parallel fill grabs every core, which starves sibling `ConformU`
+    /// suites sharing a CI job into the same timeout. A seeded xorshift64 —
+    /// the fill `zwo-rs`'s `fill_noise` uses: a few integer ops per 8 bytes,
+    /// fast even in debug, single-core, no extra deps — avoids both failure
+    /// modes. Quality is irrelevant; this is placeholder sensor noise, seeded
+    /// per frame so frames differ run-to-run.
     pub fn fill_noise(buf: &mut [u8]) {
         let mut state = rand::rng().random::<u64>() | 1;
         for chunk in buf.chunks_mut(8) {

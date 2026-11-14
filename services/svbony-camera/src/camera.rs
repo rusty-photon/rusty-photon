@@ -11,12 +11,14 @@
 //! - **No data-preserving stop**: `CanStopExposure = false`, `StopExposure`
 //!   is `NOT_IMPLEMENTED` unconditionally (E8) — the opposite of
 //!   `zwo-camera`'s graceful stop.
-//! - **`AbortExposure` never touches the SDK**: see `backend.rs`'s module
-//!   docs for why — it only bumps the exposure generation counter so a
-//!   late-completing capture's result is discarded (E7).
+//! - **`AbortExposure` makes no SDK call of its own**: it bumps the exposure
+//!   generation counter, so a late-completing capture's result is
+//!   discarded, and sets the capture's cancel flag, so the capture task
+//!   stops video capture itself between poll slices — see `backend.rs`'s
+//!   module docs, "How `capture` aborts" (E7).
 //! - **Dark frames are accepted** on every model — there is no mechanical
 //!   shutter in video mode (`HasShutter = false`), so `Light = false`
-//!   captures identically (E4/E7).
+//!   captures identically (E4).
 //! - **`ElectronsPerADU`** is a permanent `NOT_IMPLEMENTED` placeholder (ST2)
 //!   — `SVB_CAMERA_PROPERTY` carries no native electrons-per-ADU field.
 //! - Sensor/capability data (`SVB_CAMERA_PROPERTY`/`_EX`, pixel size) is
@@ -60,9 +62,9 @@ pub const DRIVER_INFO: &str = "rusty-photon svbony-camera";
 /// surfaced lazily via `image_array` (E9).
 const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 
-/// `SVB_EXPOSURE`'s assumed unit is microseconds, so the smallest step is 1 µs
-/// (see `svbony_rs::ControlType::Exposure`'s doc comment for the unit
-/// caveat, to be confirmed against real hardware).
+/// `SVB_EXPOSURE` is in microseconds (hardware-confirmed — see
+/// `svbony_rs::ControlType::Exposure`'s doc comment), so the smallest step is
+/// 1 µs.
 const EXPOSURE_RESOLUTION: Duration = Duration::from_micros(1);
 
 /// The manual `SVB_EXPOSURE` the connect handshake writes (C1a) — the
@@ -338,8 +340,8 @@ struct DeviceState {
     /// rather than a live hazard.
     frame_setup_lock: Mutex<()>,
 
-    /// True only for the duration of a blocking `PulseGuide` SDK call (v0
-    /// keeps `PulseGuide` synchronous — see `pulse_guide`'s doc comment).
+    /// True only for the duration of a blocking `PulseGuide` SDK call
+    /// (`PulseGuide` is synchronous — see the comment in `pulse_guide`).
     pulse_guiding: AtomicBool,
 }
 
@@ -852,8 +854,9 @@ impl SvbonyCamera {
     /// set `aborted` so `CameraState`/`PercentCompleted` promptly report
     /// idle (see `DeviceState::aborted`'s doc comment). Deliberately does
     /// NOT release the in-flight claim — the capture task takes the cell
-    /// once its (now short) drain completes, so a new exposure cannot race
-    /// the still-running one (the design's "one owner per device").
+    /// once its drain, at most one poll slice, completes, so a new exposure
+    /// cannot race the still-running one (the design's "one owner per
+    /// device").
     fn cancel_exposure(&self) {
         // Atomic with the capture task's commit so an abort can never be
         // overwritten by a just-completing capture. Held across the cell read
@@ -1261,7 +1264,7 @@ impl Device for SvbonyCamera {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// No custom action: the configuration moved to the setup pages.
+    /// No custom action: the device is configured on its setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
         Ok(Vec::new())
     }
@@ -1801,7 +1804,7 @@ impl Camera for SvbonyCamera {
     // --- shutter / capability flags --------------------------------------------------
 
     async fn has_shutter(&self) -> ASCOMResult<bool> {
-        // No mechanical shutter in video mode (E4/E7).
+        // No mechanical shutter in video mode (E4).
         Ok(false)
     }
 
@@ -1943,7 +1946,7 @@ impl Camera for SvbonyCamera {
     async fn start_exposure(&self, duration: Duration, light: bool) -> ASCOMResult<()> {
         self.ensure_connected()?;
         // No mechanical shutter in video mode: dark and light frames are
-        // captured identically (E4/E7) — `light` only ever informed a
+        // captured identically (E4) — `light` only ever informed a
         // shutter, which SVBony's video mode does not have.
         let _ = light;
 
@@ -2071,17 +2074,16 @@ impl Camera for SvbonyCamera {
         if !sensor.caps.supports_pulse_guide {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
-        // v0 design decision (documented in docs/services/svbony-camera.md's
-        // Pulse guiding contract, PG2): unlike zwo-camera's asynchronous
-        // ST4 wrapper (returns immediately, `IsPulseGuiding` tracks a
-        // deadline), this call stays a literal blocking `SVBPulseGuide` —
-        // `svbony_rs::Camera::pulse_guide` blocks at the SDK level for the
-        // pulse duration, and no ST4-capable SVBony model has been
-        // validated yet (the SV605CC has no ST4 port, so this whole branch
-        // is unexercised by the simulation/BDD suite). If a future
-        // ST4-capable model's guide pulses are long enough to risk
-        // ConformU's ~1s response budget, revisit with the same
-        // fire-and-forget-with-deadline pattern zwo-camera uses.
+        // PG2 (docs/services/svbony-camera.md, "Pulse guiding"): unlike
+        // zwo-camera's asynchronous ST4 wrapper (returns immediately,
+        // `IsPulseGuiding` tracks a deadline), this call stays a literal
+        // blocking `SVBPulseGuide` — `svbony_rs::Camera::pulse_guide` blocks
+        // at the SDK level for the pulse duration, and no ST4-capable SVBony
+        // model has been available to validate against (the SV605CC has no
+        // ST4 port, so only mock-backend unit tests reach this branch, never
+        // the simulation/BDD suite). If an ST4-capable model's guide pulses
+        // are long enough to risk ConformU's ~1s response budget, the answer
+        // is the fire-and-forget-with-deadline pattern zwo-camera uses.
         let dir = guide_direction(direction);
         let duration_ms = i32::try_from(duration.as_millis()).unwrap_or(i32::MAX);
         self.state.pulse_guiding.store(true, Ordering::Release);
@@ -2319,7 +2321,7 @@ mod tests {
 
     #[test]
     fn to_image_array_names_an_unsupported_format_before_the_length() {
-        // Each arm now owns its own length check, so a format the driver
+        // The format is checked before the length, so a format the driver
         // cannot unpack is reported as such even when the buffer is also
         // short — the length it would be measured against is derived from
         // that same unusable format, so leading with it would misdirect.
@@ -3024,9 +3026,10 @@ mod tests {
         assert_eq!(cam.max_adu().await.unwrap(), 65_535);
     }
 
-    /// The gap issue #882 filed: a camera that does not advertise Raw16
-    /// must not be handed Raw16 anyway. It offers only the 8-bit mode, and
-    /// `MaxADU` follows the format actually delivered (RM2).
+    /// RM1: a camera that does not advertise Raw16 is never handed Raw16,
+    /// which its `SVBSetOutputImageType` would refuse on every exposure. It
+    /// offers only the 8-bit mode, and `MaxADU` follows the format actually
+    /// delivered (RM2).
     #[tokio::test]
     async fn a_camera_without_raw16_offers_only_the_8_bit_mode() {
         let cam =
@@ -3695,8 +3698,7 @@ mod tests {
 
     /// Every SDK-error mapping carries the SDK's own error detail in the
     /// ASCOM error message — a bare error code is undiagnosable from a
-    /// client or the service log (a real-hardware gain-write transient
-    /// motivated this contract). Gain and offset reach the SDK only when an
+    /// client or the service log. Gain and offset reach the SDK only when an
     /// exposure arms them, so their mapping is pinned there instead.
     #[tokio::test]
     async fn sdk_control_failures_surface_the_sdk_detail() {
@@ -3758,10 +3760,11 @@ mod tests {
         assert!(!handle.is_open(), "failed handshake must close the camera");
     }
 
-    /// Reconnecting while a previous session's capture-cancel slot is still
-    /// populated cancels that capture (`reset_exposure_state`'s take-branch).
+    /// A reconnect after a completed exposure clears the ended session's
+    /// `ImageReady` (`reset_exposure_state`, C3): the disconnect found no
+    /// capture in flight to cancel, so it left that state as it was.
     #[tokio::test]
-    async fn reconnecting_cancels_a_previous_sessions_capture_slot() {
+    async fn a_reconnect_clears_the_ended_sessions_image_ready() {
         let cam = connected_device(MockCameraHandle::default());
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
@@ -3769,9 +3772,9 @@ mod tests {
             .await
             .unwrap();
         wait_image_ready(&cam).await;
-        // The completed exposure leaves its cancel flag in the slot (the
-        // disconnect's cancel is a no-op with nothing in flight); the
-        // reconnect must drain (take + set) it rather than leak it.
+        // The completed capture has handed the device back, so the
+        // disconnect's cancel is a no-op and leaves `ImageReady` set; the
+        // reconnect's reset is what clears it.
         cam.disconnect().unwrap();
         cam.connect().unwrap();
         assert!(!cam.image_ready().await.unwrap(), "reconnect resets state");
@@ -3870,7 +3873,7 @@ mod tests {
             .await
             .unwrap();
         // The blocking call has already returned by the time `pulse_guide`
-        // resolves (v0 keeps it synchronous — see the doc comment).
+        // resolves (`PulseGuide` is synchronous, PG2).
         assert!(!cam.is_pulse_guiding().await.unwrap());
     }
 

@@ -34,7 +34,7 @@ Feature: Gain, offset, and readout modes
   sizes the download buffer, it picks the ImageArray unpack, and MaxADU
   reports its full scale -- 65535 for Raw16, 255 for Raw8 (RM1/RM2).
   Setting an unknown index is rejected with INVALID_VALUE. The readout
-  mode is the one frame setting still refused while an exposure is in
+  mode is the one frame setting refused while an exposure is in
   flight -- with INVALID_OPERATION, so a delivered frame and the MaxADU
   describing it can never disagree.
   RGB24 / RGB32 and Y8-Y16 are never offered: they are debayered or

@@ -20,18 +20,17 @@
 //! implements the full `Device` + `Camera` surface (exposure state machine,
 //! ROI/binning, gain/offset, cooling, readout, ST4 pulse-guiding) over the
 //! [`backend::CameraHandle`] SDK seam. EFW filter wheels and EAF focusers are
-//! separate services (ADR-014): each independently usable ZWO device gets its
-//! own driver process.
+//! separate services: each independently usable ZWO device gets its own
+//! driver process.
 //!
-//! See `docs/services/zwo-camera.md` for the full design and
-//! `docs/plans/zwo-driver.md` for the decision record.
+//! See `docs/services/zwo-camera.md` for the full design.
 //!
 //! ## Native dependency
 //!
-//! `zwo-rs` is built with only its `camera` feature (ADR-014), so this binary
-//! links exactly `libASICamera2` (+ `libusb-1.0`) — machines compiling this
-//! package need that SDK installed, even with the `simulation` feature, which
-//! removes the *camera*, not the *link*.
+//! `zwo-rs` is built with only its `camera` feature, so this binary links
+//! exactly `libASICamera2` (+ `libusb-1.0`) — machines compiling this package
+//! need that SDK installed, even with the `simulation` feature, which removes
+//! the *camera*, not the *link*.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -123,7 +122,7 @@ pub struct ServerBuilder {
     /// Register no cameras (the test-only zero-camera startup path, C0). With
     /// a `usb_devices` list it empties only the SDK's side of the join.
     force_empty: bool,
-    /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
+    /// Where this build's USB scan comes from (U7); `None` takes
     /// this driver's default ([`claims::default_usb_source`]).
     usb_source: Option<UsbSource>,
     /// The setup pages, set by [`Self::build`] when there is a config
@@ -187,9 +186,9 @@ impl ServerBuilder {
         self
     }
 
-    /// Take a `usb_devices` list's USB scan from `source` (U7) — a staged
-    /// document, in a simulation build. The default is the host in a release
-    /// build and the simulated cameras' records in a simulation build.
+    /// Take the USB scan from `source` (U7) — a staged document, in a
+    /// simulation build. The default is the host in a release build and the
+    /// simulated cameras' records in a simulation build.
     #[cfg(feature = "simulation")]
     #[must_use]
     pub fn with_usb_source(mut self, source: UsbSource) -> Self {
@@ -202,7 +201,7 @@ impl ServerBuilder {
     /// returns when it is removed — the camera that loses its power or cable
     /// while connected (C6). `None` keeps a camera that never leaves. The
     /// start's enumeration and identity opens go through the same switches
-    /// ([`Self::simulated`]), so a file present at a start hides the camera
+    /// (`Self::simulated`), so a file present at a start hides the camera
     /// from them too; the scenarios create it after startup.
     #[cfg(feature = "simulation")]
     #[must_use]
@@ -251,10 +250,10 @@ impl ServerBuilder {
     /// With no `usb_devices` list, every camera the USB scan places, in port
     /// order, each opened uninitialised for its serial, and only those: a
     /// camera the scan cannot place is never opened (see
-    /// [`Self::register_enumerated`], U10). Zero registered cameras is
+    /// `Self::register_enumerated`, U10). Zero registered cameras is
     /// **not** a hard failure: the server starts with no Camera devices and
     /// logs a warning (a later reload re-enumerates). With a list, the list
-    /// (see [`Self::register_list`]).
+    /// (see `Self::register_list`).
     ///
     /// # Errors
     /// Returns [`ZwoCameraError`] when the list breaks a rule, SDK
@@ -861,8 +860,8 @@ impl BoundServer {
     }
 
     /// Serve until `shutdown` resolves — or, after a failed USB scan, until
-    /// the re-scan finds a rebuild would serve the list (U6) — then drain
-    /// gracefully.
+    /// a re-scan finds the bus readable and the SDK enumerating (U6) — then
+    /// drain gracefully.
     ///
     /// Returns which of the two ended it: on [`Ended::Rescanned`] the caller
     /// rebuilds the server, as for a reload.
@@ -1328,7 +1327,7 @@ mod simulation_tests {
         );
         assert!(
             !config.devices.contains_key(&cam.unique_id),
-            "the UniqueID must NOT resolve it (the bug Copilot flagged)"
+            "the UniqueID must NOT resolve it"
         );
     }
 

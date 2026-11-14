@@ -48,7 +48,7 @@ pub struct FilemonitorWorld {
     // TLS + auth test state (shared PKI fixture: CA, service cert, credentials)
     pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
 
-    // The device's (now empty) action list
+    // The device's empty action list
     pub last_supported_actions: Option<Vec<String>>,
     pub last_ascom_error: Option<ascom_alpaca::ASCOMError>,
 

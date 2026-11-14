@@ -93,9 +93,9 @@ pub enum SvbError {
 impl SvbError {
     /// Map a raw non-zero `SVB_ERROR_CODE` to a typed error.
     ///
-    /// `0` (`SVB_SUCCESS`) maps to [`SvbError::Unknown(0)`] here; callers
-    /// should route success through [`svb_check`] instead of calling this
-    /// directly.
+    /// `0` (`SVB_SUCCESS`) maps to
+    /// [`SvbError::Unknown(0)`](SvbError::Unknown) here; callers should
+    /// route success through [`svb_check`] instead of calling this directly.
     #[must_use]
     pub const fn from_code(code: i32) -> Self {
         match code {
@@ -160,11 +160,11 @@ mod tests {
         );
     }
 
-    /// Every code 1-19 in the hand-transcribed header maps to its own
-    /// distinct, non-`Unknown` variant — a full sweep so a future header
-    /// edit that drops or reorders an arm (and silently falls through to
-    /// `Unknown`) fails here instead of only being caught by chance in
-    /// whichever single code an existing test happened to exercise.
+    /// Every code 1-19 the SDK header defines maps to its own distinct,
+    /// non-`Unknown` variant — a full sweep so an edit to `from_code` that
+    /// drops or reorders an arm (and silently falls through to `Unknown`)
+    /// fails here instead of only being caught by chance in whichever single
+    /// code an existing test happened to exercise.
     #[test]
     fn from_code_maps_every_known_code_to_a_distinct_variant() {
         let known = [
