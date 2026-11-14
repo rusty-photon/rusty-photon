@@ -3,8 +3,8 @@
 **Date:** 2026-11-12
 **Parent design docs:** [`docs/workspace.md`](../workspace.md#project-tenets) (project tenets), [`docs/services/guider.md`](../services/guider.md), [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md), [`docs/services/rp.md`](../services/rp.md), [`docs/services/phd2-guider.md`](../services/phd2-guider.md), [`docs/plans/optical-trains.md`](optical-trains.md), [`docs/plans/daily-power-cycle.md`](daily-power-cycle.md)
 
-> **Status:** decided on 2026-11-12. Stage G0 is in progress and no
-> later stage has started. The owner read this study and settled its
+> **Status:** decided on 2026-11-12. Stage G0 is merged, stage G6 is
+> in progress, and no other stage has started. The owner read this study and settled its
 > main questions: rusty-photon builds a native guider as a standalone
 > service that is an Alpaca client, and drops PHD2
 > ([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)).
@@ -15,7 +15,9 @@
 > corrections a review of it found, with what G0 read from the rigs on
 > 2026-11-13 in § Where the rigs stand, and with what the owner settled
 > on 2026-11-14: the acceptance in § 9, and that PHD2 leaves the tree
-> before the guider is built (§ Staging).
+> before the guider is built (§ Staging). What the study quotes from
+> `rp.md` is that document as it stood on 2026-11-12; stage G6 rewrites
+> its passages about the guider.
 
 ## Goal
 
@@ -821,13 +823,20 @@ again, which calibrates. A rotation of the guiding train while guiding
 is not active has to clear the calibration as well: the guider keeps
 its record from run to run and cannot see the field turn. The guider's
 devices and `rp`'s guiding train are configured apart, and a lease on a
-camera that is not the train's protects nothing, so `rp` needs a way to
-tell that both name the same camera and mount. The guider waits in
-`star_lost` for as long as the run lasts and never selects stars again
-by itself, so `rp` needs a policy for a `star_lost` that lasts: how
-long it waits, and whether it then asks for a new selection or stops
-the run and centres again. Stage G6 designs these changes in `rp.md`
-and then makes them (§ Staging).
+camera that is not the train's protects nothing, so `rp` has to tell
+that both name the same camera and mount: the guider reports the
+`UniqueID` of each of its devices, and `rp` compares it with its own
+([rp.md § Guider Service](../services/rp.md#guider-service)). The
+guider waits in `star_lost` for as long as the run lasts and never
+selects stars again by itself, and it pushes no event when it stops a
+run. So `rp` watches the run and reports a loss that lasts and a run
+that ended without `rp` asking
+([rp.md § Guide Run Watch](../services/rp.md#guide-run-watch)), and
+the night's document asks for a new selection after the first and
+acquires the target again after the second
+([session-runner.md](../services/session-runner.md#deep_skyjson-the-night-cycle-document)).
+`rp.md` holds the design of these changes, and stage G6 makes them
+(§ Staging).
 
 **Joining the workspace.** A service that is not an Alpaca device joins
 sentinel's `NON_ALPACA_SERVICES` list and about ten other hand-kept
@@ -863,10 +872,10 @@ is pier1 until G5 and rig2 until G7.
 
 ## Staging
 
-G0 is in progress: its record is § Where the rigs stand, and what it
-changes for the later stages follows the table. No later stage has
-started. No stage measures the guider against PHD2, and no new work is
-started for PHD2 (decisions 6 and 12).
+G0 is merged: its record is § Where the rigs stand, and what it
+changes for the later stages follows the table. G6 is in progress with
+its design. No other stage has started. No stage measures the guider
+against PHD2, and no new work is started for PHD2 (decisions 6 and 12).
 
 The stages run in the order of the table. G6 comes right after G0, as
 the owner settled on 2026-11-14 (decision 11): PHD2's pieces leave the
@@ -875,8 +884,8 @@ G7a is the stage decision 13 adds.
 
 | Gate | Work | Passes when | Status |
 |---|---|---|---|
-| **G0** | Record how each rig guides today, while PHD2 is still installed: its profile, how it reaches the mount, guide logs from each rig. The logs become the fixtures the guide-log writer is tested against | The "not recorded" items in § Where the rigs stand are closed: how PHD2 drives each mount, which the section records for both rigs | In progress: `docs/native-guider-g0-rig-records` |
-| **G6** | PHD2's pieces leave the tree, and `rp` speaks the native contract. `phd2-guider`, its facade, its mock, its packaging, `restart_guider` and the old contract types go. The types and the client of the contract [`guider.md`](../services/guider.md) designs take their place in `crates/rp-guider`, and `rp`'s guiding tools move to them, tested against a test double of that contract. Several pull requests, and no compatibility is kept with the old contract or its configuration. `rp.md`, `focus-model.md`, `sentinel.md` and [`daily-power-cycle.md`](daily-power-cycle.md) are rewritten first where they name PHD2 or its facade. In `rp.md` that is § Guider Service, the train lease's facade step, the motion gate's text about pulses, the rotate-while-guiding ladder and `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `sentinel.md`, the units the `phd2-guider` package ships for PHD2 and its display; in `daily-power-cycle.md`, PHD2's restart in stages P2 and P4, and in P4 the guide camera's test exposure through the facade | `rp`'s BDD green against the double, and nothing of PHD2 left in the tree to build or to package | Not started |
+| **G0** | Record how each rig guides today, while PHD2 is still installed: its profile, how it reaches the mount, guide logs from each rig. The logs become the fixtures the guide-log writer is tested against | The "not recorded" items in § Where the rigs stand are closed: how PHD2 drives each mount, which the section records for both rigs | Merged 2026-11-14: [stage G0](https://github.com/rusty-photon/rusty-photon/pull/1780) |
+| **G6** | PHD2's pieces leave the tree, and `rp` speaks the native contract. `phd2-guider`, its facade, its mock, its packaging, `restart_guider` and the old contract types go. The types and the client of the contract [`guider.md`](../services/guider.md) designs take their place in `crates/rp-guider`, and `rp`'s guiding tools move to them, tested against a test double of that contract. No compatibility is kept with the old contract or its configuration. Four pull requests, in this order. **The design:** `rp.md`, `focus-model.md`, `session-runner.md`, `sentinel.md`, `guider.md` and [`daily-power-cycle.md`](daily-power-cycle.md) say what `rp` and its plugins do against the native guider, and mark it designed and not yet built where the code still speaks PHD2's contract. In `rp.md` that is § Guider Service with the check that the guider's devices are `rp`'s and the watch over a run, the train lease's camera-lease step, the capture through the guide camera, the motion gate's text about pulses, the rotate-while-guiding ladder and the end of `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `session-runner.md`, the night document's two rules for a lost star and for a run the guider stopped; in `sentinel.md`, the units the `phd2-guider` package ships for PHD2 and its display; in `guider.md`, the `UniqueID` the guider reports for each device; in `daily-power-cycle.md`, decision 10 and PHD2's restart in stages P2 and P4. **The BDD scenarios** of that design, against the double. **The code:** the contract's types and client in `crates/rp-guider`, the double in `bdd-infra`, and what the design changes in `rp`, in `focus-model`, in the night document and in the cards `ui-htmx`'s stream draws for `guide_stopped` and `guide_star_lost`. **The removal:** `services/phd2-guider` with its packaging and its entries in CI, in doctor's catalog and in sentinel, and with it `phd2-guider.md` and what the other living documents say of the removed pieces, the packaging guides, `doctor.md`, `README.md` and `workspace.md` among them | `rp`'s BDD green against the double, and nothing of PHD2 left in the tree to build or to package | In progress: the design, `docs/native-guider-g6-design` |
 | **G1** | Cadence spike, no guider: loop 2 s exposures through `qhy-camera` on each guide camera, full frame binned and subframe; time short pulses through the GTi driver; time the kernels on the Pi 5. Both guide cameras get a validation record under `qhy-camera` | Exposure end to pixels in the client well under the exposure length, sustained for an hour. If not, the driver overhead is fixed first | Not started |
 | **G2** | The kernels move to `rp-image-analysis`. `rp-guiding` and `guide-simulator`: multi-star measurement, step calibration, the two controllers, dither and settle | The loop converges and recovers across the simulator's mount and sky conditions in CI | Not started |
 | **G3** | Replay: record guide-camera frames on sky on pier1 through `qhy-camera`, the mount tracking and nothing guiding, and run the measurement over them | The measurement holds its guide stars through the recording, and the stars' offsets agree with one another frame by frame within a stated tolerance | Not started |
@@ -914,12 +923,6 @@ the owner has settled what each of them asked.
    on record for pier1. pier1's `rp` configuration points guiding at
    `phd2-guider`, so the first build deployed there after G6 comes
    with a change to that configuration.
-
-[`rp.md` § Restarting PHD2](../services/rp.md#restarting-phd2) and
-[`daily-power-cycle.md`](daily-power-cycle.md) (decision 10) say that
-PHD2 reaches the mount through Alpaca. On neither rig does it. Both
-passages describe PHD2's restart, which G6 rewrites, and they stand as
-they are until then.
 
 Later, each behind a measurement: subframes, full-frame correlation,
 predicted calibration, a tuning assistant, predictive PEC.
