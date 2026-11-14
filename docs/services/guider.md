@@ -1421,8 +1421,8 @@ distance and step count and the two warning thresholds are the values
 the options study collected from guiders in field use, with its sources
 ([native-guider.md § Options](../plans/native-guider.md#options), parts
 4 to 6). Every other number here is a starting value of this design:
-the plan's stage G1 settles the camera timings, G3 the star and control
-values on recorded frames, and G5 the rest on sky.
+the plan's stage G1 settles the camera timings, G3 the star values on
+recorded frames, and G5 the control values and the rest on sky.
 
 `guider doctor [--config <file>] [--json]` checks the configuration
 without starting the service, as every service's doctor does
@@ -1480,8 +1480,9 @@ clients as they cover `rp`'s.
   simulated hours in seconds: drift, periodic error, backlash, a mount
   that delivers short pulses coarsely, seeing, clouds, a slew in the
   middle of a run.
-- **Recorded frames.** Frames and guide logs recorded on the rigs are
-  replayed through the measurement and the controller.
+- **Recorded frames.** Guide-camera frames recorded on the rigs through
+  the camera's driver, with nothing guiding, are replayed through the
+  measurement.
 - **The service.** BDD scenarios start the `guider` binary against
   `guide-simulator`'s Alpaca devices and hold it to this document
   section by section: the states, starting idle, the lease, the mount
