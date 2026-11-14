@@ -15,8 +15,8 @@ records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
 [`docs/plans/native-guider.md`](../plans/native-guider.md) holds the
 evidence and orders the work in stages G0 to G7. Until stage G6 moves
-`rp` to the contract below, the rigs guide through
-[`phd2-guider`](phd2-guider.md) and `rp` speaks that service's contract.
+`rp` to the contract below, `rp` speaks the contract of
+[`phd2-guider`](phd2-guider.md).
 
 Four properties shape the design:
 
@@ -1529,7 +1529,7 @@ clients as they cover `rp`'s.
 - **Changing control values without a restart.** A save takes effect at
   the next start. Tuning on sky restarts the service between settings;
   a live path is built if stage G5 shows the need.
-- **An event stream**, and a PHD2-compatible event server.
+- **An event stream.** A PHD2-compatible event server is not planned.
 - **An assistant** that measures a mount and proposes settings.
 
 ## References
@@ -1538,8 +1538,8 @@ clients as they cover `rp`'s.
   — the decision this service implements.
 - [`docs/plans/native-guider.md`](../plans/native-guider.md) — the
   options study and the staging.
-- [`phd2-guider.md`](phd2-guider.md) — the service that guides the rigs
-  until `rp` moves to this one.
+- [`phd2-guider.md`](phd2-guider.md) — the service whose contract `rp`
+  speaks until it moves to this one.
 - [rp.md § Component Categories](rp.md#component-categories),
   [§ Guider Service](rp.md#guider-service),
   [§ Mount Motion Gate](rp.md#mount-motion-gate),
