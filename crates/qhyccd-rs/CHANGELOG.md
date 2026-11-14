@@ -135,6 +135,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the SDK manual draws them; before, the strip lay inside the effective area.
   `with_chip_info` places the effective area after the strip the same way.
   Simulation only.
+- **Breaking:** the `simulation` feature no longer depends on `rayon`, so its
+  implicit `rayon` feature is gone. The 16-bit gradient frame is generated on
+  the calling thread, as the 8-bit one is, from one noise stream per frame: a
+  parallel fill takes every core, and a simulated camera runs beside other
+  processes in CI. Simulation only.
 
 ### Fixed
 

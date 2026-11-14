@@ -16,7 +16,7 @@ exports_files(
 # simulated SDK, so the real/sim boundary is build-enforced, not review-enforced.
 #
 # crate_universe resolves ONE feature set per crate, so the real variant
-# harmlessly carries the simulation-only optional deps (rand/rayon) as unused —
+# harmlessly carries the simulation-only optional dep (rand) as unused —
 # exactly as rp-plate-solver's production variant carries mockall. The
 # `libqhyccd-sys` FFI sub-crate is a workspace member depended on explicitly
 # (it is NOT an `all_crate_deps` entry). See docs/services/qhy-camera.md

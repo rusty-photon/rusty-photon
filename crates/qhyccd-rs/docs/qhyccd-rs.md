@@ -807,7 +807,7 @@ Located in `src/simulation.rs`. Generates test images for simulated captures.
 - `generate_16bit()`: Create 16-bit image
 
 **Implementation:**
-One `rand` sample per frame seeds a cheap per-pixel xorshift noise stream (`PixelNoise`), and the 16-bit gradient fills its rows in parallel with `rayon`. Each pattern has separate implementations for 8-bit and 16-bit output; each returns a new buffer and replicates a pixel's value across its channels for color images. Images are pre-generated during `start_exposure()` in the simulation backend for immediate retrieval when `get_single_frame()` is called.
+One `rand` sample per frame seeds a cheap per-pixel xorshift noise stream (`PixelNoise`), and every pattern fills its frame on the calling thread. Each pattern has separate implementations for 8-bit and 16-bit output; each returns a new buffer and replicates a pixel's value across its channels for color images. Images are pre-generated during `start_exposure()` in the simulation backend for immediate retrieval when `get_single_frame()` is called.
 
 ## Control System
 
@@ -1408,7 +1408,6 @@ From `Cargo.toml`:
 
 **Optional (simulation feature only):**
 - `rand` (workspace): Random number generation for image noise
-- `rayon` (workspace): Parallel processing for improved simulation performance
 
 ### System Dependencies
 
