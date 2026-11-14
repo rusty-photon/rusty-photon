@@ -1,0 +1,10 @@
+PHD2 version 2.6.13 [Windows], Log version 2.5. Log enabled at 2025-05-07 20:38:10
+INFO: Guiding parameter change, MultiStar = true
+
+Log Summary: calcnt:0 gcnt:0 gdur:0 gacnt:0
+Log closed at 2025-05-07 20:38:20
+PHD2 version 2.6.13 [Windows], Log version 2.5. Log enabled at 2025-05-07 20:38:10
+INFO: Guiding parameter change, MultiStar = true
+
+Log Summary: calcnt:0 gcnt:0 gdur:0 gacnt:0
+Log closed at 2025-05-09 20:36:15

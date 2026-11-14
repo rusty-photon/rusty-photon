@@ -1211,10 +1211,12 @@ change.
   star's flux and signal-to-noise ratio; and a note for each dither,
   settle, pause, resume, star-lost frame and stop.
 - **How it is kept true to the format.** Logs that PHD2 itself wrote
-  are test fixtures. The guider's writer is tested against what a
-  parser built from them accepts, and a log of the guider's is opened
-  in PHD2 Log Viewer (<https://github.com/agalasso/phdlogview>) before
-  the first night on sky.
+  are test fixtures, in `services/guider/tests/fixtures/guide-logs/`
+  with a README that says what each one holds. The guider's writer is
+  tested against what a parser built from them accepts, and a log of
+  the guider's is opened in PHD2 Log Viewer
+  (<https://github.com/agalasso/phdlogview>) before the first night on
+  sky.
 - **Retention.** Each time it starts a file, the service removes log
   files older than `guide_log.retention`.
 - **A log that cannot be written never stops guiding.** The failure is
