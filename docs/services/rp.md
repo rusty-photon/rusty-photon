@@ -2100,10 +2100,11 @@ Captures through different cameras never wait for each other.
   when it runs under one, and otherwise one of its own, taken after
   the slot and before the gate as a train lease takes it, and released
   with the slot. A guider that is not idle refuses the lease, and the
-  capture fails at once, naming the guider's state. A camera lease the
-  guider drops mid-exposure, by restarting, does not end the capture:
-  a guider starts idle and exposes only when asked. With no guider
-  configured the capture runs as any other.
+  capture fails at once, naming the guider's state. A guider that does
+  not answer fails the capture too, as it fails a train lease's
+  acquire. A camera lease the guider drops mid-exposure, by restarting,
+  does not end the capture: a guider starts idle and exposes only when
+  asked. With no guider configured the capture runs as any other.
 - **Cancel-aware.** The wait is raced against the call's cancellation,
   like the motion-gate acquire ([In-Flight Tool
   Calls](#in-flight-tool-calls)). A call cancelled while it waits — its
@@ -5384,9 +5385,9 @@ compares the `unique_id` reported there for each device with the one
   since `rp` would expose on it with no camera lease.
 
 A difference refuses the call, naming both ids. So does an id that is
-missing where one is needed: the guider reports none until a device
-poll of its own has read the server's device list, and `rp` has none
-for a device it holds no session with. An identity that cannot be
+missing or blank where one is needed: the guider reports none until a
+device poll of its own has read the server's device list, and `rp` has
+none for a device it holds no session with. An identity that cannot be
 checked never passes. The check reads and compares, and sends no
 device anything.
 
@@ -5434,6 +5435,7 @@ the orchestrator's decision (§ Orchestration).
 
 **The run it watches** is one `rp` has seen settle. The watch starts
 at a `guide_settled` and reads `GET /api/v1/guiding/stats` every 5 s.
+A read of the watch's has 5 s to answer, whatever `timeout` is.
 While a stop that `rp` itself asked for is in flight, the watch reads
 nothing. It ends when the guider has answered that stop, because the
 `stop_guiding` tool, the rotate-while-guiding ladder and the safety
@@ -5473,7 +5475,9 @@ The shipped `deep_sky.json` wires both (session-runner.md
 and, while that is still `star_lost`, calls `start_guiding`, which
 there selects stars on a fresh frame and takes a new lock where they
 are. On a `guide_stopped` of reason `guider` it acquires the target
-again, from the slew on.
+again, from the slew on, and it fails the session at a stop that
+follows three such re-acquisitions with no frame recorded between
+them.
 
 ### Guide Focus Watch
 

@@ -1391,9 +1391,17 @@ rule for each, both gated on `when params.guide == true`:
   ([guider.md § Stopping on its own](guider.md#stopping-on-its-own)).
   A start alone would then lock on whatever field the mount points
   at. The exposure in flight is not aborted. Each re-acquisition ends
-  in a settled run or, after three failed starts, in a failed session;
-  a run that stops again starts another re-acquisition, and nothing
-  counts them.
+  in a settled run or, after three failed starts, in a failed session.
+  Re-acquisitions that follow one another with no frame between them
+  are counted: the acquisition step adds one to
+  `session.reacquisitions` each time it begins on the flag, and a
+  light frame recorded while the flag is unset puts the count back to
+  zero. A stop that finds the count at three fails the session with
+  `fail`: the guider has by then stopped three re-acquired runs in a
+  row before a frame was recorded under any of them, and a fault that
+  comes back after every settle would otherwise slew, centre and
+  focus until dawn. A run that stops now and then, with frames
+  between, is acquired again each time, and nothing counts those.
 
 In all five focus triggers the sweep call is wrapped in `try` with
 a logging `catch`: a failed focus sweep degrades the night, but ending
