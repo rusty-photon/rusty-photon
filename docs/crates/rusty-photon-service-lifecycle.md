@@ -99,6 +99,7 @@ runner turns the stop into an exit.
 ServiceRunner::new(name)                       -> ServiceRunner
 ServiceRunner::with_reload(self)               -> ServiceRunner
 ServiceRunner::scm_mode(self, enable)          -> ServiceRunner   // no-op unless cfg(all(windows, feature = "scm"))
+ServiceRunner::condition_path_exists(self, path) -> ServiceRunner // under the SCM, a clean stop while `path` is absent
 ServiceRunner::run(self, |Shutdown| async)              -> ServiceResult
 ServiceRunner::run_with_reload(self, |Shutdown, ReloadSignal| async) -> ServiceResult
 
@@ -421,6 +422,23 @@ When `scm_mode(false)` (or the `scm` feature is off, or the target
 is not Windows), the runner falls through to the OS-signal path
 unchanged.
 
+**The config condition (`condition_path_exists`).** A service with no
+config it can default hands its config path to the runner, which does
+what systemd's `ConditionPathExists=` does for the Linux unit: when the
+run goes to the SCM and the file is not there, it logs `<name>: not
+started: <path> does not exist; write it, then start the service` and
+ends the run with `Ok(())` without calling the closure. Step 6 then
+reports `Win32(0)`, a clean stop, which the failure actions leave alone,
+so the service stays stopped until it is started again. The MSI
+installs such a service Automatic like every other
+([ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)),
+and the condition is what keeps it from running without its config. A
+path that cannot be checked, as opposed to one that is not there, lets
+the closure run and meet whatever stopped the check. A console run
+ignores the condition, on every platform: the service meets the missing
+file and fails with its own error, which is what an operator running it
+by hand needs to see.
+
 ### SCM-mode rolling-file logging (`init_service_tracing`)
 
 Under SCM both std handles are absent, so a service-mode process
@@ -702,6 +720,15 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   present) rather than a single `Debug` line; the subscriber built by
   `init_tracing` carries the `ErrorLayer` (asserted via
   `SpanTrace::capture()` under `tracing::subscriber::with_default`).
+- **Config condition** — the decision is a plain function of whether
+  the run goes to the SCM, the condition, and the file: unit tests pin
+  that only an SCM run with the file absent holds the service back,
+  that a path which cannot be checked does not (Unix: a file as the
+  parent), that only a Windows build with `scm` goes to the SCM, and
+  that a console run, with and without reload, calls the closure with
+  the file absent. The stop itself is proven installed: `cargo ci
+  verify-msi` requires each gated service with no config to be stopped
+  with exit code 0 and its log to say it did not start.
 - **SCM mode** — `scm_mode(false)` is a no-op and falls through to
   the OS-signal path on Windows. The full SCM dispatch is *not*
   exercised in CI: `windows_service::service_dispatcher::start` only

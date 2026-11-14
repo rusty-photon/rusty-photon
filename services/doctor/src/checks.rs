@@ -222,9 +222,10 @@ fn inventory(ctx: &Context) -> Vec<Check> {
                 // A config-gated service (docs/packaging.md) hard-requires a
                 // hand-written config — "start it once" would do nothing.
                 // `condition_path` is the Linux/systemd fact naming the exact
-                // gate file; Windows (start type Manual) and macOS carry no
-                // equivalent fact, so `scan.entry.config_gated` is the
-                // portable signal every platform can fall back to.
+                // gate file; Windows (the service stops itself without its
+                // config) and macOS carry no equivalent fact, so
+                // `scan.entry.config_gated` is the portable signal every
+                // platform can fall back to.
                 let systemd_gate = ctx
                     .facts
                     .unit(&scan.entry.unit_name())

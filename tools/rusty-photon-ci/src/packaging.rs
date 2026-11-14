@@ -37,8 +37,9 @@ pub const SERIAL: &[&str] = &[
 
 /// Services with no config they can default.
 ///
-/// Nothing starts them until an operator writes one: systemd waits for it, the MSI installs them
-/// demand-start, and on macOS nothing runs until `brew services start`.
+/// Nothing runs them until an operator writes one: systemd waits for it, on Windows each stops
+/// itself while it is absent (`ServiceRunner::condition_path_exists`), and on macOS nothing runs
+/// until `brew services start`.
 pub const GATED: &[&str] = &[
     "sky-survey-camera",
     "plate-solver",

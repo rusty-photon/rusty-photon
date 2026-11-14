@@ -70,7 +70,8 @@ port = 11113      # default port when the config file or server block is absent
 
 # Optional: the unit has no sensible default config and never self-creates
 # one — docs/packaging.md's "config-gated" services (ConditionPathExists= on
-# Linux, start type Manual on Windows). Defaults to false. Feeds
+# Linux; on Windows the service stops itself without its config). Defaults
+# to false. Feeds
 # `units.config-gated`, `inventory.unit-without-config`'s remedy text, and
 # scopes `tls.absent`/`auth.absent` away from a config-gated service's
 # expected `FileAbsent` state (§TLS and auth).
