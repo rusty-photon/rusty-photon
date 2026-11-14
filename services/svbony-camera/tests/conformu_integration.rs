@@ -47,8 +47,8 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     let temp_dir = bdd_infra::scratch::new_dir("conformu-svbony-camera-")?;
     let config_path = temp_dir.path().join("svbony-camera.json");
-    // Camera only: SVBony has no other device kind in scope for this service
-    // (ADR-014). Port 0 → OS-assigned.
+    // Camera only: SVBony has no other device kind in scope for this service.
+    // Port 0 → OS-assigned.
     let config = serde_json::json!({
         "devices": {},
         "server": { "port": 0 },

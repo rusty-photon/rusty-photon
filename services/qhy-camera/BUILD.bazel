@@ -12,20 +12,21 @@ exports_files(
 
 # qhy-camera links the proprietary QHYCCD SDK (libqhyccd-sys → static=qhyccd +
 # libusb-1.0 + stdc++). The SDK is PROVISIONED into the Bazel actions
-# (`ivonnyssen/qhyccd-sdk-install@v3` + per-OS libusb in .github/workflows/bazel.yml
+# (`ivonnyssen/qhyccd-sdk-install@v4` + per-OS libusb in .github/workflows/bazel.yml
 # and bazel-coverage.yml; on Linux build.rs finds it at /usr/local/lib, and on
 # macOS/Windows `.bazelrc` forwards `GITHUB_WORKSPACE` so build.rs finds the
 # workspace-extracted SDK). The library, binary, unit test, BDD, and ConformU
 # suites are ALL first-class `//...` targets — they build and run under Bazel.
 #
-# The prod library/binary/unit-test link the REAL SDK via the first-party
-# //crates/qhyccd-rs:qhyccd-rs library; the `_sim` library/binary and the
-# bdd/conformu tests link //crates/qhyccd-rs:qhyccd-rs_sim (the `testonly`
-# `simulation`-feature variant) so the simulated `Sdk::new()` (a pure-Rust
-# QHY178M, no FFI) is used and no USB is enumerated on a hardware-less CI
-# runner. Since qhyccd-rs is now a workspace member with its own real/sim
-# two-variant BUILD (ADR-009), the variant is selected by which target each
-# rule depends on — not by a crate_universe feature nudge. See
+# The prod library and binary link the REAL SDK via the first-party
+# //crates/qhyccd-rs:qhyccd-rs library; the `_sim` library/binary, the unit
+# test and the bdd/conformu tests link //crates/qhyccd-rs:qhyccd-rs_sim (the
+# `testonly` `simulation`-feature variant) so the simulated `Sdk::new()` (a
+# pure-Rust QHY178M, no FFI) is used and no USB is enumerated on a
+# hardware-less CI runner. qhyccd-rs is a workspace member with its own
+# real/sim two-variant BUILD, so the variant is selected by which target each
+# rule depends on — not by the crate_universe feature nudge in Cargo.toml,
+# which only keeps `simulation`'s optional deps in `@cr`. See
 # docs/services/qhy-camera.md "Native dependency & build gating".
 
 _COMMON_INTRA_WORKSPACE_DEPS = [
@@ -54,7 +55,7 @@ _SIM_INTRA_WORKSPACE_DEPS = _COMMON_INTRA_WORKSPACE_DEPS + [
 ]
 
 # The real-SDK qhyccd-rs library (prod targets) and its simulated counterpart
-# (BDD / ConformU targets).
+# (the `_sim` and test targets).
 _QHYCCD_REAL = "//crates/qhyccd-rs:qhyccd-rs"
 
 _QHYCCD_SIM = "//crates/qhyccd-rs:qhyccd-rs_sim"
@@ -137,7 +138,8 @@ rust_test(
     ),
 )
 
-# The `simulation`-backed (mock alias) library + binary for BDD / ConformU.
+# The `simulation`-backed (mock alias) library + binary for the unit test,
+# BDD and ConformU.
 rust_library(
     name = "qhy-camera_lib_sim",
     # Test-only: links the `testonly` qhyccd-rs_sim (simulated SDK). Bazel

@@ -1,7 +1,6 @@
-//! Exposure-lifecycle steps (`@wip` — the soft-trigger video-capture state
-//! machine is Phase E, docs/plans/archive/svbony-camera.md; see
-//! docs/services/svbony-camera.md "Behavioral contracts → Exposure"). The
-//! `StartExposure` step is shared with the binning/ROI feature.
+//! Exposure-lifecycle steps (docs/services/svbony-camera.md "Behavioral
+//! contracts → Exposure"). The `StartExposure` step is shared with the
+//! binning/ROI feature.
 
 use ascom_alpaca::api::camera::{CameraState, GuideDirection};
 use cucumber::{then, when};

@@ -40,7 +40,7 @@ the same:
 
 | Concern | QHY (the precedent) | ZWO (this service) |
 |---|---|---|
-| **SDK license** | Closed/proprietary, with no right to redistribute → no package ships its DLL or firmware; CI downloads it publicly from qhyccd.com | **MIT** ("Copyright 2015, ZWO Company") → redistributable with its notice, so the package ships the blob |
+| **SDK license** | Closed/proprietary, its redistribution rights unresolved → no package ships its DLL or firmware ([ADR-013](../decisions/013-native-sdk-payload-policy.md)); CI downloads it publicly from qhyccd.com | **MIT** ("Copyright 2015, ZWO Company") → redistributable with its notice, so the package ships the blob |
 | **Rust FFI layer** | Published `qhyccd-rs`/`libqhyccd-sys` already exist; driver just writes the device layer | **No usable equivalent** → we also build & maintain `zwo-rs` + `libzwo-sys` |
 | **Build/link gating** | Native lib links at compile time on *every* machine | **Same constraint**, per device feature (`libzwo-sys` `build.rs` links each SDK its feature enables — this service builds with `camera` only; that SDK is required at link time even with `--features simulation`, unless `ZWO_SKIP_NATIVE_LINK=1` omits the link) |
 
@@ -82,8 +82,8 @@ workspace needs a native library installed to build: `qhy-camera`,
 through one. What sets ZWO's apart from QHY's is
 licensing: ZWO's SDK is **MIT**, so `zwo-camera`'s `.deb`/`.rpm` ships
 `libASICamera2.so` with its license ([Packaging](#packaging)), while QHYCCD's
-gives no right to redistribute, so `qhy-camera`'s packages ship neither its
-DLL nor its firmware.
+is proprietary with its redistribution rights unresolved, so `qhy-camera`'s
+packages ship neither its DLL nor its firmware.
 
 ### Gating plan
 
@@ -92,7 +92,7 @@ DLL nor its firmware.
 | local dev (SDK required) | `zwo-camera` is a normal workspace member but **fails to link without the SDK**. The SDK is a required local-dev prerequisite — install it with `bazel run //.github/actions:install -- zwo-sdk`, which installs what CI installs, by the action's own module (into `/usr/local` on Linux and macOS); `bazel build //...` then builds the package like any other. On Windows the build also needs LLVM/libclang for bindgen (`LIBCLANG_PATH`), which CI runners ship and a fresh Windows box does not, `ZWO_SDK_LIB_DIR` pointing at the SDK's `lib\x64` for the link, and `ASICamera2.dll` beside the executable to run. Documented here and in the service README. |
 | CI | An explicit SDK-provisioning step (`./.github/actions/install-zwo-sdk`) **pulls the pinned ASI/EFW/EAF SDK from the INDI mirror** (Linux/macOS, pinned by `REF` in the action's `zwo-sdk.mjs`) **or ZWO's CDN** (Windows, unpinned "latest") + installs `libusb-1.0-0-dev`, before building/testing this package, as `bazel.yml` / `conformu.yml` / `native.yml` / `scheduled.yml` do before their builds. The Linux/macOS mirror fetch is cached (keyed on the arch folder, the files and `REF`) so a warm cache skips it — the mirror otherwise rate-limits CI's ephemeral IPs (429s; see the action's own doc comment); the Windows download is cached per ISO week, and the newest earlier week's stands in when ZWO's CDN fails. `test.yml` and `safety.yml` (ASan/LSan) build only the `simulation` path and set `ZWO_SKIP_NATIVE_LINK=1`, so they provision no SDK — which also lets the sanitizers cover the zwo crates rather than exclude them — and `cargo check`/clippy jobs (no linker) skip it too. The real link and FFI are built on Linux, macOS and Windows, with a Linux runtime FFI smoke (`cargo test -p zwo-rs` against the installed SDK), by `native.yml`: nightly, and on every push to `main` that touches the zwo crates, services or the SDK action. |
 | Raspberry Pi nightly runner | **Sudo-free per-run** (the runner is sudo-less for public-repo safety): `pi-nightly.yml` runs `./.github/actions/install-zwo-sdk` with `sudo: "false"` — stages the `armv8` blobs under `$RUNNER_TEMP`, symlinks the system libusb/libudev *runtime* libs to satisfy `-lusb-1.0`/`-ludev` (no -dev package), and exports `ZWO_SDK_LIB_DIR` + `LD_LIBRARY_PATH` (the blobs carry no SONAME). `scripts/setup-pi-runner.sh` installs only the stable host prerequisites (clang/libclang-dev, libusb-1.0 runtime) — no device-access udev rule: this runner is CI-only and never has a physical camera attached, so the device rule below applies only to *production packaging* (`services/zwo-camera/pkg/`), not this runner. Mirrors the QHYCCD per-run model → self-healing for SDK bumps. **aarch64 (Pi 5) confirmed linking.** |
-| Bazel | **First-class `//...` targets — no `manual` gating.** `zwo-rs` / `libzwo-sys` are **vendored first-party**, so the repo owns their `BUILD.bazel`: `libzwo-sys` is a first-party `cargo_build_script` (runs bindgen in-sandbox; its `data` carries the vendored MIT headers + `wrapper.h`), and `zwo-rs` ships **two variants** — `//crates/zwo-rs:zwo-rs` (real SDK) and `//crates/zwo-rs:zwo-rs_sim` (`testonly`, `simulation`). zwo-camera's production `lib`/`binary` link the **real** variant (the prod binary `NEEDs libASICamera2.so` — the real/sim parity win an external `@cr` crate could not give, since `crate_universe` resolves one feature set per crate); the `unit_test` / `bdd` / `conformu_integration` targets link `zwo-rs_sim`. Every workspace crate builds and tests under Bazel, so a `manual`-excluded crate would silently carry zero CI. The `bdd` / `conformu_integration` suites — which spawn the service binary (linked against `zwo-rs_sim`) and bind a port — run under Bazel, tagged `bdd` / `conformu` (mirroring qhy-camera). The `bazel.yml` / `bazel-coverage.yml` workflows run the `install-zwo-sdk` composite action (like they install OmniSim), so `libzwo-sys` links against the system SDK; `.bazelrc` forwards `LIBCLANG_PATH` (macOS bindgen) / `ZWO_SDK_LIB_DIR` (Windows link) per-OS under `strict_action_env`. zwo-camera keeps a `simulation` dev-dep for one reason: it keeps `simulation`'s optional deps (`rand`/`rayon`) resolved into `@cr` for the `zwo-rs_sim` target. After any change to `Cargo.lock` or any workspace `Cargo.toml` (a version bump included), run `cargo ci repin-bazel-lock` (Rule 10). |
+| Bazel | **First-class `//...` targets — no `manual` gating.** `zwo-rs` / `libzwo-sys` are **vendored first-party**, so the repo owns their `BUILD.bazel`: `libzwo-sys` is a first-party `cargo_build_script` (runs bindgen in-sandbox; its `data` carries the vendored MIT headers + `wrapper.h`), and `zwo-rs` ships **two variants** — `//crates/zwo-rs:zwo-rs` (real SDK) and `//crates/zwo-rs:zwo-rs_sim` (`testonly`, `simulation`). zwo-camera's production `lib`/`binary` link the **real** variant (the prod binary `NEEDs libASICamera2.so` — the real/sim parity win an external `@cr` crate could not give, since `crate_universe` resolves one feature set per crate); the `unit_test` / `bdd` / `conformu_integration` targets link `zwo-rs_sim`. Every workspace crate builds and tests under Bazel, so a `manual`-excluded crate would silently carry zero CI. The `bdd` / `conformu_integration` suites — which spawn the service binary (linked against `zwo-rs_sim`) and bind a port — run under Bazel, tagged `bdd` / `conformu` (mirroring qhy-camera). The `bazel.yml` / `bazel-coverage.yml` workflows run the `install-zwo-sdk` composite action (like they install OmniSim), so `libzwo-sys` links against the system SDK; `.bazelrc` forwards `LIBCLANG_PATH` (macOS bindgen) / `ZWO_SDK_LIB_DIR` (Windows link) per-OS under `strict_action_env`. zwo-camera keeps a `simulation` dev-dep for one reason: it keeps `simulation`'s optional dep (`rand`) resolved into `@cr` for the `zwo-rs_sim` target. After any change to `Cargo.lock` or any workspace `Cargo.toml` (a version bump included), run `cargo ci repin-bazel-lock` (Rule 10). |
 
 ### udev / USB
 
@@ -274,10 +274,10 @@ data-preserving stop (E8) that SVBony has no analogue for.
 
 ## MVP scope
 
-The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what the
+The MVP boundary drives BDD scenario selection. Grounded in what the
 ASI C API exposes and what `zwo-rs` wraps.
 
-**In scope (v0)**
+**In scope**
 
 - ASCOM Camera (`ICameraV4`) for **every enumerated ASI camera** (each registered as
   a device on the one port), 16-bit (`ASI_IMG_RAW16`) monochrome **and**
@@ -361,7 +361,7 @@ ASI C API exposes and what `zwo-rs` wraps.
 **Deferred (see *Future Work*)**
 
 - **Video mode** (`ASIStartVideoCapture`) — the high-FPS guiding/planetary path;
-  v0 is snap-mode only (snap and video are mutually exclusive).
+  the driver is snap-mode only (snap and video are mutually exclusive).
 - **EFW filter wheel** and **EAF focuser** — separate services:
   the EAF is [`zwo-focuser`](zwo-focuser.md); the EFW is a future
   `zwo-filterwheel` service (*FilterWheel*).
@@ -491,7 +491,7 @@ Sections:
   `name`/`description` to a specific camera. Any device without an entry uses
   SDK-derived defaults. It serves the no-list default only: beside a list it is
   refused (above), and each camera's page edits its own entry (*Setup
-  pages*). v0 does **not** carry per-camera connect-time tuning
+  pages*). The driver does **not** carry per-camera connect-time tuning
   (gain/offset/target temperature) — with heterogeneous cameras those are
   per-serial concerns and clients set them over ASCOM; per-serial defaults are
   deferred (see *Future Work*).
@@ -2018,7 +2018,7 @@ thread-safe on macOS.
 
 ---
 
-## ASCOM Camera surface — v0 behaviour
+## ASCOM Camera surface
 
 **Every member below that describes the camera or its session answers
 `NOT_CONNECTED` while the device is disconnected** unless its row says
@@ -2030,7 +2030,7 @@ how a client asks whether a device is there at all. A session whose camera
 the SDK has reported removed counts as disconnected: `Connected` reads
 `false` and the members below answer `NOT_CONNECTED` (C6).
 
-| Property / Method | v0 behaviour (backed by `zwo-rs`) |
+| Property / Method | Behaviour (backed by `zwo-rs`) |
 |---|---|
 | `CameraXSize` / `CameraYSize` | Cached `ASI_CAMERA_INFO` MaxWidth/MaxHeight, aligned down so the full frame at every bin is a valid ASI ROI (R4; e.g. 6248→6240) |
 | `PixelSizeX` / `PixelSizeY` | Cached `ASI_CAMERA_INFO.PixelSize` (X == Y) |
@@ -2174,7 +2174,7 @@ handle against the `zwo-rs` simulation, and three of `claims.rs`'s.
   *inside* that section: that the writes precede `ASIStartExposure` rather
   than follow it under the same lock. Neither double can observe it, so it
   rests on the code's order (E5).
-- **BDD** (`bdd-infra::ServiceHandle`, the six camera feature files) —
+- **BDD** (`bdd-infra::ServiceHandle`, the camera feature files) —
   connection lifecycle (C0–C4), ROI/bin validation (R1–R3, B1–B3), exposure
   happy-path + error paths (E1–E8, incl. the graceful-stop / abort split; E9's
   mid-exposure Error transition is unit-tested), gain/offset/readout (GO1–RM1,

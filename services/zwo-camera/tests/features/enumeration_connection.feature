@@ -4,8 +4,9 @@ Feature: Camera enumeration and connection lifecycle
   each the USB scan places as an ASCOM device, index 0, 1, 2, ... in port
   order, on one port (C0, U10). Each device's UniqueID is derived
   from its SDK serial; because ASIGetSerialNumber requires an open camera,
-  enumeration opens each camera briefly to read the serial, so two
-  identical-model cameras are distinguished by serial. Connect is per-device
+  enumeration opens each placed camera briefly to read the serial. Two
+  identical-model cameras cannot be told apart before that open, so the USB
+  join refuses them as look-alikes (U3). Connect is per-device
   (C4): connecting or disconnecting one camera does not affect the others.
   Opening a device (C1) caches its ASI_CAMERA_INFO, supported binning modes,
   and exposure / gain / offset control caps, and reads the camera's current
@@ -25,7 +26,7 @@ Feature: Camera enumeration and connection lifecycle
   implements, keeps answering false (E12). With zero cameras discovered the service still
   starts, registering no Camera devices and logging a warning. Against the
   zwo-rs simulation backend exactly one camera (ASI2600MM-Pro-Simulated,
-  6248x4176, monochrome, 16-bit) and one 7-position filter wheel are present.
+  6248x4176, monochrome, 16-bit) is present.
 
   Background:
     Given the zwo-camera service running with the simulation backend

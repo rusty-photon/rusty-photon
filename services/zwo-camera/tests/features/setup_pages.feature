@@ -32,8 +32,9 @@ Feature: Setup pages
   A listed camera's page and a placeholder's page show what the driver
   knows and link to the Cameras section. A camera served without a list
   edits its devices override on its own page: the first save that names it
-  creates the override, and a save that clears both names deletes it. The
-  config.get, config.apply and config.schema actions are gone.
+  creates the override, and a save that clears both names deletes it. A
+  camera has no actions: its supported actions are empty, and an action
+  such as config.get answers ActionNotImplemented.
 
   The simulation build's scan holds one record by default, 03c3:2600 on
   simulated-usbv3-0:1, where the simulated camera (serial 0a1b2c3d4e5f6071)
@@ -241,7 +242,7 @@ Feature: Setup pages
     Then the page asks to confirm dropping the names of "simulated-usbv3-0:1"
     And the configuration file holds "Main" at "/usb_devices/0/name"
 
-  Scenario: The config actions are gone
+  Scenario: A camera serves no custom action, so config.get is not implemented
     Given a running zwo-camera service with the simulation backend
     When the supported actions are queried on camera device 0
     Then the supported actions are empty

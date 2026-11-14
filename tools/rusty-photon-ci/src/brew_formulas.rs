@@ -381,7 +381,7 @@ mod tests {
     const VERSION: &str = "0.1.0+nightly.202610220507.gabc1234";
     const NIGHTLY: &str = "https://github.com/rusty-photon/rusty-photon/releases/download/nightly";
     const STABLE: &str = "https://github.com/rusty-photon/rusty-photon/releases/download/v0.1.0";
-    const ZWO_CAMERA: &str = "ASCOM Alpaca Camera (+ EFW FilterWheel) driver for ZWO ASI hardware";
+    const ZWO_CAMERA: &str = "ASCOM Alpaca Camera driver for ZWO ASI hardware";
 
     fn request(channel: Channel, url_base: &str) -> Request {
         Request {

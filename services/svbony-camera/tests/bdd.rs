@@ -3,10 +3,9 @@
 //! Camera client. The binary must be pre-built with `--features simulation`
 //! (or `--all-features`).
 //!
-//! All scenarios are green as of Phase E (docs/plans/archive/svbony-camera.md); the
-//! `@wip` filter below is kept as the standard sanctioned mechanism
-//! (docs/skills/testing.md §2.7) for any future feature landing ahead of
-//! its implementation, not because anything is currently tagged.
+//! The `@wip` filter below is the standard mechanism
+//! (docs/skills/testing.md §2.7) for a feature that lands ahead of its
+//! implementation.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -60,9 +59,10 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        // Skip `@wip` scenarios so this design/BDD-scaffolding phase can land
-        // without breaking the green-suite invariant; `_and_exit` makes a
-        // scenario failure a non-zero exit (testing.md §2.7).
+        // Skip `@wip` scenarios, so a feature can land ahead of its
+        // implementation without breaking the green-suite invariant;
+        // `_and_exit` makes a scenario failure a non-zero exit (testing.md
+        // §2.7).
         .filter_run_and_exit("tests/features", |feature, _rule, scenario| {
             let is_wip = feature.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || scenario.tags.iter().any(|t| t == "wip" || t == "@wip");

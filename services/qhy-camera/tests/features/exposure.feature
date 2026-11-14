@@ -3,9 +3,9 @@ Feature: Exposure lifecycle
   StartExposure requires a connected device (E1, NOT_CONNECTED) and rejects
   a second exposure while one is in flight (E2, INVALID_OPERATION). A
   Duration outside [ExposureMin, ExposureMax] is rejected with INVALID_VALUE
-  (E3). Dark frames (Light = false) return NOT_IMPLEMENTED on all models in v0
-  — qhyccd-rs 0.1.9 exposes mechanical-shutter presence but no open/close
-  actuation, so no model can capture a true dark (E4); the simulated
+  (E3). Dark frames (Light = false) return NOT_IMPLEMENTED on all models —
+  qhyccd-rs exposes mechanical-shutter presence but no open/close actuation,
+  so no model can capture a true dark (E4); the simulated
   QHY178M-Simulated is shutterless. A successful
   light exposure produces an ImageArray of the binned sub-frame with
   ImageReady true and the last-exposure timestamps set (E5); a full frame is

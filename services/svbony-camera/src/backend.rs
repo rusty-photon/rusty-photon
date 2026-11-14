@@ -8,21 +8,22 @@
 //! a mid-exposure SDK error or an exceeded `SVBGetVideoData` deadline (E9),
 //! a model without an ST4 port (PG2) — without hardware, and (3) keeps the
 //! open/close lifecycle in one place. `svbony-rs`'s `Camera` is RAII (open =
-//! [`svbony_rs::Sdk::open_camera`], close = drop) and `Send + !Sync`, so the
-//! production handle keeps it behind a `parking_lot::Mutex` and re-opens on
-//! connect from the cached enumeration `index`.
+//! [`svbony_rs::Sdk::open_listed`], close = drop) and `Send + !Sync`, so the
+//! production handle keeps it behind a `parking_lot::Mutex` and, on connect,
+//! re-opens the camera it enumerated by finding it again in a fresh rescan
+//! (see `locate`).
 //!
-//! **Phase E scope (this file).** The seam now covers every blocking SDK
-//! operation the `Camera` trait needs: property/property-ex fetch (cached on
-//! the open `svbony_rs::Camera`, so these are cheap once open), control
-//! get/set (gain, exposure, black level, cooler enable/target/current-temp/
-//! power), camera-mode select + video-capture start (called once at connect,
-//! trigger cameras only — by `camera.rs`'s open handshake — see
-//! `docs/services/svbony-camera.md` "Behavioral contracts → Exposure"
-//! step 1), the soft-trigger [`CameraHandle::capture`] composite (ROI +
-//! output format + exposure control + the armed gain and offset + trigger +
-//! the `SVBGetVideoData` read deadline (see [`exposure_timeout_ms`]),
-//! state-machine step 2), and pulse-guide.
+//! **What the seam covers.** Every blocking SDK operation the `Camera` trait
+//! needs: property/property-ex fetch (cached on the open `svbony_rs::Camera`,
+//! so these are cheap once open), control get/set (gain, exposure, black
+//! level, cooler enable/target/current-temp/power), camera-mode select +
+//! video-capture start (called once at connect, trigger cameras only — by
+//! `camera.rs`'s open handshake — see `docs/services/svbony-camera.md`
+//! "Behavioral contracts → Exposure" step 1), the soft-trigger
+//! [`CameraHandle::capture`] composite (ROI + output format + exposure
+//! control + the armed gain and offset + trigger + the `SVBGetVideoData` read
+//! deadline (see [`exposure_timeout_ms`]), state-machine step 2), and
+//! pulse-guide.
 //!
 //! **The download format is the caller's choice, not this seam's.**
 //! `capture` applies whatever [`CaptureRequest::image_type`] carries and
@@ -344,9 +345,9 @@ fn arm_controls(
 /// for something the exposure did not buy, which is what makes it worth a log
 /// line.
 ///
-/// The recommendation is recorded in `docs/plans/archive/svbony-camera.md`
-/// "Verified SDK facts". Negative/zero exposures clamp to a `0` base so the
-/// deadline never underflows.
+/// The recommendation is the SDK header's, transcribed on `SVBGetVideoData`
+/// in `libsvbony-sys/lib.rs`. Negative/zero exposures clamp to a `0` base so
+/// the deadline never underflows.
 fn recommended_read_deadline_ms(exposure_us: i64) -> i64 {
     let us = exposure_us.max(0);
     // 1_000 is a literal divisor, so the division is total; the base is a floor
@@ -386,7 +387,7 @@ pub fn exposure_timeout_ms(exposure_us: i64) -> i32 {
 /// for why polling in slices instead of one blocking call for the whole
 /// deadline matters.
 /// Held as `u32` rather than the SDK's `i32`: a poll slice is a duration, so
-/// the sign was never meaningful, and the type makes the widening to
+/// the sign has no meaning, and the type makes the widening to
 /// `Duration`'s `u64` total. Only the SDK call narrows.
 const VIDEO_DATA_POLL_MS: u32 = 250;
 
@@ -567,8 +568,8 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>>;
 
     /// Issue an ST4 guide pulse (`SVBPulseGuide`) — blocks at the SDK level
-    /// for `duration_ms` (see `camera.rs::pulse_guide`'s doc comment for why
-    /// this seam keeps that a literal blocking call in v0).
+    /// for `duration_ms` (see the comment in `camera.rs`'s `pulse_guide` for
+    /// why this seam keeps that a literal blocking call).
     ///
     /// # Errors
     ///
@@ -1467,7 +1468,8 @@ mod handle_tests {
 
     /// The abort path that matters on hardware: a capture already polling
     /// `SVBGetVideoData` bails within one slice instead of sitting out the rest
-    /// of its read deadline (the existing pre-cancelled test never gets that
+    /// of its read deadline (the pre-cancelled test,
+    /// `production_handle_capture_honours_a_cancelled_request`, never gets that
     /// far — it returns from the integration wait). Driven with a request the
     /// simulation never produces a frame for, so the poll loop is genuinely
     /// where the cancel lands.
@@ -2262,7 +2264,8 @@ pub(crate) mod mock {
             self.stop_video_capture_calls.load(Ordering::SeqCst)
         }
 
-        /// The ordered C1a handshake steps seen so far (see `sdk_call_log`).
+        /// The SDK calls whose order is contract, in the order they reached
+        /// the seam so far (see the `sdk_call_log` field).
         pub fn sdk_call_log(&self) -> Vec<String> {
             self.sdk_call_log.lock().clone()
         }
@@ -2385,8 +2388,9 @@ pub(crate) mod mock {
             Ok(())
         }
 
-        /// The read's timeout at its deadline, as the production capture
-        /// reports it.
+        /// The read's timeout at its deadline — the failure the production
+        /// capture reports with the SDK's own `Timeout`, worded here to name
+        /// the deadline.
         fn read_timed_out(request: &CaptureRequest) -> BackendError {
             BackendError::new(format!(
                 "SVBGetVideoData deadline exceeded ({}ms)",

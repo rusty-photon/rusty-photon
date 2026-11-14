@@ -7,16 +7,12 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-# First first-party `cargo_build_script` in the repo, and the first to run
-# bindgen under Bazel from a hand-written rule (ADR-010 / docs/plans/vendor-zwo-rs.md).
-# It is a faithful re-expression of the target crate_universe auto-generated for
-# `@cr__libzwo-sys-0.1.0` while this crate was an external git dep — so the
-# `/usr/local/lib` + `static`/`dylib` link and the bindgen step are a proven
-# build, not a new one. The `bazel.yml` / `bazel-coverage.yml` workflows
-# run `.github/actions/install-zwo-sdk` first, which installs both the SDK (so
+# A first-party `cargo_build_script` that runs bindgen under Bazel. The
+# `bazel.yml` / `bazel-coverage.yml` workflows run
+# `.github/actions/install-zwo-sdk` first, which installs both the SDK (so
 # `build.rs`'s link directives resolve) and libclang (so bindgen runs); `.bazelrc`
 # forwards `LIBCLANG_PATH` (macOS) / `ZWO_SDK_LIB_DIR` (Windows) that
-# `--incompatible_strict_action_env` strips. See ADR-008 + docs/plans/archive/bazel-migration.md.
+# `--incompatible_strict_action_env` strips.
 
 # Surfaces CARGO_PKG_* (and friends) from Cargo.toml to the build script + lib,
 # matching what crate_universe generated; cheap and avoids env-var surprises.
@@ -25,7 +21,7 @@ cargo_toml_env_vars(
     src = "Cargo.toml",
 )
 
-# The link directives are feature-gated per device (ADR-014: `camera` /
+# The link directives are feature-gated per device (`camera` /
 # `efw` / `focuser`), read by build.rs via CARGO_FEATURE_*. Bazel builds the
 # UNION of what the workspace's services need — the packaging path (cargo,
 # `cargo ci build-packages`) is where per-service narrowing happens; keeping

@@ -113,7 +113,7 @@ jobs:
       # (indi-3rdparty ships no `mac_arm64` blob) — `macos-latest` is Apple
       # Silicon today, so this step (and the build step below) is a no-op
       # there until a verified Apple Silicon blob exists (see
-      # docs/plans/archive/svbony-camera.md "Packaging"). No libclang: libsvbony-sys's
+      # docs/services/svbony-camera.md "Packaging"). No libclang: libsvbony-sys's
       # FFI is hand-written, not bindgen'd (SVBony's header carries no license
       # to vendor under).
       - name: Install SVBony SDK

@@ -1,12 +1,10 @@
 //! Configuration for the zwo-camera service.
 //!
 //! The shared `server` block (`AlpacaServerConfig`) binds the listener; the
-//! `devices` override map (keyed by
-//! SDK serial — applied to each `ZwoCamera` at registration) is live as of
-//! Phase E, and the whole `Config` is edited on the setup pages (see
-//! `setup.rs`). EFW filter
-//! wheels are out of scope: they belong to a future separate service
-//! (ADR-014), so there is no filter-wheel config surface here.
+//! `devices` override map, keyed by SDK serial, is applied to each
+//! `ZwoCamera` at registration; and the whole `Config` is edited on the setup
+//! pages (see `setup.rs`). The EFW filter wheel belongs to a separate
+//! service, so there is no filter-wheel config surface here.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -25,10 +23,9 @@ pub const DEFAULT_PORT: u16 = 11122;
 
 /// Effective service configuration.
 ///
-/// `deny_unknown_fields` (as in zwo-focuser and the other newer services) so
-/// typoed or removed keys fail loudly at load instead of being silently
-/// ignored — in particular the pre-ADR-014 `filterwheel` section, which is no
-/// longer valid here (the EFW belongs to a future separate service).
+/// `deny_unknown_fields`, so a typoed key, or one this service does not read,
+/// fails loudly at load instead of being silently ignored — a `filterwheel`
+/// section among them: the EFW belongs to a separate service.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -243,9 +240,9 @@ mod tests {
 
     #[test]
     fn a_legacy_filterwheel_section_is_rejected_loudly() {
-        // Pre-ADR-014 configs carried a `filterwheel` section; the EFW moved
-        // to its own future service, so the key must fail at load rather than
-        // be silently ignored.
+        // The EFW belongs to a separate service, so a `filterwheel` section
+        // is a key this service does not read: it fails at load rather than
+        // being silently ignored.
         let err = serde_json::from_str::<Config>(r#"{"filterwheel": {"enabled": false}}"#)
             .unwrap_err()
             .to_string();
@@ -260,7 +257,7 @@ mod tests {
             Config::default().max_adu_reporting,
             MaxAduReporting::SensorCeiling
         );
-        // An older config predating the key must load and keep that default.
+        // A config without the key loads and keeps that default.
         let c: Config = serde_json::from_str(r#"{"devices": {}}"#).unwrap();
         assert_eq!(c.max_adu_reporting, MaxAduReporting::SensorCeiling);
     }
@@ -286,7 +283,7 @@ mod tests {
 
     #[test]
     fn the_page_labels_each_contract_and_explains_the_field() {
-        // The dropdown offers only the new names, each labelled by what it
+        // The dropdown offers exactly the two values, each labelled by what it
         // reports, and the hint under it warns that zwo_driver may disable
         // saturation detection.
         let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();

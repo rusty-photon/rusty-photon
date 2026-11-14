@@ -134,7 +134,7 @@ ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendo
 
 ### ZWO Focuser
 
-ASCOM Alpaca **Focuser** driver for the ZWO EAF, built on the same vendored `zwo-rs` crate (its `focuser` feature — the binary links only the focuser SDK, `libEAFFocuser`; ADR-014) rather than the serial transport pattern the other focusers use. Exposes the full `Device + Focuser` surface (absolute move, halt, live temperature) and passes ConformU against the simulation backend; real-hardware validation is pending. See [docs/services/zwo-focuser.md](docs/services/zwo-focuser.md) for design documentation.
+ASCOM Alpaca **Focuser** driver for the ZWO EAF, built on the same vendored `zwo-rs` crate (its `focuser` feature — the binary links only the focuser SDK, `libEAFFocuser`; ADR-014) rather than the serial transport pattern the other focusers use. Exposes the full `Device + Focuser` surface (absolute move, halt, live temperature) and passes ConformU against the simulation backend and against a physical EAF. See [docs/services/zwo-focuser.md](docs/services/zwo-focuser.md) for design documentation.
 
 ### Planetarium Bridge
 

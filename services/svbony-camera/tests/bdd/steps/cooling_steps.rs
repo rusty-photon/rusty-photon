@@ -1,6 +1,6 @@
-//! Cooling steps (`@wip` — Phase E, docs/plans/archive/svbony-camera.md). Tenet-3
-//! (no actuation on connect) is documented in
-//! docs/services/svbony-camera.md and unit-tested at connect time, not here.
+//! Cooling steps (`cooling.feature`). Its tenet-3 scenario — connecting never
+//! enables the cooler (K5) — reads `CoolerOn` through the shared boolean step
+//! in `common_steps.rs`; a unit test pins the same at connect time.
 
 use cucumber::{then, when};
 

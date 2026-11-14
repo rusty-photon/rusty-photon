@@ -89,9 +89,10 @@ async fn camera_reports_bool(
 /// contract is about a surface as a whole — the capability members (E11), or
 /// the cache-served ones of a camera that has left the bus (C9) — and one
 /// member answering while its neighbours refuse is the contradiction the check
-/// exists to remove. An outline pays a service start per member, the cost
-/// that pushed `sky-survey-camera`'s suite past its 60s Bazel budget on
-/// Windows. The members stay named in the feature file, per testing.md §2.5.
+/// exists to remove. An outline pays a service start per member, a cost
+/// that takes a camera suite such as `sky-survey-camera`'s past a 60 s Bazel
+/// budget on Windows. The members stay named in the feature file, per
+/// testing.md §2.5.
 #[then(regex = r"^reading these members from camera device (\d+) is rejected with ASCOM (\w+):$")]
 async fn member_reads_rejected(world: &mut CameraWorld, step: &Step, device: u32, code: String) {
     let camera = world.device(device);

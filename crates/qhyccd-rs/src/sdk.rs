@@ -8,10 +8,8 @@ use std::ffi::{c_char, CStr};
 #[cfg(feature = "simulation")]
 use crate::simulation;
 
-// These imports are only used when NOT simulating (real hardware path in Sdk::new
-// / version / Drop); under `simulation` those methods are `#[cfg]`'d out. The FFI
-// is called directly here (not behind a per-method backend fork like the camera
-// modules), so `sdk.rs` gates itself out under `simulation` rather than forking.
+// These imports are used only by the real-hardware paths (`init_and_scan`, the
+// real `version`, the body of `Drop`), which `simulation` compiles out.
 #[cfg(not(feature = "simulation"))]
 use crate::sys::{
     GetQHYCCDId, GetQHYCCDSDKVersion, InitQHYCCDResource, ReleaseQHYCCDResource, ScanQHYCCD,
@@ -46,7 +44,7 @@ use crate::sys::{
 /// `Sdk` holds its claim until its drop has run the release. A thread that
 /// holds an `Sdk` and calls [`Sdk::new`] waits forever. The simulated build
 /// keeps the same rule, so a host's simulation tests meet it, except for
-/// [`Sdk::new_simulated`], which stands for no SDK resource and claims
+/// `Sdk::new_simulated`, which stands for no SDK resource and claims
 /// nothing. `Sdk` is not `Clone`: a clone's drop would release the resource
 /// too. Hold a single `Sdk` for the program's lifetime.
 ///
@@ -225,8 +223,8 @@ impl Sdk {
     /// default simulated camera (QHY178M-Simulated) with cooler support and a
     /// 7-position filter wheel, which [`Sdk::probe_filter_wheels`] finds as on
     /// real hardware, so the same code runs in both builds, the wait included.
-    /// For other simulated cameras, use [`Sdk::new_simulated`] and
-    /// [`Sdk::add_simulated_camera`].
+    /// For other simulated cameras, use `Sdk::new_simulated` and
+    /// `Sdk::add_simulated_camera`.
     /// # Errors
     /// Returns [`QHYError::Sdk`] if SDK initialisation, the camera scan, or
     /// reading a scanned camera's id fails, or [`QHYError::InvalidUtf8`] if
@@ -459,7 +457,7 @@ impl Sdk {
     }
 
     /// Synthetic version for the simulated SDK — mirrors the SDK release this crate
-    /// targets (see `libqhyccd-sys/build.rs`). No FFI is linked under `simulation`.
+    /// targets (see `libqhyccd-sys/build.rs`). No FFI is called under `simulation`.
     /// # Errors
     /// Infallible in the simulated build — the `Result` mirrors the real
     /// SDK query.
@@ -480,9 +478,9 @@ impl Sdk {
 
 impl Drop for Sdk {
     fn drop(&mut self) {
-        // Real-SDK cleanup only. Under `simulation` no QHYCCD SDK is linked (every
-        // such SDK is simulated), so this whole body is compiled out and `drop` is
-        // a no-op. In both builds the claim on the SDK is a field, so it is
+        // Real-SDK cleanup only. Under `simulation` every `Sdk` is simulated and
+        // makes no SDK call, so this whole body is compiled out and `drop` is a
+        // no-op. In both builds the claim on the SDK is a field, so it is
         // released after this body has run.
         #[cfg(not(feature = "simulation"))]
         {

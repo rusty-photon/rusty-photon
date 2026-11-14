@@ -3,11 +3,12 @@
 ## Status
 
 **Implemented through Phase G — full ASCOM Camera landed; ConformU passes and is
-wired into CI. Phase F (EFW `FilterWheel`) remains; Phase H (EAF focuser) is
-v0-implemented pending real-hardware validation.**
+wired into CI. Phase H (EAF focuser) is implemented and validated on a real EAF.
+Phase F (EFW `FilterWheel`) and the first crates.io publish of
+`zwo-rs`/`libzwo-sys` remain.**
 
-**Phase H — EAF focuser (`zwo-focuser` service) — v0 implemented, pending
-real-hardware validation (2026-07-09).** The EAF phase this plan named from
+**Phase H — EAF focuser (`zwo-focuser` service) — implemented (2026-07-09) and
+validated on a real EAF (2026-07-14).** The EAF phase this plan named from
 the start ("Camera → EFW filter wheel → EAF focuser later") landed as its own
 service, `zwo-focuser` (port 11124), built on the same `zwo-rs` FFI seam as
 `zwo-camera` rather than the serial `rusty-photon-shared-transport` pattern
@@ -20,9 +21,8 @@ ASCOM service itself: full `Device` + `Focuser` surface (absolute move,
 position, is-moving, halt, live temperature), config actions, serial-derived
 identity, 25 unit + 26 BDD scenarios green, ConformU harness wired, full local
 quality gate green workspace-wide (including no regression in `zwo-camera`
-from the shared `zwo-rs` changes). **Not yet validated against a real EAF** —
-see [`docs/services/zwo-focuser.md`](../services/zwo-focuser.md) "Real-hardware
-validation" for the remaining step and how to run it.
+from the shared `zwo-rs` changes). Validated against a real EAF on 2026-07-14
+([`docs/services/zwo-focuser.md`](../services/zwo-focuser.md)).
 The `zwo-rs` + `libzwo-sys` FFI crates are now **vendored first-party** at
 `crates/zwo-rs/` (ADR-010 / [vendor-zwo-rs.md](vendor-zwo-rs.md); the standalone
 [github.com/ivonnyssen/zwo-rs](https://github.com/ivonnyssen/zwo-rs) repo,
@@ -36,8 +36,8 @@ full Camera), with config actions, serial-derived identity, decoupled
 full **ConformU** pass on both suites — now run in CI via `conformu.yml` (Phase G,
 2026-06-18). The simulation path links **no** native SDK
 (`ZWO_SKIP_NATIVE_LINK=1`), so `test.yml`/`safety.yml` exercise the service with
-zero SDK provisioning. The **one remaining phase is F** (EFW `FilterWheel`); the
-`rp` `CameraConfig` consumer is the only Phase-G tail item left. This plan remains
+zero SDK provisioning. The **one remaining phase is F** (EFW `FilterWheel`);
+Phase G's `rp` consumer needs nothing camera-specific (Phase G below). This plan remains
 the agreed decision record behind `docs/services/zwo-camera.md` (the service
 design doc) and the BDD scenarios, per the design→BDD→implementation flow in
 [`docs/skills/development-workflow.md`](../skills/development-workflow.md).
@@ -50,7 +50,7 @@ two new author-maintained FFI crates: **`zwo-rs`** (safe wrapper) and
 **`libzwo-sys`** (raw bindgen), siblings to `qhyccd-rs`/`libqhyccd-sys`.
 
 Scope sequence: **Camera first → EFW filter wheel fast-follow → EAF focuser
-(Phase H, v0 landed, pending real-hardware validation).** Developed
+(Phase H, landed and validated on a real EAF).** Developed
 **standalone** (the parallel `qhy-camera` work is tracked separately).
 
 > **Topology re-scope (2026-07-10,
@@ -297,15 +297,18 @@ The crate is the long pole (~40–50% of effort) and holds the real unknowns
 `crate.annotation`). Once `simulation` works, the driver builds entirely against
 it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
 
-- **Phase A — `libzwo-sys`:** ✅ *skeleton stood up* — `bindgen` over `ASICamera2.h`
+- **Phase A — `libzwo-sys`:** ✅ *done* — `bindgen` over `ASICamera2.h`
   + `EFW_filter.h` + `EAF_focuser.h` (parsed as C++ for the bare `bool`),
   `build.rs` unconditional system-link of `ASICamera2` + `EFWFilter` (+ `usb-1.0`,
   `stdc++`/`c++`, `udev`/IOKit; mirror `libqhyccd-sys`). Green `check` + `test` on
-  CI (Linux x86_64) and built + tested locally on aarch64. *Remaining (long pole):*
-  confirm green link on Pi5 aarch64 CI + macOS arm64.
-- **Phase B — `zwo-rs`:** ⚙️ *skeleton stood up* — safe `Sdk`/`Error` surface +
-  `simulation`-feature stub. *Remaining:* real safe handles/enums + error mapping +
-  the `simulation` backend (camera frames + EFW position/moving); publish 0.1.0.
+  CI (Linux x86_64) and built + tested locally on aarch64. The real link is green
+  nightly on linux-arm64 (`pi-nightly.yml`, Raspberry Pi) and macOS arm64
+  (`native.yml`'s `macos-latest`).
+- **Phase B — `zwo-rs`:** ⚙️ *done but for the publish* — safe `Sdk`/`Error`
+  surface, real safe handles (`Camera`, `FilterWheel`, `Focuser`) and their enums,
+  error mapping, and the `simulation` backend (camera frames, EFW
+  position/moving, EAF). *Remaining:* publish `zwo-rs`/`libzwo-sys` 0.1.0 to
+  crates.io.
 - **Phase C — Track A:** bare `zwo-camera` serving an empty/sim Camera on `:11122`;
   prove build/link, CI SDK provisioning, Pi5 aarch64, Bazel `requires-cargo`,
   repin-twice — *before* device-trait work.
@@ -328,7 +331,7 @@ it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
   the BDD scenarios from the removed `@wip` `filter_wheel.feature` move here.
   Not folded into `zwo-camera`: the EFW is an independently usable device on
   its own SDK; nothing forces co-hosting (see the ADR).
-- **Phase G — test + gate + consumer:** ✅ *mostly landed.* BDD + ConformU on the
+- **Phase G — test + gate + consumer:** ✅ *landed.* BDD + ConformU on the
   sim backend; `cargo rail run --profile commit` + `cargo fmt` green; ConformU
   **wired into `conformu.yml`** (per-service matrix with `install-zwo-sdk`
   provisioning, 2026-06-18); the `native.yml` nightly real-link build covers
@@ -336,19 +339,21 @@ it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
   `Exposure` control that gated ConformU's 10 s `StartExposure` timeout landed in
   rev `3c32e59`; the macOS `StartExposure` timeout was then traced to a driver
   real-clock-deadline bug (fixed in `backend.rs`). The Bazel real/sim two-variant
-  build superseded the `crate.annotation` plan (ADR-010). *Remaining tail:* the
-  `rp` `CameraConfig` consumer.
-- **Phase H — EAF focuser (`zwo-focuser` service):** ✅ *v0 landed
-  (2026-07-09), pending real-hardware validation.* New service, port 11124,
+  build superseded the `crate.annotation` plan (ADR-010). The consumer is `rp`'s
+  generic `CameraConfig` (`alpaca_url`, `device_number`), which binds
+  `zwo-camera` as it binds any Alpaca camera, so nothing camera-specific is owed
+  in `rp`; running the two together on the field rig is an item of
+  [zwo-real-hardware-validation.md](zwo-real-hardware-validation.md).
+- **Phase H — EAF focuser (`zwo-focuser` service):** ✅ *landed (2026-07-09),
+  validated on a real EAF (2026-07-14).* New service, port 11124,
   built on the `zwo-rs`/`zwo-camera` native-SDK pattern (not the serial
   `rusty-photon-shared-transport` pattern). Added the `libEAFFocuser` link
   directive to `libzwo-sys/build.rs` (headers + bindgen bindings already
   existed) and a new `zwo_rs::Focuser` safe wrapper (structural clone of
   `efw.rs`), plus the full `zwo-focuser` ASCOM `Device`+`Focuser` service:
   25 unit + 26 BDD scenarios green, ConformU wired, full quality gate green.
-  *Remaining:* validate against the user's physical EAF (no real-hardware
-  prior art exists yet for this device family's timing/polling behaviour).
-  See [`docs/services/zwo-focuser.md`](../services/zwo-focuser.md).
+  The EAF's measured timing and polling behaviour are in
+  [`docs/services/zwo-focuser.md`](../services/zwo-focuser.md).
 
 ## Concurrency
 

@@ -122,7 +122,7 @@ impl AsiError {
     /// Takes `i64` because the raw alias is unsigned on LP64 and signed on
     /// MSVC; both widen into `i64` losslessly, and a code outside the vendored
     /// header's range reaches [`AsiError::Unknown`] intact. `0` (`ASI_SUCCESS`)
-    /// maps to [`AsiError::Unknown(0)`] here; callers should route success
+    /// maps to `AsiError::Unknown(0)` here; callers should route success
     /// through [`asi_check`] instead of calling this directly.
     #[must_use]
     pub const fn from_code(code: i64) -> Self {
@@ -215,8 +215,11 @@ impl EfwError {
 /// EAF focuser SDK error codes (`EAF_ERROR_CODE`), mapped from the raw `int`.
 ///
 /// `0` is `EAF_SUCCESS`; handle it via [`eaf_check`]. The BLE-specific codes
-/// (`EAF_BLE_*`, starting at 50) are out of scope for this driver (see
-/// `docs/services/zwo-focuser.md` "MVP scope") and fold into [`Self::Unknown`].
+/// (`EAF_BLE_*`, starting at 50) belong to the Bluetooth path, which the
+/// `zwo-focuser` driver does not serve ([its MVP scope][mvp-scope]), and fold
+/// into [`Self::Unknown`].
+///
+/// [mvp-scope]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-focuser.md#mvp-scope
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum EafError {
@@ -283,11 +286,12 @@ impl EafError {
     /// Whether this answer, given to a call on an **open** focuser, means the
     /// focuser has left the bus.
     ///
-    /// Measured on Linux with EAF SDK 1.7.7 (rusty-photon issue #1431): from
-    /// the moment an open EAF leaves, every call that needs its session
-    /// answers [`Self::Removed`]. Once a rescan (`EAFGetNum`) has run, its ID
-    /// answers [`Self::InvalidId`], or [`Self::Closed`] when the EAF has come
-    /// back and been listed again under the same ID, which then names a
+    /// Measured on Linux with EAF SDK 1.7.7 ([the focuser departure
+    /// record][eaf-departure]): from the moment an open EAF leaves, every
+    /// call that needs its session answers [`Self::Removed`]. Once a rescan
+    /// (`EAFGetNum`) has run, its ID answers [`Self::InvalidId`], or
+    /// [`Self::Closed`] when the EAF has come back and been listed again
+    /// under the same ID, which then names a
     /// fresh, unopened entry. All three mean the session's ID no longer names
     /// a focuser it holds.
     ///
@@ -296,6 +300,8 @@ impl EafError {
     /// accessible, which is a permissions problem, not a departure. Nor to a
     /// call on a focuser that was never opened, where [`Self::Closed`] means
     /// just that.
+    ///
+    /// [eaf-departure]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/validation/2026-10-07-zwo-focuser-departure-linux/README.md
     #[must_use]
     pub const fn left_the_bus(self) -> bool {
         matches!(self, Self::Removed | Self::InvalidId | Self::Closed)

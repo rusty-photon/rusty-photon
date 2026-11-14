@@ -112,12 +112,12 @@ pub type Result<T> = core::result::Result<T, QHYError>;
 /// QHY analogue of `zwo-rs`'s `asi_check` / `svbony-rs`'s `svb_check`; because the
 /// QHY ABI carries no code to map, it takes a `'static` `op` label instead, which
 /// becomes [`QHYError::Sdk`]'s operation name on failure. On the failure path it
-/// logs the error via `tracing::error!`, centralising the per-call-site logging
-/// the void SDK wrappers previously did by hand.
+/// logs the error via `tracing::error!`, so the void SDK wrappers that route
+/// through it do not log by hand.
 ///
-/// The status is compared against the literal `0` (rather than the `ffi`/`sys`
-/// `QHYCCD_SUCCESS` constant) so the check does not depend on how the bindings
-/// are generated — matching the sibling crates' hard-coded `code == 0`. It is
+/// The status is compared against the literal `0` (rather than the `sys`
+/// `QHYCCD_SUCCESS` constant) so the check does not depend on the bindings'
+/// constants — matching the sibling crates' hard-coded `code == 0`. It is
 /// **not** used for the value-returning entry points (`GetQHYCCDMemLength`,
 /// `GetQHYCCDParam`, `GetQHYCCDType`, …) whose `u32::MAX` / `u32::MAX as f64`
 /// sentinel must be distinguished from a valid returned value at the call site;

@@ -3,30 +3,35 @@
 //! Sibling crate to [`qhyccd-rs`](https://crates.io/crates/qhyccd-rs). It wraps
 //! the raw FFI in [`libzwo-sys`](https://crates.io/crates/libzwo-sys) — generated
 //! by `bindgen` from the vendored MIT ZWO SDK headers — in a safe, ergonomic
-//! API. It is consumed by rusty-photon's `zwo-camera` ASCOM Alpaca driver.
+//! API. It is consumed by rusty-photon's `zwo-camera` and `zwo-focuser` ASCOM
+//! Alpaca drivers.
 //!
 //! ## Status
 //!
-//! **Under construction.** Enumeration, SDK-version queries, the ASI [`Camera`]
-//! handle (open/init, [`CameraInfo`], serial, control caps, ROI and binning,
-//! control get/set, single exposures, frame download, and ST4 guiding), the
-//! EFW [`FilterWheel`] handle (open, slot count, position with the moving
-//! sentinel, serial, firmware, calibration, direction), and the EAF [`Focuser`]
-//! handle (open, `MaxStep`, position, dedicated `IsMoving`, absolute move,
-//! stop, temperature, reverse, serial, firmware) are all wired to the FFI, per
-//! the rusty-photon `docs/plans/zwo-driver.md` plan. Scope order: **Camera →
-//! EFW filter wheel → EAF focuser**.
+//! Enumeration, SDK-version queries, the ASI [`Camera`] handle (open/init,
+//! [`CameraInfo`], serial, control caps, ROI and binning, control get/set,
+//! single exposures, frame download, and ST4 guiding), the EFW
+//! [`FilterWheel`] handle (open, slot count, position with the moving
+//! sentinel, serial, firmware, calibration, direction), and the EAF
+//! [`Focuser`] handle (open, `MaxStep`, position, dedicated `IsMoving`,
+//! absolute move, stop, temperature, reverse, serial, firmware) are all wired
+//! to the FFI. The camera and focuser handles are what the [`zwo-camera`] and
+//! [`zwo-focuser`] drivers run on against physical hardware; no rusty-photon
+//! service drives the filter wheel.
+//!
+//! [`zwo-camera`]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-camera.md
+//! [`zwo-focuser`]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-focuser.md
 //!
 //! ## Device features (`camera` / `efw` / `focuser`)
 //!
 //! The three ZWO device SDKs are independent libraries with no shared handle,
 //! so each device surface is its own additive feature that compiles the matching
 //! module ([`Camera`], [`FilterWheel`], [`Focuser`]) and forwards to the
-//! matching `libzwo-sys` link feature. **Default = all three** (the pre-split
-//! behaviour); narrow consumers (e.g. rusty-photon's `zwo-camera` /
-//! `zwo-focuser` services) use `default-features = false` and pick one, so a
-//! camera-only binary never links `libEFWFilter`/`libEAFFocuser` and vice
-//! versa.
+//! matching `libzwo-sys` link feature. **Default = all three**, so a bare
+//! build wraps and links every device; narrow consumers (e.g. rusty-photon's
+//! `zwo-camera` / `zwo-focuser` services) use `default-features = false` and
+//! pick one, so a camera-only binary never links
+//! `libEFWFilter`/`libEAFFocuser` and vice versa.
 //!
 //! ## `simulation` feature
 //!
@@ -35,7 +40,10 @@
 //! this feature is enabled — it removes the hardware, not the link. With the
 //! feature on, the SDK is never called: enumeration reports the fixed simulated
 //! device counts (`SIM_CAMERA_COUNT`, `SIM_FILTER_WHEEL_COUNT`,
-//! `SIM_FOCUSER_COUNT` — each present only with its device feature).
+//! `SIM_FOCUSER_COUNT` — each present only with its device feature). A
+//! `simulation` build references no SDK symbol, so with `ZWO_SKIP_NATIVE_LINK`
+//! set at build time, which omits `libzwo-sys`'s link directives, it links
+//! with no SDK installed.
 //!
 //! ## The EAF SDK's own log (Linux)
 //!
@@ -53,7 +61,7 @@
 //! - **The enabled ZWO SDK libraries** (`libASICamera2` for `camera` — plus
 //!   **libusb-1.0** —, `libEFWFilter` for `efw`, `libEAFFocuser` for `focuser`)
 //!   on the link path — needed to *link* (i.e. `build`/`test`), even with the
-//!   `simulation` feature.
+//!   `simulation` feature unless `ZWO_SKIP_NATIVE_LINK` is set (above).
 //! - **libudev** (Linux, `efw`/`focuser` only) — the EFW/EAF blobs reference
 //!   `udev_*` symbols without declaring libudev in their own `DT_NEEDED`, so
 //!   the consumer binary links it on their behalf (`libudev-dev` on
@@ -285,7 +293,7 @@ pub(crate) fn sim_rescan(list: SimList, path: &std::path::Path) -> bool {
     !gone
 }
 
-/// `ASIGetNumOfConnectedCameras`, with [`camera_list`] already held: rebuild
+/// `ASIGetNumOfConnectedCameras`, with [`CAMERA_LIST`] already held: rebuild
 /// the SDK's camera list and count it.
 #[cfg(feature = "camera")]
 pub(crate) fn rescan(sdk: &Sdk) -> usize {
@@ -314,9 +322,9 @@ pub(crate) fn rescan(sdk: &Sdk) -> usize {
 
 /// Entry point to the ZWO SDK.
 ///
-/// Enumerates connected ASI cameras and EFW filter wheels. With the `simulation`
-/// feature, a fixed simulated environment is reported and the native SDK is
-/// never called (though it is still linked — see the crate docs).
+/// Enumerates connected ASI cameras, EFW filter wheels and EAF focusers. With
+/// the `simulation` feature, a fixed simulated environment is reported and the
+/// native SDK is never called (though it is still linked — see the crate docs).
 #[derive(Debug, Default)]
 pub struct Sdk {
     /// Simulation only: while this file exists the simulated camera and
@@ -345,9 +353,10 @@ impl Sdk {
     /// `path` exists, and put them back when the file is removed.
     ///
     /// Models a camera that loses its power or its cable while connected, as
-    /// ASI SDK 1.41 was measured to on Linux (rusty-photon issue #1411). While
-    /// the file exists this SDK finds no camera: a rescan counts none, and an
-    /// open answers `AsiError::InvalidIndex`. A `Camera` opened before
+    /// ASI SDK 1.41 does on Linux ([the camera departure
+    /// record][asi-departure]). While the file exists this SDK finds no
+    /// camera: a rescan counts none, and an open answers
+    /// `AsiError::InvalidIndex`. A `Camera` opened before
     /// the departure keeps its handle, and until a rescan runs the SDK hides
     /// the departure: reads answer from memory, `Camera::set_control_value`
     /// and the guide pulses fail with `AsiError::GeneralError`, an exposure
@@ -362,10 +371,11 @@ impl Sdk {
     /// Like the real open, an open reads the list the last rescan left: a
     /// camera a rescan dropped opens again only after a rescan has listed it.
     ///
-    /// The simulated EAF focuser leaves with it, as EAF SDK 1.7.7 was measured
-    /// to on Linux (rusty-photon issue #1431). Unlike the ASI SDK, the EAF SDK
-    /// says so at once: from the first call that sees the file, every call on
-    /// a `Focuser` opened before the departure answers `EafError::Removed`,
+    /// The simulated EAF focuser leaves with it, as EAF SDK 1.7.7 does on
+    /// Linux ([the focuser departure record][eaf-departure]). Unlike the ASI
+    /// SDK, the EAF SDK says so at once: from the first call that sees the
+    /// file, every call on a `Focuser` opened before the departure answers
+    /// `EafError::Removed`,
     /// and once a rescan has run while it was gone, `EafError::InvalidId`
     /// (the real SDK answers `EafError::Closed` instead once the EAF is back
     /// and listed under its old ID; either means gone). A focuser opened
@@ -375,8 +385,12 @@ impl Sdk {
     /// it is on the bus and the last rescan listed it. Not modelled: a
     /// departure and return that no call observed (the real SDK answers
     /// `Removed` after one), and the new ID a returned EAF can be listed under.
-    // Code spans, not links, above: this builds with either device feature
-    // alone, so a link to the other device's items would dangle.
+    ///
+    /// [asi-departure]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/validation/2026-10-06-zwo-camera-departure-linux/README.md
+    /// [eaf-departure]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/validation/2026-10-07-zwo-focuser-departure-linux/README.md
+    // Code spans, not intra-doc links, for the items above: this builds with
+    // either device feature alone, so a link to the other device's items would
+    // dangle.
     #[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
     #[must_use]
     pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
@@ -417,7 +431,8 @@ impl Sdk {
     /// ID answers `INVALID_ID`, or `CAMERA_CLOSED` once the camera has come back
     /// and a later rescan has listed it afresh. Either means this handle's
     /// camera has gone, and `Ok(false)` says so. Measured on Linux with ASI SDK
-    /// 1.41 (rusty-photon issue #1411): no call answers `CAMERA_REMOVED`.
+    /// 1.41 ([the departure record][asi-departure]): no call answers
+    /// `CAMERA_REMOVED`.
     ///
     /// A rescan leaves present cameras, their IDs and their exposures alone,
     /// but it renumbers the list the enumeration indices read, so an index
@@ -426,6 +441,8 @@ impl Sdk {
     /// # Errors
     /// Returns [`Error::Asi`] for any other answer, which says nothing either
     /// way.
+    ///
+    /// [asi-departure]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/validation/2026-10-06-zwo-camera-departure-linux/README.md
     #[cfg(feature = "camera")]
     pub fn still_connected(&self, camera: &Camera) -> Result<bool> {
         let list = lock_camera_list();
@@ -552,11 +569,13 @@ pub mod simulation {
     //!
     //! Enumeration of the simulated environment is reported by [`crate::Sdk`]
     //! via `SIM_CAMERA_COUNT` / `SIM_FILTER_WHEEL_COUNT` / `SIM_FOCUSER_COUNT`
-    //! (each present only with its device feature). Simulated frames and EFW
-    //! motion land with the Camera and filter-wheel device handles.
+    //! (each present only with its device feature). Simulated frames, EFW
+    //! motion and EAF travel live with the `Camera`, `FilterWheel` and
+    //! `Focuser` handles.
     use rand::RngExt;
 
-    /// One 16-bit noise sample — a placeholder for simulated sensor frames.
+    /// One 16-bit sample of simulated sensor noise. Frames are filled by
+    /// [`fill_noise`].
     #[must_use]
     pub fn noise_sample() -> u16 {
         rand::rng().random()
@@ -565,13 +584,13 @@ pub mod simulation {
     /// Fill `buf` with simulated sensor noise as fast as possible.
     ///
     /// A full-frame ASI2600 frame is ~52 MiB and this runs in unoptimised test/CI
-    /// builds. Two earlier approaches both tripped `ConformU`'s 10 s `StartExposure`
-    /// timeout: a per-byte `rand::rng()` lookup (the original, >10 s), and a bulk
-    /// [`rand::RngCore::fill_bytes`] (`ChaCha` is ~seconds for 52 MiB in debug). A
+    /// builds, inside `ConformU`'s 10 s `StartExposure` timeout. The obvious fills
+    /// do not fit in it: a per-byte `rand::rng()` lookup takes over 10 s, and a
+    /// bulk `RngCore::fill_bytes` (`ChaCha`) takes seconds for 52 MiB in debug. A
     /// rayon parallel fill is fast in isolation but grabs every core, so when
     /// several `ConformU` camera suites run in one job (conformu.yml) it starves the
-    /// siblings *and* itself and re-trips the timeout on constrained (e.g. macOS)
-    /// runners. Instead: a seeded xorshift64 — a few integer ops per 8 bytes, fast
+    /// siblings *and* itself and trips the timeout on constrained (e.g. macOS)
+    /// runners. Hence a seeded xorshift64 — a few integer ops per 8 bytes, fast
     /// even in debug, single-core, no extra deps. Quality is irrelevant; this is
     /// placeholder sensor noise, seeded per frame so frames differ run-to-run.
     pub fn fill_noise(buf: &mut [u8]) {
@@ -597,7 +616,7 @@ mod tests {
     }
 
     // Per-device enumeration/version tests: each gated on its device feature
-    // (the Sdk surface itself is feature-gated per ADR-014). Without the
+    // (the Sdk surface itself is feature-gated per device). Without the
     // simulation feature these call the real SDK; with no hardware attached the
     // counts are zero, but the calls must not panic.
 
@@ -774,9 +793,10 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn simulation_fill_noise_fills_whole_buffer() {
-        // A small buffer is enough to exercise the parallel fill path; the
-        // chunking is internal. Just assert it touches every byte (vanishingly
-        // unlikely to stay all-zero) and respects the slice length.
+        // A small buffer is enough to exercise the fill, including the short
+        // final chunk (the length is not a multiple of 8). Just assert it
+        // touches the buffer (vanishingly unlikely to stay all-zero) and
+        // respects the slice length.
         let mut buf = vec![0u8; 256 * 1024 + 7];
         simulation::fill_noise(&mut buf);
         assert!(buf.iter().any(|&b| b != 0));

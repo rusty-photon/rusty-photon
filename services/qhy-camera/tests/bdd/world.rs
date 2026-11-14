@@ -32,8 +32,8 @@ pub const SIM_SERIAL: &str = "SIM-QHY178M";
 /// BDD suites share the same 3-core macOS runner. The equivalent zwo-camera
 /// wait was measured there at 7.5 s and still unfinished.
 ///
-/// Matching `star-adventurer-gti`'s `DEBUG_RETRY_WINDOW`, the other in-repo
-/// budget written for a starved runner.
+/// Matching `star-adventurer-gti`'s `DEBUG_RETRY_WINDOW`, also written for a
+/// starved runner.
 const IMAGE_READY_BUDGET: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Default, World)]
@@ -358,16 +358,15 @@ impl CameraWorld {
     ///
     /// The budget is wall-clock, not a poll count. Each iteration is a full
     /// Alpaca round trip, so a fixed count of naps promises a budget it cannot
-    /// keep: the loop this replaced advertised 6 s as 240 x 25 ms and, in the
-    /// zwo-camera copy of it, actually fired at ~7.5 s on a loaded runner,
-    /// because the round trips are not free. A deadline says what it means on
-    /// every machine.
+    /// keep: 240 x 25 ms reads as 6 s, and a zwo-camera loop of that shape
+    /// fired at ~7.5 s on a loaded runner, because the round trips are not
+    /// free. A deadline says what it means on every machine.
     ///
     /// The budget is checked after each poll, so a wait can overshoot it by
     /// the round trip that was in flight when it expired, and a frame landing
     /// inside that round trip still passes. Both are deliberate: this is a
     /// generosity floor, not a stopwatch. Failing a frame that arrived a few
-    /// milliseconds late would reintroduce the flake the budget exists to
+    /// milliseconds late would be the very flake the budget exists to
     /// remove, and bounding the final poll by the remaining time would
     /// surface a transport error in place of this message — see
     /// `docs/skills/testing.md` §5.9 rule 2. The panic reports the wait it

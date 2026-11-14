@@ -6,18 +6,18 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-# Two-variant build (the real/sim parity win of ADR-010 / docs/plans/vendor-zwo-rs.md),
-# applying the first-party variant pattern used by crates/rp-plate-solver
+# Two-variant build (real and simulated), applying the first-party variant
+# pattern used by crates/rp-plate-solver
 # (`rp-plate-solver` ↔ `rp-plate-solver_with_mock`). crate_universe resolves a
 # single feature set per crate and ignores a target's `crate_features`, so an
-# external `zwo-rs` cannot be both real and simulated; owning the BUILD lets us
+# `@cr` `zwo-rs` could not be both real and simulated; owning the BUILD lets us
 # express both. `libzwo-sys` is first-party (not in `@cr`), so it is named
-# explicitly; the remaining deps (thiserror/tracing, +rand/rayon under
+# explicitly; the remaining deps (thiserror/tracing, +rand under
 # simulation) come from `all_crate_deps`.
 _LIBZWO_SYS = "//crates/zwo-rs/libzwo-sys:libzwo-sys"
 
 # Bazel `crate_features` is LITERAL (no Cargo feature resolution), so the
-# per-device features (ADR-014: camera/efw/focuser) are spelled out as the
+# per-device features (camera/efw/focuser) are spelled out as the
 # UNION of what the workspace's services need. Per-service link narrowing is a
 # cargo/packaging concern (`cargo ci build-packages` builds each zwo service in
 # its own cargo invocation); under Bazel one shared target set linking every
@@ -30,8 +30,8 @@ _DEVICE_FEATURES = [
 ]
 
 # Real SDK variant: no `simulation` feature cfg's out the simulation module
-# (rand/rayon) so the real FFI path compiles and links the native ZWO SDK via
-# libzwo-sys. zwo-camera's production targets depend on this.
+# (rand) so the real FFI path compiles and links the native ZWO SDK via
+# libzwo-sys. zwo-camera's and zwo-focuser's production targets depend on this.
 rust_library(
     name = "zwo-rs",
     srcs = glob(["src/**/*.rs"]),
@@ -45,8 +45,9 @@ rust_library(
 # Simulation variant: `simulation` enables the hardware-free in-Rust simulated
 # camera/EFW/EAF. `testonly = True` makes Bazel reject any production
 # rust_binary/rust_library that links it, so the convention is enforced at
-# build time, not only by review. zwo-camera's sim/BDD/ConformU targets depend
-# on this. (The SDK is still linked — simulation removes the camera, not the link.)
+# build time, not only by review. zwo-camera's and zwo-focuser's sim/BDD/ConformU
+# targets depend on this. (The SDK is still linked — simulation removes the
+# camera, not the link.)
 rust_library(
     name = "zwo-rs_sim",
     testonly = True,

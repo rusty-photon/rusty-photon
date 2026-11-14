@@ -12,11 +12,12 @@ description = "ASCOM Alpaca Camera (+ FilterWheel) driver for QHYCCD hardware"
 default = []
 # `simulation` forwards qhyccd-rs's simulation backend so `Sdk::new()` yields a
 # QHY178M-Simulated camera + 7-position CFW instead of scanning USB. It is
-# hardware-free (no physical camera/USB) but NOT SDK-free — the static `qhyccd`
-# lib is still required at link time (see docs/services/qhy-camera.md "Native
-# dependency & build gating"). It also stages the USB scan a `usb_devices`
-# list is placed from (docs/services/qhy-camera.md U7): the fabricated camera
-# is on no bus a host scan could read.
+# hardware-free (no physical camera/USB) but on its own not SDK-free — the
+# static `qhyccd` lib is linked unless `QHYCCD_SKIP_NATIVE_LINK=1` is set too
+# (see docs/services/qhy-camera.md "Native dependency & build gating"). It also
+# stages the USB scan a `usb_devices` list is placed from
+# (docs/services/qhy-camera.md U7): the fabricated camera is on no bus a host
+# scan could read.
 simulation = ["qhyccd-rs/simulation", "rusty-photon-doctor-checks/mock"]
 # `mock` is the project-wide convention name BDD/CI build with (`--features mock`
 # / `--all-features`); for this SDK-backed service it is just an alias that
@@ -36,10 +37,10 @@ rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-camera-core = { workspace = true }
-# `claims`: the placeholder Camera and the failed USB scan's re-scan
-# (docs/services/qhy-camera.md U4, U6).
+# `claims`: the placeholder Camera, the failed USB scan's re-scan and the
+# setup pages' Cameras section (docs/services/qhy-camera.md U4, U6, "Setup
+# pages").
 rusty-photon-driver = { workspace = true, features = ["claims"] }
-# The setup pages' handler (docs/services/qhy-camera.md "Setup pages").
 rusty-photon-setup = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-tls = { workspace = true }
@@ -63,9 +64,7 @@ parking_lot = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 # Preflight/doctor: resolve + keep resident the delay-loaded qhyccd.dll (see
 # docs/services/qhy-camera.md § "Windows: qhyccd.dll resolution" and build.rs).
-# Windows-only and single-service, so a local dep (Rule 10); the version was
-# already in Cargo.lock as a transitive dep (bindgen), so this adds an edge,
-# not a new pin.
+# Windows-only and single-service, so a local dep (Rule 10).
 libloading = "0.9"
 
 [package.metadata.conformu]
@@ -156,18 +155,16 @@ tokio-test = { workspace = true }
 # typed client can carry it — `std::time::Duration` is unsigned).
 reqwest = { workspace = true }
 # Bazel-only resolution nudge — keeps `simulation`'s OPTIONAL deps (rand, rayon)
-# materialized in the `@cr` crate_universe repo. Since ADR-009 vendored qhyccd-rs
-# first-party, the real/sim SDK split is done by depending on the two BUILD
-# variants (`//crates/qhyccd-rs:qhyccd-rs` vs `:qhyccd-rs_sim`), NOT by this
-# dev-dep. But crate_universe (`from_cargo`) still resolves ONE feature set per
-# crate and ignores a Bazel target's `crate_features`: `qhyccd-rs/simulation` is
-# non-default, so without something enabling it in the Cargo resolution, `rand`/
-# `rayon` never enter `@cr` and `qhyccd-rs_sim` fails to compile (`unresolved
-# import rand`). This dev-dep is that "something". resolver = "2" keeps it out of
-# the release binary (`cargo build` ignores dev-deps) so production links the
-# real SDK. (Verified by spike 2026-06-17: dropping it → rand/rayon leave `@cr` →
-# sim build breaks.) See docs/services/qhy-camera.md "Native dependency & build
-# gating".
+# materialized in the `@cr` crate_universe repo. The real/sim SDK split is done
+# by depending on the two BUILD variants (`//crates/qhyccd-rs:qhyccd-rs` vs
+# `:qhyccd-rs_sim`), NOT by this dev-dep. But crate_universe (`from_cargo`)
+# resolves ONE feature set per crate and ignores a Bazel target's
+# `crate_features`: `qhyccd-rs/simulation` is non-default, so without something
+# enabling it in the Cargo resolution, `rand`/`rayon` never enter `@cr` and
+# `qhyccd-rs_sim` fails to compile (`unresolved import rand`). This dev-dep is
+# that "something". resolver = "2" keeps its feature out of the release binary
+# (`cargo build` ignores dev-deps) so production links the real SDK. See
+# docs/services/qhy-camera.md "Native dependency & build gating".
 qhyccd-rs = { workspace = true, features = ["simulation"] }
 
 [[test]]

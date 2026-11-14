@@ -3,15 +3,14 @@
 ASCOM Alpaca **Camera** driver for ZWO ASI hardware, served on port
 **11122**. It is the ZWO analogue of `qhy-camera`, built on the vendored
 first-party [`zwo-rs`](../../crates/zwo-rs) FFI crate. Other ZWO devices are
-separate services (ADR-014): the EAF focuser is `zwo-focuser`, and the EFW
-filter wheel is a future `zwo-filterwheel` service.
+separate services: the EAF focuser is `zwo-focuser`, and the EFW filter wheel
+is a future `zwo-filterwheel` service.
 
 See [`docs/services/zwo-camera.md`](../../docs/services/zwo-camera.md) for the
-full design, [`docs/plans/zwo-driver.md`](../../docs/plans/zwo-driver.md) for the
-decision record, and [ADR-008](../../docs/decisions/008-zwo-camera-native-sdk-ffi.md)
-for the native-SDK / FFI-crate decision.
+full design; what is still to build, the filter wheel's service among it, is
+in [`docs/plans/zwo-driver.md`](../../docs/plans/zwo-driver.md).
 
-## Status — Phase E (full Camera) landed
+## What it serves
 
 This crate implements the full ASCOM `Device` + `Camera` surface over the
 `zwo-rs` SDK seam (`backend.rs`): connection lifecycle, sensor geometry (with
@@ -26,25 +25,14 @@ identity and its setup pages (`/setup`, with the Cameras section that edits
 `usb_devices`, and a page per camera). A camera that leaves the
 bus while connected reads `Connected = false` once a call on it fails and a
 rescan no longer finds it; a reconnect finds it again by its serial once it is
-back (design doc C6). Phase E landed
-validated by **45 unit tests** (against the in-crate mock seam), **57 BDD
-scenarios**, and a full **ConformU** pass (both `alpacaprotocol` and
-`conformance` suites); the suite now stands at **144 unit tests** (the mock
-seam, and the production handle against the `zwo-rs` simulation) and **85 BDD
-scenarios** — see the design doc's *Testing* section. Roadmap:
-
-- **Phase F** — re-scoped by ADR-014 to a future separate `zwo-filterwheel`
-  service (not part of this crate).
-- **Phase G** — mostly done: ConformU is wired into `conformu.yml` (per-service
-  matrix, native ZWO SDK provisioned via `install-zwo-sdk`), and the nightly
-  `native.yml` builds the real linked path on Linux/macOS/Windows. Remaining
-  tail: the `rp` `CameraConfig` consumer.
-
-The six camera BDD feature files under `tests/features/` are live.
+back (design doc C6). Both ConformU suites (`alpacaprotocol` and
+`conformance`) pass against the `simulation` backend in CI and against
+physical cameras on Linux and Windows; the unit tests, the BDD scenarios and
+the ConformU run are described in the design doc's *Testing* section.
 
 ## Native dependency (the crux)
 
-`zwo-rs` is built with only its `camera` feature (ADR-014), so this binary
+`zwo-rs` is built with only its `camera` feature, so this binary
 links exactly the ASI camera SDK (`libASICamera2` + `libusb-1.0`).
 Consequences:
 
@@ -69,7 +57,7 @@ brew install libusb llvm
 
 # 2. The MIT-licensed ZWO SDK, as CI installs it: the same files, from the
 #    same pinned indi-3rdparty commit (Windows: ZWO's developer SDKs).
-#    `cargo build -p zwo-camera` links only libASICamera2 (ADR-014), but
+#    `cargo build -p zwo-camera` links only libASICamera2, but
 #    `bazel build //...` builds the shared zwo-rs targets with the union of
 #    device features, so it installs all three SDKs.
 bazel run //.github/actions:install -- zwo-sdk

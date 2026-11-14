@@ -15,7 +15,7 @@ Feature: Filter wheel
   has failed, and Position reports that as an error until a write goes out
   to the wheel (FW8); the simulated CFW drops no move, so the unit tests pin
   that.
-  FocusOffsets returns zero for every filter in v0 (FW3). The simulated CFW
+  FocusOffsets returns zero for every filter (FW3). The simulated CFW
   has 7 positions.
 
   Background:

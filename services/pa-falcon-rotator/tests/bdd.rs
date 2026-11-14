@@ -58,13 +58,9 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        // Skip scenarios tagged `@wip` so an in-flight scenario can ride
-        // on the branch without breaking the green-suite invariant; the tag
-        // gets stripped in the commit that turns the scenario green. We use
-        // `filter_run_and_exit` (NOT the bare `filter_run`) per
-        // docs/skills/testing.md §2.7 — without `_and_exit` the binary
-        // returns 0 even on scenario failures and CI silently passes on
-        // broken scenarios (see issue #171).
+        // Skip `@wip` scenarios so an in-flight feature can ride the branch
+        // without breaking the green-suite invariant; `_and_exit` makes a
+        // scenario failure a non-zero exit (testing.md §2.7).
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
