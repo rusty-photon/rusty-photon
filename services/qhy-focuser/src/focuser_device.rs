@@ -217,7 +217,7 @@ impl Focuser for QhyFocuserDevice {
     async fn position(&self) -> ASCOMResult<i32> {
         ensure_connected!(self);
         let state = self.manager.get_cached_state().await;
-        let position = state.position.ok_or_else(|| {
+        let position = state.position.value().ok_or_else(|| {
             ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "Position not yet available",
@@ -250,12 +250,16 @@ impl Focuser for QhyFocuserDevice {
     async fn temperature(&self) -> ASCOMResult<f64> {
         ensure_connected!(self);
         let state = self.manager.get_cached_state().await;
-        state.outer_temp.ok_or_else(|| {
-            ASCOMError::new(
-                ASCOMErrorCode::INVALID_OPERATION,
-                "Temperature not yet available",
-            )
-        })
+        state
+            .temperature
+            .get()
+            .map(|reading| reading.outer_temp)
+            .ok_or_else(|| {
+                ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "Temperature not yet available",
+                )
+            })
     }
 
     async fn halt(&self) -> ASCOMResult<()> {
