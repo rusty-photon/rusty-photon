@@ -410,7 +410,8 @@ mod tests {
     async fn the_three_readings_are_the_aht20s_fields() {
         let (device, manager) = make_device_on(Arc::new(MockGeminiTransportFactory::default()));
         device.set_connected(true).await.unwrap();
-        let frame = manager.get_cached_state().await.status.unwrap();
+        let state = manager.get_cached_state().await;
+        let frame = state.status.get().unwrap();
         let t = device.temperature().await.unwrap();
         assert!(
             (t - frame.ambient_temperature.unwrap()).abs() < 0.01,
