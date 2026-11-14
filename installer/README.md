@@ -31,9 +31,10 @@ sources, no generator — the same explicitness rule as the Linux
 The tools crate's packaging guard
 ([`tools/rusty-photon-ci/src/pkg_assets.rs`](../tools/rusty-photon-ci/src/pkg_assets.rs))
 checks the fragment contract (fragment per service, service name, exe
-rename, `--service`, failure actions + flag, firewall port, demand-start on
-exactly the gated services, the doctor exe + renewal-task wiring, QHY/ZWO
-pin parity) on every pull request. Run it after any edit here, with
+rename, `--service`, failure actions + flag, firewall port, Automatic
+start type, a start on install and a stop that waits, a gated service's
+start that does not, the doctor exe + renewal-task wiring, QHY/ZWO pin
+parity) on every pull request. Run it after any edit here, with
 `cargo test -p rusty-photon-ci pkg_assets`.
 
 ## Fragment contract notes
@@ -49,10 +50,18 @@ pin parity) on every pull request. Run it after any edit here, with
   types); `cargo ci build-msi` suppresses it — the util element cannot
   express the flag, and `cargo ci verify-msi` behaviorally proves the
   combination works.
-- **Demand-start** (`Start="demand"`, no `Start="install"`) is the
-  `ConditionPathExists=` translation for the six no-defaultable-config
-  services: sky-survey-camera, plate-solver, calibrator-flats,
-  session-runner, polar-align, focus-model.
+- **Every service starts automatically**, the six with no defaultable
+  config too (sky-survey-camera, plate-solver, calibrator-flats,
+  session-runner, polar-align, focus-model). They do what the Linux units'
+  `ConditionPathExists=` does themselves (`ServiceRunner::condition_path_exists`
+  in `rusty-photon-service-lifecycle`): without their config they stop at
+  once with exit code 0, which the failure actions leave alone. The start
+  type is therefore the package's, and an upgrade, which removes the old
+  product and installs each service afresh, has no operator setting to
+  lose. Their start on install is a `ServiceControl` of its own with
+  `Wait="no"`, since a service that stops at once never runs for the
+  installer to see; the stop keeps `Wait="yes"`, so no exe is replaced or
+  removed while it runs.
 - **zwo-focuser's DLL keeps ZWO's original name** `EAF_focuser.dll`: the
   import library embeds the DLL name it was generated from, so the exe's
   import table asks the loader for that exact name (the `EAFFocuser.lib`

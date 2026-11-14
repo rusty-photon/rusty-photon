@@ -1090,11 +1090,15 @@ platform config directory, e.g.
 file's `server.port`; `--port 0` binds an ephemeral port, printed at startup),
 `--bind-address` (overrides the file's `server.bind_address`), `--log-level`.
 
-The config file is **operator-provided, never self-created**: `workflows_dir`
-and `state_dir` are required with no usable defaults, so — unlike the services
-that bootstrap via `rusty_photon_config::resolve_and_init` — session-runner
-deliberately writes no default scaffold on first start, and refuses to start
-until the file exists.
+The config file is **operator-provided, never self-created**:
+`workflows_dir` and `state_dir` are required with no usable defaults, so
+— unlike the services that bootstrap via
+`rusty_photon_config::resolve_and_init` — session-runner deliberately
+writes no default scaffold on first start, and refuses to start until
+the file exists. Run by the Windows SCM without the file, the service
+stops at once with exit code 0, which the failure actions leave alone
+(`ServiceRunner::condition_path_exists`;
+[ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
 
 ## Example Documents
 

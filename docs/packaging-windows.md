@@ -31,8 +31,8 @@ the GitHub Releases page. The installer presents a feature tree:
 
 Every selected service installs
 `%ProgramFiles%\rusty-photon\rusty-photon-<svc>.exe` and registers a
-Windows service named `rusty-photon-<svc>` (LocalSystem; auto-start,
-except the config-gated six, which install as *Manual* — see below)
+Windows service named `rusty-photon-<svc>` (LocalSystem; Automatic,
+started on install — the config-gated six too, see below)
 with restart-after-5s failure actions — the systemd
 `Restart=on-failure`/`RestartSec=5` parity the serial drivers' eager
 hardware validation depends on — plus an inbound firewall exception on
@@ -93,12 +93,15 @@ list). Azure Trusted Signing is the noted post-1.0 path.
 
 **Config-gated services** (`sky-survey-camera`, `plate-solver`,
 `calibrator-flats`, `session-runner`, `polar-align`, `focus-model`) have
-no sensible default config, so they install with start type *Manual* —
-the Windows translation of the Linux units' `ConditionPathExists=`
-gating. Write `%ProgramData%\rusty-photon\<svc>.json` by hand, then:
+no sensible default config. Each checks for its own when it starts, as
+the Linux units' `ConditionPathExists=` does: without
+`%ProgramData%\rusty-photon\<svc>.json` it stops at once with exit code 0,
+which the failure actions leave alone, and its log says the config does
+not exist ([ADR-025](decisions/025-config-gated-services-gate-themselves-on-windows.md)).
+Services.msc shows it as Automatic and stopped. Write the config by
+hand, then start the service, or reboot:
 
 ```powershell
-sc.exe config rusty-photon-<svc> start= auto
 sc.exe start rusty-photon-<svc>
 ```
 
@@ -134,7 +137,9 @@ Verify the task with `schtasks /Query /TN rusty-photon-renew`.
 
 Install the newer MSI — it performs a major upgrade: the old version is
 removed, feature selections carry over, and self-created configs and logs
-are untouched. Downgrades are blocked by the installer.
+are untouched. Downgrades are blocked by the installer. Each service is
+installed afresh, Automatic and started, so a start type set by hand does
+not survive an upgrade; a configured gated service comes back running.
 
 Pre-1.0, config schemas may change between versions with no in-service
 migration — a service handed a config key it has retired refuses to start
