@@ -27,6 +27,7 @@ members = [
   "crates/rusty-photon-setup",
   "crates/rusty-photon-shared-transport",
   "crates/skywatcher-motor-protocol",
+  "crates/transport-doubles",
   "services/filemonitor",
   "services/gemini-powerbox-adv3-driver",
   "services/pa-falcon-rotator",
@@ -244,6 +245,7 @@ rusty-photon-server-config = { path = "crates/rusty-photon-server-config" }
 rusty-photon-service-lifecycle = { path = "crates/rusty-photon-service-lifecycle" }
 rusty-photon-setup = { path = "crates/rusty-photon-setup" }
 rusty-photon-shared-transport = { path = "crates/rusty-photon-shared-transport" }
+transport-doubles = { path = "crates/transport-doubles" }
 i18n-embed = { version = "0.16", features = ["fluent-system"] }
 i18n-embed-fl = "0.10"
 fluent-syntax = "0.12"

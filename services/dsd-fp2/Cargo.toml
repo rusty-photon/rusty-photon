@@ -115,6 +115,7 @@ fi
 require-sh = true
 
 [dev-dependencies]
+transport-doubles = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio-test = { workspace = true }
 cucumber = { workspace = true }

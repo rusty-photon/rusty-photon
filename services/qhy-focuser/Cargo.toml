@@ -116,6 +116,7 @@ fi
 require-sh = true
 
 [dev-dependencies]
+transport-doubles = { workspace = true }
 tracing-subscriber = { workspace = true }
 bdd-infra = { workspace = true, features = ["conformu", "tls-auth", "setup-pages"] }
 tokio-test = { workspace = true }
