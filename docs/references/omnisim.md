@@ -238,7 +238,7 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
 
 ### Telescope
 
-- **`Slewing` (`IsSlewing`) is over-conservative.** It returns `true` if *any* of these are true: `SlewState != SlewNone`, an internal `slewing` flag, or `rateMoveAxes.LengthSquared != 0`. A prior `MoveAxis` call that left non-zero rate state will keep `Slewing` true even after a subsequent slew completes. **Conclusion:** poll `AtPark` (the canonical post-park signal) rather than `Slewing` to detect park completion. See `services/rp/src/mcp.rs::do_park_blocking`.
+- **`Slewing` (`IsSlewing`) is over-conservative.** It returns `true` if *any* of these are true: `SlewState != SlewNone`, an internal `slewing` flag, or `rateMoveAxes.LengthSquared != 0`. A prior `MoveAxis` call that left non-zero rate state will keep `Slewing` true even after a subsequent slew completes. **Conclusion:** poll `AtPark` (the canonical post-park signal) rather than `Slewing` to detect park completion. See `services/rp/src/mcp/internals.rs::do_park_blocking`.
 
 - **`AtPark` is the single source of truth for park completion.** It transitions to `true` in exactly one code path — the `SlewType.SlewPark` completion handler in OmniSim's slew loop.
 
@@ -324,7 +324,7 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
   comma-decimal host.
 - **Pair the XML override with rp's `poll_interval`.** rp polls
   cover/calibrator state every 3 s by default
-  (`services/rp/src/config.rs::default_cover_calibrator_poll_interval`).
+  (`services/rp/src/config/cover_calibrator.rs::default_cover_calibrator_poll_interval`).
   Without overriding it, even a 0.6-second OmniSim transition
   ends up bounded by rp's 3-second poll.
   `bdd_infra::rp_harness::CoverCalibratorConfig` exposes a
