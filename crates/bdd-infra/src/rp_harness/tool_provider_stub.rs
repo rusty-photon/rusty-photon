@@ -5,12 +5,11 @@
 //!
 //! rp's tool-provider BDD scenarios need a provider they can register,
 //! call through rp, take down and bring back **on the same port** — so
-//! the stub rebinds its port with `SO_REUSEADDR` on a restart — and
+//! the stub holds its socket through a stop (`held_port` says why) — and
 //! whose own view of events they can assert on: every call it served and
 //! every request it saw cancelled by its client (rp forwarding a safety
 //! stop) are recorded.
 
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,6 +26,8 @@ use rmcp::transport::streamable_http_server::session::never::NeverSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::RoleServer;
 use serde_json::{json, Value};
+
+use super::held_port::{self, SharedListener};
 
 /// How long `slow_echo` runs when the call names no `delay_ms`: long
 /// enough that a scenario's safety flip lands in the middle of it.
@@ -190,6 +191,11 @@ pub struct ToolProviderStub {
     port: u16,
     tools: Vec<String>,
     log: Arc<Log>,
+    /// The one socket the stub ever listens on; shared with whichever
+    /// task currently owns the port — the server, or the refuser that
+    /// stands in for a stopped provider.
+    listener: Arc<tokio::net::TcpListener>,
+    /// Ends the current task (server or refuser).
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -215,7 +221,7 @@ impl ToolProviderStub {
     /// Panics if no loopback port can be bound.
     #[must_use]
     pub fn start_offering(tools: &[&str]) -> Self {
-        let listener = bind_reuse(0).expect("failed to bind tool provider stub");
+        let listener = held_port::bind_loopback().expect("failed to bind tool provider stub");
         let port = listener
             .local_addr()
             .expect("stub has no local addr")
@@ -224,10 +230,11 @@ impl ToolProviderStub {
             port,
             tools: tools.iter().map(|s| (*s).to_owned()).collect(),
             log: Arc::new(Log::default()),
+            listener: Arc::new(listener),
             shutdown_tx: None,
             task: None,
         };
-        stub.spawn(listener);
+        stub.serve();
         stub
     }
 
@@ -264,9 +271,26 @@ impl ToolProviderStub {
             .clone()
     }
 
-    /// Stop the server and wait until the listener is fully released,
-    /// so a later [`Self::restart`] can rebind the same port.
+    /// Stop the server: every request from now on fails at the
+    /// transport (the connection is accepted and dropped unanswered),
+    /// as against a provider that is down — but the port stays bound,
+    /// so nothing else can take it before [`Self::restart`].
     pub async fn stop(&mut self) {
+        self.halt().await;
+        let (shutdown_tx, task) = held_port::refuse(self.listener.clone());
+        self.shutdown_tx = Some(shutdown_tx);
+        self.task = Some(task);
+    }
+
+    /// Bring the server back on the same port, offering the same tools.
+    pub async fn restart(&mut self) {
+        self.halt().await;
+        self.serve();
+    }
+
+    /// End whichever task holds the port (server or refuser) and wait
+    /// for it, so the next task is the socket's only user.
+    async fn halt(&mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -275,28 +299,9 @@ impl ToolProviderStub {
         }
     }
 
-    /// Bring the server back on the same port, offering the same tools.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the original port cannot be rebound within 10 s.
-    pub async fn restart(&mut self) {
-        self.stop().await;
-        // 100 × 100 ms = a 10 s rebind budget, generous for the rare
-        // lingering-socket case since `stop` already joined the server.
-        let mut bound = bind_reuse(self.port);
-        for _ in 0..100u32 {
-            if bound.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            bound = bind_reuse(self.port);
-        }
-        let listener = bound.expect("could not rebind the tool provider stub port within 10s");
-        self.spawn(listener);
-    }
-
-    fn spawn(&mut self, listener: tokio::net::TcpListener) {
+    /// Serve the tools on the shared socket.
+    fn serve(&mut self) {
+        let listener = SharedListener(self.listener.clone());
         let handler = StubHandler::new(&self.tools, &self.log);
         // Session-less, like rp's own transport: every request is served
         // statelessly, which is what rp's client (MCP revision 2026-07-28,
@@ -330,15 +335,6 @@ impl Drop for ToolProviderStub {
             let _ = tx.send(());
         }
     }
-}
-
-/// Bind a loopback listener with `SO_REUSEADDR`, so a restart can
-/// reclaim the port even while old connections linger in `TIME_WAIT`.
-fn bind_reuse(port: u16) -> std::io::Result<tokio::net::TcpListener> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
-    socket.listen(64)
 }
 
 #[cfg(test)]
@@ -383,6 +379,26 @@ mod tests {
         client.call_tool("echo", json!({"n": 1})).await.unwrap();
         let calls: Vec<String> = stub.calls().into_iter().map(|(tool, _)| tool).collect();
         assert_eq!(calls, ["capture", "echo"]);
+    }
+
+    /// The port is never released: while the stub is stopped nothing
+    /// else can bind it, so a concurrent shard's server can never sit
+    /// where rp expects the stopped provider.
+    #[tokio::test]
+    async fn the_port_stays_bound_while_stopped() {
+        let mut stub = ToolProviderStub::start();
+        let url = stub.url();
+        stub.stop().await;
+
+        let taken = std::net::TcpListener::bind(("127.0.0.1", stub.port)).map(|_| ());
+        assert!(
+            taken.is_err(),
+            "a stopped stub must keep its port bound, but a second bind succeeded"
+        );
+
+        stub.restart().await;
+        let client = McpTestClient::connect(&url).await.unwrap();
+        client.call_tool("echo", json!({})).await.unwrap();
     }
 
     /// `slow_echo` with a short delay finishes on its own; nothing is

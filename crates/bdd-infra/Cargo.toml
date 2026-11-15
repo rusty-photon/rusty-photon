@@ -6,7 +6,7 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared BDD test infrastructure: process lifecycle (ServiceHandle) plus the optional rp-harness feature (OmniSim, rp config builder, webhook receiver, test orchestrator, MCP client) for plugin/workflow BDD tests"
+description = "Shared BDD test infrastructure: process lifecycle (ServiceHandle) plus the optional rp-harness feature (OmniSim, rp config builder, webhook receiver, MCP client) for plugin/workflow BDD tests"
 
 [lints]
 workspace = true

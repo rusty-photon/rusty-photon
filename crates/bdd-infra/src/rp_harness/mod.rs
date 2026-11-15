@@ -34,6 +34,7 @@ mod config;
 mod facade_stub;
 mod focus_model_provider;
 mod guider_stub;
+mod held_port;
 mod launcher;
 mod mcp_client;
 mod omnisim;

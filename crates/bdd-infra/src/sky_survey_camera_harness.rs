@@ -436,9 +436,7 @@ impl SkySurveyCameraConfig {
 pub async fn start_sky_survey_camera(
     config: &SkySurveyCameraConfig,
 ) -> (ServiceHandle, tempfile::TempDir) {
-    let cache = tempfile::Builder::new()
-        .prefix("sky-survey-cache-")
-        .tempdir()
+    let cache = crate::scratch::new_dir("sky-survey-cache-")
         .expect("failed to create sky-survey-camera cache TempDir");
     let mut config = config.clone();
     config.cache_dir = cache.path().to_path_buf();

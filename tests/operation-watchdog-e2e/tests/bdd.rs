@@ -5,6 +5,10 @@
 //! corrective ladder. See `world.rs` for the process lifecycle.
 
 #![allow(clippy::expect_used)]
+#![expect(
+    clippy::panic,
+    reason = "the before hook fails the scenario on a failed OmniSim reset, naming every failed restart"
+)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
     clippy::needless_pass_by_ref_mut,
@@ -49,7 +53,11 @@ bdd_infra::bdd_main! {
                 // Until a step has started that OmniSim (the rp-unresponsive
                 // scenario never starts it), the call sends nothing and
                 // returns Ok. See docs/skills/testing.md § 5.5.
-                let _ = bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
+                if let Err(errors) =
+                    bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
+                {
+                    panic!("OmniSim device reset failed: {}", errors.join("; "));
+                }
             })
         })
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {

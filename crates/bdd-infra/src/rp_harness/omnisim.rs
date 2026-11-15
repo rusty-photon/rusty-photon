@@ -125,10 +125,9 @@ static OMNISIM: OnceCell<OmniSimProcess> = OnceCell::const_new();
 /// concurrently-drawn scenario runs its own before-hook. Once the
 /// `@serial` queue drains, cucumber draws the untagged scenarios
 /// together and their hooks fire as one burst, each restarting every
-/// device class: eleven such hooks (rp's untagged scenarios, on a
-/// Raspberry Pi nightly runner) are enough to deadlock `OmniSim`
+/// device class. A burst of concurrent restarts deadlocks `OmniSim`
 /// mid-wave — its log torn, then silent, no stderr, the later PUTs
-/// timing out — and fail the remaining hooks loud. Holding this
+/// timing out — and fails the remaining hooks loud. Holding this
 /// mutex across each PUT caps in-flight restarts at one per test
 /// process. A process-wide mutex is also *sufficient*: every test
 /// process owns a private `OmniSim` instance (`--multi-instance` + a

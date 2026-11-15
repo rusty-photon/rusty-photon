@@ -50,7 +50,7 @@ impl PkiFixture {
     /// password cannot be hashed.
     #[must_use]
     pub fn generate(service_name: &str) -> Self {
-        let dir = TempDir::new().unwrap();
+        let dir = crate::scratch::new_dir("tls-auth-pki-").unwrap();
         rusty_photon_tls::test_cert::generate_ca(dir.path()).unwrap();
         let ca_pem = std::fs::read_to_string(dir.path().join("ca.pem")).unwrap();
         let ca_key = std::fs::read_to_string(dir.path().join("ca-key.pem")).unwrap();
@@ -157,8 +157,8 @@ impl PkiFixture {
 /// The fixtures live for the process: their `TempDir`s are never dropped, so
 /// the PKI stays readable for scenarios still running at shutdown, and the
 /// process never removes the directories. [`PkiFixture::generate`] creates
-/// them under the system temp directory, not Bazel's per-action
-/// `TEST_TMPDIR` ([`crate::scratch`] says why that matters).
+/// them with [`crate::scratch::new_dir`], so under Bazel they land in the
+/// per-action `TEST_TMPDIR`, which Bazel wipes between runs.
 #[allow(clippy::type_complexity)]
 static SHARED_PKI: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<PkiFixture>>>> = OnceLock::new();
 
@@ -299,7 +299,7 @@ pub trait TlsAuthSmokeWorld {
 pub fn stage_config_file(state: &mut TlsAuthState, config: &serde_json::Value) -> PathBuf {
     let dir = state
         .config_dir
-        .get_or_insert_with(|| TempDir::new().unwrap());
+        .get_or_insert_with(|| crate::scratch::new_dir("tls-auth-config-").unwrap());
     let path = dir.path().join("tls-auth-config.json");
     std::fs::write(&path, config.to_string()).unwrap();
     path
