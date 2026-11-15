@@ -6,9 +6,8 @@
 //!
 //! These scenarios spawn their own rp on port 0
 //! from a scenario-private temp config, its entries pointing at addresses
-//! nothing answers on (or at the stub camera facade), so no simulator runs.
+//! nothing answers on, so no simulator runs.
 
-use bdd_infra::rp_harness::FacadeCameraStub;
 use bdd_infra::setup_pages::{self, dom, SetupPagesWorld as _};
 use bdd_infra::ServiceHandle;
 use cucumber::gherkin::Step;
@@ -70,25 +69,6 @@ fn config_with_roster(world: &mut RpWorld, step: &Step) {
         }
     }
     write_scenario_config(world, equipment);
-}
-
-#[given(
-    expr = "a temp rp config whose camera {string} is the stub camera facade and whose mount guides through {string}"
-)]
-async fn config_with_facade(world: &mut RpWorld, id: String, guider: String) {
-    let facade = FacadeCameraStub::start().await;
-    write_scenario_config(
-        world,
-        json!({
-            "cameras": [{ "id": id, "alpaca_url": facade.url(), "device_number": 0 }],
-            "mount": {
-                "alpaca_url": "http://127.0.0.1:1",
-                "device_number": 0,
-                "guiding": { "url": guider }
-            }
-        }),
-    );
-    world.facade_stub = Some(facade);
 }
 
 #[given(expr = "the entry {string} presents the username {string} with the password {string}")]
@@ -225,16 +205,6 @@ fn row_links_driver(world: &mut RpWorld, id: String, href: String) {
 fn row_links_device(world: &mut RpWorld, id: String, href: String) {
     let css = format!(r#"{} a.device-setup[href="{href}"]"#, row_css(&id));
     assert_page_matches(world, &css, &format!("{id} does not link {href}"));
-}
-
-#[then(expr = "the roster row {string} links the guider's setup page at {string}")]
-fn row_links_guider(world: &mut RpWorld, id: String, href: String) {
-    let css = format!(r#"{} a.guider-setup[href="{href}"]"#, row_css(&id));
-    assert_page_matches(
-        world,
-        &css,
-        &format!("{id} does not link the guider at {href}"),
-    );
 }
 
 #[then(expr = "the roster row {string} reads {string}")]

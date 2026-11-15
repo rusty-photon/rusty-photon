@@ -18,8 +18,8 @@
 //!   server (`echo`, `slow_echo`) for rp's aggregation scenarios.
 //! - [`PowerBoxStub`] — a power box's `Switch` with named on/off outputs,
 //!   for rp's power-switching scenarios.
-//! - [`FacadeCameraStub`] — `phd2-guider`'s camera facade as far as rp's
-//!   train lease reaches it: the three sweep-lease Actions, scripted.
+//! - [`GuiderStub`] — a double of the guider's HTTP contract: a small
+//!   state machine a scenario scripts, recording every request.
 //! - [`FocusModelProvider`] — the real `focus-model` tool provider, started
 //!   before rp for documents that call `focus_train`, with its registration.
 //!
@@ -31,7 +31,6 @@ mod alpaca_stub;
 mod basic_auth;
 mod computed_sky;
 mod config;
-mod facade_stub;
 mod focus_model_provider;
 mod guider_stub;
 mod launcher;
@@ -56,12 +55,14 @@ pub use config::{
     RpConfigBuilder, SafetyMonitorConfig, SwitchConfig, TrainAutoFocusConfig,
     STARLESS_THRESHOLD_SIGMA,
 };
-pub use facade_stub::{FacadeCall, FacadeCameraStub, SWEEP_LEASE_ACTIONS};
 pub use focus_model_provider::{
     starless_focus_train, FocusModelProvider, FOCUS_MODEL_PROVIDER_NAME,
     FOCUS_MODEL_REQUIRED_RP_TOOLS, FOCUS_MODEL_TOOLS,
 };
-pub use guider_stub::{CannedGuiding, CannedTotals, GuiderStub, GuiderStubBehavior};
+pub use guider_stub::{
+    CannedTotals, GuiderStub, HeldLease, LeaseCall, StubRequest, STUB_GUIDE_CAMERA_ID,
+    STUB_GUIDE_MOUNT_ID,
+};
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
 pub use omnisim::OmniSimHandle;

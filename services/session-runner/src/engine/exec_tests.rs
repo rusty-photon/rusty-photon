@@ -2844,7 +2844,9 @@ async fn test_golden_deep_sky_start_guiding_failure_retries_then_fails_the_sessi
     let tools = MockTools::new(|_, tool, _| match tool {
         "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
-        "start_guiding" => Err(ToolCallError::Failed("PHD2 unreachable".to_owned())),
+        "start_guiding" => Err(ToolCallError::Failed(
+            "the guider could not be reached".to_owned(),
+        )),
         // The retry back-off advances the mock clock past the
         // meridian poll's interval; the poll lands at the finally's
         // safe point (the warm-up) and must be answered.
@@ -2857,7 +2859,7 @@ async fn test_golden_deep_sky_start_guiding_failure_retries_then_fails_the_sessi
     let error = failure(outcome);
     assert_eq!(
         error.message,
-        "tool `start_guiding` failed after 3 attempts: PHD2 unreachable"
+        "tool `start_guiding` failed after 3 attempts: the guider could not be reached"
     );
     assert_eq!(
         tools
@@ -3091,7 +3093,9 @@ async fn test_golden_deep_sky_shutdown_stop_failure_keeps_the_flag_and_still_par
         | "record_exposure" | "start_guiding" | "park" => Ok(json!({})),
         "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
         "capture" => Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" })),
-        "stop_guiding" => Err(ToolCallError::Failed("PHD2 went away".to_owned())),
+        "stop_guiding" => Err(ToolCallError::Failed(
+            "the guider did not answer".to_owned(),
+        )),
         other => panic!("unexpected tool call `{other}`"),
     });
     let dir = tempfile::tempdir().unwrap();
@@ -3228,6 +3232,367 @@ async fn test_golden_deep_sky_watch_triggers_stay_silent_without_guide() {
     ]);
     let (outcome, _) = run_params_with_events(&doc, &params, &tools, events).await;
     assert_eq!(outcome, RunOutcome::Completed);
+}
+
+// --- deep_sky.json: the guide-run rules -------------------------------------
+
+/// rp's `guide_stopped` payload for a run the guider ended by itself
+/// (rp.md § Guide Run Watch).
+fn stopped_by_the_guider(stop_reason: &str) -> Value {
+    json!({ "reason": "guider", "stop_reason": stop_reason })
+}
+
+/// rp's `guide_stopped` payload for a stop rp was asked for.
+fn stopped_on_request() -> Value {
+    json!({ "reason": "requested", "stop_reason": null })
+}
+
+/// rp's `guide_star_lost` payload.
+fn star_lost() -> Value {
+    json!({ "lost_for_ms": 60000 })
+}
+
+/// What the guide-run-rule tests script.
+struct GuideRunScript {
+    /// Events pushed into the intake while the n-th `capture` (from 1)
+    /// is in flight: the trigger they fire runs at the safe point after
+    /// that capture.
+    during_capture: Vec<(usize, &'static str, Value)>,
+    /// Events pushed while the n-th `start_guiding` (from 1) is in
+    /// flight.
+    during_start: Vec<(usize, &'static str, Value)>,
+    /// The `state` every `get_guiding_stats` answers.
+    stats_state: &'static str,
+    /// The `start_guiding` calls (from 1) that fail, as a start on a
+    /// frame with no star does.
+    failing_starts: Vec<usize>,
+}
+
+impl GuideRunScript {
+    fn new(stats_state: &'static str) -> Self {
+        Self {
+            during_capture: Vec::new(),
+            during_start: Vec::new(),
+            stats_state,
+            failing_starts: Vec::new(),
+        }
+    }
+}
+
+/// The tools of a guided session on one target, scripted by `script`.
+fn guide_run_tools(script: GuideRunScript) -> (MockTools, EventIntake) {
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let captures = std::sync::atomic::AtomicUsize::new(0);
+    let starts = std::sync::atomic::AtomicUsize::new(0);
+    let push = move |n: usize, events: &[(usize, &'static str, Value)]| {
+        for (at, event, payload) in events {
+            if *at == n {
+                tx.try_send(EngineEvent {
+                    event: (*event).to_owned(),
+                    payload: payload.clone(),
+                })
+                .expect("the intake must accept the event");
+            }
+        }
+    };
+    let tools = MockTools::new(move |_, tool, _| match tool {
+        "unpark" | "set_tracking" | "start_cooldown" | "start_warmup" | "slew"
+        | "center_on_target" | "record_exposure" | "stop_guiding" | "park" => Ok(json!({})),
+        "get_next_target" => Ok(planned_recommendation(Value::Null, Value::Null)),
+        // A retry's back-off moves the mock clock past the meridian
+        // poll's interval, so the poll comes due.
+        "get_meridian_status" => Ok(json!({ "time_to_flip_seconds": null })),
+        "get_guiding_stats" => Ok(json!({
+            "state": script.stats_state,
+            "guiding": script.stats_state == "guiding",
+        })),
+        "capture" => {
+            let n = captures.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            push(n, &script.during_capture);
+            Ok(json!({ "image_path": "/tmp/light.fits", "document_id": "doc-1" }))
+        }
+        "start_guiding" => {
+            let n = starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            push(n, &script.during_start);
+            if script.failing_starts.contains(&n) {
+                Err(ToolCallError::Failed(
+                    "no star in the frame passed the selection".to_owned(),
+                ))
+            } else {
+                Ok(json!({ "state": "guiding" }))
+            }
+        }
+        other => panic!("unexpected tool call `{other}`"),
+    });
+    (tools, EventIntake::new(rx))
+}
+
+/// Run the deep-sky document guided, unfocused and unparked, for
+/// `max_frames` frames, with or without centring.
+async fn run_guide_run_rules(
+    script: GuideRunScript,
+    max_frames: u32,
+    centering: bool,
+) -> (MockTools, RunOutcome, Value) {
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": centering,
+            "guide": true,
+            "max_frames": max_frames,
+            "park_on_finish": false
+        }),
+    );
+    let (tools, events) = guide_run_tools(script);
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+    (tools, outcome, session)
+}
+
+fn count_calls(tools: &MockTools, name: &str) -> usize {
+    tools
+        .call_names()
+        .iter()
+        .filter(|call| *call == name)
+        .count()
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_a_lost_star_starts_guiding_again_where_the_mount_points() {
+    let mut script = GuideRunScript::new("star_lost");
+    script.during_capture = vec![(2, "guide_star_lost", star_lost())];
+    let (tools, outcome, _) = run_guide_run_rules(script, 3, true).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        tools.call_names(),
+        vec![
+            "unpark",
+            "set_tracking",
+            "start_cooldown",
+            "get_next_target",
+            "slew",
+            "center_on_target",
+            "start_guiding",
+            "capture",
+            "record_exposure",
+            "get_next_target",
+            "capture",
+            // The rule reads the state and, the star still lost, asks
+            // for a new selection: no stop, no slew, no centring.
+            "get_guiding_stats",
+            "start_guiding",
+            "record_exposure",
+            "get_next_target",
+            "capture",
+            "record_exposure",
+            "stop_guiding",
+            "start_warmup",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_a_star_lost_event_drained_after_the_run_recovered_or_stopped_starts_nothing(
+) {
+    for state in ["guiding", "idle"] {
+        let mut script = GuideRunScript::new(state);
+        script.during_capture = vec![(1, "guide_star_lost", star_lost())];
+        let (tools, outcome, _) = run_guide_run_rules(script, 2, false).await;
+
+        assert_eq!(outcome, RunOutcome::Completed, "state {state}");
+        assert_eq!(
+            count_calls(&tools, "get_guiding_stats"),
+            1,
+            "the rule reads the state (state {state})"
+        );
+        assert_eq!(
+            count_calls(&tools, "start_guiding"),
+            1,
+            "a guider found {state} is sent no start: the acquisition's is the only one"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_a_failed_selection_is_logged_and_asked_for_again_at_the_next_event() {
+    let mut script = GuideRunScript::new("star_lost");
+    script.during_capture = vec![
+        (1, "guide_star_lost", star_lost()),
+        (2, "guide_star_lost", star_lost()),
+    ];
+    script.failing_starts = vec![2, 3];
+    let (tools, outcome, session) = run_guide_run_rules(script, 4, false).await;
+
+    assert_eq!(
+        outcome,
+        RunOutcome::Completed,
+        "a lost star never fails the session"
+    );
+    assert_eq!(
+        count_calls(&tools, "start_guiding"),
+        3,
+        "the acquisition's start, then one start for each event, none retried"
+    );
+    assert_eq!(count_calls(&tools, "capture"), 4, "the frames go on");
+    assert_eq!(count_calls(&tools, "slew"), 1);
+    assert_eq!(session["total_frames"], json!(4.0));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_a_run_the_guider_stopped_is_acquired_again_from_the_slew_on() {
+    let mut script = GuideRunScript::new("idle");
+    script.during_capture = vec![(1, "guide_stopped", stopped_by_the_guider("mount_slewing"))];
+    let (tools, outcome, session) = run_guide_run_rules(script, 3, true).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(
+        tools.call_names(),
+        vec![
+            "unpark",
+            "set_tracking",
+            "start_cooldown",
+            "get_next_target",
+            "slew",
+            "center_on_target",
+            "start_guiding",
+            // The exposure in flight is not aborted, and its frame is
+            // recorded.
+            "capture",
+            "record_exposure",
+            // The next pass acquires the same target again.
+            "get_next_target",
+            "stop_guiding",
+            "slew",
+            "center_on_target",
+            "start_guiding",
+            "capture",
+            "record_exposure",
+            "get_next_target",
+            "capture",
+            "record_exposure",
+            "stop_guiding",
+            "start_warmup",
+        ],
+    );
+    assert_eq!(session["reacquire"], json!(false));
+    assert_eq!(
+        session["reacquisitions"],
+        json!(0.0),
+        "a frame recorded after the re-acquisition puts the count back to zero"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_a_requested_stop_starts_no_reacquisition() {
+    let mut script = GuideRunScript::new("idle");
+    script.during_capture = vec![(1, "guide_stopped", stopped_on_request())];
+    let (tools, outcome, session) = run_guide_run_rules(script, 3, false).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(count_calls(&tools, "slew"), 1);
+    assert_eq!(count_calls(&tools, "start_guiding"), 1);
+    assert_eq!(session["reacquire"], json!(false));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_three_reacquisitions_with_no_frame_between_fail_the_session() {
+    // The guider stops every run as it settles: each stop lands before
+    // the pass's frame, so no frame is recorded with the flag unset.
+    let mut script = GuideRunScript::new("idle");
+    script.during_start = (1..=10)
+        .map(|n| (n, "guide_stopped", stopped_by_the_guider("mount_parked")))
+        .collect();
+    let (tools, outcome, session) = run_guide_run_rules(script, 20, false).await;
+
+    let error = failure(outcome);
+    assert_eq!(
+        error.message,
+        "trigger `reacquire-on-guider-stop`: the guider stopped three re-acquired guide runs \
+         in a row before a light frame was recorded under any of them"
+    );
+    assert_eq!(
+        count_calls(&tools, "start_guiding"),
+        4,
+        "the first acquisition and three re-acquisitions; the fourth stop fails the session"
+    );
+    assert_eq!(count_calls(&tools, "slew"), 4);
+    assert_eq!(session["reacquisitions"], json!(3.0));
+    assert_eq!(
+        tools.call_names().last().map(String::as_str),
+        Some("start_warmup"),
+        "the finally warms the camera however the run ends"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_reacquisitions_with_frames_between_never_fail_the_session() {
+    // The guider stops a run now and then, with a frame recorded under
+    // each re-acquired run: five stops, and none counted past one.
+    let mut script = GuideRunScript::new("idle");
+    script.during_capture = [1, 3, 5, 7, 9]
+        .into_iter()
+        .map(|n| (n, "guide_stopped", stopped_by_the_guider("tracking_off")))
+        .collect();
+    let (tools, outcome, session) = run_guide_run_rules(script, 10, false).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(count_calls(&tools, "slew"), 6);
+    assert_eq!(count_calls(&tools, "start_guiding"), 6);
+    assert_eq!(count_calls(&tools, "capture"), 10);
+    assert_eq!(session["reacquisitions"], json!(0.0));
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_a_reacquisition_whose_start_fails_three_times_fails_the_session() {
+    let mut script = GuideRunScript::new("idle");
+    script.during_capture = vec![(
+        1,
+        "guide_stopped",
+        stopped_by_the_guider("pier_side_changed"),
+    )];
+    script.failing_starts = vec![2, 3, 4];
+    let (tools, outcome, _) = run_guide_run_rules(script, 5, false).await;
+
+    let error = failure(outcome);
+    assert_eq!(
+        error.message,
+        "tool `start_guiding` failed after 3 attempts: no star in the frame passed the selection"
+    );
+    assert_eq!(
+        count_calls(&tools, "start_guiding"),
+        4,
+        "the first acquisition's start, then the re-acquisition's three"
+    );
+    assert_eq!(count_calls(&tools, "capture"), 1);
+}
+
+#[tokio::test]
+async fn test_golden_deep_sky_guide_run_rules_stay_silent_without_guide() {
+    let doc = make_doc(crate::document::corpus::golden_deep_sky());
+    let params = deep_sky_params(
+        &doc,
+        json!({
+            "focus": false,
+            "centering": false,
+            "max_frames": 2,
+            "park_on_finish": false
+        }),
+    );
+    let mut script = GuideRunScript::new("star_lost");
+    script.during_capture = vec![
+        (1, "guide_star_lost", star_lost()),
+        (1, "guide_stopped", stopped_by_the_guider("mount_slewing")),
+    ];
+    let (tools, events) = guide_run_tools(script);
+    let (outcome, session) = run_params_with_events(&doc, &params, &tools, events).await;
+
+    assert_eq!(outcome, RunOutcome::Completed);
+    assert_eq!(count_calls(&tools, "get_guiding_stats"), 0);
+    assert_eq!(count_calls(&tools, "start_guiding"), 0);
+    assert_eq!(count_calls(&tools, "slew"), 1);
+    assert_eq!(session["reacquire"], json!(false));
 }
 
 // --- deep_sky.json: refocus-on-temperature ----------------------------------

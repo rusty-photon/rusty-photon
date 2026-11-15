@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: The guide run watch reports a run's end and a lost star
   The guider pushes no event: a run it stops by itself, or one that
   has lost its stars, shows only in its stats. So rp watches a run it
@@ -17,10 +17,12 @@ Feature: The guide run watch reports a run's end and a lost star
   another state ends the loss. The watch sends the guider its reads
   and nothing else: what follows an event is the orchestrator's
   decision. It ends when it has reported the run's end. It ends too
-  when the guider has answered a stop that rp asked for, which reports
-  its own guide_stopped, and it goes on when that stop failed. A start
-  that fails before it settles is that call's error and no event of
-  the watch's.
+  when the guider has answered a stop that rp asked for, since rp
+  ended that run: an answer of the guider's state, after which the
+  caller reports its own guide_stopped, or the error stop_timeout,
+  after which the guider sends no further pulse and the run ends. It
+  goes on when that stop failed in any other way. A start that fails
+  before it settles is that call's error and no event of the watch's.
 
   The reads come 5 s apart, so an event follows the stub guider's
   change by up to 5 s, and a lost star's by up to 5 s more. The
@@ -119,7 +121,7 @@ Feature: The guide run watch reports a run's end and a lost star
   Scenario: The watch goes on after a stop of rp's that the guider failed
     Given a running Alpaca simulator
     And a stub guider in state "idle"
-    And the stub guider answers "/guiding/stop" requests with error code "stop_timeout" and message "the exposure in flight did not end in time"
+    And the stub guider answers "/guiding/stop" requests with error code "internal" and message "an unexpected failure of the service"
     And a test webhook receiver subscribed to "guide_settled" and "guide_stopped"
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
@@ -131,6 +133,21 @@ Feature: The guide run watch reports a run's end and a lost star
     Then the test webhook receiver should receive a "guide_stopped" event
     And the "guide_stopped" event payload field "reason" should be "guider"
     And the "guide_stopped" event payload field "stop_reason" should be "camera_error"
+
+  Scenario: A stop of rp's that the guider answers with stop_timeout ends the watch, and the run's end is not reported as the guider's
+    Given a running Alpaca simulator
+    And a stub guider in state "idle"
+    And the stub guider ends its run on a stop and answers the stop with stop_timeout
+    And a test webhook receiver subscribed to "guide_settled" and "guide_stopped"
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "start_guiding" with no arguments
+    And the test webhook receiver has received a "guide_settled" event
+    And the MCP client calls "stop_guiding"
+    Then the tool call should return an error
+    And the error message should contain "stop_timeout"
+    And the stub guider's run should have ended with a last stop of reason "requested"
+    And no "guide_stopped" event of reason "guider" arrives within 12000 ms
 
   Scenario: A lost star is reported once star_lost_after has passed, with how long it has lasted, and again while it lasts
     Given a running Alpaca simulator

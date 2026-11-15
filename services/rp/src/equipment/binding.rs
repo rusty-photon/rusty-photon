@@ -394,8 +394,7 @@ pub(super) fn reported_name(id: &str, read: ascom_alpaca::ASCOMResult<String>) -
 /// refused as unverifiable only when every attempt still lists it blank:
 /// a pin that cannot be checked never binds. Nothing here actuates: the
 /// listing is a read, and `Connected = true` is non-actuating by driver
-/// contract, except phd2-guider's camera facade, whose connect may take
-/// a 1 ms frame (rp.md § Device Session Recovery).
+/// contract (rp.md § Device Session Recovery).
 pub(super) async fn establish_listed<C: RosterEntry>(
     config: &C,
     ca_cert_path: Option<&Path>,

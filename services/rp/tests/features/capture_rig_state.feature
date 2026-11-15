@@ -147,7 +147,8 @@ Feature: Rig state on the exposure document
     And the document at "/safety_monitors" should be the JSON [{"id": "weather-watcher", "is_safe": false}]
 
   Scenario: A guided frame records the guide error over its exposure
-    Given a guider service reporting "Guiding" whose running totals grow on every read by:
+    Given a stub guider in state "guiding"
+    And the stub guider's running totals grow on every read by:
       | guide_steps | ra_sum_sq_px2 | dec_sum_sq_px2 | star_lost | interruptions |
       | 10          | 5.625         | 10.0           | 1         | 0             |
     And rp is running with the whole rig on the simulator
@@ -157,7 +158,8 @@ Feature: Rig state on the exposure document
     And the document at "/guiding" should be the JSON {"guided_throughout": true, "guide_steps": 10, "rms_ra_px": 0.75, "rms_dec_px": 1.0, "total_rms_px": 1.25, "star_lost": 1}
 
   Scenario: A frame whose guiding was interrupted records the guide steps it got
-    Given a guider service reporting "Guiding" whose running totals grow on every read by:
+    Given a stub guider in state "guiding"
+    And the stub guider's running totals grow on every read by:
       | guide_steps | ra_sum_sq_px2 | dec_sum_sq_px2 | star_lost | interruptions |
       | 10          | 5.625         | 10.0           | 0         | 1             |
     And rp is running with the whole rig on the simulator
@@ -166,8 +168,9 @@ Feature: Rig state on the exposure document
     Then the tool call should succeed
     And the document at "/guiding" should be the JSON {"guided_throughout": false, "guide_steps": 10, "rms_ra_px": 0.75, "rms_dec_px": 1.0, "total_rms_px": 1.25, "star_lost": 0}
 
-  Scenario: A frame taken while PHD2 was not guiding records no guide steps
-    Given a guider service reporting "Stopped" whose running totals grow on every read by:
+  Scenario: A frame taken while the guider was not guiding records no guide steps
+    Given a stub guider in state "idle"
+    And the stub guider's running totals grow on every read by:
       | guide_steps | ra_sum_sq_px2 | dec_sum_sq_px2 | star_lost | interruptions |
       | 0           | 0.0           | 0.0            | 0         | 0             |
     And rp is running with the whole rig on the simulator
@@ -177,7 +180,8 @@ Feature: Rig state on the exposure document
     And the document at "/guiding" should be the JSON {"guided_throughout": false, "guide_steps": 0, "star_lost": 0}
 
   Scenario: A guider service that restarted during the exposure records only that guiding was not throughout
-    Given a guider service reporting "Guiding" that starts a new epoch on every read, its running totals growing on every read by:
+    Given a stub guider in state "guiding"
+    And the stub guider starts a new epoch on every read, its running totals growing on every read by:
       | guide_steps | ra_sum_sq_px2 | dec_sum_sq_px2 | star_lost | interruptions |
       | 10          | 5.625         | 10.0           | 0         | 0             |
     And rp is running with the whole rig on the simulator
@@ -186,8 +190,9 @@ Feature: Rig state on the exposure document
     Then the tool call should succeed
     And the document at "/guiding" should be the JSON {"guided_throughout": false}
 
-  Scenario: A guider service without running totals leaves the guiding block out
-    Given a guider service reporting "Guiding" without running totals
+  Scenario: A guider whose stats cannot be read leaves the guiding block out
+    Given a stub guider in state "guiding"
+    And the stub guider answers "/guiding/stats" requests with error code "internal" and message "the statistics could not be read"
     And rp is running with the whole rig on the simulator
     When the MCP client calls "capture" with camera "main-cam" for 100 ms
     And I fetch the document for the captured document_id

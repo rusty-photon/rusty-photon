@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Guiding tools on the guider's contract
   rp's six guiding tools proxy to the guider service over the HTTP
   contract of docs/services/guider.md: start_guiding, stop_guiding,
@@ -173,10 +173,9 @@ Feature: Guiding tools on the guider's contract
     Then the guider result should contain "state" with value "guiding"
     And the stub guider should have received a resume request
 
-  Scenario: resume_guiding answers star_lost for a run that resumes without its guide star
+  Scenario: resume_guiding answers star_lost for a run that has lost its guide star
     Given a running Alpaca simulator
-    And a stub guider in state "paused"
-    And the stub guider resumes into state "star_lost"
+    And a stub guider in state "star_lost"
     And rp is running with a camera on the simulator
     And an MCP client connected to rp
     When the MCP client calls "resume_guiding"

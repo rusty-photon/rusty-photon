@@ -230,7 +230,7 @@ impl McpHandler {
         let start = reading("guider", "guiding stats as the exposure started", start)?;
         let end = bounded_read(deadline, client.guiding_stats()).await;
         let end = reading("guider", "guiding stats once the frame was ready", end)?;
-        guiding_between(&start, &end)
+        Some(guiding_between(&start, &end))
     }
 }
 
@@ -436,34 +436,31 @@ async fn read_safety_monitor(
 }
 
 /// The guiding between two reads of the guider service's stats (rp.md
-/// § Rig state, `guiding`). `None` when either lacks the running totals;
-/// only `guided_throughout: false` when the two cannot be subtracted.
+/// § Rig state, `guiding`): only `guided_throughout: false` when their
+/// running totals cannot be subtracted.
 fn guiding_between(
     start: &rp_guider::GuidingStats,
     end: &rp_guider::GuidingStats,
-) -> Option<ExposureGuiding> {
-    let (Some(first), Some(last)) = (&start.totals, &end.totals) else {
-        debug!("the guider service reports no running totals; the frame omits guiding");
-        return None;
-    };
+) -> ExposureGuiding {
+    let (first, last) = (&start.totals, &end.totals);
     let Some(between) = TotalsBetween::of(first, last) else {
         debug!(
             start_epoch = %first.epoch,
             end_epoch = %last.epoch,
             "the guider's totals cannot be subtracted; the frame records only that guiding was not throughout"
         );
-        return Some(ExposureGuiding::default());
+        return ExposureGuiding::default();
     };
     let rms_ra_px = between.ra.rms();
     let rms_dec_px = between.dec.rms();
-    Some(ExposureGuiding {
+    ExposureGuiding {
         guided_throughout: start.guiding && end.guiding && between.interruptions == 0,
         guide_steps: Some(between.guide_steps),
         rms_ra_px,
         rms_dec_px,
         total_rms_px: rms_ra_px.zip(rms_dec_px).map(|(ra, dec)| ra.hypot(dec)),
         star_lost: Some(between.star_lost),
-    })
+    }
 }
 
 /// What the guider service folded between two readings of its running
@@ -520,27 +517,34 @@ mod tests {
         }
     }
 
-    fn stats(guiding: bool, totals: Option<rp_guider::GuidingTotals>) -> rp_guider::GuidingStats {
+    fn stats(guiding: bool, totals: rp_guider::GuidingTotals) -> rp_guider::GuidingStats {
         rp_guider::GuidingStats {
-            app_state: if guiding { "Guiding" } else { "Stopped" }.to_string(),
+            state: if guiding {
+                rp_guider::GuiderState::Guiding
+            } else {
+                rp_guider::GuiderState::Idle
+            },
             guiding,
+            settling: false,
+            pixel_scale_arcsec: None,
             rms_ra_px: None,
             rms_dec_px: None,
             total_rms_px: None,
+            rms_ra_arcsec: None,
+            rms_dec_arcsec: None,
+            total_rms_arcsec: None,
             snr: None,
             star_mass: None,
+            star_count: None,
             sample_count: 0,
+            last_stop: None,
             totals,
         }
     }
 
     #[test]
     fn guiding_that_ran_through_records_the_error_over_the_steps_between() {
-        let guiding = guiding_between(
-            &stats(true, Some(totals(10, 2))),
-            &stats(true, Some(totals(30, 2))),
-        )
-        .unwrap();
+        let guiding = guiding_between(&stats(true, totals(10, 2)), &stats(true, totals(30, 2)));
         assert_eq!(
             guiding,
             ExposureGuiding {
@@ -556,34 +560,25 @@ mod tests {
 
     #[test]
     fn an_interruption_between_the_reads_means_not_throughout() {
-        let guiding = guiding_between(
-            &stats(true, Some(totals(10, 2))),
-            &stats(true, Some(totals(30, 3))),
-        )
-        .unwrap();
+        let guiding = guiding_between(&stats(true, totals(10, 2)), &stats(true, totals(30, 3)));
         assert!(!guiding.guided_throughout);
         assert_eq!(guiding.guide_steps, Some(20));
     }
 
     #[test]
-    fn phd2_not_guiding_at_either_read_means_not_throughout() {
+    fn a_guider_not_guiding_at_either_read_means_not_throughout() {
         for (at_start, at_end) in [(false, true), (true, false)] {
             let guiding = guiding_between(
-                &stats(at_start, Some(totals(10, 0))),
-                &stats(at_end, Some(totals(30, 0))),
-            )
-            .unwrap();
+                &stats(at_start, totals(10, 0)),
+                &stats(at_end, totals(30, 0)),
+            );
             assert!(!guiding.guided_throughout, "{at_start} {at_end}");
         }
     }
 
     #[test]
     fn no_steps_between_the_reads_records_no_rms() {
-        let guiding = guiding_between(
-            &stats(false, Some(totals(10, 0))),
-            &stats(false, Some(totals(10, 0))),
-        )
-        .unwrap();
+        let guiding = guiding_between(&stats(false, totals(10, 0)), &stats(false, totals(10, 0)));
         assert_eq!(
             guiding,
             ExposureGuiding {
@@ -599,34 +594,16 @@ mod tests {
     fn totals_from_two_runs_of_the_service_record_only_not_throughout() {
         let mut restarted = totals(5, 0);
         restarted.epoch = "run-2".to_string();
-        let guiding = guiding_between(
-            &stats(true, Some(totals(10, 0))),
-            &stats(true, Some(restarted)),
-        );
-        assert_eq!(guiding, Some(ExposureGuiding::default()));
+        let guiding = guiding_between(&stats(true, totals(10, 0)), &stats(true, restarted));
+        assert_eq!(guiding, ExposureGuiding::default());
     }
 
     #[test]
     fn a_count_that_went_backwards_records_only_not_throughout() {
         let mut earlier = totals(10, 0);
         earlier.star_lost = 9;
-        let guiding = guiding_between(
-            &stats(true, Some(earlier)),
-            &stats(true, Some(totals(30, 0))),
-        );
-        assert_eq!(guiding, Some(ExposureGuiding::default()));
-    }
-
-    #[test]
-    fn a_guider_without_running_totals_records_no_guiding() {
-        assert_eq!(
-            guiding_between(&stats(true, None), &stats(true, Some(totals(30, 0)))),
-            None
-        );
-        assert_eq!(
-            guiding_between(&stats(true, Some(totals(10, 0))), &stats(true, None)),
-            None
-        );
+        let guiding = guiding_between(&stats(true, earlier), &stats(true, totals(30, 0)));
+        assert_eq!(guiding, ExposureGuiding::default());
     }
 
     fn assert_close(actual: f64, expected: f64) {

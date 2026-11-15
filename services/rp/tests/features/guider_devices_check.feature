@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: The guider's camera and mount are rp's
   The guider's devices are configured apart from rp's roster. So before
   rp asks the guider to start guiding, or for its camera lease, it

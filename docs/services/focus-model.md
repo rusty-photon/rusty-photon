@@ -716,18 +716,11 @@ A **training run** is a `focus_train` call without `shared`, or a
 `determine_filter_offsets` call, addressed to the guiding train. It
 captures through the guide camera under `rp`'s train lease
 ([rp.md § Train Lease](rp.md#train-lease)), which holds the guider's
-camera lease and with it the guider idle. In-session guide focus is
+camera lease ([guider.md § The camera lease](guider.md#the-camera-lease))
+and with it the guider idle. In-session guide focus is
 not a training run: a `shared: true` walk on the guiding train keeps
 its guide step on `rp`'s guide-metric `auto_focus`. An imaging train's
 run takes no lease.
-
-**Designed and not yet built.** The guider this section names, and its
-camera lease under `rp`'s train lease, are `rp`'s design
-([rp.md § Guider Service](rp.md#guider-service)). As built, `rp`
-reaches the guide camera as `phd2-guider`'s camera facade, and its
-train lease holds that facade's sweep lease. Stage G6 of
-[the native guider plan](../plans/native-guider.md#staging) builds
-what is written here.
 
 Where the guide path's focuser sits decides how it is focused:
 
@@ -1686,15 +1679,6 @@ naming both ids. A run too long for one lease is refused naming the
 numbers before the lease is asked for. The offsets procedure asks for
 one lease for each of its sweeps, releases each, and puts the wheel
 back.
-
-**Designed and not yet built.** As built, `guide_training.feature`
-puts a stub of `phd2-guider`'s camera facade over the simulator's
-camera and counts that stub's sweep leases. The scenarios against the
-guider stub are in `guide_training_lease.feature`, tagged `@wip`, which
-the runner filters out. Stage G6 of
-[the native guider plan](../plans/native-guider.md#staging) builds the
-stub's camera lease and the scenarios' step definitions, and moves the
-scenarios into `guide_training.feature`.
 
 `auth.feature` spawns only focus-model with `server.tls` and
 `server.auth` and proves `/health` and `/mcp` both require the

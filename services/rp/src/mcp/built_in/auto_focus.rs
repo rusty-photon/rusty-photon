@@ -1,5 +1,5 @@
 //! Auto-focus tool category: `auto_focus`, the guiding train's
-//! PHD2-metric V-curve sweep (rp.md § `auto_focus` Contract).
+//! guider-metric V-curve sweep (rp.md § `auto_focus` Contract).
 //!
 //! An imaging train has no sweep in rp — the focus-model provider's
 //! `focus_train` focuses it through rp's primitives.
@@ -26,7 +26,7 @@ use crate::imaging;
 #[schemars(extend("required" = ["train_id"]))]
 pub struct AutoFocusToolParams {
     /// The guiding train's id: the sweep moves its terminal focuser and
-    /// reads PHD2's per-frame HFD, so it requires an active guide loop
+    /// reads the guider's per-frame HFD, so it requires an active guide loop
     /// and never captures through the guide camera. An imaging train is
     /// refused — the focus-model provider's `focus_train` focuses it.
     #[serde(default)]
@@ -53,7 +53,7 @@ pub struct AutoFocusToolParams {
 #[tool_router(router = tool_router_auto_focus, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "The guiding train's V-curve auto-focus: sweep ± half_width around its terminal focuser's position, sample each position with the median HFD of fresh PHD2 guide frames (requires active guiding; never captures through the guide camera), fit the hyperbola, move the focuser to the fitted minimum, and confirm it with one more sample set — falling back to the lowest sweep sample when the confirmation measures worse than confirmation_tolerance allows. One attempt. Sweep parameters fall back to the guiding train's auto_focus config block. Refuses an imaging train, which the focus-model provider's focus_train focuses, and a focuser an imaging train holds, which only the imaging camera focuses."
+        description = "The guiding train's V-curve auto-focus: sweep ± half_width around its terminal focuser's position, sample each position with the median HFD of the guider's fresh guide frames (requires active guiding; never captures through the guide camera), fit the hyperbola, move the focuser to the fitted minimum, and confirm it with one more sample set — falling back to the lowest sweep sample when the confirmation measures worse than confirmation_tolerance allows. One attempt. Sweep parameters fall back to the guiding train's auto_focus config block. Refuses an imaging train, which the focus-model provider's focus_train focuses, and a focuser an imaging train holds, which only the imaging camera focuses."
     )]
     pub(crate) async fn auto_focus(
         &self,
@@ -102,7 +102,7 @@ impl McpHandler {
         };
         // A focuser an imaging train holds is focused through the
         // imaging camera alone, the guide camera taken as parfocal
-        // (rp.md § `auto_focus` Contract): PHD2's HFD must not move it.
+        // (rp.md § `auto_focus` Contract): the guider's HFD must not move it.
         if let Some(imaging) = self.trains.imaging_train_focusing(&focuser_id) {
             return Ok(tool_error!(
                 "guide-train auto_focus: focuser '{}' is in imaging train '{}', which \
@@ -148,6 +148,15 @@ impl McpHandler {
                 .unwrap_or(imaging::tools::auto_focus::DEFAULT_CONFIRMATION_TOLERANCE),
         };
 
+        // A lease that holds the train's camera or focuser refuses the
+        // sweep, naming the lease, before the guider is read. A guiding
+        // train's lease holds the guider's camera lease, which keeps
+        // the guider out of a run, so the guiding check would refuse
+        // the sweep too, naming the guider's state and not the lease.
+        let _sweep = match self.enter_guide_sweep(train_id, &focuser_id) {
+            Ok(guard) => guard,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
         let client = match self.require_active_guiding().await {
             Ok(c) => c,
             Err(e) => return Ok(tool_error!("{}", e)),
@@ -174,7 +183,7 @@ impl McpHandler {
     }
 }
 
-/// Resolved geometry of a guide-train (PHD2-metric) sweep.
+/// Resolved geometry of a guide-train (guider-metric) sweep.
 #[derive(Debug, Clone)]
 struct GuideSweepParams {
     step_size: i32,
@@ -263,16 +272,16 @@ fn guide_fit_stage(
 
 /// Ceiling per awaited guide frame during a metric sweep. Guide
 /// exposures are seconds; a frame that takes longer than this means
-/// PHD2 stopped producing them and the sweep must fail rather than
-/// hang.
+/// the guider stopped producing them and the sweep must fail rather
+/// than hang.
 const GUIDE_FRAME_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Poll cadence against the guider metrics window during a sweep.
 const GUIDE_METRICS_POLL: Duration = Duration::from_millis(500);
 
 impl McpHandler {
-    /// The active-guiding precondition of the sweep: PHD2 emits HFD
-    /// only while it guides.
+    /// The active-guiding precondition of the sweep: the guider's
+    /// metrics window fills only while it guides.
     async fn require_active_guiding(
         &self,
     ) -> Result<std::sync::Arc<dyn rp_guider::GuiderClient>, String> {
@@ -285,8 +294,8 @@ impl McpHandler {
         match client.guiding_stats().await {
             Ok(stats) if stats.guiding => Ok(client),
             Ok(stats) => Err(format!(
-                "{what} requires active guiding (PHD2 state: {})",
-                stats.app_state
+                "{what} requires active guiding (the guider's state: {})",
+                stats.state
             )),
             Err(e) => Err(format!(
                 "{what} requires active guiding (stats unavailable: {e})"
@@ -315,11 +324,12 @@ impl McpHandler {
         )
     }
 
-    /// One full PHD2-metric V-curve run on the guiding train's
+    /// One full guider-metric V-curve run on the guiding train's
     /// terminal focuser, the per-position sample being the median HFD
-    /// of `frames_per_step` fresh guide frames. Corrections stay active
-    /// for the whole sweep — pausing them would stop the `GuideStep`
-    /// stream this sweep reads.
+    /// of `frames_per_step` fresh guide frames. The guider keeps
+    /// guiding for the whole sweep: its metrics window fills only while
+    /// it does. The caller holds the sweep's place in the reservation
+    /// table for as long as this runs.
     async fn run_guide_af_sweep(
         &self,
         train_id: &str,
@@ -329,7 +339,6 @@ impl McpHandler {
         progress_sink: Option<ProgressSink>,
         cancel: Cancel,
     ) -> Result<GuideAfOutcome, String> {
-        let _sweep = self.enter_guide_sweep(train_id, focuser_id)?;
         let foc_entry = self
             .equipment
             .find_focuser(focuser_id)
@@ -378,7 +387,7 @@ impl McpHandler {
                 "train_id": train_id,
                 "position": starting_position,
                 "temperature": temperature_c,
-                "method": "phd2_hfd",
+                "method": "guider_hfd",
             }),
         ));
 
@@ -416,7 +425,7 @@ impl McpHandler {
                         "confirmed": outcome.confirmed,
                         "fit_r_squared": outcome.fit_r_squared,
                         "samples_used": outcome.samples_used,
-                        "method": "phd2_hfd",
+                        "method": "guider_hfd",
                     }),
                 ));
                 Ok(outcome)
@@ -463,10 +472,10 @@ impl McpHandler {
             if !metrics.guiding {
                 // No fresh frames will ever arrive — fail now instead
                 // of burning the per-position ceiling.
-                return Err(
-                    "guiding stopped during the metric sweep (PHD2 is no longer guiding)"
-                        .to_string(),
-                );
+                return Err(format!(
+                    "guiding stopped during the metric sweep (the guider's state: {})",
+                    metrics.state
+                ));
             }
             let mut fresh: Vec<&rp_guider::FrameMetrics> = metrics
                 .frames

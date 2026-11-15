@@ -7,9 +7,7 @@ Feature: rp's setup page
   (<alpaca_url>/setup) and the device's own page
   (<alpaca_url>/setup/v1/<type>/<number>/setup). An entry that names its
   driver by a loopback address links it at the host the browser reached rp
-  by; any other host is linked as written. The camera that is phd2-guider's
-  facade links the guider's setup page instead, at the mount's guiding
-  address.
+  by; any other host is linked as written.
 
   A row's fields are named by the entry's place in the file
   (equipment.cameras.0.gain). A row's Remove box takes the entry out, and
@@ -49,12 +47,6 @@ Feature: rp's setup page
     And the roster row "main-cam" links its device's page at "http://rig.example:1/setup/v1/camera/0/setup"
     And the roster row "far-focuser" links its driver's setup page at "http://focuslynx.invalid:4247/setup"
     And the roster row "far-focuser" links its device's page at "http://focuslynx.invalid:4247/setup/v1/focuser/1/setup"
-
-  Scenario: The camera that is phd2-guider's facade links the guider's setup page
-    Given a temp rp config whose camera "guide-cam" is the stub camera facade and whose mount guides through "http://127.0.0.1:11130"
-    And rp is started with that config file
-    When I open rp's setup page reached as "rig.example"
-    Then the roster row "guide-cam" links the guider's setup page at "http://rig.example:11130/setup"
 
   Scenario: A changed entry field is saved and waits for rp's restart
     Given a temp rp config whose roster holds:

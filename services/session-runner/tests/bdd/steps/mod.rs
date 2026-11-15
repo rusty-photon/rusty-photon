@@ -3,6 +3,7 @@
 pub mod auth_steps;
 pub mod deep_sky_steps;
 pub mod event_steps;
+pub mod guider_steps;
 pub mod infrastructure;
 pub mod mcp_client_auth_steps;
 pub mod observation;

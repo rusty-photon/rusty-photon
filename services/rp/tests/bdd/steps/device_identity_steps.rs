@@ -138,7 +138,7 @@ fn configure_on_simulator(world: &mut RpWorld, kind: &Kind) {
 
 /// The `UniqueID` the simulator lists for its first device of
 /// `device_type` — device 0, the one rp binds.
-async fn simulator_unique_id(world: &RpWorld, device_type: &str) -> String {
+pub async fn simulator_unique_id(world: &RpWorld, device_type: &str) -> String {
     let url = format!("{}/management/v1/configureddevices", world.omnisim_url());
     let body: Value = reqwest::get(&url)
         .await

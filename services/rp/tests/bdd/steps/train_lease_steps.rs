@@ -2,16 +2,16 @@
 //!
 //! The imaging-train rigs run on the simulator: its focuser, filter
 //! wheel and camera, in one train "main". The guiding-train rigs pair
-//! the simulator's focuser with either the simulator's camera (not a
-//! facade) or bdd-infra's stub camera facade, which answers the three
-//! sweep-lease Actions and records them, so a scenario can check the
-//! token rp named and that its release named the same one.
+//! the simulator's focuser with the simulator's camera, behind the stub
+//! guider a prior Given started, since a guiding train needs the
+//! guiding config; its camera lease is in `guider_camera_lease.feature`.
 //!
 //! Shared steps live elsewhere: `the tool call should return an error`
 //! and `the error message should contain {string}` in `tool_steps.rs`,
-//! the background calls and their joins in `motion_gate_steps.rs`, the
-//! event waits in `event_steps.rs`, and `the MCP client calls auto_focus
-//! with train {string}, step_size {int} and half_width {int}` in
+//! the stub guider's Given in `guider_steps.rs`, the background calls
+//! and their joins in `motion_gate_steps.rs`, the event waits in
+//! `event_steps.rs`, and `the MCP client calls auto_focus with train
+//! {string}, step_size {int} and half_width {int}` in
 //! `guide_focus_steps.rs`.
 
 use std::time::Duration;
@@ -19,7 +19,7 @@ use std::time::Duration;
 use cucumber::{given, then, when};
 use serde_json::{json, Value};
 
-use bdd_infra::rp_harness::{CameraConfig, FacadeCameraStub, FocuserConfig, OpticalTrainConfig};
+use bdd_infra::rp_harness::{FocuserConfig, OpticalTrainConfig};
 
 use crate::steps::focuser_steps::add_focuser;
 use crate::steps::motion_gate_steps::add_stub_guider;
@@ -80,9 +80,10 @@ async fn rp_with_imaging_rig_and_side_camera(
 }
 
 #[given(
-    expr = "rp is running with guiding train {string} behind an offline upstream focuser {string} and the stub camera facade"
+    expr = "rp is running with guiding train {string} behind an offline upstream focuser {string} and a camera on the simulator"
 )]
 async fn rp_with_upstream_focuser(world: &mut RpWorld, train_id: String, upstream: String) {
+    expect_stub_guider(world);
     ensure_omnisim(world).await;
     add_focuser(world, None, None, None);
     world.focusers.push(FocuserConfig {
@@ -94,14 +95,7 @@ async fn rp_with_upstream_focuser(world: &mut RpWorld, train_id: String, upstrea
         max_position: None,
         backlash: None,
     });
-    let facade = FacadeCameraStub::start().await;
-    world.cameras.push(CameraConfig {
-        id: "guide-cam".to_string(),
-        alpaca_url: facade.url(),
-        device_number: 0,
-        cooler_targets_c: Vec::new(),
-    });
-    world.facade_stub = Some(facade);
+    add_camera(world);
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
@@ -110,15 +104,9 @@ async fn rp_with_upstream_focuser(world: &mut RpWorld, train_id: String, upstrea
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
         default_position_angle_degrees: None,
-        devices: vec![
-            upstream,
-            "main-focuser".to_string(),
-            "guide-cam".to_string(),
-        ],
+        devices: vec![upstream, "main-focuser".to_string(), "main-cam".to_string()],
         auto_focus: None,
     });
-    // A guiding train needs `equipment.mount.guiding`.
-    add_stub_guider(world, Duration::ZERO).await;
     start_rp(world).await;
 }
 
@@ -146,40 +134,25 @@ fn push_guiding_train(world: &mut RpWorld, train_id: &str, camera_id: &str) {
 }
 
 #[given(
-    expr = "rp is running with guiding train {string} of a focuser on the simulator and the stub camera facade"
-)]
-async fn rp_with_facade_guiding_train(world: &mut RpWorld, train_id: String) {
-    ensure_omnisim(world).await;
-    add_focuser(world, None, None, None);
-    let facade = FacadeCameraStub::start().await;
-    world.cameras.push(CameraConfig {
-        id: "guide-cam".to_string(),
-        alpaca_url: facade.url(),
-        device_number: 0,
-        cooler_targets_c: Vec::new(),
-    });
-    world.facade_stub = Some(facade);
-    push_guiding_train(world, &train_id, "guide-cam");
-    // A guiding train needs `equipment.mount.guiding`.
-    add_stub_guider(world, Duration::ZERO).await;
-    start_rp(world).await;
-}
-
-#[given(
     expr = "rp is running with guiding train {string} of a focuser and a camera on the simulator"
 )]
 async fn rp_with_simulator_guiding_train(world: &mut RpWorld, train_id: String) {
+    expect_stub_guider(world);
     ensure_omnisim(world).await;
     add_focuser(world, None, None, None);
     add_camera(world);
     push_guiding_train(world, &train_id, "main-cam");
-    add_stub_guider(world, Duration::ZERO).await;
     start_rp(world).await;
 }
 
-#[given(expr = "the stub camera facade reports PHD2 {string}")]
-fn facade_reports_phd2_state(world: &mut RpWorld, phd2_state: String) {
-    facade(world).set_phd2_state(&phd2_state);
+/// A guiding train needs the guiding config, which the stub guider's
+/// Given sets: the guiding-train rigs take that stub rather than one of
+/// their own, so the scenario scripts the guider it runs against.
+fn expect_stub_guider(world: &RpWorld) {
+    assert!(
+        world.guider_stub.is_some(),
+        "a guiding-train rig needs a prior 'Given a stub guider in state ...' step"
+    );
 }
 
 #[given(expr = "the MCP client holds train lease {string} on train {string}")]
@@ -354,72 +327,6 @@ async fn no_event_within(world: &mut RpWorld, event_type: String, window_ms: u64
     }
 }
 
-#[then(
-    expr = "the stub camera facade should hold a sweep lease under a token of 32 lowercase hex digits with a ttl_s of {int}"
-)]
-fn facade_holds_lease(world: &mut RpWorld, ttl_s: u64) {
-    let facade = facade(world);
-    let token = facade
-        .held_token()
-        .expect("the stub camera facade holds no sweep lease");
-    assert!(
-        token.len() == 32 && token.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-        "the token rp named is not 32 lowercase hex digits: {token:?}"
-    );
-    let acquire = facade
-        .calls()
-        .into_iter()
-        .rfind(|c| c.action == "rustyphoton:sweep-lease-acquire")
-        .expect("the stub camera facade saw no acquire");
-    assert_eq!(acquire.parameters["ttl_s"], json!(ttl_s), "{acquire:?}");
-}
-
-/// How long a step waits for rp's facade release. rp answers
-/// `release_train_lease` at once and sends the facade's release from the
-/// lease's keeper once the lease has given everything back (rp.md § Train
-/// Lease), so the release reaches the stub a moment after the tool's
-/// answer.
-const FACADE_RELEASE_WAIT: Duration = Duration::from_secs(10);
-
-#[then("the stub camera facade should hold no sweep lease")]
-async fn facade_holds_no_lease(world: &mut RpWorld) {
-    let deadline = tokio::time::Instant::now() + FACADE_RELEASE_WAIT;
-    while facade(world).held_token().is_some() && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let held = facade(world).held_token();
-    assert!(
-        held.is_none(),
-        "the stub camera facade still holds {held:?} after {FACADE_RELEASE_WAIT:?}"
-    );
-}
-
-#[then("the stub camera facade's last release should name the token it granted")]
-async fn facade_release_names_granted_token(world: &mut RpWorld) {
-    let release = "rustyphoton:sweep-lease-release";
-    let deadline = tokio::time::Instant::now() + FACADE_RELEASE_WAIT;
-    while !facade(world).calls().iter().any(|c| c.action == release)
-        && tokio::time::Instant::now() < deadline
-    {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let calls = facade(world).calls();
-    let granted = calls
-        .iter()
-        .rfind(|c| c.action == "rustyphoton:sweep-lease-acquire")
-        .expect("the stub camera facade saw no acquire");
-    let released = calls
-        .iter()
-        .rfind(|c| c.action == release)
-        .unwrap_or_else(|| {
-            panic!("the stub camera facade saw no release in {FACADE_RELEASE_WAIT:?}")
-        });
-    assert_eq!(
-        released.parameters["token"], granted.parameters["token"],
-        "the release named another token than the acquire"
-    );
-}
-
 // --- Helpers -------------------------------------------------------------
 
 async fn call(world: &mut RpWorld, tool: &str, args: Value) {
@@ -447,11 +354,4 @@ fn result_field(world: &RpWorld, field: &str) -> Value {
         .get(field)
         .cloned()
         .unwrap_or_else(|| panic!("expected '{field}' in the result, got: {result}"))
-}
-
-const fn facade(world: &RpWorld) -> &FacadeCameraStub {
-    world
-        .facade_stub
-        .as_ref()
-        .expect("this scenario runs no stub camera facade")
 }

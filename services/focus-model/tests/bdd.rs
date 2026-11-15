@@ -50,8 +50,8 @@ bdd_infra::bdd_main! {
         .before(|_feature, _rule, _scenario, _world| {
             Box::pin(async move {
                 // Reset every OmniSim device class our scenarios touch
-                // (camera, filter wheel, focuser) to defaults before
-                // each scenario. OmniSim is a per-process singleton;
+                // (mount, camera, filter wheel, focuser) to defaults
+                // before each scenario. OmniSim is a per-process singleton;
                 // without this, a scenario's focuser position and
                 // filter slot leak into the next one. Failures from
                 // the very first scenario's hook (before any Given

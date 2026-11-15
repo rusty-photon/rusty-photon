@@ -1,9 +1,10 @@
 //! A training run's train lease (docs/services/focus-model.md § Training
 //! runs on a guiding train).
 //!
-//! A training run on the guiding train captures through the PHD2 camera
-//! facade under `rp`'s train lease, which holds guiding, mount motion
-//! and every other client's work on the train's light path off the run
+//! A training run on the guiding train captures through the guide
+//! camera under `rp`'s train lease, which holds the guider's camera
+//! lease and with it the guider idle, and holds mount motion and every
+//! other client's work on the train's light path off the run
 //! (rp.md § Train Lease). This module names the lease, sizes it from
 //! the sweep, and tells `rp`'s refusal of a lease that is no longer
 //! held from any other failure.
@@ -14,9 +15,9 @@ use crate::config::TrainConfig;
 use crate::error::{FocusModelError, Result};
 use crate::sizing::SweepPlan;
 
-/// What a frame costs beyond its exposure: PHD2's readout and save,
-/// the facade's read and download, `rp`'s FITS write and document, and
-/// `measure_stars` on the frame.
+/// What a frame costs beyond its exposure: the guide camera's readout,
+/// `rp`'s download, FITS write and document, and `measure_stars` on the
+/// frame. An allowance, not a measurement.
 pub const FRAME_COST: Duration = Duration::from_secs(2);
 
 /// What one focuser move costs: a sample's short hop, with `rp`'s
@@ -100,7 +101,7 @@ fn whole_seconds(duration: Duration) -> Duration {
 ///
 /// `rp` refuses a call under a lease it no longer holds: one released,
 /// ended idle, at its `max_duration`, on the safety transition, or with
-/// its facade lease lost. rp.md § Train Lease names the phrase.
+/// the guider's camera lease lost. rp.md § Train Lease names the phrase.
 #[must_use]
 pub fn is_not_held(error: &FocusModelError, lease_id: &str) -> bool {
     matches!(error, FocusModelError::ToolCall(message)

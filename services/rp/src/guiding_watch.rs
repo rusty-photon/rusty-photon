@@ -12,7 +12,8 @@
 //! The trend logic lives in [`WatchCore`], a pure state machine over
 //! `(guiding, valid HFDs, now)` observations so the thresholds are
 //! unit-testable without a runtime; the spawned task owns the polling
-//! and the baseline re-arm on guiding-train focus events.
+//! and the baseline re-arm on guiding-train focus events. A guider
+//! that has restarted re-arms it too: its answers carry a new `epoch`.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -43,6 +44,8 @@ pub struct WatchCore {
     baseline: Option<f64>,
     episode: Option<Episode>,
     cooldown_until: Option<Instant>,
+    /// The guider run the observations so far came from.
+    epoch: Option<String>,
 }
 
 impl WatchCore {
@@ -53,7 +56,22 @@ impl WatchCore {
             baseline: None,
             episode: None,
             cooldown_until: None,
+            epoch: None,
         }
+    }
+
+    /// Name the guider run the next observation comes from. A new
+    /// `epoch` is a guider that has restarted, and what the watch holds
+    /// was measured on another run's frames, so it re-arms.
+    pub fn under_epoch(&mut self, epoch: &str) {
+        if self.epoch.as_deref() == Some(epoch) {
+            return;
+        }
+        if self.epoch.is_some() {
+            debug!(%epoch, "guide focus watch re-armed: the guider restarted");
+            self.rearm();
+        }
+        self.epoch = Some(epoch.to_string());
     }
 
     /// Drop the baseline, any open episode, and the cooldown — a
@@ -172,6 +190,7 @@ pub fn spawn(
                 () = tokio::time::sleep(config.poll_interval) => {
                     let (guiding, valid) = match client.guiding_metrics().await {
                         Ok(metrics) => {
+                            core.under_epoch(&metrics.epoch);
                             let valid: Vec<f64> = metrics
                                 .frames
                                 .iter()
@@ -426,6 +445,46 @@ mod tests {
         assert_eq!(
             core.observe(true, &[3.0, 3.0, 3.0, 3.2, 3.2, 3.2], t0),
             Vec::<WatchEvent>::new()
+        );
+    }
+
+    #[test]
+    fn a_new_epoch_rearms_the_watch_and_the_same_one_does_not() {
+        let mut core = WatchCore::new(config(
+            3,
+            1.25,
+            Duration::from_mins(10),
+            Duration::from_secs(10),
+        ));
+        let t0 = Instant::now();
+        core.under_epoch("run-1");
+        core.observe(true, &[2.0, 2.0, 2.0], t0);
+
+        // The same run: the baseline of 2.0 stands, and 3.0 degrades it.
+        core.under_epoch("run-1");
+        let events = core.observe(true, &[2.0, 2.0, 2.0, 3.0, 3.0, 3.0], t0);
+        assert_eq!(
+            events,
+            vec![WatchEvent::Degraded {
+                baseline_hfd: 2.0,
+                current_hfd: 3.0
+            }]
+        );
+
+        // A restarted guider: 3.0 is the new run's baseline, and the
+        // cooldown of the run before does not hold a fire against it.
+        core.under_epoch("run-2");
+        assert_eq!(
+            core.observe(true, &[3.0, 3.0, 3.0], t0),
+            Vec::<WatchEvent>::new()
+        );
+        let events = core.observe(true, &[3.0, 3.0, 3.0, 4.5, 4.5, 4.5], t0);
+        assert_eq!(
+            events,
+            vec![WatchEvent::Degraded {
+                baseline_hfd: 3.0,
+                current_hfd: 4.5
+            }]
         );
     }
 

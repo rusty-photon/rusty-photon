@@ -183,12 +183,18 @@ pub struct GuiderConfig {
     /// Default `dither` amount when the per-call `pixels` parameter
     /// is omitted.
     pub dither_pixels: Option<f64>,
-    /// Rotation threshold above which rp clears the PHD2 calibration
-    /// when rotating a guide-coupled train. `None` ⇒ rp's default (5°).
+    /// Rotation above which rp empties the guider's calibration store
+    /// when it turns a guiding train's rotator. `None` ⇒ rp's default
+    /// (5°).
     pub recalibrate_above_deg: Option<f64>,
     /// The `focus_watch` sub-block (rp.md § Guide Focus Watch),
     /// passed through as raw JSON. `None` ⇒ omit (watch disabled).
     pub focus_watch: Option<Value>,
+    /// Keys of the block given as raw JSON, written last: each one
+    /// replaces what a field above emitted under the same key, and
+    /// reaches the keys that have no field (`calibration_timeout`,
+    /// `star_lost_after`).
+    pub overrides: Vec<(String, Value)>,
 }
 
 impl GuiderConfig {
@@ -204,6 +210,7 @@ impl GuiderConfig {
             dither_pixels: None,
             recalibrate_above_deg: None,
             focus_watch: None,
+            overrides: Vec::new(),
         }
     }
 }
@@ -992,6 +999,9 @@ fn guiding_block(g: &GuiderConfig) -> Value {
     if let Some(w) = &g.focus_watch {
         set_key(&mut block, "focus_watch", w.clone());
     }
+    for (key, value) in &g.overrides {
+        set_key(&mut block, key, value.clone());
+    }
     block
 }
 
@@ -1388,6 +1398,7 @@ mod tests {
             dither_pixels: Some(5.0),
             recalibrate_above_deg: Some(10.0),
             focus_watch: Some(serde_json::json!({ "window": 5 })),
+            overrides: Vec::new(),
         });
         let cfg = b.build();
         let g = &cfg["equipment"]["mount"]["guiding"];
@@ -1399,6 +1410,27 @@ mod tests {
         assert_eq!(g["dither_pixels"], 5.0);
         assert_eq!(g["recalibrate_above_deg"], 10.0);
         assert_eq!(g["focus_watch"]["window"], 5);
+    }
+
+    #[test]
+    fn with_guider_writes_the_raw_overrides_last() {
+        let mut b = RpConfigBuilder::new();
+        b.with_mount(MountConfig {
+            alpaca_url: "http://127.0.0.1:11122".to_string(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
+        let mut guider = GuiderConfig::url_only("http://127.0.0.1:11130".to_string());
+        guider.settle_time = Some(std::time::Duration::from_secs(8));
+        guider.overrides = vec![
+            ("star_lost_after".to_string(), serde_json::json!("2s")),
+            ("settle_time".to_string(), serde_json::json!("3s")),
+        ];
+        b.with_guider(guider);
+        let cfg = b.build();
+        let g = &cfg["equipment"]["mount"]["guiding"];
+        assert_eq!(g["star_lost_after"], "2s");
+        assert_eq!(g["settle_time"], "3s");
     }
 
     #[test]

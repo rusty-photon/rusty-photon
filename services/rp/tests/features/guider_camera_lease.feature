@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: rp exposes on the guide camera only under the guider's camera lease
   The guider exposes on the guiding train's camera whenever it is not
   idle, so rp exposes on that camera only while it holds the guider's

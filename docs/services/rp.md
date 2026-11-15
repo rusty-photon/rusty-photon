@@ -1221,7 +1221,7 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `guide_started` | recalibrate, settle_pixels, settle_time, settle_timeout | Guiding starting; carries the start's deadline (`max_duration_ms` = `calibration_timeout` + settle_timeout + 15 s, since a start calibrates when the guider holds no calibration it can use) when a settle timeout is resolved |
 | `guide_settled` | rms_ra_px, rms_dec_px, total_rms_px, sample_count | Post-start settle complete |
 | `guide_failed` | error | Guiding start or settle failed |
-| `guide_stopped` | reason (`requested` \| `safety` \| `guider`), stop_reason | Guiding stopped (point event). `guider` is a run that ended without `rp` asking, which the [Guide Run Watch](#guide-run-watch) reports with `stop_reason`: the guider's own reason, `restarted` or `unreachable` (`null` for the other two reasons) |
+| `guide_stopped` | reason (`requested` \| `safety` \| `guider`), stop_reason | Guiding stopped (point event). `guider` is a run that ended without `rp` asking, which the [Guide Run Watch](#guide-run-watch) reports with `stop_reason`: the guider's own reason, `restarted` or `unreachable` (`null` for the other two reasons). A stop of `rp`'s that the guider answers `stop_timeout` has no `guide_stopped`: the caller reports the error |
 | `guide_star_lost` | lost_for_ms | The guider has been in `star_lost` for `star_lost_after` (point event from the [Guide Run Watch](#guide-run-watch); repeats every `star_lost_after` while the loss lasts) |
 | `guide_focus_degraded` | train_id, baseline_hfd, current_hfd, window | The [Guide Focus Watch](#guide-focus-watch)'s trailing HFD median exceeded `baseline × degrade_ratio` (point event; held by `cooldown`). `train_id` names the guiding train (null when the watch runs without one), so a workflow trigger can address the guide-only sweep without knowing the rig |
 | `guide_focus_escalation` | train_id, baseline_hfd, current_hfd | A degradation episode is still degraded `escalation_deadline` after `guide_focus_degraded` — the full refocus of the guiding train's plan is indicated (point event; once per episode). `train_id` names the guiding train (null when the watch runs without one, same as `guide_focus_degraded`) |
@@ -5348,20 +5348,16 @@ credentials to an auth-enabled guider; `doctor --fix` wires it from
 the observatory credential once the guider's own `server.auth` is on
 (`joins.client-auth`, `docs/services/doctor.md` §Client-target joins).
 
-**Designed and not yet built.** Everything this document says of the
-guider is its design: the guider tools' contract, the check and the
+**The guider service is designed and not yet built**
+([`guider.md`](guider.md)), so no rig guides under `rp` yet. `rp`'s
+side of its contract is built: the guider tools, the check and the
 watch below, the camera lease that a [train lease](#train-lease) and a
 capture through the guide camera hold, the rotate-while-guiding ladder
-([Rotator Tool Details](#rotator-tool-details)), the sidecar's
-`guiding` block as [Rig state](#rig-state) words it, and the modules
-`camera_lease.rs` and `guide_run_watch.rs` of
-[Module Structure](#module-structure). `rp` as built
-speaks the contract of [`phd2-guider`](phd2-guider.md), which wraps
-PHD2, and reaches the guide camera through that service's camera
-facade. Stage G6 of
-[the native guider plan](../plans/native-guider.md#staging) builds what
-is written here. `rp` speaks one guider contract and has no backend
-selector.
+([Rotator Tool Details](#rotator-tool-details)) and the sidecar's
+`guiding` block ([Rig state](#rig-state)). Its scenarios run against
+`bdd-infra`'s double of the contract
+(§ [BDD Tests](#bdd-tests-cucumber)). `rp` speaks one guider contract
+and has no backend selector.
 
 Guider operations are exposed as built-in MCP tools (`start_guiding`,
 `stop_guiding`, `dither`, `pause_guiding`, `resume_guiding` and
@@ -5437,13 +5433,17 @@ the orchestrator's decision (§ Orchestration).
 at a `guide_settled` and reads `GET /api/v1/guiding/stats` every 5 s.
 A read of the watch's has 5 s to answer, whatever `timeout` is.
 While a stop that `rp` itself asked for is in flight, the watch reads
-nothing. It ends when the guider has answered that stop, because the
-`stop_guiding` tool, the rotate-while-guiding ladder and the safety
-stop each report their own `guide_stopped`, and it goes on when the
-request failed. It also ends when it has reported the run's end. A
-start that fails before it settles is that call's error and no event
-of the watch's. A restart of `rp` forgets the run, and the watch
-starts again at the next `guide_settled`.
+nothing. It ends when the guider has answered that stop,
+`stop_timeout` included, since the run's end is then `rp`'s own doing:
+the `stop_guiding` tool, the rotate-while-guiding ladder and the safety
+stop each report their own `guide_stopped` for a stop the guider
+answers with its state, and after a `stop_timeout` the guider sends no
+further pulse and the run ends
+([guider.md § `guiding/stop`](guider.md#post-apiv1guidingstop)). It
+goes on when the request failed otherwise. It also ends when it has
+reported the run's end. A start that fails before it settles is that
+call's error and no event of the watch's. A restart of `rp` forgets
+the run, and the watch starts again at the next `guide_settled`.
 
 **`guide_stopped`** with `reason: "guider"` is emitted once, when the
 run has ended without `rp` asking. `stop_reason` says how:
@@ -6085,6 +6085,11 @@ Requirements, checked before any motion:
   `guide_focus_degraded` trigger logs this and goes on, and the
   escalation's `focus_train {shared: true}` sweeps the focuser through
   the imaging camera.
+- No [train lease](#train-lease) reserves the train's camera or its
+  focuser. A sweep that overlaps a lease's reservation is refused,
+  naming the lease (§ Train Lease, *rp's own sweeps*). This comes
+  before the guider's state is read: a guiding train's lease holds the
+  guider's camera lease, under which the guider is `idle`.
 - `equipment.mount.guiding` is configured, and the guider's stats
   report the state `guiding`. Error: "guide-train auto_focus requires
   active guiding". The sweep is an in-session refocus, and guide
@@ -8993,20 +8998,19 @@ Behavioral specifications for `rp`'s responsibilities:
   which can restart as a different device), while an unpinned camera
   follows its number
 - Event delivery to webhook endpoints
-- Guiding against the guider's contract (§ Guider Service), designed
-  and not yet built: seven feature files tagged `@wip`, which the
-  runner filters out. `guiding_tools.feature` holds the six tools,
-  their settle values and their events; `guider_devices_check.feature`
-  the check that the guider's camera and mount are `rp`'s;
-  `guiding_dither.feature` the dither; `guide_run_watch.feature` the
-  watch's `guide_stopped` and `guide_star_lost`;
-  `guider_camera_lease.feature` the camera lease of a train lease and
-  of a capture; `rotate_while_guiding.feature` the ladder; and
-  `guide_metric_focus.feature` the metric `auto_focus` and the guide
-  focus watch. Stage G6 of
-  [the native guider plan](../plans/native-guider.md#staging) builds
-  `bdd-infra`'s guider stub for that contract and the scenarios' step
-  definitions, and takes the tag off
+- Guiding against the guider's contract (§ Guider Service), with
+  `bdd-infra`'s guider stub, an in-process double of guider.md § HTTP
+  API, in place of the guider. `guiding_tools.feature` holds the six
+  tools, their settle values and their events; `guider.feature` the
+  tools with no guider configured or none answering;
+  `guider_devices_check.feature` the check that the guider's camera
+  and mount are `rp`'s; `guiding_dither.feature` the dither and its
+  refusals; `guide_run_watch.feature` the watch's `guide_stopped` and
+  `guide_star_lost`; `guider_camera_lease.feature` the camera lease of
+  a train lease and of a capture; `rotate_while_guiding.feature` the
+  ladder; `guide_metric_focus.feature` the metric `auto_focus` and the
+  guide focus watch; and `guide_focus.feature` what the sweep refuses
+  before it reads the guider, and a steady guide focus watch
 - Power failure recovery (`startup_recovery.feature`: derived
   progress survives an rp restart on disk — see § What Survives an rp
   Restart; the end-to-end restart of a run against a real engine lives

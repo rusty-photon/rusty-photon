@@ -7,13 +7,13 @@ use cucumber::{given, then};
 use serde_json::Value;
 
 use bdd_infra::rp_harness::{
-    CannedGuiding, CannedTotals, GuiderConfig, GuiderStub, GuiderStubBehavior, MountConfig,
-    ObservingConditionsConfig, OmniSimHandle, OpticalTrainConfig, RotatorConfig,
-    SafetyMonitorConfig,
+    CannedTotals, MountConfig, ObservingConditionsConfig, OmniSimHandle, OpticalTrainConfig,
+    RotatorConfig, SafetyMonitorConfig,
 };
 
 use crate::steps::event_steps::json_values_match;
 use crate::steps::focuser_steps::add_focuser;
+use crate::steps::guider_steps::guider_stub;
 use crate::steps::tool_steps::{add_camera, add_filter_wheel, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
 
@@ -103,38 +103,18 @@ async fn add_whole_rig(
     world.site = Some((51.0786, -0.2944));
 }
 
-// --- Given steps: the guider service ----------------------------------
+// --- Given steps: the stub guider's running totals --------------------
 
-#[given(
-    regex = r#"^a guider service reporting "(Guiding|Stopped)" whose running totals grow on every read by:$"#
-)]
-async fn guider_with_totals(world: &mut RpWorld, app_state: String, step: &Step) {
-    let totals = totals_from_table(step, false);
-    start_guider(world, &app_state, Some(totals)).await;
+#[given("the stub guider's running totals grow on every read by:")]
+fn stub_totals_grow(world: &mut RpWorld, step: &Step) {
+    guider_stub(world).set_totals(totals_from_table(step, false));
 }
 
 #[given(
-    regex = r#"^a guider service reporting "(Guiding|Stopped)" that starts a new epoch on every read, its running totals growing on every read by:$"#
+    "the stub guider starts a new epoch on every read, its running totals growing on every read by:"
 )]
-async fn guider_with_new_epochs(world: &mut RpWorld, app_state: String, step: &Step) {
-    let totals = totals_from_table(step, true);
-    start_guider(world, &app_state, Some(totals)).await;
-}
-
-#[given(regex = r#"^a guider service reporting "(Guiding|Stopped)" without running totals$"#)]
-async fn guider_without_totals(world: &mut RpWorld, app_state: String) {
-    start_guider(world, &app_state, None).await;
-}
-
-async fn start_guider(world: &mut RpWorld, app_state: &str, totals: Option<CannedTotals>) {
-    let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
-        guiding: app_state == "Guiding",
-        totals,
-        ..CannedGuiding::default()
-    }))
-    .await;
-    world.guider = Some(GuiderConfig::url_only(stub.url.clone()));
-    world.guider_stub = Some(stub);
+fn stub_totals_grow_in_new_epochs(world: &mut RpWorld, step: &Step) {
+    guider_stub(world).set_totals(totals_from_table(step, true));
 }
 
 /// One read's growth, from the single data row under the header

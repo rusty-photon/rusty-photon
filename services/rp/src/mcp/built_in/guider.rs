@@ -1,26 +1,30 @@
 //! Guider tool category: `start_guiding`, `stop_guiding`, `dither`,
-//! `pause_guiding`, `resume_guiding`, `get_guiding_stats`, `restart_guider`.
+//! `pause_guiding`, `resume_guiding`, `get_guiding_stats`.
 //!
-//! rp.md describes `restart_guider` with the other power tools, in its
-//! power switching section. All seven proxy to the guider rp-managed service (the `phd2-guider`
-//! binary's `serve` mode) through the `rp-guider` HTTP client on
-//! `McpHandler::guider`; `None` there means every tool errors with
-//! "guider not configured". Wire quantities are **guide-camera
-//! pixels** (`*_px`, `settle_pixels`) — the service rejects
-//! arcseconds-style thresholds because a pixel scale only exists
-//! after PHD2 calibration. `dither`'s optional `unit` converts a
-//! per-call `main_px` / `arcsec` amount to guide pixels *in rp*
-//! before the proxy call, via the train pixel-scale derivation
-//! (rp.md § Optical Trains).
+//! All six proxy to the guider service (guider.md § HTTP API) through
+//! the `rp-guider` client on `McpHandler::guider`; `None` there means
+//! every tool errors with "guider not configured". Settle thresholds
+//! and the RMS the events report are in **guide-camera pixels**; the
+//! tools' results pass the guider's arcsecond values through beside
+//! them. `dither`'s optional `unit` says how the per-call amount is
+//! read: `guide_px` goes out as `amount_px`, `arcsec` as
+//! `amount_arcsec`, and `main_px` is multiplied by the imaging train's
+//! pixel scale (rp.md § Optical Trains) and goes out as arcseconds.
+//!
+//! Before a start, and before a camera lease, `rp` checks that the
+//! guider's devices are its own ([`McpHandler::check_guider_devices`],
+//! rp.md § Guider Service).
 //!
 //! The settle-blocking operations emit operation-event triples that
 //! terminate in `*_settled` rather than `*_complete`:
 //! `guide_started` / `guide_settled` / `guide_failed` and
-//! `dither_started` / `dither_settled` / `dither_failed`.
-//! `stop_guiding` emits the `guide_stopped` point event with
-//! `reason: "requested"` (the safety enforcer emits the same event
-//! with `reason: "safety"`).
+//! `dither_started` / `dither_settled` / `dither_failed`. A stop `rp`
+//! asks for emits the `guide_stopped` point event with
+//! `reason: "requested"`; the safety enforcer emits the same event
+//! with `reason: "safety"`, and the Guide Run Watch with
+//! `reason: "guider"`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::handler::server::wrapper::Parameters;
@@ -37,22 +41,15 @@ use super::super::inflight::Cancel;
 use super::super::{tool_error, tool_success};
 use crate::events::EventEnvelope;
 
-/// The guider service's settle backstop grace: it fails a wedged
-/// settle wait `settle.timeout` plus this margin after the RPC (see
-/// `phd2-guider.md` § "HTTP Service Mode"). Mirrored here to size the
-/// `max_duration_ms` deadline carried on `guide_started` /
-/// `dither_started`.
-const SETTLE_BACKSTOP_GRACE: Duration = Duration::from_secs(10);
-
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StartGuidingParams {
-    /// Force a fresh PHD2 calibration before guiding starts.
-    /// Defaults to false (reuse the existing calibration).
+    /// Calibrate anew before guiding starts. Defaults to false: the
+    /// guider calibrates only when it holds no calibration it can use.
     #[serde(default)]
     pub recalibrate: Option<bool>,
     /// Settle threshold in guide-camera pixels. Falls back to
-    /// `guider.settle_pixels` from rp config, then to the guider
-    /// service's own default.
+    /// `settle_pixels` of rp's guiding config, then to the guider's
+    /// own default.
     #[serde(default)]
     pub settle_pixels: Option<f64>,
     /// How long guiding must hold within the threshold (humantime
@@ -70,16 +67,15 @@ pub struct StartGuidingParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct StopGuidingParams {}
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct RestartGuiderParams {}
-
-/// Unit of a `dither` amount. The guider service itself only speaks
-/// guide-camera pixels; the other units are converted by rp via the
-/// train pixel-scale derivation (rp.md § Optical Trains).
+/// Unit of a `dither` amount.
+///
+/// Guide-camera pixels and arcseconds go to the guider as they are;
+/// main-camera pixels are converted to arcseconds by rp via the train
+/// pixel-scale derivation (rp.md § Optical Trains).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DitherUnit {
-    /// Guide-camera pixels (the wire unit; today's behavior).
+    /// Guide-camera pixels.
     #[default]
     GuidePx,
     /// Main-camera pixels — requires exactly one imaging train.
@@ -101,14 +97,15 @@ impl DitherUnit {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DitherParams {
     /// Dither offset, interpreted in `unit` (guide-camera pixels by
-    /// default). Falls back to `guider.dither_pixels` from rp config
+    /// default). Falls back to `dither_pixels` of rp's guiding config
     /// when `unit` is absent or `guide_px`; an error when neither
     /// is set.
     #[serde(default)]
     pub pixels: Option<f64>,
     /// Unit of `pixels`: `guide_px` (default), `main_px`, or
     /// `arcsec`. Non-default units require an explicit `pixels`
-    /// amount and a guiding train with `focal_length_mm`.
+    /// amount, and `main_px` exactly one imaging train with
+    /// `focal_length_mm`.
     #[serde(default)]
     pub unit: Option<DitherUnit>,
     /// Restrict the dither to the RA axis (declination drift stays
@@ -132,9 +129,9 @@ pub struct DitherParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PauseGuidingParams {
-    /// When true, also pause guide-camera looping ("full" pause);
-    /// otherwise only guide corrections pause and the camera keeps
-    /// looping. Defaults to false.
+    /// When true, the guide frames stop too ("full" pause); otherwise
+    /// only guide corrections pause and the camera keeps exposing.
+    /// Defaults to false.
     #[serde(default)]
     pub full: Option<bool>,
 }
@@ -145,10 +142,21 @@ pub struct ResumeGuidingParams {}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetGuidingStatsParams {}
 
+/// Which of the guider's devices a call has checked against rp's own
+/// (rp.md § Guider Service).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DevicesCheck {
+    /// Before a start: the guider's mount and its camera.
+    Start,
+    /// Before a camera lease: the camera alone, since the lease moves
+    /// no mount.
+    CameraLease,
+}
+
 #[tool_router(router = tool_router_guider, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "Start the guiding loop via the guider rp-managed service and block until the post-start settle completes. Settle overrides (settle_pixels, settle_time, settle_timeout) fall back to rp's guider config, then to the service's own defaults. Returns the rolling RMS in guide-camera pixels."
+        description = "Start guiding via the guider service and block until settled. The guider selects its guide stars, and calibrates first when it holds no calibration it can use. Settle overrides (settle_pixels, settle_time, settle_timeout) fall back to rp's guiding config, then to the guider's own defaults. Refused when the guider's camera or mount is not the one rp holds. Returns the guider's state and the rolling RMS in guide-camera pixels and in arcseconds."
     )]
     pub(crate) async fn start_guiding(
         &self,
@@ -170,82 +178,25 @@ impl McpHandler {
         let Some(client) = self.guider.clone() else {
             return Ok(tool_error!("start_guiding: guider not configured"));
         };
-        let settle = self.merge_settle(
-            params.settle_pixels,
-            params.settle_time,
-            params.settle_timeout,
-        );
-        let recalibrate = params.recalibrate.unwrap_or(false);
-
-        let operation_id = uuid::Uuid::new_v4().to_string();
-        let started_at = chrono::Utc::now();
-        let started_payload = serde_json::json!({
-            "recalibrate": recalibrate,
-            "settle_pixels": settle.as_ref().and_then(|s| s.pixels),
-            "settle_time": humantime_or_null(settle.as_ref().and_then(|s| s.time)),
-            "settle_timeout": humantime_or_null(settle.as_ref().and_then(|s| s.timeout)),
-        });
-        self.event_bus.emit_operation(with_settle_deadlines(
-            EventEnvelope::started("guide", &operation_id, started_at, started_payload),
-            settle.as_ref(),
-        ));
-
-        let start = client.start_guiding(rp_guider::StartGuidingRequest {
-            recalibrate,
-            settle,
-        });
-        let outcome = tokio::select! {
-            biased;
-            () = cancel.cancelled() => {
-                // Stop-class counterpart (rp.md § In-Flight Tool Calls):
-                // undo the half-started loop. Best-effort — on the
-                // safety path the enforcer's own stop follows anyway.
-                if let Err(e) = client.stop_guiding().await {
-                    debug!(error = %e, "stop_guiding after cancelled start_guiding failed");
-                }
-                let message = cancel.error();
-                self.event_bus.emit_operation(EventEnvelope::failed(
-                    "guide",
-                    &operation_id,
-                    started_at,
-                    &message,
-                ));
-                return Ok(tool_error!("{}", message));
-            }
-            outcome = start => outcome,
+        let request = rp_guider::StartGuidingRequest {
+            recalibrate: params.recalibrate.unwrap_or(false),
+            settle: self.merge_settle(
+                params.settle_pixels,
+                params.settle_time,
+                params.settle_timeout,
+            ),
         };
-        match outcome {
-            Ok(outcome) => {
-                self.event_bus.emit_operation(EventEnvelope::settled(
-                    "guide",
-                    &operation_id,
-                    started_at,
-                    settled_payload(&outcome),
-                ));
-                self.warn_if_guide_rotator_unmodeled(client.as_ref()).await;
-                Ok(tool_success!({
-                    "state": outcome.state,
-                    "rms_ra_px": outcome.rms_ra_px,
-                    "rms_dec_px": outcome.rms_dec_px,
-                    "total_rms_px": outcome.total_rms_px,
-                    "sample_count": outcome.sample_count,
-                }))
-            }
-            Err(e) => {
-                let message = guider_error_text("start_guiding", &e);
-                self.event_bus.emit_operation(EventEnvelope::failed(
-                    "guide",
-                    &operation_id,
-                    started_at,
-                    &message,
-                ));
-                Ok(tool_error!("{}", message))
-            }
+        match self
+            .start_guiding_run("start_guiding", client.as_ref(), request, cancel)
+            .await
+        {
+            Ok(outcome) => Ok(tool_success!(settled_result(&outcome))),
+            Err(message) => Ok(tool_error!("{}", message)),
         }
     }
 
     #[tool(
-        description = "Stop the guiding loop via the guider rp-managed service, blocking until the service confirms it is down. Idempotent: stopping an already-stopped guider succeeds. Emits guide_stopped with reason \"requested\"."
+        description = "Stop the guider's run or loop via the guider service, blocking until its exposure has ended and no pulse is in flight. Idempotent: stopping an idle guider succeeds. Returns the guider's state. Emits guide_stopped with reason \"requested\"."
     )]
     pub(crate) async fn stop_guiding(
         &self,
@@ -254,46 +205,14 @@ impl McpHandler {
         let Some(client) = self.guider.clone() else {
             return Ok(tool_error!("stop_guiding: guider not configured"));
         };
-        match client.stop_guiding().await {
-            Ok(()) => {
-                self.event_bus.emit(
-                    "guide_stopped",
-                    serde_json::json!({ "reason": "requested" }),
-                );
-                Ok(tool_success!({ "state": "stopped" }))
-            }
+        match self.stop_guiding_run(client.as_ref()).await {
+            Ok(state) => Ok(tool_success!({ "state": state })),
             Err(e) => Ok(tool_error!("{}", guider_error_text("stop_guiding", &e))),
         }
     }
 
     #[tool(
-        description = "Have the guider service restart PHD2 and connect its equipment, so PHD2 meets its guide camera and mount in a fresh process. Refused while PHD2 guides, calibrates, is paused or has lost its star (stop_guiding first), while the PHD2 camera facade's camera is connected or capturing (disconnect_device first), and where nothing would start PHD2 again. Waits up to 130 s. Returns phd2 (restarted), equipment (connected) and elapsed_ms"
-    )]
-    pub(crate) async fn restart_guider(
-        &self,
-        Parameters(_params): Parameters<RestartGuiderParams>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let Some(client) = self.guider.clone() else {
-            return Ok(tool_error!("restart_guider: guider not configured"));
-        };
-        match client.restart_phd2().await {
-            Ok(outcome) => {
-                debug!(
-                    elapsed_ms = outcome.elapsed_ms,
-                    "the guider service restarted PHD2"
-                );
-                Ok(tool_success!({
-                    "phd2": outcome.phd2,
-                    "equipment": outcome.equipment,
-                    "elapsed_ms": outcome.elapsed_ms,
-                }))
-            }
-            Err(e) => Ok(tool_error!("{}", guider_error_text("restart_guider", &e))),
-        }
-    }
-
-    #[tool(
-        description = "Dither the guide star by `pixels` guide-camera pixels via the guider rp-managed service and block until guiding re-settles. `pixels` falls back to rp's guider.dither_pixels config. ra_only restricts the offset to the RA axis. Settle overrides as in start_guiding."
+        description = "Move the guider's lock by `pixels` via the guider service and block until guiding re-settles. `unit` says how `pixels` is read: guide_px (the default, guide-camera pixels), arcsec, or main_px (main-camera pixels, converted with the imaging train's pixel scale). With guide_px, `pixels` falls back to dither_pixels of rp's guiding config. ra_only restricts the offset to the RA axis. Settle overrides as in start_guiding. The guider refuses a dither outside the state guiding."
     )]
     pub(crate) async fn dither(
         &self,
@@ -307,10 +226,6 @@ impl McpHandler {
     /// Body of the `dither` MCP tool, split out so unit tests can pass
     /// a never-cancelled handle without constructing a real rmcp
     /// `RequestContext`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "unit resolution, settle merge, the motion-gate acquire and the event triple are one contract; splitting it would scatter the order they run in"
-    )]
     pub(crate) async fn dither_inner(
         &self,
         params: DitherParams,
@@ -319,43 +234,9 @@ impl McpHandler {
         let Some(client) = self.guider.clone() else {
             return Ok(tool_error!("dither: guider not configured"));
         };
-        // Resolve the amount to guide-camera pixels (the wire unit).
-        // Non-default units convert the explicit per-call amount via
-        // the train pixel scales; the `dither_pixels` config default
-        // is guide-camera pixels by definition, so it only backs the
-        // default unit.
-        let unit = params.unit.unwrap_or_default();
-        let amount_px = match (params.pixels, unit) {
-            (None, DitherUnit::GuidePx) => {
-                let Some(px) = self.guider_defaults.dither_pixels else {
-                    return Ok(tool_error!(
-                        "dither: missing required argument: provide pixels or configure guider.dither_pixels"
-                    ));
-                };
-                px
-            }
-            (None, unit) => {
-                return Ok(tool_error!(
-                    "dither: unit '{}' requires an explicit pixels amount (the dither_pixels config default is guide-camera pixels)",
-                    unit.name()
-                ));
-            }
-            (Some(p), DitherUnit::GuidePx) => p,
-            (Some(p), DitherUnit::Arcsec) => match self.guide_pixel_scale_arcsec_per_px() {
-                Ok(scale) => p / scale,
-                Err(e) => return Ok(tool_error!("{}", e)),
-            },
-            (Some(p), DitherUnit::MainPx) => {
-                let main_scale = match self.main_pixel_scale_arcsec_per_px() {
-                    Ok(s) => s,
-                    Err(e) => return Ok(tool_error!("{}", e)),
-                };
-                let guide_scale = match self.guide_pixel_scale_arcsec_per_px() {
-                    Ok(s) => s,
-                    Err(e) => return Ok(tool_error!("{}", e)),
-                };
-                p * main_scale / guide_scale
-            }
+        let amount = match self.dither_amount(params.pixels, params.unit.unwrap_or_default()) {
+            Ok(amount) => amount,
+            Err(e) => return Ok(tool_error!("{}", e)),
         };
         let settle = self.merge_settle(
             params.settle_pixels,
@@ -377,10 +258,13 @@ impl McpHandler {
 
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
+        let (amount_px, amount_arcsec) = match amount {
+            rp_guider::DitherAmount::Px(px) => (Some(px), None),
+            rp_guider::DitherAmount::Arcsec(arcsec) => (None, Some(arcsec)),
+        };
         let started_payload = serde_json::json!({
-            "pixels": amount_px,
-            "unit": unit.name(),
-            "requested_amount": params.pixels,
+            "amount_px": amount_px,
+            "amount_arcsec": amount_arcsec,
             "ra_only": ra_only,
             "settle_pixels": settle.as_ref().and_then(|s| s.pixels),
             "settle_time": humantime_or_null(settle.as_ref().and_then(|s| s.time)),
@@ -389,15 +273,20 @@ impl McpHandler {
         self.event_bus.emit_operation(with_settle_deadlines(
             EventEnvelope::started("dither", &operation_id, started_at, started_payload),
             settle.as_ref(),
+            Duration::ZERO,
         ));
 
         // Owned future so a cancelled body can hand it, permit and all,
         // to the detached tail holder below.
-        let tail_cap = dither_tail_cap(settle.as_ref());
+        let tail_cap = rp_guider::dither_deadline(
+            self.guider_defaults.timeout,
+            settle.as_ref().and_then(|s| s.timeout),
+        );
+        let dither_client = Arc::clone(&client);
         let mut dither = Box::pin(async move {
-            client
+            dither_client
                 .dither(rp_guider::DitherRequest {
-                    amount_px,
+                    amount,
                     ra_only,
                     settle,
                 })
@@ -406,12 +295,12 @@ impl McpHandler {
         let outcome = tokio::select! {
             biased;
             () = cancel.cancelled() => {
-                // No stop-class counterpart — PHD2 has no dither abort,
-                // so the guider finishes its settle on its own (rp.md
-                // § In-Flight Tool Calls). The mount is still being
-                // pulsed towards the new lock position, though, so the
-                // permit must not fall with this body: a detached holder
-                // keeps the gate exclusive until the settle RPC ends.
+                // Stop-class counterpart (rp.md § In-Flight Tool
+                // Calls): the guider's dither abort. The mount is
+                // pulsed until the guider has answered the dither
+                // request, so the permit must not fall with this body:
+                // a detached holder sends the abort and keeps the gate
+                // exclusive until that answer.
                 let message = cancel.error();
                 self.event_bus.emit_operation(EventEnvelope::failed(
                     "dither",
@@ -419,7 +308,7 @@ impl McpHandler {
                     started_at,
                     &message,
                 ));
-                hold_permit_through_dither_tail(motion_permit, dither, tail_cap);
+                abort_dither_holding_permit(motion_permit, client, dither, tail_cap);
                 return Ok(tool_error!("{}", message));
             }
             outcome = &mut dither => outcome,
@@ -435,13 +324,7 @@ impl McpHandler {
                     started_at,
                     settled_payload(&outcome),
                 ));
-                Ok(tool_success!({
-                    "state": outcome.state,
-                    "rms_ra_px": outcome.rms_ra_px,
-                    "rms_dec_px": outcome.rms_dec_px,
-                    "total_rms_px": outcome.total_rms_px,
-                    "sample_count": outcome.sample_count,
-                }))
+                Ok(tool_success!(settled_result(&outcome)))
             }
             Err(e) => {
                 let message = guider_error_text("dither", &e);
@@ -457,7 +340,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Pause guide corrections via the guider rp-managed service (e.g. during readout). full=true also pauses guide-camera looping."
+        description = "Pause guide corrections via the guider service (e.g. during readout). full=true also stops the guide frames. Returns the guider's state."
     )]
     pub(crate) async fn pause_guiding(
         &self,
@@ -467,12 +350,14 @@ impl McpHandler {
             return Ok(tool_error!("pause_guiding: guider not configured"));
         };
         match client.pause_guiding(params.full.unwrap_or(false)).await {
-            Ok(()) => Ok(tool_success!({ "state": "paused" })),
+            Ok(state) => Ok(tool_success!({ "state": state })),
             Err(e) => Ok(tool_error!("{}", guider_error_text("pause_guiding", &e))),
         }
     }
 
-    #[tool(description = "Resume guiding after pause_guiding.")]
+    #[tool(
+        description = "Resume paused guiding via the guider service. Returns the guider's state: guiding, or star_lost when the run is in it."
+    )]
     pub(crate) async fn resume_guiding(
         &self,
         Parameters(params): Parameters<ResumeGuidingParams>,
@@ -499,13 +384,13 @@ impl McpHandler {
             outcome = client.resume_guiding() => outcome,
         };
         match outcome {
-            Ok(()) => Ok(tool_success!({ "state": "resumed" })),
+            Ok(state) => Ok(tool_success!({ "state": state })),
             Err(e) => Ok(tool_error!("{}", guider_error_text("resume_guiding", &e))),
         }
     }
 
     #[tool(
-        description = "Read the current guiding state and rolling RMS statistics (guide-camera pixels) from the guider rp-managed service. Cheap; safe to poll."
+        description = "Read the guider's state and rolling RMS statistics (guide-camera pixels and arcseconds) from the guider service. Cheap; safe to poll."
     )]
     pub(crate) async fn get_guiding_stats(
         &self,
@@ -516,14 +401,21 @@ impl McpHandler {
         };
         match client.guiding_stats().await {
             Ok(stats) => Ok(tool_success!({
-                "app_state": stats.app_state,
+                "state": stats.state,
                 "guiding": stats.guiding,
+                "settling": stats.settling,
+                "pixel_scale_arcsec": stats.pixel_scale_arcsec,
                 "rms_ra_px": stats.rms_ra_px,
                 "rms_dec_px": stats.rms_dec_px,
                 "total_rms_px": stats.total_rms_px,
+                "rms_ra_arcsec": stats.rms_ra_arcsec,
+                "rms_dec_arcsec": stats.rms_dec_arcsec,
+                "total_rms_arcsec": stats.total_rms_arcsec,
                 "snr": stats.snr,
                 "star_mass": stats.star_mass,
+                "star_count": stats.star_count,
                 "sample_count": stats.sample_count,
+                "last_stop": stats.last_stop,
             })),
             Err(e) => Ok(tool_error!(
                 "{}",
@@ -534,17 +426,236 @@ impl McpHandler {
 }
 
 impl McpHandler {
-    /// The guiding train's pixel scale in arcsec per pixel:
-    /// `206.265 × pixel_size_x_um / focal_length_mm` (square pixels
-    /// assumed — the x-axis size is used, read from the camera at
-    /// connect time).
-    fn guide_pixel_scale_arcsec_per_px(&self) -> Result<f64, String> {
-        let Some(train) = self.trains.guiding_train() else {
+    /// Start a guiding run and wait for it to settle: the devices
+    /// check ([`DevicesCheck::Start`]), then the `guide` event triple
+    /// around the guider's start. The `start_guiding` tool and the
+    /// rotate-while-guiding ladder both start a run here, so both emit
+    /// the same events.
+    ///
+    /// `what` leads the error text. A refusal of the devices check is
+    /// an error with no event: nothing has been asked of the guider. A
+    /// cancellation after `guide_started` stops the guider (rp.md
+    /// § In-Flight Tool Calls) and reports `guide_failed`.
+    pub(crate) async fn start_guiding_run(
+        &self,
+        what: &str,
+        client: &dyn rp_guider::GuiderClient,
+        request: rp_guider::StartGuidingRequest,
+        cancel: &Cancel,
+    ) -> Result<rp_guider::SettledOutcome, String> {
+        let checked = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(cancel.error()),
+            checked = self.check_guider_devices(client, DevicesCheck::Start) => checked,
+        };
+        checked.map_err(|e| format!("{what}: {e}"))?;
+
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        let settle = request.settle.as_ref();
+        let started_payload = serde_json::json!({
+            "recalibrate": request.recalibrate,
+            "settle_pixels": settle.and_then(|s| s.pixels),
+            "settle_time": humantime_or_null(settle.and_then(|s| s.time)),
+            "settle_timeout": humantime_or_null(settle.and_then(|s| s.timeout)),
+        });
+        // A start calibrates when the guider holds no calibration it
+        // can use, so its deadline has the calibration in it.
+        self.event_bus.emit_operation(with_settle_deadlines(
+            EventEnvelope::started("guide", &operation_id, started_at, started_payload),
+            settle,
+            self.guider_defaults.calibration_timeout,
+        ));
+
+        let outcome = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                // Stop-class counterpart (rp.md § In-Flight Tool Calls):
+                // undo the half-started run. Best-effort — on the
+                // safety path the enforcer's own stop follows anyway.
+                if let Err(e) = client.stop_guiding().await {
+                    debug!(error = %e, "stop_guiding after a cancelled start failed");
+                }
+                let message = cancel.error();
+                self.event_bus.emit_operation(EventEnvelope::failed(
+                    "guide",
+                    &operation_id,
+                    started_at,
+                    &message,
+                ));
+                return Err(message);
+            }
+            outcome = client.start_guiding(request) => outcome,
+        };
+        match outcome {
+            Ok(outcome) => {
+                self.event_bus.emit_operation(EventEnvelope::settled(
+                    "guide",
+                    &operation_id,
+                    started_at,
+                    settled_payload(&outcome),
+                ));
+                Ok(outcome)
+            }
+            Err(e) => {
+                let message = guider_error_text(what, &e);
+                self.event_bus.emit_operation(EventEnvelope::failed(
+                    "guide",
+                    &operation_id,
+                    started_at,
+                    &message,
+                ));
+                Err(message)
+            }
+        }
+    }
+
+    /// Stop the guider's run or loop and, once the guider has answered,
+    /// emit `guide_stopped` with `reason: "requested"`. The
+    /// `stop_guiding` tool and the rotate-while-guiding ladder both
+    /// stop here.
+    pub(crate) async fn stop_guiding_run(
+        &self,
+        client: &dyn rp_guider::GuiderClient,
+    ) -> Result<rp_guider::GuiderState, rp_guider::GuiderError> {
+        let state = client.stop_guiding().await?;
+        self.event_bus.emit(
+            "guide_stopped",
+            serde_json::json!({ "reason": "requested", "stop_reason": null }),
+        );
+        Ok(state)
+    }
+
+    /// The same camera and mount check (rp.md § Guider Service): read
+    /// the guider's `devices` and compare the `unique_id` it reports
+    /// for each device with the one rp's own session bound. A
+    /// difference refuses, naming both ids, and so does an id that is
+    /// missing or blank on either side: an identity that cannot be
+    /// checked never passes. The check reads and compares, and sends
+    /// no device anything.
+    pub(crate) async fn check_guider_devices(
+        &self,
+        client: &dyn rp_guider::GuiderClient,
+        scope: DevicesCheck,
+    ) -> Result<(), String> {
+        let devices = client
+            .devices()
+            .await
+            .map_err(|e| format!("the guider's devices could not be read: {e}"))?;
+        if scope == DevicesCheck::Start {
+            self.check_guider_mount(devices.mount.as_ref())?;
+        }
+        self.check_guider_camera(devices.camera.as_ref())
+    }
+
+    /// The guider's mount is rp's mount.
+    fn check_guider_mount(&self, mount: Option<&rp_guider::GuiderDevice>) -> Result<(), String> {
+        let Some(theirs) = reported_id(mount) else {
             return Err(
-                "dither: unit conversion requires a guiding train with focal_length_mm".to_string(),
+                "the guider reports no unique_id for its mount, so it cannot be checked against rp's mount"
+                    .to_string(),
             );
         };
-        self.train_pixel_scale_arcsec_per_px(train)
+        let ours = self
+            .equipment
+            .mount
+            .as_ref()
+            .and_then(|m| m.session.bound_identity())
+            .map(|identity| identity.unique_id)
+            .filter(|id| !id.is_empty());
+        let Some(ours) = ours else {
+            return Err(format!(
+                "rp holds no session with its mount, so the guider's mount '{theirs}' cannot be checked against it"
+            ));
+        };
+        if ours != theirs {
+            return Err(format!(
+                "the guider's mount '{theirs}' is not rp's mount '{ours}'"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The guider's camera is the guiding train's camera. On a rig
+    /// with no guiding train it is none of the cameras rp holds a
+    /// session with, since rp would expose on it with no camera lease.
+    fn check_guider_camera(&self, camera: Option<&rp_guider::GuiderDevice>) -> Result<(), String> {
+        let theirs = reported_id(camera);
+        let Some(train) = self.trains.guiding_train() else {
+            let Some(theirs) = theirs else {
+                return Err(
+                    "the guider reports no unique_id for its camera, so it cannot be checked against rp's cameras"
+                        .to_string(),
+                );
+            };
+            let held = self.equipment.cameras.iter().find(|entry| {
+                entry
+                    .session
+                    .bound_identity()
+                    .is_some_and(|identity| identity.unique_id == theirs)
+            });
+            return held.map_or(Ok(()), |entry| {
+                Err(format!(
+                    "the guider's camera '{theirs}' is rp's camera '{}', which rp exposes on with no camera lease: no guiding train holds it",
+                    entry.id
+                ))
+            });
+        };
+        let Some(theirs) = theirs else {
+            return Err(
+                "the guider reports no unique_id for its camera, so it cannot be checked against the guiding train's camera"
+                    .to_string(),
+            );
+        };
+        let camera_id = train.camera_id().unwrap_or_default();
+        let ours = self
+            .equipment
+            .find_camera(camera_id)
+            .and_then(|entry| entry.session.bound_identity())
+            .map(|identity| identity.unique_id)
+            .filter(|id| !id.is_empty());
+        let Some(ours) = ours else {
+            return Err(format!(
+                "rp holds no session with the guiding train's camera '{camera_id}', so the guider's camera '{theirs}' cannot be checked against it"
+            ));
+        };
+        if ours != theirs {
+            return Err(format!(
+                "the guider's camera '{theirs}' is not the guiding train's camera '{ours}'"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The amount a `dither` sends. Guide-camera pixels and arcseconds
+    /// go out as they are; main-camera pixels go out as arcseconds, by
+    /// the imaging train's pixel scale. The `dither_pixels` config
+    /// default is guide-camera pixels by definition, so it only backs
+    /// the default unit.
+    fn dither_amount(
+        &self,
+        pixels: Option<f64>,
+        unit: DitherUnit,
+    ) -> Result<rp_guider::DitherAmount, String> {
+        match (pixels, unit) {
+            (None, DitherUnit::GuidePx) => self
+                .guider_defaults
+                .dither_pixels
+                .map(rp_guider::DitherAmount::Px)
+                .ok_or_else(|| {
+                    "dither: missing required argument: provide pixels or configure guider.dither_pixels"
+                        .to_string()
+                }),
+            (None, unit) => Err(format!(
+                "dither: unit '{}' requires an explicit pixels amount (the dither_pixels config default is guide-camera pixels)",
+                unit.name()
+            )),
+            (Some(px), DitherUnit::GuidePx) => Ok(rp_guider::DitherAmount::Px(px)),
+            (Some(arcsec), DitherUnit::Arcsec) => Ok(rp_guider::DitherAmount::Arcsec(arcsec)),
+            (Some(px), DitherUnit::MainPx) => Ok(rp_guider::DitherAmount::Arcsec(
+                px * self.main_pixel_scale_arcsec_per_px()?,
+            )),
+        }
     }
 
     /// The single imaging train's pixel scale — `main_px` is only
@@ -567,6 +678,10 @@ impl McpHandler {
         }
     }
 
+    /// A train's pixel scale in arcsec per pixel:
+    /// `206.265 × pixel_size_x_um / focal_length_mm` (square pixels
+    /// assumed — the x-axis size is used, read from the camera at
+    /// connect time).
     fn train_pixel_scale_arcsec_per_px(
         &self,
         train: &crate::equipment::trains::Train,
@@ -597,9 +712,9 @@ impl McpHandler {
 
     /// Merge per-call settle parameters over the rp-config defaults,
     /// field by field. `None` when every field ends up unset — the
-    /// wire then omits `settle` entirely and the guider service's own
-    /// `settling` config applies.
-    fn merge_settle(
+    /// wire then omits `settle` entirely and the guider's own settle
+    /// values apply.
+    pub(crate) fn merge_settle(
         &self,
         pixels: Option<f64>,
         time: Option<Duration>,
@@ -612,73 +727,41 @@ impl McpHandler {
         };
         (!settle.is_empty()).then_some(settle)
     }
+}
 
-    /// Decision 9's setup warning (rp.md § Guider Service): the train
-    /// model says the guide camera is rotator-coupled, but PHD2 has
-    /// no connected rotator — rotations of the guide field will clear
-    /// calibration above `recalibrate_above_deg` instead of being
-    /// angle-adjusted by PHD2. Emitted after a successful
-    /// `start_guiding` settle; best-effort (an equipment read failure
-    /// only logs — the guiding start already succeeded).
-    async fn warn_if_guide_rotator_unmodeled(&self, client: &dyn rp_guider::GuiderClient) {
-        let Some(guiding) = self.trains.guiding_train() else {
-            return;
-        };
-        let Some(rotator_id) = guiding
-            .devices
-            .iter()
-            .find(|d| d.kind == crate::equipment::trains::TrainDeviceKind::Rotator)
-            .map(|d| d.id.clone())
-        else {
-            return;
-        };
-        match client.current_equipment().await {
-            Ok(equipment) => {
-                let phd2_has_rotator = equipment.rotator.is_some_and(|r| r.connected);
-                if !phd2_has_rotator {
-                    tracing::warn!(
-                        rotator_id,
-                        train_id = %guiding.id,
-                        "the guide camera is rotator-coupled but PHD2 reports no connected \
-                         rotator; rotations will clear calibration above recalibrate_above_deg"
-                    );
-                    self.event_bus.emit(
-                        "guide_rotator_unmodeled",
-                        serde_json::json!({
-                            "rotator_id": rotator_id,
-                            "train_id": guiding.id,
-                        }),
-                    );
-                }
-            }
-            Err(e) => {
-                debug!(error = %e, "could not read PHD2 equipment for the rotator warning");
-            }
-        }
-    }
+/// The `unique_id` the guider reports for a device, stripped of
+/// padding as rp strips its own; `None` for a device the guider does
+/// not have, an id it has not read, and a blank one.
+fn reported_id(device: Option<&rp_guider::GuiderDevice>) -> Option<&str> {
+    device
+        .and_then(|d| d.unique_id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
 }
 
 /// Attach the settle deadline to a `*_started` envelope when the
 /// resolved settle pins a timeout: predicted = the hold time (or the
-/// timeout when no hold time is known), max = the timeout plus the
-/// service's backstop grace. Without a resolved timeout rp cannot
-/// know the service-side default, so the deadline fields stay
-/// omitted (same posture as operations without predictions).
+/// timeout when no hold time is known), max = `before_settle` plus the
+/// timeout plus the margin the guider's answer gets past it. Without a
+/// resolved timeout the guider's own applies, which rp cannot see, so
+/// the deadline fields stay omitted (same posture as operations
+/// without predictions).
 ///
-/// The service does not itself validate `settle_time <=
-/// settle_timeout`, so a misconfigured hold time longer than the
-/// timeout is clamped to the timeout here — `predicted_duration_ms`
-/// must never exceed `max_duration_ms` (Sentinel treats that as a
-/// contract violation).
+/// A misconfigured hold time longer than the timeout is clamped to the
+/// timeout here — `predicted_duration_ms` must never exceed
+/// `max_duration_ms` (Sentinel treats that as a contract violation).
 fn with_settle_deadlines(
     envelope: EventEnvelope,
     settle: Option<&rp_guider::SettleOverride>,
+    before_settle: Duration,
 ) -> EventEnvelope {
     let Some(timeout) = settle.and_then(|s| s.timeout) else {
         return envelope;
     };
     let predicted = settle.and_then(|s| s.time).unwrap_or(timeout).min(timeout);
-    let max = timeout.saturating_add(SETTLE_BACKSTOP_GRACE);
+    let max = before_settle
+        .saturating_add(timeout)
+        .saturating_add(rp_guider::SETTLE_MARGIN);
     envelope.with_deadlines(
         u64::try_from(predicted.as_millis()).unwrap_or(u64::MAX),
         u64::try_from(max.as_millis()).unwrap_or(u64::MAX),
@@ -696,10 +779,26 @@ fn settled_payload(outcome: &rp_guider::SettledOutcome) -> serde_json::Value {
     })
 }
 
+/// Result shared by `start_guiding` / `dither`: the guider's state and
+/// the settled RMS, in guide-camera pixels and in the guider's
+/// arcseconds.
+fn settled_result(outcome: &rp_guider::SettledOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "state": outcome.state,
+        "rms_ra_px": outcome.rms_ra_px,
+        "rms_dec_px": outcome.rms_dec_px,
+        "total_rms_px": outcome.total_rms_px,
+        "rms_ra_arcsec": outcome.rms_ra_arcsec,
+        "rms_dec_arcsec": outcome.rms_dec_arcsec,
+        "total_rms_arcsec": outcome.total_rms_arcsec,
+        "sample_count": outcome.sample_count,
+    })
+}
+
 /// Map a client error onto the tool-error text, mirroring
 /// `do_plate_solve`'s formatting: unreachable / structured envelope
 /// (code + message, details when present) / internal.
-fn guider_error_text(tool: &str, e: &rp_guider::GuiderError) -> String {
+pub(crate) fn guider_error_text(tool: &str, e: &rp_guider::GuiderError) -> String {
     match e {
         rp_guider::GuiderError::ServiceUnreachable(reason) => {
             format!("{tool}: service unreachable: {reason}")
@@ -719,35 +818,15 @@ fn guider_error_text(tool: &str, e: &rp_guider::GuiderError) -> String {
     }
 }
 
-/// Bound on the detached permit holder a cancelled dither leaves
-/// behind when the caller gave no settle timeout: the guider service
-/// client's own request timeout is in the same range, so the holder
-/// never outlives the RPC it waits on by more than the margin.
-const DITHER_TAIL_CAP_DEFAULT: Duration = Duration::from_secs(90);
-
-/// Headroom past the caller's settle timeout for the tail holder —
-/// the guider service's own settle backstop margin, so the holder
-/// releases just after the RPC would have timed out on its own.
-const DITHER_TAIL_MARGIN: Duration = Duration::from_secs(15);
-
-/// How long the tail holder of a cancelled dither may keep the motion
-/// permit: the settle timeout plus margin when the call named one,
-/// [`DITHER_TAIL_CAP_DEFAULT`] otherwise.
-fn dither_tail_cap(settle: Option<&rp_guider::SettleOverride>) -> Duration {
-    settle
-        .and_then(|s| s.timeout)
-        .map_or(DITHER_TAIL_CAP_DEFAULT, |t| {
-            t.saturating_add(DITHER_TAIL_MARGIN)
-        })
-}
-
-/// Keep `permit` alive on a detached task until the guider's dither
-/// RPC ends (settled, failed, or `cap` elapsed), so no imaging-train
-/// capture starts into the tail of guide pulses the cancelled body
-/// can no longer wait for. The RPC's outcome is only logged: the
-/// caller already has its `cancelled: <reason>` answer.
-fn hold_permit_through_dither_tail(
+/// Send the guider's dither abort for a cancelled `dither` and keep
+/// `permit` alive on a detached task until the guider has answered the
+/// dither request (settled, aborted, failed, or `cap` elapsed), so no
+/// imaging-train capture starts into guide pulses the cancelled body
+/// can no longer wait for. Both outcomes are only logged: the caller
+/// already has its `cancelled: <reason>` answer.
+fn abort_dither_holding_permit(
     permit: OwnedRwLockWriteGuard<()>,
+    client: Arc<dyn rp_guider::GuiderClient>,
     dither: impl std::future::Future<Output = Result<rp_guider::SettledOutcome, rp_guider::GuiderError>>
         + Send
         + 'static,
@@ -755,12 +834,19 @@ fn hold_permit_through_dither_tail(
 ) {
     tokio::spawn(async move {
         let _permit = permit;
-        match tokio::time::timeout(cap, dither).await {
+        let abort = async {
+            match client.abort_dither().await {
+                Ok(aborted) => debug!(aborted, "dither abort sent for a cancelled dither"),
+                Err(e) => debug!(error = %e, "dither abort for a cancelled dither failed"),
+            }
+        };
+        let ((), tail) = tokio::join!(abort, tokio::time::timeout(cap, dither));
+        match tail {
             Ok(Ok(_)) => debug!("cancelled dither settled; motion permit released"),
             Ok(Err(e)) => debug!(error = %e, "cancelled dither ended; motion permit released"),
             Err(_) => warn!(
                 cap = ?cap,
-                "cancelled dither did not settle within its cap; releasing the motion permit"
+                "the guider did not answer a cancelled dither within its cap; releasing the motion permit"
             ),
         }
     });

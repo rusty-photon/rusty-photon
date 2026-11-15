@@ -231,6 +231,20 @@ async fn event_reserves_deadline_fields(world: &mut RpWorld, event_type: String)
     );
 }
 
+#[then(expr = "the {string} event should carry a max_duration_ms of {int}")]
+async fn event_carries_max_duration(world: &mut RpWorld, event_type: String, expected: u64) {
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{event_type}' event within timeout"
+    );
+    let ev = find_event(world, &event_type).await;
+    assert_eq!(
+        ev.max_duration_ms,
+        Some(expected),
+        "'{event_type}' max_duration_ms mismatch"
+    );
+}
+
 #[then(expr = "the {string} event carries the deadline fields")]
 async fn event_carries_deadline_fields(world: &mut RpWorld, event_type: String) {
     let ev = find_event(world, &event_type).await;

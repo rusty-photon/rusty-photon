@@ -25,6 +25,8 @@ pub mod event_steps;
 pub mod focuser_steps;
 pub mod focuser_temperature_steps;
 pub mod guide_focus_steps;
+pub mod guide_run_watch_steps;
+pub mod guider_camera_lease_steps;
 pub mod guider_steps;
 pub mod image_http_api_steps;
 pub mod image_stats_steps;

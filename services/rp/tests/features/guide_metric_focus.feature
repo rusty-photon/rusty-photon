@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Guide-train focus on the guider's metrics
   rp's auto_focus is the guiding train's sweep, and it never captures
   through the guide camera: addressed with the guiding train's id, it

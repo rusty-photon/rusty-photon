@@ -88,8 +88,9 @@ impl Severity {
 }
 
 /// Classify an envelope: `*_failed` and `safety_changed:unsafe` are bad,
-/// `*_complete`/`*_settled` ok, `*_started` live, `stream_error` and
-/// `guide_stopped` warn; other point events are neutral.
+/// `*_complete`/`*_settled` ok, `*_started` live, `stream_error`,
+/// `guide_stopped` and `guide_star_lost` warn; other point events are
+/// neutral.
 fn severity_of(env: &EventEnvelope) -> Severity {
     match env.event.as_str() {
         "safety_changed" => {
@@ -99,7 +100,7 @@ fn severity_of(env: &EventEnvelope) -> Severity {
                 Severity::Ok
             }
         }
-        "stream_error" | "guide_stopped" => Severity::Warn,
+        "stream_error" | "guide_stopped" | "guide_star_lost" => Severity::Warn,
         event if event.ends_with("_failed") => Severity::Bad,
         event if event.ends_with("_complete") || event.ends_with("_settled") => Severity::Ok,
         event if event.ends_with("_started") => Severity::Live,
@@ -367,9 +368,22 @@ fn guiding_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
         "guide_started" => ("Guiding started".to_string(), Vec::new()),
         "guide_settled" => ("Guiding settled".to_string(), rms_detail(p)),
         "guide_failed" => ("Guiding failed".to_string(), error_detail(p)),
+        // `stop_reason` is set when the guider ended the run by itself
+        // (`reason: "guider"`), and says how.
         "guide_stopped" => (
             "Guiding stopped".to_string(),
-            field(p, "reason").into_iter().collect(),
+            [field(p, "reason"), field(p, "stop_reason")]
+                .into_iter()
+                .flatten()
+                .collect(),
+        ),
+        "guide_star_lost" => (
+            "Guide star lost".to_string(),
+            p.get("lost_for_ms")
+                .and_then(Value::as_u64)
+                .map(|ms| format!("lost for {}", humanize_ms(ms)))
+                .into_iter()
+                .collect(),
         ),
         "dither_started" => ("Dither started".to_string(), Vec::new()),
         "dither_settled" => ("Dither settled".to_string(), rms_detail(p)),
@@ -465,7 +479,7 @@ pub(crate) fn unreachable_slot() -> Markup {
 /// `guide` on `guide_settled`/`dither_settled` (the RMS readout), `safety` on
 /// `safety_changed` (the SAFE / UNSAFE chip). Point
 /// events (`filter_switch`, `centering_iteration`, `guide_stopped`,
-/// `document_persistence_failed`) leave the slots alone — the proxy is
+/// `guide_star_lost`, `document_persistence_failed`) leave the slots alone — the proxy is
 /// stateless, so an untouched slot keeps its previous content.
 pub(crate) fn slot_updates(env: &EventEnvelope) -> Vec<(&'static str, Markup)> {
     match env.event.as_str() {
@@ -997,10 +1011,24 @@ mod tests {
             ),
             case(
                 "guide_stopped",
-                json!({"reason": "safety stop"}),
+                json!({"reason": "safety", "stop_reason": null}),
                 "sev-warn",
                 "Guiding stopped",
-                Some("safety stop"),
+                Some("safety"),
+            ),
+            case(
+                "guide_stopped",
+                json!({"reason": "guider", "stop_reason": "mount_not_tracking"}),
+                "sev-warn",
+                "Guiding stopped",
+                Some("guider · mount_not_tracking"),
+            ),
+            case(
+                "guide_star_lost",
+                json!({"lost_for_ms": 65_000}),
+                "sev-warn",
+                "Guide star lost",
+                Some("lost for 1m 5s"),
             ),
             case(
                 "document_persistence_failed",
@@ -1223,6 +1251,7 @@ mod tests {
             ("filter_switch", json!({"filter_name": "Ha"}), vec![]),
             ("centering_iteration", json!({}), vec![]),
             ("guide_stopped", json!({"reason": "safety"}), vec![]),
+            ("guide_star_lost", json!({"lost_for_ms": 10_000}), vec![]),
             ("document_persistence_failed", json!({}), vec![]),
             // Unknown started/terminal events still drive the operation slot.
             (
