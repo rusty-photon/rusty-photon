@@ -1689,9 +1689,12 @@ back.
 
 **Designed and not yet built.** As built, `guide_training.feature`
 puts a stub of `phd2-guider`'s camera facade over the simulator's
-camera and counts that stub's sweep leases. Stage G6 of
-[the native guider plan](../plans/native-guider.md#staging) moves the
-feature to the guider stub.
+camera and counts that stub's sweep leases. The scenarios against the
+guider stub are in `guide_training_lease.feature`, tagged `@wip`, which
+the runner filters out. Stage G6 of
+[the native guider plan](../plans/native-guider.md#staging) builds the
+stub's camera lease and the scenarios' step definitions, and moves the
+scenarios into `guide_training.feature`.
 
 `auth.feature` spawns only focus-model with `server.tls` and
 `server.auth` and proves `/health` and `/mcp` both require the
