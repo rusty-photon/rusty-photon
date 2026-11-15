@@ -19,7 +19,7 @@ homepage = "https://github.com/ivonnyssen/qhyccd-rs/wiki"
 
 [features]
 default = []
-simulation = ["rand", "rayon"]
+simulation = ["rand"]
 
 [dependencies]
 libqhyccd-sys = { version = "0.1.4", path = "libqhyccd-sys" }
@@ -31,7 +31,6 @@ tracing = { workspace = true }
 # there is no poison error to model.
 parking_lot = { workspace = true }
 rand = { workspace = true, optional = true }
-rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The examples/ probes' log output (`FmtSubscriber`).
