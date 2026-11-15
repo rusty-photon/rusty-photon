@@ -1,5 +1,23 @@
 # Values that carry their time — one type for a cached reading, one rule for every other time
 
+**Status: COMPLETE (archived 2026-11-15).** Delivered by [the plan](https://github.com/rusty-photon/rusty-photon/pull/1762) and five pull
+requests: [S1](https://github.com/rusty-photon/rusty-photon/pull/1770) `Stamped<T>` and `dsd-fp2`,
+[S2](https://github.com/rusty-photon/rusty-photon/pull/1782) the three power boxes,
+[S3](https://github.com/rusty-photon/rusty-photon/pull/1786) `qhy-focuser`,
+[S4](https://github.com/rusty-photon/rusty-photon/pull/1791) `SensorMean` reads no clock, and
+[S5](https://github.com/rusty-photon/rusty-photon/pull/1794) one reply-holding test transport in
+`transport-doubles`; [the issue](https://github.com/rusty-photon/rusty-photon/issues/1727) closes with
+the archive. Each item of the definition of done holds on `main`: no driver keeps a
+value field and a `ReadStamp` field side by side, and `ReadStamp` is used
+outside its crate only in `pa-scops-oag` (a test comment in `qhy-focuser`
+names it); workspace.md § Values that carry their time names
+`Stamped<T>` and the monotonic clock; `rusty-photon-rolling-stats` names
+no `SystemTime` and its tests no `sleep`; `struct ReplyHold` is defined
+once, in `transport-doubles`. The two findings outside the steps stay
+the owner's call and are not filed: `sentinel`'s `StateChange`, which
+nothing constructs, and `InjectableFactory`, still copied in six drivers'
+test modules, which `transport-doubles` could hold.
+
 ## Goal
 
 Much of what the workspace handles carries the time it happened: a
@@ -28,7 +46,7 @@ The outcome of this plan:
 - In the five drivers whose caches hold one value per stamp, the value
   is private to `Stamped<T>` and `offer` is the only way in: a store
   that skips the stamp does not compile.
-- [workspace.md § Values that carry their time](../workspace.md#values-that-carry-their-time)
+- [workspace.md § Values that carry their time](../../workspace.md#values-that-carry-their-time)
   states the rule for a cached reading with the type that keeps it, and
   says that a reading's age is measured on the monotonic clock.
 - `SensorMean` reads no clock. A sample is dated by the instant its
@@ -258,7 +276,7 @@ plan's proposals; merging the plan settles them.
     test-only twin of its own library, as `rp` has for the plate
     solver's mock. Under Cargo each driver would turn the feature on in
     a dev-dependency, which compiles `reconnect_now` into every driver's
-    test build, where [testing.md §6.13](../skills/testing.md) has the
+    test build, where [testing.md §6.13](../../skills/testing.md) has the
     feature on for the crate's own tests and no dependent's. A crate
     that depends only on the public `TransportFactory`, `FrameTransport`
     and `TransportError` costs each driver one dev-dependency line and
@@ -408,7 +426,7 @@ Not filed, and not part of any step; each is the owner's call.
 - `struct ReplyHold` appears once in the tree, in `transport-doubles`.
 - Every row of the status table names its merged pull request, the
   issue is closed, and the plan is archived per
-  [archiving-plans.md](../skills/archiving-plans.md).
+  [archiving-plans.md](../../skills/archiving-plans.md).
 
 ## Out of scope
 
@@ -431,4 +449,4 @@ Not filed, and not part of any step; each is the owner's call.
 | S2 — the three power boxes | Merged 2026-11-14 | [S2](https://github.com/rusty-photon/rusty-photon/pull/1782) |
 | S3 — `qhy-focuser` | Merged 2026-11-14 | [S3](https://github.com/rusty-photon/rusty-photon/pull/1786) |
 | S4 — `SensorMean` reads no clock | Merged 2026-11-15 | [S4](https://github.com/rusty-photon/rusty-photon/pull/1791) |
-| S5 — one reply-holding test transport | In progress | `feature/stamped-values-s5-1727` |
+| S5 — one reply-holding test transport | Merged 2026-11-15 | [S5](https://github.com/rusty-photon/rusty-photon/pull/1794) |
