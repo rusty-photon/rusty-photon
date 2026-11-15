@@ -5375,7 +5375,8 @@ guider's [`GET /api/v1/devices`](guider.md#get-apiv1devices) and
 compares the `unique_id` reported there for each device with the one
 `rp`'s own session bound (§ [Device Identity Pin](#device-identity-pin)):
 
-- the guider's mount is `rp`'s mount;
+- the guider's mount is `rp`'s mount, checked before a start only: the
+  camera lease moves no mount;
 - the guider's camera is the guiding train's camera. On a rig with no
   guiding train it is none of the cameras `rp` holds a session with,
   since `rp` would expose on it with no camera lease.

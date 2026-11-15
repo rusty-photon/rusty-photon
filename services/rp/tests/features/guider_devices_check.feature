@@ -4,10 +4,11 @@ Feature: The guider's camera and mount are rp's
   rp asks the guider to start guiding, or for its camera lease, it
   reads the guider's GET /api/v1/devices and compares the unique_id
   reported there for each device with the one its own session bound.
-  The guider's mount has to be rp's mount. The guider's camera has to
-  be the guiding train's camera, and on a rig with no guiding train it
-  has to be none of the cameras rp holds a session with, since rp would
-  expose on it with no camera lease. A difference refuses the call,
+  The guider's mount has to be rp's mount; that is checked before a
+  start only, since a camera lease moves no mount. The guider's camera
+  has to be the guiding train's camera, and on a rig with no guiding
+  train it has to be none of the cameras rp holds a session with, since
+  rp would expose on it with no camera lease. A difference refuses the call,
   naming both ids. An id that is missing or blank on either side
   refuses it too: an identity that cannot be checked never passes. A
   refused call has sent the guider no start and has asked it for no
