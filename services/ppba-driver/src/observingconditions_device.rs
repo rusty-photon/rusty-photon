@@ -14,6 +14,7 @@ use rusty_photon_rolling_stats::observing_conditions::{
 use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 use tracing::debug;
 
 use crate::codec::PpbaCodec;
@@ -202,7 +203,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             .get_cached_state()
             .await
             .temp_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -217,7 +218,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             .get_cached_state()
             .await
             .humidity_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -232,7 +233,7 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
             .get_cached_state()
             .await
             .dewpoint_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -244,17 +245,17 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
     async fn time_since_last_update(&self, sensor_name: String) -> ASCOMResult<f64> {
         ensure_connected!(self);
         let state = self.manager.get_cached_state().await;
+        let now = Instant::now().into_std();
         let duration = match sensor_name.to_lowercase().as_str() {
             // The freshest window; `None` while all three are empty, so the
             // client reads "no data" rather than "updated just now".
-            "" => time_since_freshest_update([
-                &state.temp_mean,
-                &state.humidity_mean,
-                &state.dewpoint_mean,
-            ]),
-            "temperature" => state.temp_mean.time_since_last_update(),
-            "humidity" => state.humidity_mean.time_since_last_update(),
-            "dewpoint" => state.dewpoint_mean.time_since_last_update(),
+            "" => time_since_freshest_update(
+                [&state.temp_mean, &state.humidity_mean, &state.dewpoint_mean],
+                now,
+            ),
+            "temperature" => state.temp_mean.time_since_last_update(now),
+            "humidity" => state.humidity_mean.time_since_last_update(now),
+            "dewpoint" => state.dewpoint_mean.time_since_last_update(now),
             "cloudcover" | "pressure" | "rainrate" | "skybrightness" | "skyquality"
             | "starfwhm" | "skytemperature" | "winddirection" | "windgust" | "windspeed" => {
                 return Err(ASCOMError::NOT_IMPLEMENTED);
@@ -313,6 +314,7 @@ mod tests {
     use async_trait::async_trait;
     use rusty_photon_rolling_stats::observing_conditions::instantaneous_window;
     use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+    use std::time::Duration;
 
     /// Factory whose `open()` always fails. Used to exercise the
     /// `set_connected(true)` acquire-failure mapping into ASCOM errors —
@@ -485,6 +487,29 @@ mod tests {
         assert!((h - 60.0).abs() < 0.01);
         let d = device.dew_point().await.unwrap();
         assert!((d - 15.5).abs() < 0.01);
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn time_since_last_update_follows_the_clock_the_frame_is_dated_on() {
+        // The handshake's frame is the newest sample. Three seconds of the
+        // paused clock later, short of the next poll, every sensor name
+        // answers three seconds: the age is counted on the clock that dated
+        // the frame, which no other clock follows while this one is paused.
+        let device = connected_device().await;
+
+        tokio::time::advance(Duration::from_secs(3)).await;
+
+        for sensor in ["", "temperature", "humidity", "dewpoint"] {
+            let seconds = device
+                .time_since_last_update(sensor.to_string())
+                .await
+                .unwrap();
+            assert!(
+                (seconds - 3.0).abs() < f64::EPSILON,
+                "{sensor:?}: {seconds} s"
+            );
+        }
         device.set_connected(false).await.unwrap();
     }
 

@@ -117,9 +117,9 @@ impl GeminiManager {
         let mut state = CachedState::default();
         let period_hours = config.observingconditions.averaging_period.as_secs_f64() / 3600.0;
         let window = effective_window(period_hours, poll_interval);
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        state.temp_mean = SensorMean::new(window);
+        state.humidity_mean = SensorMean::new(window);
+        state.dewpoint_mean = SensorMean::new(window);
         state.average_period_hours = period_hours;
         let cached_state = Arc::new(RwLock::new(state));
 
@@ -170,9 +170,10 @@ impl GeminiManager {
         }
         let window = effective_window(period_hours, self.poll_interval);
         let mut state = self.cached_state.write().await;
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        let now = Instant::now().into_std();
+        state.temp_mean.set_window(window, now);
+        state.humidity_mean.set_window(window, now);
+        state.dewpoint_mean.set_window(window, now);
         state.average_period_hours = period_hours;
         drop(state);
         debug!(period_hours, ?window, "sensor averaging period updated");
@@ -424,7 +425,9 @@ async fn poll_loop(
 /// confirmed. It is dropped, samples and all ([`Stamped::offer`]).
 ///
 /// The windows are fed only while the AHT20 says it is attached, and only
-/// from a field that carries a reading. The first frame whose flag reads
+/// from a field that carries a reading. A sample is dated by the frame's
+/// read instant, so `TimeSinceLastUpdate` counts from the moment the frame
+/// came off the wire, not from this write. The first frame whose flag reads
 /// `0` clears the three windows, so the readings go `VALUE_NOT_SET` at once
 /// rather than serving a mean of samples taken before the sensor went away;
 /// a field with no reading while the flag is `1` adds no sample and clears
@@ -436,13 +439,14 @@ fn apply_status(state: &mut CachedState, dated: &DatedFrame) {
         return;
     }
     if frame.ambient_sensor_attached {
+        let at = dated.read_at.into_std();
         for (mean, reading) in [
             (&mut state.temp_mean, frame.ambient_temperature),
             (&mut state.humidity_mean, frame.humidity),
             (&mut state.dewpoint_mean, frame.dew_point),
         ] {
             if let Some(value) = reading {
-                mean.add_sample(value);
+                mean.add_sample(value, at);
             }
         }
     } else {
@@ -736,6 +740,29 @@ mod tests {
         assert_eq!(state.temp_mean.sample_count(), 2);
     }
 
+    #[test]
+    fn a_frame_dates_its_samples_by_its_read_instant() {
+        // An hour from the clock's own reading, so a sample dated by a
+        // clock read cannot pass for one dated by the frame.
+        let mut state = CachedState::default();
+        let read_at = tokio::time::Instant::now() + Duration::from_hours(1);
+        let asked_at = (read_at + Duration::from_secs(7)).into_std();
+
+        apply_status(&mut state, &dated(DC3_ON, read_at));
+
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.time_since_last_update(asked_at),
+                Some(Duration::from_secs(7)),
+                "the {sensor} sample is not dated by the frame's read instant"
+            );
+        }
+    }
+
     // ---- poll loop -------------------------------------------------------
 
     #[tokio::test]
@@ -811,18 +838,19 @@ mod tests {
                 .is_some_and(|frame| !frame.ambient_sensor_attached)
         })
         .await;
+        let now = tokio::time::Instant::now().into_std();
         assert_eq!(
-            state.temp_mean.get_mean(),
+            state.temp_mean.get_mean(now),
             None,
             "temperature window cleared"
         );
         assert_eq!(
-            state.humidity_mean.get_mean(),
+            state.humidity_mean.get_mean(now),
             None,
             "humidity window cleared"
         );
         assert_eq!(
-            state.dewpoint_mean.get_mean(),
+            state.dewpoint_mean.get_mean(now),
             None,
             "dewpoint window cleared"
         );
@@ -834,7 +862,10 @@ mod tests {
         // Plugging it back in starts fresh windows.
         factory.set_sensors(true, true).await;
         let state = wait_for_cache(&manager, "the AHT20 back", |state| {
-            state.temp_mean.get_mean().is_some()
+            state
+                .temp_mean
+                .get_mean(tokio::time::Instant::now().into_std())
+                .is_some()
         })
         .await;
         assert!(state.temp_mean.sample_count() >= 1);

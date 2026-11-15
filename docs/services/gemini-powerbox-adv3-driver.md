@@ -752,7 +752,10 @@ staleness rule (an emptied window reads `VALUE_NOT_SET`) are exactly as
 [`ppba-driver`](ppba-driver.md#averageperiod-staleness-and-the-meaning-of-zero)
 specifies them, and the three drivers share the one implementation in
 `rusty-photon-rolling-stats`; this document does not restate them.
-`TimeSinceLastUpdate` with an empty sensor name is the freshest of the
+`TimeSinceLastUpdate` counts from the instant the frame that carried the
+newest sample was read off the wire, on the monotonic clock
+([Values that carry their time](../workspace.md#values-that-carry-their-time)).
+With an empty sensor name it is the freshest of the
 three windows, and while all three are empty it answers what one empty
 window answers — the no-data value, not zero. A sample is fed only while
 the AHT20's attached flag is

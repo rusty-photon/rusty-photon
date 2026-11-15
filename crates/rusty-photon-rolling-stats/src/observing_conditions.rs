@@ -11,7 +11,7 @@
 //! and the ASCOM error codes stay with the driver.
 
 use std::ops::RangeInclusive;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::SensorMean;
 
@@ -90,8 +90,8 @@ pub fn effective_window(period_hours: f64, poll_interval: Duration) -> Duration 
     Duration::try_from_secs_f64(period_hours * 3600.0).map_or(floor, |window| window.max(floor))
 }
 
-/// How long ago the freshest of `means` took a sample: what a driver
-/// answers for `TimeSinceLastUpdate` with an empty sensor name.
+/// How long before `now` the freshest of `means` took a sample: what a
+/// driver answers for `TimeSinceLastUpdate` with an empty sensor name.
 ///
 /// `None` while every mean is empty, so the client reads "no data" rather
 /// than "updated just now" — a sensor that was never read, or whose windows
@@ -99,10 +99,11 @@ pub fn effective_window(period_hours: f64, poll_interval: Duration) -> Duration 
 /// one beside it.
 pub fn time_since_freshest_update<'a>(
     means: impl IntoIterator<Item = &'a SensorMean>,
+    now: Instant,
 ) -> Option<Duration> {
     means
         .into_iter()
-        .filter_map(SensorMean::time_since_last_update)
+        .filter_map(|mean| mean.time_since_last_update(now))
         .min()
 }
 
@@ -110,10 +111,6 @@ pub fn time_since_freshest_update<'a>(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use std::thread::sleep;
-
-    /// Slept between two samples so their ages can be told apart under load.
-    const SETTLE: Duration = Duration::from_millis(50);
 
     #[test]
     fn the_average_period_range_is_ascoms_zero_to_twenty_four_hours() {
@@ -172,31 +169,37 @@ mod tests {
 
     #[test]
     fn time_since_freshest_update_is_none_while_every_mean_is_empty() {
+        let now = Instant::now();
         let means = [SensorMean::default(), SensorMean::default()];
-        assert_eq!(time_since_freshest_update(&means), None);
-        assert_eq!(time_since_freshest_update([]), None);
+        assert_eq!(time_since_freshest_update(&means, now), None);
+        assert_eq!(time_since_freshest_update([], now), None);
     }
 
     #[test]
     fn time_since_freshest_update_is_the_newest_sample_and_skips_empty_means() {
+        // The one clock read: an `Instant` has no other constructor. The
+        // rest are this one plus a `Duration`.
+        let t0 = Instant::now();
         let mut older = SensorMean::default();
         let mut newer = SensorMean::default();
         let empty = SensorMean::default();
-        older.add_sample(1.0);
-        sleep(SETTLE);
-        newer.add_sample(2.0);
+        older.add_sample(1.0, t0);
+        newer.add_sample(2.0, t0 + Duration::from_secs(4));
 
-        let freshest = time_since_freshest_update([&older, &empty, &newer])
-            .expect("two means hold a sample, so this is not the no-data case");
-        let newest_alone = newer.time_since_last_update().unwrap();
-        let oldest_alone = older.time_since_last_update().unwrap();
-        // A floor rather than a bound on scheduling: the answer is at least
-        // the newer sample's age (read just after it) and never as old as the
-        // older sample, which the settle keeps SETTLE behind.
-        assert!(freshest <= newest_alone, "{freshest:?} > {newest_alone:?}");
-        assert!(
-            freshest + SETTLE <= oldest_alone,
-            "{freshest:?} + {SETTLE:?} > {oldest_alone:?}"
+        let now = t0 + Duration::from_secs(10);
+        assert_eq!(
+            time_since_freshest_update([&older, &empty, &newer], now),
+            Some(Duration::from_secs(6)),
+            "the answer is the newer sample's age, whichever order the means come in"
+        );
+        assert_eq!(
+            time_since_freshest_update([&newer, &older], now),
+            Some(Duration::from_secs(6))
+        );
+        assert_eq!(
+            time_since_freshest_update([&empty, &older], now),
+            Some(Duration::from_secs(10)),
+            "an empty mean hid the one that holds a sample"
         );
     }
 }

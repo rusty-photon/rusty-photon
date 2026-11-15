@@ -17,6 +17,11 @@
 //! sampler that stops sampling reads as "no value" rather than as an average of
 //! readings that aged out.
 //!
+//! [`SensorMean`] reads no clock. The caller hands in the instant that dates
+//! a sample and the instant every time-dependent question is asked at, as
+//! [`std::time::Instant`]s, so the caller picks the clock and a test passes
+//! the instants it means.
+//!
 //! [`observing_conditions`] holds the one piece of ASCOM policy the three
 //! `ObservingConditions` drivers share: how `AveragePeriod` maps onto a window,
 //! and what `TimeSinceLastUpdate` with an empty sensor name answers over
@@ -32,12 +37,12 @@ mod square_sums;
 pub use square_sums::SquareSums;
 
 use std::collections::VecDeque;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
-/// A single timestamped sensor sample
+/// A sensor sample and the instant that dates it
 #[derive(Debug, Clone)]
 struct TimedSample {
-    timestamp: SystemTime,
+    at: Instant,
     value: f64,
 }
 
@@ -61,38 +66,46 @@ impl SensorMean {
         }
     }
 
-    /// Add a new sample to the rolling window
+    /// Add a sample dated `at` to the rolling window
     ///
-    /// Automatically removes samples that fall outside the time window.
-    pub fn add_sample(&mut self, value: f64) {
-        let now = SystemTime::now();
+    /// Removes the samples that are outside the time window as of `at`.
+    ///
+    /// Samples are expected in the order of their instants. One dated before
+    /// the newest held is kept, and dated as the newest: the reading still
+    /// counts, and the buffer stays ordered, which eviction relies on when
+    /// it stops at the first sample inside the window.
+    pub fn add_sample(&mut self, value: f64, at: Instant) {
+        let at = self.samples.back().map_or(at, |newest| at.max(newest.at));
 
         // Add new sample
-        self.samples.push_back(TimedSample {
-            timestamp: now,
-            value,
-        });
+        self.samples.push_back(TimedSample { at, value });
 
         // Remove samples outside the window
-        self.cleanup_old_samples(now);
+        self.cleanup_old_samples(at);
     }
 
-    /// Remove samples that are older than the time window
-    fn cleanup_old_samples(&mut self, now: SystemTime) {
-        let cutoff = now
-            .checked_sub(self.window)
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-
+    /// Remove samples that are outside the time window as of `now`
+    fn cleanup_old_samples(&mut self, now: Instant) {
         while let Some(sample) = self.samples.front() {
-            if sample.timestamp < cutoff {
-                self.samples.pop_front();
-            } else {
+            if self.is_in_window(sample, now) {
                 break;
             }
+            self.samples.pop_front();
         }
     }
 
-    /// Get the mean of the samples currently inside the time window.
+    /// Whether `sample` is inside the time window as of `now`: no older than
+    /// the window is long.
+    ///
+    /// Asked of the sample's age rather than of a cutoff instant: the
+    /// cutoff, `now - window`, is an `Option` (`Instant::checked_sub`) whose
+    /// `None` would need an answer of its own, and the age always has one.
+    /// A sample dated after `now` has no age yet, and is inside.
+    fn is_in_window(&self, sample: &TimedSample, now: Instant) -> bool {
+        now.saturating_duration_since(sample.at) <= self.window
+    }
+
+    /// Get the mean of the samples inside the time window as of `now`.
     ///
     /// Returns `None` when the window holds no samples. The ASCOM
     /// `ObservingConditions` drivers report that as `VALUE_NOT_SET`.
@@ -105,17 +118,17 @@ impl SensorMean {
     /// temperature as current is the kind of quiet wrong answer that costs a
     /// night, so a stale window reads as "no value" instead.
     #[must_use]
-    pub fn get_mean(&self) -> Option<f64> {
-        let cutoff = SystemTime::now()
-            .checked_sub(self.window)
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-
+    pub fn get_mean(&self, now: Instant) -> Option<f64> {
         let mut sum = 0.0_f64;
         // Counted rather than `len()`d because the filter decides membership;
         // saturating because the count is a `u32` for the lossless conversion
         // below, and the window is poll-rate bounded nowhere near 2^32.
         let mut count: u32 = 0;
-        for sample in self.samples.iter().filter(|s| s.timestamp >= cutoff) {
+        for sample in self
+            .samples
+            .iter()
+            .filter(|sample| self.is_in_window(sample, now))
+        {
             sum += sample.value;
             count = count.saturating_add(1);
         }
@@ -126,40 +139,34 @@ impl SensorMean {
         Some(sum / f64::from(count))
     }
 
-    /// Time elapsed since the last sample was added.
+    /// Time elapsed at `now` since the instant of the newest sample.
     ///
     /// `None` means the buffer is empty — either nothing has been added yet,
     /// or [`set_window`](Self::set_window) shrank the window far enough to
     /// evict everything. It does **not** mean the samples are stale: a buffer
     /// whose contents have all aged out still reports how long ago the newest
-    /// one arrived, which is precisely what tells a caller how stale
+    /// one was taken, which is precisely what tells a caller how stale
     /// [`get_mean`](Self::get_mean)'s `None` is.
     ///
-    /// A backwards clock jump — an NTP correction, a VM resuming from a
-    /// snapshot — leaves the newest sample stamped in the future, and
-    /// `duration_since` fails on that. Reporting it as `None` would put it in
-    /// the same bucket as an empty buffer, which the ASCOM drivers surface as
-    /// `f64::MAX` seconds: a fresh reading described to the client as never
-    /// updated, which is the opposite of the truth. A sample stamped in the
-    /// future is as new as a sample can be, so it reports zero.
+    /// A sample dated after `now` reports zero. A caller that reads its clock
+    /// and then a buffer another task has added to in between holds one.
+    /// `None` would put it in the same bucket as an empty buffer, which the
+    /// ASCOM drivers surface as `f64::MAX` seconds: a fresh reading described
+    /// to the client as never updated, which is the opposite of the truth. A
+    /// sample dated after `now` is as new as a sample can be.
     #[must_use]
-    pub fn time_since_last_update(&self) -> Option<Duration> {
-        let sample = self.samples.back()?;
-        Some(
-            SystemTime::now()
-                .duration_since(sample.timestamp)
-                .unwrap_or(Duration::ZERO),
-        )
+    pub fn time_since_last_update(&self, now: Instant) -> Option<Duration> {
+        let newest = self.samples.back()?;
+        Some(now.saturating_duration_since(newest.at))
     }
 
     /// Change the time window and cleanup old samples
     ///
-    /// Samples outside the new window will be removed immediately.
-    pub fn set_window(&mut self, window: Duration) {
+    /// Samples outside the new window as of `now` are removed immediately.
+    pub fn set_window(&mut self, window: Duration, now: Instant) {
         self.window = window;
 
         // Cleanup with the new window
-        let now = SystemTime::now();
         self.cleanup_old_samples(now);
     }
 
@@ -194,11 +201,16 @@ impl Default for SensorMean {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use std::thread::sleep;
 
-    /// Slept between an event and reading a duration back, so the assertion
-    /// can be a load-safe floor rather than a bound on scheduling latency.
-    const SETTLE: Duration = Duration::from_millis(50);
+    /// The instant the tests count from. `Instant` has no other constructor;
+    /// every other instant in a test is this one plus a `Duration`, so no
+    /// test waits and each asserts the exact answer.
+    fn start() -> Instant {
+        Instant::now()
+    }
+
+    const SECOND: Duration = Duration::from_secs(1);
+    const NANOSECOND: Duration = Duration::from_nanos(1);
 
     #[test]
     fn test_new_sensor_mean() {
@@ -207,88 +219,104 @@ mod tests {
 
         assert_eq!(mean.window(), window);
         assert_eq!(mean.sample_count(), 0);
-        assert_eq!(mean.get_mean(), None);
+        assert_eq!(mean.get_mean(start()), None);
     }
 
     #[test]
     fn test_add_sample() {
+        let t0 = start();
         let mut mean = SensorMean::new(Duration::from_mins(1));
 
-        mean.add_sample(10.0);
+        mean.add_sample(10.0, t0);
         assert_eq!(mean.sample_count(), 1);
-        assert_eq!(mean.get_mean(), Some(10.0));
+        assert_eq!(mean.get_mean(t0), Some(10.0));
 
-        mean.add_sample(20.0);
+        mean.add_sample(20.0, t0 + SECOND);
         assert_eq!(mean.sample_count(), 2);
-        assert_eq!(mean.get_mean(), Some(15.0));
+        assert_eq!(mean.get_mean(t0 + SECOND), Some(15.0));
 
-        mean.add_sample(30.0);
+        mean.add_sample(30.0, t0 + 2 * SECOND);
         assert_eq!(mean.sample_count(), 3);
-        assert_eq!(mean.get_mean(), Some(20.0));
+        assert_eq!(mean.get_mean(t0 + 2 * SECOND), Some(20.0));
     }
 
     #[test]
     fn test_time_since_last_update() {
+        let t0 = start();
         let mut mean = SensorMean::new(Duration::from_mins(1));
 
-        assert_eq!(mean.time_since_last_update(), None);
+        assert_eq!(mean.time_since_last_update(t0), None);
 
-        mean.add_sample(10.0);
-        sleep(SETTLE);
-        let elapsed = mean.time_since_last_update().unwrap();
+        mean.add_sample(10.0, t0);
+        mean.add_sample(20.0, t0 + 3 * SECOND);
 
-        // A floor, because load can only push the elapsed time up: it proves
-        // the answer is measured from the sample's timestamp rather than
-        // returned as a constant zero, and no amount of contention makes it
-        // fail. The ceiling is deliberately loose. It exists to catch a
-        // timestamp that was never set — an epoch-based answer reads as
-        // decades — not to assert anything about scheduling latency, which is
-        // all a tight bound here would measure.
-        assert!(
-            elapsed >= SETTLE,
-            "elapsed should be at least the {SETTLE:?} slept since the sample, got {elapsed:?}"
+        // Counted from the newest sample's instant to the one asked about:
+        // neither the older sample nor the moment of the call comes into it.
+        assert_eq!(
+            mean.time_since_last_update(t0 + 10 * SECOND),
+            Some(7 * SECOND)
         );
-        assert!(
-            elapsed < Duration::from_secs(60),
-            "elapsed should be recent, got {elapsed:?} — is the timestamp set from the sample?"
+        assert_eq!(
+            mean.time_since_last_update(t0 + 3 * SECOND),
+            Some(Duration::ZERO)
         );
     }
 
     #[test]
-    fn time_since_last_update_reports_zero_for_a_sample_stamped_in_the_future() {
-        // The state a backwards clock jump leaves behind. Staged directly
-        // rather than by moving the system clock, which a test cannot do.
+    fn time_since_last_update_reports_zero_for_a_sample_dated_after_now() {
+        // What a caller holds when it read its clock before the buffer and a
+        // sample arrived in between.
+        let t0 = start();
         let mut mean = SensorMean::new(Duration::from_mins(1));
-        mean.samples.push_back(TimedSample {
-            timestamp: SystemTime::now() + Duration::from_secs(3600),
-            value: 10.0,
-        });
+        mean.add_sample(10.0, t0 + Duration::from_hours(1));
 
         let elapsed = mean
-            .time_since_last_update()
+            .time_since_last_update(t0)
             .expect("a sample is present, so this is not the no-data case");
         assert_eq!(
             elapsed,
             Duration::ZERO,
-            "a future-stamped sample is as new as a sample gets"
+            "a sample dated after now is as new as a sample gets"
+        );
+        assert_eq!(
+            mean.get_mean(t0),
+            Some(10.0),
+            "a sample dated after now is inside the window"
         );
     }
 
     #[test]
     fn test_window_cleanup() {
+        let t0 = start();
         let mut mean = SensorMean::new(Duration::from_millis(100));
 
-        mean.add_sample(10.0);
-        mean.add_sample(20.0);
+        mean.add_sample(10.0, t0);
+        mean.add_sample(20.0, t0);
         assert_eq!(mean.sample_count(), 2);
 
-        // Wait for samples to age out
-        sleep(Duration::from_millis(150));
-
-        // Add new sample, which should trigger cleanup
-        mean.add_sample(30.0);
+        // A sample dated after the first two aged out triggers cleanup
+        let later = t0 + Duration::from_millis(150);
+        mean.add_sample(30.0, later);
         assert_eq!(mean.sample_count(), 1);
-        assert_eq!(mean.get_mean(), Some(30.0));
+        assert_eq!(mean.get_mean(later), Some(30.0));
+    }
+
+    #[test]
+    fn a_sample_exactly_one_window_old_is_inside_the_window() {
+        // The edge both the read filter and eviction share: a sample as old
+        // as the window is long is the oldest one inside it.
+        let t0 = start();
+        let window = Duration::from_secs(10);
+        let mut mean = SensorMean::new(window);
+        mean.add_sample(10.0, t0);
+
+        assert_eq!(mean.get_mean(t0 + window), Some(10.0));
+        assert_eq!(mean.get_mean(t0 + window + NANOSECOND), None);
+
+        mean.add_sample(20.0, t0 + window);
+        assert_eq!(mean.sample_count(), 2, "eviction dropped a sample inside");
+        mean.add_sample(30.0, t0 + window + NANOSECOND);
+        assert_eq!(mean.sample_count(), 2, "eviction kept a sample outside");
     }
 
     #[test]
@@ -297,16 +325,15 @@ mod tests {
         // all older than the window, and nothing arriving to evict them.
         // Eviction only runs on insert, so `get_mean` has to apply the window
         // itself or it reports a stale average as current.
+        let t0 = start();
         let mut mean = SensorMean::new(Duration::from_millis(50));
 
-        mean.add_sample(10.0);
-        mean.add_sample(20.0);
-        assert_eq!(mean.get_mean(), Some(15.0));
-
-        sleep(Duration::from_millis(100));
+        mean.add_sample(10.0, t0);
+        mean.add_sample(20.0, t0);
+        assert_eq!(mean.get_mean(t0), Some(15.0));
 
         assert_eq!(
-            mean.get_mean(),
+            mean.get_mean(t0 + Duration::from_millis(100)),
             None,
             "a window holding only aged-out samples must read as no value, not as a stale mean"
         );
@@ -316,22 +343,54 @@ mod tests {
     }
 
     #[test]
+    fn a_sample_dated_before_the_newest_is_kept_and_dated_as_the_newest() {
+        let t0 = start();
+        let window = 5 * SECOND;
+        let newest = t0 + 10 * SECOND;
+        let mut mean = SensorMean::new(window);
+        mean.add_sample(10.0, newest);
+
+        // By its own date this one is ten seconds old in a five second
+        // window.
+        mean.add_sample(20.0, t0);
+
+        assert_eq!(mean.sample_count(), 2, "the late sample was dropped");
+        assert_eq!(
+            mean.get_mean(newest),
+            Some(15.0),
+            "the late sample is not in the mean"
+        );
+        assert_eq!(
+            mean.time_since_last_update(newest),
+            Some(Duration::ZERO),
+            "the late sample moved the newest instant back"
+        );
+        // Both leave the window together, at the newest instant's age.
+        assert_eq!(mean.get_mean(newest + window), Some(15.0));
+        assert_eq!(mean.get_mean(newest + window + NANOSECOND), None);
+        mean.add_sample(30.0, newest + window + NANOSECOND);
+        assert_eq!(mean.sample_count(), 1, "eviction left an aged-out sample");
+    }
+
+    #[test]
     fn test_set_window() {
+        let t0 = start();
         let mut mean = SensorMean::new(Duration::from_mins(1));
 
-        mean.add_sample(10.0);
-        sleep(Duration::from_millis(50));
-        mean.add_sample(20.0);
-        sleep(Duration::from_millis(50));
-        mean.add_sample(30.0);
+        mean.add_sample(10.0, t0);
+        mean.add_sample(20.0, t0 + Duration::from_millis(50));
+        mean.add_sample(30.0, t0 + Duration::from_millis(100));
 
         assert_eq!(mean.sample_count(), 3);
 
         // Shrink window to very small duration
-        mean.set_window(Duration::from_millis(10));
+        let now = t0 + Duration::from_millis(105);
+        mean.set_window(Duration::from_millis(10), now);
 
         // Old samples should be removed
-        assert!(mean.sample_count() < 3);
+        assert_eq!(mean.window(), Duration::from_millis(10));
+        assert_eq!(mean.sample_count(), 1);
+        assert_eq!(mean.get_mean(now), Some(30.0));
     }
 
     #[test]
@@ -339,18 +398,16 @@ mod tests {
         // Staleness and emptiness are different answers. `get_mean` going
         // `None` is what a caller notices; this is how it learns how stale
         // the reading it can no longer have actually is.
+        let t0 = start();
+        let later = t0 + Duration::from_millis(100);
         let mut mean = SensorMean::new(Duration::from_millis(50));
-        mean.add_sample(10.0);
-        sleep(Duration::from_millis(100));
+        mean.add_sample(10.0, t0);
 
-        assert_eq!(mean.get_mean(), None, "the sample has aged out");
+        assert_eq!(mean.get_mean(later), None, "the sample has aged out");
         let elapsed = mean
-            .time_since_last_update()
+            .time_since_last_update(later)
             .expect("an aged-out sample is still a sample");
-        assert!(
-            elapsed >= Duration::from_millis(100),
-            "expected at least the 100ms slept, got {elapsed:?}"
-        );
+        assert_eq!(elapsed, Duration::from_millis(100));
     }
 
     #[test]
@@ -358,14 +415,15 @@ mod tests {
         // The second way the buffer empties, and the reason `None` cannot be
         // documented as "nothing was ever added": `set_window` evicts, and a
         // small enough window evicts everything.
+        let t0 = start();
+        let later = t0 + Duration::from_millis(50);
         let mut mean = SensorMean::new(Duration::from_mins(1));
-        mean.add_sample(10.0);
-        sleep(Duration::from_millis(50));
+        mean.add_sample(10.0, t0);
 
-        mean.set_window(Duration::from_millis(10));
+        mean.set_window(Duration::from_millis(10), later);
 
         assert_eq!(mean.sample_count(), 0, "the shrink evicted the only sample");
-        assert_eq!(mean.time_since_last_update(), None);
+        assert_eq!(mean.time_since_last_update(later), None);
     }
 
     #[test]
