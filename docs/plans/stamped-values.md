@@ -430,5 +430,5 @@ Not filed, and not part of any step; each is the owner's call.
 | S1 — `Stamped<T>`, and `dsd-fp2` | Merged 2026-11-13 | [S1](https://github.com/rusty-photon/rusty-photon/pull/1770) |
 | S2 — the three power boxes | Merged 2026-11-14 | [S2](https://github.com/rusty-photon/rusty-photon/pull/1782) |
 | S3 — `qhy-focuser` | Merged 2026-11-14 | [S3](https://github.com/rusty-photon/rusty-photon/pull/1786) |
-| S4 — `SensorMean` reads no clock | In progress | `feature/stamped-values-s4-1727` |
-| S5 — one reply-holding test transport | Not started | — |
+| S4 — `SensorMean` reads no clock | Merged 2026-11-15 | [S4](https://github.com/rusty-photon/rusty-photon/pull/1791) |
+| S5 — one reply-holding test transport | In progress | `feature/stamped-values-s5-1727` |

@@ -1864,7 +1864,7 @@ async fn test_focuser_position_not_connected() {
 
 #### 6.5 Mock Infrastructure Lives in Test Files
 
-Hand-written test doubles (ppba-driver's and qhy-focuser's `InjectableFactory` and `HoldingFactory`, ppba-driver's `FailingPpbaTransportFactory`) are defined in the `#[cfg(test)]` modules that use them. They are NOT feature-gated. The `mock` feature is reserved for the device simulators in `src/mock.rs` (`MockPpbaTransportFactory`, `MockQhyTransportFactory`), which stand in for the serial port in ConformU, server and BDD tests.
+Hand-written test doubles (ppba-driver's and qhy-focuser's `InjectableFactory`, ppba-driver's `FailingPpbaTransportFactory`) are defined in the `#[cfg(test)]` modules that use them. They are NOT feature-gated. A double the unit tests of several drivers share lives in the `transport-doubles` crate, a dev-dependency (`HoldingFactory`, §6.14). The `mock` feature is reserved for the device simulators in `src/mock.rs` (`MockPpbaTransportFactory`, `MockQhyTransportFactory`), which stand in for the serial port in ConformU, server and BDD tests.
 
 #### 6.6 Serialize Tests That Share Process-Global State
 
@@ -2392,6 +2392,62 @@ The evidence that the gate holds is negative:
   analysis;
 - `cargo build -v -p <a dependent>` shows the crate compiled without
   `--cfg feature="test-util"`.
+
+#### 6.14 A Store-Order Race Is Built With `HoldingFactory`
+
+A driver stores what a request brought back after its turn on the wire
+ends, so a poll that read the device before a command can store after the
+command's value. The driver refuses the poll's older value ([Values that
+carry their time](../workspace.md#values-that-carry-their-time)). The unit
+test that proves it has to put the two stores in that order every run, not
+wait for a loaded host to do it. `transport-doubles`'s `HoldingFactory` does
+that. It wraps the driver's mock factory, holds back the reply to one
+request, says when the reply is held, and lets it go when the test says.
+The `manager.rs` test modules of the six polling serial drivers have such
+tests; `services/dsd-fp2/src/manager.rs` has the shortest one:
+
+```rust
+let factory = Arc::new(HoldingFactory::new(MockTransportFactory::default()));
+// ... a manager on `factory`, polling every 20 ms, and a session ...
+
+// A poll's request is on the wire. The device has it, so its reply is decided.
+factory.hold_next_reply_to(Fp2Codec.encode(&Command::GetLight));
+factory.reply_held().await;
+
+// With the cache held, the poll reads its reply and waits on the lock. The
+// command goes on the wire behind it and stores first.
+let mut cache = snap.write().await;
+factory.release_reply();
+let (reply, timing) = session.request_timed(Command::SetLight(true)).await.unwrap();
+reply.parse_ok().unwrap();
+cache.store_light_on(true, timing.received_at);
+
+// The poll stores next. Its next request shows it has stored.
+factory.hold_next_reply_to(Fp2Codec.encode(&Command::GetMotorState));
+drop(cache);
+factory.reply_held().await;
+assert_eq!(snap.read().await.light_on.value(), Some(true));
+factory.release_reply();
+```
+
+- **Arm with the frame's leading bytes.** `hold_next_reply_to` takes bytes:
+  a literal such as `b"PA"`, or the driver's codec encoding the command
+  (`Codec::encode`). A frame that starts otherwise passes and leaves the arm
+  set, so a command sent between polls does not take it.
+  `hold_next_reply` holds the next reply read, whatever frame went out
+  before it. It is for a device that sends frames unasked, which
+  `gemini-powerbox-adv3-driver`'s hub does.
+- **The hold sits before the reply is read.** The device has the request,
+  so the mock's answer is the one it gives at that moment. Arming again
+  while a reply is held arms the next match, so a test can arm the poll's
+  next request before it lets the held one go, as `pa-scops-oag`'s do.
+- **The next request is the sign.** Once the poll sends its next armed
+  request, its store is done. The test waits on that event, not on a sleep
+  (§6.9). `reply_held` fails with "no request reached its reply in 10s"
+  (`HOLD_DEADLINE`) when no request comes. That is a failure deadline, not a
+  duration.
+- **Prove the test can fail.** Remove the driver's order check, making the
+  store unconditional, and the test must fail.
 
 ---
 
