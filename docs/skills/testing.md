@@ -987,10 +987,14 @@ gracefully, freeing rp's connection.
 tool-dispatch module) shows much higher coverage from unit tests than from
 BDD — e.g. a big gap between BDD-only coverage and combined coverage.
 Confirm by re-running BDD with `bdd_infra=debug` added to the log filter
-and stderr captured — `RUST_LOG=warn,rusty_photon_tls=debug,bdd_infra=debug`
+and stderr captured — `RUST_LOG=info,rusty_photon_tls=debug,bdd_infra=debug`
 for a `cargo test` run, and the same value through
 `--test_env=RUST_LOG=…` under Bazel, whose test actions see only the
 variables `.bazelrc` or the command line forwards, besides Bazel's own.
+The base level is `info`, not the suite default's `warn`, because the
+services under test inherit `RUST_LOG`: `info` is the level they start
+at without it, so a scenario that waits for one of their `info!` lines
+(the restart scenarios' `restart requested:`) still sees it.
 `ServiceHandle::stop` logs `<service> did not exit after SIGTERM, forcing
 it down with SIGKILL` at `debug!` for every forced stop (`CTRL_BREAK_EVENT`
 and `TerminateProcess` on Windows). A count > 0 means the lifecycle
@@ -1082,9 +1086,9 @@ Every BDD test process owns a private OmniSim
 (`--multi-instance` + a port it picks itself + per-instance settings dir), so
 the wall-clock lever is more processes, each with its own simulator:
 the OmniSim suites (every target tagged `resources:omnisim:1`) run
-concurrently under Bazel, and `rp:bdd`,
-`session-runner:bdd` and `polar-align:bdd` are additionally split into
-parallel shard processes via Bazel `shard_count`. To shard a suite:
+concurrently under Bazel, and a suite whose `rust_test` target sets
+Bazel's `shard_count` is split further, into that many shard
+processes. To shard a suite:
 (1) set `shard_count` on its `rust_test` target, and (2) route its
 cucumber filter through
 `bdd_infra::sharding::scenario_in_current_shard(feat.path.as_deref(),
