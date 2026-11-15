@@ -81,7 +81,7 @@ impl McpHandler {
     /// `RequestContext`.
     #[expect(
         clippy::too_many_lines,
-        reason = "the rotate-while-guiding ladder (pause, pre-move read, move, calibration decision, back to guiding) is one contract; the body was this long under the #[tool] macro, which hid it from the lint"
+        reason = "the rotate-while-guiding ladder (pause, pre-move read, move, calibration decision, back to guiding) is one contract, kept in one body so its order reads top to bottom"
     )]
     pub(crate) async fn move_rotator_inner(
         &self,
