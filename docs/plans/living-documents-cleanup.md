@@ -446,7 +446,7 @@ for every batch.
 | B1 — Star Adventurer GTi | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1763), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1767) |
 | B2 — doctor, ui-htmx, the installer | Not started | — |
 | B3 — rp and its client crates | Not started | — |
-| B4 — BDD infrastructure and OmniSim | Not started | — |
+| B4 — BDD infrastructure and OmniSim | Under way: the docs first, the code comments and the guard rows second | [docs](https://github.com/rusty-photon/rusty-photon/pull/1790) |
 | B5 — shared transport and the serial drivers | Not started | — |
 | B6 — cameras and SDK crates | Merged: the design docs on 2026-11-14, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1779), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1783) |
 | B7 — guiding, solving, sentinel, lifecycle, TLS | Not started | — |
