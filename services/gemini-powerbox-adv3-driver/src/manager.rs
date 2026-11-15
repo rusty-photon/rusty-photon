@@ -1112,81 +1112,11 @@ mod tests {
 
     // ---- a poll against a write -----------------------------------------
 
-    /// Wraps the canonical mock and, once armed, holds the next reply read:
-    /// `recv_frame` says it has been reached and waits to be let go. The hub
-    /// has the command by then, so the held reply is already decided.
-    #[derive(Default, Clone)]
-    struct HoldingFactory {
-        inner: MockGeminiTransportFactory,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[derive(Default)]
-    struct ReplyHold {
-        armed: AtomicBool,
-        reached: tokio::sync::Notify,
-        released: tokio::sync::Notify,
-    }
-
-    impl HoldingFactory {
-        /// Hold the next reply any request reads.
-        fn hold_next_reply(&self) {
-            self.hold.armed.store(true, Ordering::SeqCst);
-        }
-
-        /// Wait until a request is held, or fail at [`CACHE_DEADLINE`].
-        async fn reply_held(&self) {
-            tokio::time::timeout(CACHE_DEADLINE, self.hold.reached.notified())
-                .await
-                .unwrap_or_else(|_| panic!("no request reached its reply in {CACHE_DEADLINE:?}"));
-        }
-
-        fn release_reply(&self) {
-            self.hold.released.notify_one();
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for HoldingFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(HoldingTransport {
-                inner,
-                hold: Arc::clone(&self.hold),
-            }))
-        }
-    }
-
-    struct HoldingTransport {
-        inner: Box<dyn FrameTransport>,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for HoldingTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            if self.hold.armed.swap(false, Ordering::SeqCst) {
-                self.hold.reached.notify_one();
-                self.hold.released.notified().await;
-            }
-            self.inner.recv_frame(buf).await
-        }
-
-        async fn discard_input(&mut self) -> std::result::Result<(), TransportError> {
-            self.inner.discard_input().await
-        }
-    }
+    use transport_doubles::HoldingFactory;
 
     #[tokio::test]
     async fn a_poll_read_before_a_write_does_not_replace_the_written_frame() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockGeminiTransportFactory::default()));
         let manager = make_manager_polling_every(
             Duration::from_millis(20),
             Arc::clone(&factory) as Arc<dyn TransportFactory>,
