@@ -380,10 +380,9 @@ Scenarios with `@serial` (on scenario, rule, or feature level) run sequentially.
   scenarios cucumber draws together once the `@serial` queue drains
   are enough.
 
-- The `tests/bdd.rs` of `rp`, `calibrator-flats`, `focus-model`,
-  `polar-align` and `session-runner` — the cucumber
-  `before(scenario)` hook calls `reset_all_devices` to give every
-  scenario a clean default state.
+- The `tests/bdd.rs` of every OmniSim suite (the Bazel targets tagged
+  `resources:omnisim:1`) — the cucumber `before(scenario)` hook calls
+  `reset_all_devices` to give every scenario a clean default state.
 
 - All BDD feature files that touch OmniSim are tagged `@serial`
   (file-level) so the per-scenario reset can't disconnect a device

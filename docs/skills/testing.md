@@ -279,7 +279,8 @@ scenarios fail. Because BDD tests use `harness = false`, `cargo test --test
 bdd` only fails when the binary exits non-zero, so plain `filter_run` makes
 scenario failures silently green in CI, for as long as nobody reads the
 log. The `_and_exit` variants have identical signatures plus the side
-effect of `process::exit(1)` on failure — there is no reason to prefer the
+effect of panicking with the failure summary when the run fails, which
+`bdd_main!` turns into a non-zero exit — there is no reason to prefer the
 bare form.
 
 Use `@wip` only for not-yet-implemented behavior. A scenario that fails
@@ -640,7 +641,7 @@ fixture behind every service's `auth.feature`:
 
 **Doctor smoke (always available, no feature)** — the shared fixture behind
 every service's `doctor.feature`
-([doctor.md §Per-service doctors](../services/doctor.md)):
+([doctor.md § The per-service subcommand](../services/doctor.md#the-per-service-subcommand)):
 `DoctorSmokeState` + `DoctorSmokeWorld` + `doctor_smoke_steps!` in
 `bdd_infra::doctor_smoke`. The World embeds the state, implements the trait
 (`valid_config()` — a config JSON the service's own `deny_unknown_fields`
@@ -985,11 +986,15 @@ gracefully, freeing rp's connection.
 **How to spot a regression of this issue:** rp's `mcp` module (or any
 tool-dispatch module) shows much higher coverage from unit tests than from
 BDD — e.g. a big gap between BDD-only coverage and combined coverage.
-Confirm by re-running BDD with `RUST_LOG=warn,bdd_infra=debug` and stderr
-captured: `ServiceHandle::stop` logs `<service> did not exit after SIGTERM,
-forcing it down with SIGKILL` at `debug!` for every forced stop
-(`CTRL_BREAK_EVENT` and `TerminateProcess` on Windows). A count > 0 means
-the lifecycle ordering is wrong somewhere.
+Confirm by re-running BDD with `bdd_infra=debug` added to the log filter
+and stderr captured — `RUST_LOG=warn,rusty_photon_tls=debug,bdd_infra=debug`
+for a `cargo test` run, and the same value through
+`--test_env=RUST_LOG=…` under Bazel, whose test actions see only the
+variables `.bazelrc` or the command line forwards, besides Bazel's own.
+`ServiceHandle::stop` logs `<service> did not exit after SIGTERM, forcing
+it down with SIGKILL` at `debug!` for every forced stop (`CTRL_BREAK_EVENT`
+and `TerminateProcess` on Windows). A count > 0 means the lifecycle
+ordering is wrong somewhere.
 
 #### 5.5 Reset OmniSim devices in the `before(scenario)` hook
 
@@ -1076,7 +1081,8 @@ restart PUTs are serialized process-wide.)
 Every BDD test process owns a private OmniSim
 (`--multi-instance` + a port it picks itself + per-instance settings dir), so
 the wall-clock lever is more processes, each with its own simulator:
-the six OmniSim suites run concurrently under Bazel, and `rp:bdd`,
+the OmniSim suites (every target tagged `resources:omnisim:1`) run
+concurrently under Bazel, and `rp:bdd`,
 `session-runner:bdd` and `polar-align:bdd` are additionally split into
 parallel shard processes via Bazel `shard_count`. To shard a suite:
 (1) set `shard_count` on its `rust_test` target, and (2) route its
@@ -1849,7 +1855,7 @@ async fn test_focuser_position_not_connected() {
 #### 6.4 Test File Organization
 
 - `src/<module>.rs` `#[cfg(test)] mod tests` -- Unit and mock-based component tests (inline with source)
-- `test_integration.rs` / `test_lib.rs` -- Server, run-loop, and CLI integration tests. Aim to keep these in one binary per service when practical so cargo links fewer integration targets; phd2-guider splits by concern, where the categories share no helpers.
+- `test_integration.rs` / `test_lib.rs` -- Server, run-loop, and CLI integration tests. Aim to keep these in one binary per service when practical so cargo links fewer integration targets; some services split by concern where the categories share no helpers.
 - `conformu_integration.rs` -- ASCOM conformance (self-skips without `CONFORMU_PATH`; see §1.4)
 
 #### 6.5 Mock Infrastructure Lives in Test Files
