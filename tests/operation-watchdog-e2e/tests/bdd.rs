@@ -4,11 +4,9 @@
 //! plate-solver stub) and drives the watchdog through wedge → escalation →
 //! corrective ladder. See `world.rs` for the process lifecycle.
 
-#![allow(clippy::expect_used)]
-#![expect(
-    clippy::panic,
-    reason = "the before hook fails the scenario on a failed OmniSim reset, naming every failed restart"
-)]
+// An allow, not an expect, for `clippy::panic`: whether it fires inside the
+// `bdd_main!` body depends on the clippy version.
+#![allow(clippy::expect_used, clippy::panic)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
     clippy::needless_pass_by_ref_mut,
