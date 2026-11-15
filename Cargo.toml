@@ -180,7 +180,6 @@ tokio-serial = "5.4.5"
 # `dep:`-only dependency with no implicit feature, so a direct-minimal-versions
 # build of the dual-homed simulation crates fails to resolve it.
 rand = "0.10.1"
-rayon = "1.10"
 # `libqhyccd-sys` links the proprietary static `qhyccd` lib and `libusb-1.0`:
 # docs/services/qhy-camera.md "Native dependency & build gating".
 qhyccd-rs = { path = "crates/qhyccd-rs" }

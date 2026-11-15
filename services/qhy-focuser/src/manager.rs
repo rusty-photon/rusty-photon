@@ -16,8 +16,12 @@
 //! the cache keeps the reading taken last ([`Stamped`]). Requests take
 //! turns on the wire, but each stores its reading after its turn ends, so
 //! a poll's position can land after the one `is_moving`'s refresh read at
-//! the target; the poll's is then the older one and is dropped.
+//! the target; the poll's is then the older one and is dropped. It can
+//! also land after a move this driver has since sent: a position read
+//! before the device answered a move says nothing about that move, so it
+//! cannot end it.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,9 +45,18 @@ pub struct CachedState {
     pub position: Stamped<i64>,
     /// Target position for the in-flight move.
     pub target_position: Option<i64>,
-    /// True between move start and the poll that observes target reached
-    /// (or a successful Abort).
+    /// True between move start and the position, read after the device
+    /// answered the move, that finds the target reached (or a successful
+    /// Abort).
     pub is_moving: bool,
+    /// When the device last answered a move. A position read before it was
+    /// read before the device had that move, and ends no move.
+    pub move_answered_at: Option<Instant>,
+    /// Moves sent and not yet answered. While one is, no position ends a
+    /// move: it may have been read before the move reached the device.
+    /// Counted by [`MoveInFlight`], which takes a move off the count
+    /// however its request ends.
+    pub moves_in_flight: Arc<AtomicU32>,
     /// Outer and chip temperatures (°C) and input voltage (V), the three
     /// values one `ReadTemperature` answer carries, with the instant it was
     /// read off the wire.
@@ -52,6 +65,28 @@ pub struct CachedState {
     pub firmware_version: Option<String>,
     /// Board version reported by the handshake.
     pub board_version: Option<String>,
+}
+
+/// One move sent and not yet answered, on [`CachedState::moves_in_flight`]
+/// for as long as it lives.
+///
+/// Dropping it takes the move off the count: once its answer is recorded,
+/// on a failure, or with the caller's future when a client hangs up
+/// mid-request. A move nobody waits for any more therefore cannot keep a
+/// position at its target from ending it, and `is_moving` at true.
+struct MoveInFlight(Arc<AtomicU32>);
+
+impl MoveInFlight {
+    fn start(count: &Arc<AtomicU32>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for MoveInFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Manager that wraps the shared transport plus Q-Focuser-specific
@@ -97,7 +132,8 @@ impl FocuserManager {
 
     /// Issue an absolute-move command over the device's session and
     /// update the cached `is_moving` / `target_position`. The poll loop
-    /// clears these once the device reports the target reached.
+    /// clears these once the device reports the target reached, in a
+    /// position read after the device answered this command.
     ///
     /// On transport failure the cache is rolled back to its pre-move
     /// state so a transient wire failure doesn't wedge ASCOM `IsMoving`
@@ -108,22 +144,38 @@ impl FocuserManager {
     ///
     /// # Errors
     ///
-    /// Returns the [`Session::request`] failure as a [`QhyFocuserError`]: a
-    /// transport error, a response the codec cannot decode, or an exhausted
-    /// skip budget.
+    /// Returns the [`Session::request_timed`] failure as a
+    /// [`QhyFocuserError`]: a transport error, a response the codec cannot
+    /// decode, or an exhausted skip budget.
     pub async fn move_absolute(&self, session: &Session<QhyCodec>, position: i64) -> Result<()> {
         // Set cache state before sending so a racing `is_moving` read
         // can't observe `is_moving == false` while the move is in flight.
-        {
+        let in_flight = {
             let mut state = self.cached_state.write().await;
             state.target_position = Some(position);
             state.is_moving = true;
-        }
-        if let Err(e) = session.request(Command::AbsoluteMove { position }).await {
-            let mut state = self.cached_state.write().await;
-            rollback_move_if_ours(&mut state, position);
-            return Err(QhyFocuserError::from(e));
-        }
+            MoveInFlight::start(&state.moves_in_flight)
+        };
+        let outcome = session
+            .request_timed(Command::AbsoluteMove { position })
+            .await;
+        let mut state = self.cached_state.write().await;
+        // Off the count only now, with the cache held until the answer's
+        // date is in: a position read before the answer meets the count or
+        // the date, never a moment with neither guard up.
+        drop(in_flight);
+        let timing = match outcome {
+            Ok((_, timing)) => timing,
+            Err(e) => {
+                rollback_move_if_ours(&mut state, position);
+                return Err(QhyFocuserError::from(e));
+            }
+        };
+        // Date the move by its answer, so a position read before it, which
+        // can equal the target with the focuser still on its way there,
+        // cannot end the move.
+        record_move_answer(&mut state, timing.received_at);
+        drop(state);
         debug!(position, "absolute-move command sent");
         Ok(())
     }
@@ -329,6 +381,14 @@ fn rollback_move_if_ours(state: &mut CachedState, our_target: i64) {
     }
 }
 
+/// Record that the device answered a move at `answered_at`. The cache
+/// keeps the latest answer: moves take turns on the wire, but each caller
+/// records its answer after its turn ends, so two clients' answers can be
+/// recorded out of wire order.
+fn record_move_answer(state: &mut CachedState, answered_at: Instant) {
+    state.move_answered_at = state.move_answered_at.max(Some(answered_at));
+}
+
 /// Update the cached position and clear `is_moving` if the target was
 /// reached. Kept in one place so `refresh_position` and the poll loop
 /// stay in lockstep on move-completion semantics.
@@ -337,20 +397,36 @@ fn rollback_move_if_ours(state: &mut CachedState, our_target: i64) {
 /// reading taken on the way to the target would replace the one
 /// `is_moving`'s refresh took at the target, and the focuser would report
 /// that it stopped short of where it says it arrived.
+///
+/// A position at the target ends the move unless it was read before the
+/// device answered the move. Read before, it shows where the focuser was
+/// before it had the move: a client that sends the focuser to the step a
+/// poll has just read would see the move end with the focuser still
+/// travelling, and `is_moving` would answer false without asking the
+/// device again. While a move is unanswered nothing dates it yet, and no
+/// position ends it.
 fn apply_position(state: &mut CachedState, position: i64, read_at: Instant) {
     if !state.position.offer(position, read_at) {
         debug!(position, "dropping a position read before the cached one");
         return;
     }
-    if state.is_moving {
-        if let Some(target) = state.target_position {
-            if position == target {
-                debug!(position, target, "move complete: target reached");
-                state.is_moving = false;
-                state.target_position = None;
-            }
-        }
+    if !state.is_moving || state.target_position != Some(position) {
+        return;
     }
+    if state.moves_in_flight.load(Ordering::SeqCst) > 0 {
+        debug!(position, "at the target, with a move not yet answered");
+        return;
+    }
+    if state
+        .move_answered_at
+        .is_some_and(|answered_at| read_at < answered_at)
+    {
+        debug!(position, "at the target, read before the move was answered");
+        return;
+    }
+    debug!(position, "move complete: target reached");
+    state.is_moving = false;
+    state.target_position = None;
 }
 
 /// Store the temperatures and the voltage read at `read_at`, unless the
@@ -740,12 +816,193 @@ mod tests {
     }
 
     /// Build a manager whose poll loop is effectively disabled (300s
-    /// interval) so the `InjectableFactory`'s armed failure is consumed
-    /// by the test's foreground request rather than by the poll task.
-    fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<FocuserManager> {
+    /// interval), so only the test's own requests go on the wire: an armed
+    /// failure or a held reply meets the request the test sends, not a
+    /// poll's.
+    fn make_manager_with_factory<F>(factory: Arc<F>) -> Arc<FocuserManager>
+    where
+        F: TransportFactory + 'static,
+    {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
         FocuserManager::new(&config, factory)
+    }
+
+    // ---- a position read before a move ----------------------------------
+
+    #[tokio::test]
+    async fn a_position_read_before_a_move_was_sent_does_not_end_it() {
+        let manager = make_manager_with_factory(Arc::new(InjectableFactory::default()));
+        let session = manager.transport().acquire().await.unwrap();
+
+        // The focuser is on its way to 5000, and a reader has 1000 in hand
+        // that it has not stored yet: what a poll task slow to run again on
+        // a loaded host holds.
+        manager.move_absolute(&session, 5000).await.unwrap();
+        let (in_hand, timing) = session.request_timed(Command::GetPosition).await.unwrap();
+        let QhyResponse::Position(in_hand) = in_hand else {
+            panic!("GetPosition answered by {in_hand:?}");
+        };
+        assert_eq!(in_hand.position, 1000, "the reader's position");
+
+        // A client sends the focuser to the very step the reader holds,
+        // and the reader stores it afterwards, as the poll loop does.
+        manager.move_absolute(&session, 1000).await.unwrap();
+        apply_position(
+            &mut *manager.cached_state.write().await,
+            in_hand.position,
+            timing.received_at,
+        );
+
+        let state = manager.get_cached_state().await;
+        assert!(
+            state.is_moving,
+            "a position read before the move was sent ended it"
+        );
+        assert_eq!(state.target_position, Some(1000));
+        assert_eq!(state.position.value(), Some(1000), "the position is stored");
+
+        // A position read after the move's answer finds the focuser at the
+        // target, and ends the move.
+        manager.refresh_position(&session).await.unwrap();
+        let state = manager.get_cached_state().await;
+        assert!(!state.is_moving);
+        assert_eq!(state.target_position, None);
+
+        session.close().await.unwrap();
+    }
+
+    #[test]
+    fn a_position_at_the_target_read_before_the_move_was_answered_ends_no_move() {
+        let read_at = Instant::now();
+        let answered_at = read_at.checked_add(Duration::from_millis(1)).unwrap();
+        let mut state = CachedState {
+            target_position: Some(1000),
+            is_moving: true,
+            move_answered_at: Some(answered_at),
+            ..Default::default()
+        };
+
+        apply_position(&mut state, 1000, read_at);
+
+        assert!(
+            state.is_moving,
+            "a position read before the move was answered ended it"
+        );
+        assert_eq!(state.target_position, Some(1000));
+        assert_eq!(state.position.value(), Some(1000), "the position is stored");
+        assert_eq!(state.position.read_at(), Some(read_at));
+    }
+
+    #[test]
+    fn a_position_at_the_target_read_as_the_move_was_answered_ends_it() {
+        let answered_at = Instant::now();
+        let mut state = CachedState {
+            target_position: Some(1000),
+            is_moving: true,
+            move_answered_at: Some(answered_at),
+            ..Default::default()
+        };
+
+        // Only a strictly earlier read is refused, the rule `ReadStamp`
+        // keeps for readings: reads at one instant, every read on a paused
+        // test clock, still end a move.
+        apply_position(&mut state, 1000, answered_at);
+
+        assert!(
+            !state.is_moving,
+            "a position read at the answer's instant did not end the move"
+        );
+        assert_eq!(state.target_position, None);
+    }
+
+    #[test]
+    fn the_cache_keeps_the_later_of_two_move_answers() {
+        let earlier = Instant::now();
+        let later = earlier.checked_add(Duration::from_millis(1)).unwrap();
+        let mut state = CachedState::default();
+
+        // Two clients' moves, recorded in the other order than they were
+        // answered.
+        record_move_answer(&mut state, later);
+        record_move_answer(&mut state, earlier);
+
+        assert_eq!(
+            state.move_answered_at,
+            Some(later),
+            "the earlier answer replaced the later one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_position_at_the_target_does_not_end_a_move_the_device_has_not_answered() {
+        let factory = Arc::new(HoldingFactory::default());
+        let manager = make_manager_with_factory(Arc::clone(&factory));
+        let session = manager.transport().acquire().await.unwrap();
+
+        factory.hold_next_reply_to(&Command::AbsoluteMove { position: 1000 });
+        let mut moving = Box::pin(manager.move_absolute(&session, 1000));
+        tokio::select! {
+            () = factory.reply_held() => {}
+            outcome = &mut moving => panic!("the move ended with its reply held: {outcome:?}"),
+        }
+
+        // The device has the move and has not answered it. A reader stores
+        // a position at the target in the meantime, which it may have read
+        // before the move was sent.
+        apply_position(
+            &mut *manager.cached_state.write().await,
+            1000,
+            Instant::now(),
+        );
+        let state = manager.get_cached_state().await;
+        assert!(
+            state.is_moving,
+            "a position ended a move the device had not answered"
+        );
+        assert_eq!(state.target_position, Some(1000));
+
+        // Answered, the move is ended by the next position at the target.
+        factory.release_reply();
+        moving.await.unwrap();
+        manager.refresh_position(&session).await.unwrap();
+        let state = manager.get_cached_state().await;
+        assert!(!state.is_moving);
+        assert_eq!(state.target_position, None);
+
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_move_whose_caller_stopped_waiting_does_not_hold_is_moving() {
+        let factory = Arc::new(HoldingFactory::default());
+        let manager = make_manager_with_factory(Arc::clone(&factory));
+        let session = manager.transport().acquire().await.unwrap();
+
+        factory.hold_next_reply_to(&Command::AbsoluteMove { position: 1000 });
+        let mut moving = Box::pin(manager.move_absolute(&session, 1000));
+        tokio::select! {
+            () = factory.reply_held() => {}
+            outcome = &mut moving => panic!("the move ended with its reply held: {outcome:?}"),
+        }
+
+        // The client hangs up: its handler's future goes, with the move on
+        // the wire and nobody left to record its answer.
+        drop(moving);
+        assert!(manager.get_cached_state().await.is_moving);
+
+        // The exchange runs to its reply all the same, and the next
+        // position at the target ends the move.
+        factory.release_reply();
+        manager.refresh_position(&session).await.unwrap();
+        let state = manager.get_cached_state().await;
+        assert!(
+            !state.is_moving,
+            "a move nobody waits for held is_moving at true"
+        );
+        assert_eq!(state.target_position, None);
+
+        session.close().await.unwrap();
     }
 
     #[tokio::test]

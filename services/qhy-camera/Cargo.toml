@@ -154,13 +154,13 @@ tokio-test = { workspace = true }
 # StartExposure with a negative Duration (rejected by the server before the
 # typed client can carry it — `std::time::Duration` is unsigned).
 reqwest = { workspace = true }
-# Bazel-only resolution nudge — keeps `simulation`'s OPTIONAL deps (rand, rayon)
+# Bazel-only resolution nudge — keeps `simulation`'s OPTIONAL dep (rand)
 # materialized in the `@cr` crate_universe repo. The real/sim SDK split is done
 # by depending on the two BUILD variants (`//crates/qhyccd-rs:qhyccd-rs` vs
 # `:qhyccd-rs_sim`), NOT by this dev-dep. But crate_universe (`from_cargo`)
 # resolves ONE feature set per crate and ignores a Bazel target's
 # `crate_features`: `qhyccd-rs/simulation` is non-default, so without something
-# enabling it in the Cargo resolution, `rand`/`rayon` never enter `@cr` and
+# enabling it in the Cargo resolution, `rand` never enters `@cr` and
 # `qhyccd-rs_sim` fails to compile (`unresolved import rand`). This dev-dep is
 # that "something". resolver = "2" keeps its feature out of the release binary
 # (`cargo build` ignores dev-deps) so production links the real SDK. See

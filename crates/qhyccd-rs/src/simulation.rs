@@ -28,7 +28,6 @@ use crate::{
     BayerPattern, CCDChipArea, CCDChipInfo, CfwStatus, ControlType, QHYError, Result, StreamMode,
 };
 use rand::{Rng, RngExt};
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -845,17 +844,6 @@ impl PixelNoise {
     }
 }
 
-/// Row-distinct seed so rayon rows (and serial frames reusing a seed)
-/// don't repeat the same noise sequence.
-#[expect(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    reason = "`row` indexes the rows of a frame whose height is a `u32`, so the truncation is unreachable; `usize` has no total conversion to `u32`, and every fallible spelling would add an arm that cannot be taken and whose fallback would alias row 0's seed. A seed needs only to differ between rows, which folding preserves either way"
-)]
-const fn row_seed(frame_seed: u32, row: usize) -> u32 {
-    frame_seed ^ (row as u32).wrapping_mul(0x9E37_79B9)
-}
-
 /// Whole microseconds as `u64`. `Duration` has no `u64` accessor for them —
 /// `as_micros` is `u128` — but `as_secs` is `u64` and `subsec_micros` is `u32`,
 /// so composing the two needs no conversion at all and saturates rather than
@@ -916,7 +904,7 @@ impl Frame {
     /// `None` for a frame with no bytes in it, and for one too large to address
     /// on this target — both mean the same thing to every caller here: nothing
     /// to fill. Excluding the empty frame also keeps every stride below
-    /// non-zero, which is what `chunks_exact_mut` and `par_chunks_mut` require.
+    /// non-zero, which is what `chunks_exact_mut` requires.
     fn new(width: u32, height: u32, channels: u32, sample_bytes: u32) -> Option<Self> {
         let sample_bytes = usize::try_from(sample_bytes).ok()?;
         let pixel_bytes = usize::try_from(channels).ok()?.checked_mul(sample_bytes)?;
@@ -1098,27 +1086,24 @@ impl ImageGenerator {
 
     fn generate_gradient_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = quantize::to_i32(65535.0 * self.noise_level);
-        let base_level = self.base_level;
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
-        // Process rows in parallel; each row gets its own noise stream.
-        data.par_chunks_mut(frame.row_bytes)
-            .enumerate()
-            .for_each(|(y, row)| {
-                let mut noise_source = PixelNoise::new(row_seed(frame_seed, y), noise_range);
+        // On the calling thread, as the 8-bit fill is: a parallel fill takes
+        // every core, and the simulated cameras run beside other processes in
+        // CI.
+        for row in data.chunks_exact_mut(frame.row_bytes) {
+            for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
+                let gradient = quantize::to_u16((f64::from(x) / f64::from(frame.width)) * 50000.0);
+                let noise = noise_source.next_signed();
+                let value = sample_u16(
+                    i32::from(self.base_level)
+                        .saturating_add(i32::from(gradient))
+                        .saturating_add(noise),
+                );
 
-                for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
-                    let gradient =
-                        quantize::to_u16((f64::from(x) / f64::from(frame.width)) * 50000.0);
-                    let noise = noise_source.next_signed();
-                    let value = sample_u16(
-                        i32::from(base_level)
-                            .saturating_add(i32::from(gradient))
-                            .saturating_add(noise),
-                    );
-
-                    write_sample(pixel, value);
-                }
-            });
+                write_sample(pixel, value);
+            }
+        }
     }
 
     fn generate_starfield_8bit<R: Rng>(
@@ -1513,11 +1498,6 @@ mod image_generator_tests {
         }
         let past_the_ceiling = Duration::new(u64::MAX, 999_999_999);
         assert_eq!(elapsed_micros(past_the_ceiling), u64::MAX);
-    }
-
-    #[test]
-    fn row_seed_differs_between_rows() {
-        assert_ne!(row_seed(1234, 0), row_seed(1234, 1));
     }
 
     #[test]
