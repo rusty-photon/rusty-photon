@@ -75,7 +75,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/transport-doubles"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

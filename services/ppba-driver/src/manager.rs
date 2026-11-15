@@ -621,93 +621,11 @@ mod tests {
 
     // ---- a poll against a write -----------------------------------------
 
-    /// How long a test waits for a request to reach its held reply before
-    /// declaring the poll loop dead: a failure deadline, not a duration.
-    const HOLD_DEADLINE: Duration = Duration::from_secs(10);
-
-    /// Wraps the canonical mock and, once armed with a command, holds the
-    /// reply to the next send of it: `recv_frame` says it has been reached
-    /// and waits to be let go. The device has the command by then, so the
-    /// held reply is already decided.
-    #[derive(Default, Clone)]
-    struct HoldingFactory {
-        inner: MockPpbaTransportFactory,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[derive(Default)]
-    struct ReplyHold {
-        /// The command whose reply is held next, as it goes on the wire.
-        armed: std::sync::Mutex<Option<&'static [u8]>>,
-        holding: AtomicBool,
-        reached: tokio::sync::Notify,
-        released: tokio::sync::Notify,
-    }
-
-    impl HoldingFactory {
-        fn hold_next_reply_to(&self, command: &'static [u8]) {
-            *self.hold.armed.lock().unwrap() = Some(command);
-        }
-
-        /// Wait until the armed command's reply is held, or fail at
-        /// [`HOLD_DEADLINE`].
-        async fn reply_held(&self) {
-            tokio::time::timeout(HOLD_DEADLINE, self.hold.reached.notified())
-                .await
-                .unwrap_or_else(|_| panic!("no request reached its reply in {HOLD_DEADLINE:?}"));
-        }
-
-        fn release_reply(&self) {
-            self.hold.released.notify_one();
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for HoldingFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(HoldingTransport {
-                inner,
-                hold: Arc::clone(&self.hold),
-            }))
-        }
-    }
-
-    struct HoldingTransport {
-        inner: Box<dyn FrameTransport>,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for HoldingTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            let armed_command = self
-                .hold
-                .armed
-                .lock()
-                .unwrap()
-                .take_if(|command| bytes.starts_with(command));
-            if armed_command.is_some() {
-                self.hold.holding.store(true, Ordering::SeqCst);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            if self.hold.holding.swap(false, Ordering::SeqCst) {
-                self.hold.reached.notify_one();
-                self.hold.released.notified().await;
-            }
-            self.inner.recv_frame(buf).await
-        }
-    }
+    use transport_doubles::HoldingFactory;
 
     #[tokio::test]
     async fn a_poll_read_before_a_write_does_not_replace_the_refreshed_status() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockPpbaTransportFactory::default()));
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_millis(20);
         let manager = PpbaManager::new(&config, Arc::clone(&factory) as Arc<dyn TransportFactory>);

@@ -637,103 +637,21 @@ mod tests {
 
     // ---- a poll against a refresh ---------------------------------------
 
-    /// How long a test waits for a request to reach its held reply before
-    /// declaring the poll loop dead: a failure deadline, not a duration.
-    const HOLD_DEADLINE: Duration = Duration::from_secs(10);
-
-    /// Wraps the canonical mock and, once armed with a command, holds the
-    /// reply to the next send of it: `recv_frame` says it has been reached
-    /// and waits to be let go. The device has the command by then, so the
-    /// held reply is already decided.
-    #[derive(Default, Clone)]
-    struct HoldingFactory {
-        inner: MockQhyTransportFactory,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[derive(Default)]
-    struct ReplyHold {
-        /// The command whose reply is held next, as it goes on the wire.
-        armed: std::sync::Mutex<Option<Vec<u8>>>,
-        holding: AtomicBool,
-        reached: tokio::sync::Notify,
-        released: tokio::sync::Notify,
-    }
-
-    impl HoldingFactory {
-        fn hold_next_reply_to(&self, command: &Command) {
-            *self.hold.armed.lock().unwrap() = Some(QhyCodec.encode(command));
-        }
-
-        /// Wait until the armed command's reply is held, or fail at
-        /// [`HOLD_DEADLINE`].
-        async fn reply_held(&self) {
-            tokio::time::timeout(HOLD_DEADLINE, self.hold.reached.notified())
-                .await
-                .unwrap_or_else(|_| panic!("no request reached its reply in {HOLD_DEADLINE:?}"));
-        }
-
-        fn release_reply(&self) {
-            self.hold.released.notify_one();
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for HoldingFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(HoldingTransport {
-                inner,
-                hold: Arc::clone(&self.hold),
-            }))
-        }
-    }
-
-    struct HoldingTransport {
-        inner: Box<dyn FrameTransport>,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for HoldingTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            let armed_command = self
-                .hold
-                .armed
-                .lock()
-                .unwrap()
-                .take_if(|command| bytes.starts_with(command));
-            if armed_command.is_some() {
-                self.hold.holding.store(true, Ordering::SeqCst);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            if self.hold.holding.swap(false, Ordering::SeqCst) {
-                self.hold.reached.notify_one();
-                self.hold.released.notified().await;
-            }
-            self.inner.recv_frame(buf).await
-        }
-    }
+    use transport_doubles::HoldingFactory;
 
     #[tokio::test]
     async fn a_poll_read_short_of_the_target_does_not_replace_the_refreshed_arrival() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockQhyTransportFactory::default()));
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_millis(20);
-        let dyn_factory: Arc<dyn TransportFactory> = Arc::<HoldingFactory>::clone(&factory);
+        let dyn_factory: Arc<dyn TransportFactory> = Arc::<HoldingFactory<_>>::clone(&factory);
         let manager = FocuserManager::new(&config, dyn_factory);
         let session = manager.transport().acquire().await.unwrap();
 
         // The mock steps 1000 per position read: the poll's read lands at
         // 1000, short of the target.
         manager.move_absolute(&session, 1500).await.unwrap();
-        factory.hold_next_reply_to(&Command::GetPosition);
+        factory.hold_next_reply_to(QhyCodec.encode(&Command::GetPosition));
         factory.reply_held().await;
 
         // With the cache held, the poll reads 1000 and cannot store it;
@@ -752,7 +670,7 @@ mod tests {
 
         // The poll stores next, and its next position read is the sign it
         // has.
-        factory.hold_next_reply_to(&Command::GetPosition);
+        factory.hold_next_reply_to(QhyCodec.encode(&Command::GetPosition));
         drop(cache);
         factory.reply_held().await;
 
@@ -936,11 +854,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_position_at_the_target_does_not_end_a_move_the_device_has_not_answered() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockQhyTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        factory.hold_next_reply_to(&Command::AbsoluteMove { position: 1000 });
+        factory.hold_next_reply_to(QhyCodec.encode(&Command::AbsoluteMove { position: 1000 }));
         let mut moving = Box::pin(manager.move_absolute(&session, 1000));
         tokio::select! {
             () = factory.reply_held() => {}
@@ -975,11 +893,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_move_whose_caller_stopped_waiting_does_not_hold_is_moving() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockQhyTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        factory.hold_next_reply_to(&Command::AbsoluteMove { position: 1000 });
+        factory.hold_next_reply_to(QhyCodec.encode(&Command::AbsoluteMove { position: 1000 }));
         let mut moving = Box::pin(manager.move_absolute(&session, 1000));
         tokio::select! {
             () = factory.reply_held() => {}
