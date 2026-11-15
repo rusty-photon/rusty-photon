@@ -15,16 +15,59 @@ guide error's RMS.
 
 ## Scope
 
-- Hold timestamped `f64` samples in a time-bounded window.
+- Hold `f64` samples, each dated by an instant the caller hands in, in a
+  time-bounded window.
 - Answer the mean of the samples **inside** that window.
-- Answer how long ago the newest sample arrived.
+- Answer how old the newest sample is.
 - Resize the window, evicting what no longer fits.
 - Keep a running count and sum of squares, and answer the RMS over the values
   folded between two readings of it.
 
 Out of scope: persistence, interpolation, statistics beyond the mean and the
-RMS (min/max and percentiles would be additions here, not new crates), and any
-knowledge of what the samples measure.
+RMS (min/max and percentiles would be additions here, not new crates), any
+knowledge of what the samples measure, and reading a clock.
+
+## The caller hands in every instant
+
+`SensorMean` reads no clock. `add_sample(value, at)` takes the instant that
+dates the sample. `get_mean(now)`, `time_since_last_update(now)` and
+`set_window(window, now)` take the instant the question is asked at, and so
+does `time_since_freshest_update(means, now)`. Each is a
+`std::time::Instant`, a reading of the monotonic clock, so a step of the
+wall clock moves neither a sample's age nor its place in the window. Whether
+a system suspend counts as elapsed time is the platform's: the standard
+library leaves it unspecified for `Instant`, so an age can come out short by
+the length of a suspend until the next sample arrives.
+
+What dates a sample is therefore the caller's choice. A driver hands in the
+instant its frame came off the wire rather than the instant it stores the
+reading, so the age it reports counts from the read
+([`docs/workspace.md` § Values that carry their
+time](../workspace.md#values-that-carry-their-time)). Which clock the
+instants come from is the caller's too: a driver on tokio converts a
+`tokio::time::Instant` with `into_std`, so its means follow a paused test
+clock, and the crate depends on no async runtime to allow it. A clock trait
+would add a dependency or a type parameter for what an argument already
+does.
+
+A sample is inside the window as of `now` while it is no older than the
+window is long; one exactly a window old is inside. The comparison is made
+on the sample's age, not against a cutoff of `now` less the window:
+`Instant::checked_sub` gives that cutoff as an `Option`, whose `None` would
+need an answer of its own, and the age always has one.
+
+### A sample dated before the newest is dated as the newest
+
+Samples are expected in the order of their instants, and the drivers hand
+them in so: only a frame read after the cached one adds a sample.
+`add_sample` still answers for one that is not. It keeps the sample and
+dates it as the newest one held. The reading counts towards the mean, and
+the buffer stays in the order of its instants, which eviction relies on: it
+drops from the front and stops at the first sample inside the window.
+Dropping the sample would lose a reading the caller did take. Keeping its
+own date would put an older sample at the back, where
+`time_since_last_update` reads the newest from, and behind a newer one that
+eviction stops at.
 
 ## The window is applied on read
 
@@ -63,20 +106,19 @@ nothing was ever added, or `set_window` shrank the window far enough to evict
 everything it held.
 
 Staleness is deliberately *not* one of them. A buffer whose samples have all
-aged out still reports how long ago the newest one arrived, even though
+aged out still reports how old the newest one is, even though
 `get_mean` has stopped answering. That pairing is the point: `get_mean` going
 `None` is what a caller notices, and this is how it learns how stale the
 reading it can no longer have actually is.
 
-### A sample stamped in the future reports zero elapsed
+### A sample dated after `now` reports zero elapsed
 
-A backwards clock jump — an NTP correction, a VM resuming from a snapshot —
-leaves the newest sample stamped ahead of now, and
-`SystemTime::duration_since` fails on that. Reporting the failure as `None`
+A caller that reads its clock and then a buffer another task has added to
+in between asks about a sample dated after its `now`. Answering `None`
 would put a *fresh* reading in the same bucket as an empty buffer, which the
 ASCOM drivers surface as `f64::MAX` seconds — the opposite of the truth. A
-sample stamped in the future is as new as a sample can be, so it reports
-`Duration::ZERO`.
+sample dated after `now` is as new as a sample can be, so it reports
+`Duration::ZERO`, and `get_mean` counts it as inside the window.
 
 ## `SquareSums`: the RMS over an interval the caller picks
 
@@ -129,9 +171,10 @@ already reached in one copy only:
   non-finite or oversized period lands on the instantaneous window rather
   than panicking.
 - **The empty-name `TimeSinceLastUpdate`.** `time_since_freshest_update`
-  answers over several means: the freshest sample's age, and `None` while
-  every mean is empty, so the client reads "no data" rather than "updated
-  just now". An empty mean does not hide a fresher one beside it.
+  answers over several means: the freshest sample's age at the instant it
+  is handed, and `None` while every mean is empty, so the client reads "no
+  data" rather than "updated just now". An empty mean does not hide a
+  fresher one beside it.
 
 The policy speaks in hours and `Duration`s; the ASCOM error codes stay with
 the drivers.
@@ -142,7 +185,9 @@ the drivers.
 three (temperature, humidity, dewpoint), size them through
 `effective_window` from the configured `averaging_period` and from every
 `SetAveragePeriod`, and answer the empty-name `TimeSinceLastUpdate` through
-`time_since_freshest_update`.
+`time_since_freshest_update`. Each dates a sample by the read instant of the
+status frame that carried it and asks at `tokio::time::Instant::now()`, both
+through `into_std`.
 
 `phd2-guider` keeps a `SquareSums` per axis of PHD2's guide distances as its
 running totals, and `rp` subtracts two readings of them into the guiding over
@@ -155,9 +200,10 @@ totals](../services/phd2-guider.md#running-totals) and [`docs/services/rp.md`
 
 ## Testing
 
-Unit tests live with the code. The timing-dependent ones assert **floors**
-after a known sleep rather than ceilings on elapsed time: load can only push an
-elapsed time up, so a floor cannot flake, and it rejects a constant-zero
-implementation that a tight ceiling would accept. The one ceiling that remains
-is 60 s, which catches a timestamp that was never set (an epoch-based answer
-reads as decades) without asserting anything about the machine.
+Unit tests live with the code. None of them waits. A test of `SensorMean`
+or of `time_since_freshest_update` reads the clock once, for an origin,
+because an `Instant` has no other constructor; every other instant is that
+one plus a `Duration`. The answers are therefore exact, and the tests assert
+them as equalities: an age to the nanosecond, a sample exactly one window
+old on the inside of the edge and one a nanosecond older on the outside.
+Load on the machine has nothing to move.

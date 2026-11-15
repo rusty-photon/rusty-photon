@@ -100,9 +100,9 @@ impl Upbv2Manager {
         let mut state = CachedState::default();
         let period_hours = config.observingconditions.averaging_period.as_secs_f64() / 3600.0;
         let window = effective_window(period_hours, poll_interval);
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        state.temp_mean = SensorMean::new(window);
+        state.humidity_mean = SensorMean::new(window);
+        state.dewpoint_mean = SensorMean::new(window);
         state.average_period_hours = period_hours;
         let cached_state = Arc::new(RwLock::new(state));
 
@@ -158,9 +158,10 @@ impl Upbv2Manager {
         }
         let window = effective_window(period_hours, self.poll_interval);
         let mut state = self.cached_state.write().await;
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        let now = Instant::now().into_std();
+        state.temp_mean.set_window(window, now);
+        state.humidity_mean.set_window(window, now);
+        state.dewpoint_mean.set_window(window, now);
         state.average_period_hours = period_hours;
         drop(state);
         debug!(period_hours, ?window, "sensor averaging period updated");
@@ -397,18 +398,22 @@ fn session_err_to_warn(op: &str, err: &SessionError<Upbv2CodecError>) {
     warn!(op, error = %err, "upbv2 poll request failed");
 }
 
-/// Store a `PA` frame read at `read_at` and feed the sensor windows, unless
-/// the cache holds one read after it: that one is newer, and stored, this
-/// one would put an output the box has since switched back to its old
-/// state.
+/// Store a `PA` frame read at `read_at` and feed the sensor windows a
+/// sample each, dated `read_at`, unless the cache holds one read after it:
+/// that one is newer, and stored, this one would put an output the box has
+/// since switched back to its old state.
+///
+/// The read instant dates the samples, so `TimeSinceLastUpdate` counts from
+/// the moment the frame came off the wire, not from this write.
 fn apply_status(state: &mut CachedState, status: &Upbv2Status, read_at: Instant) {
     if !state.status.offer(status.clone(), read_at) {
         debug!("dropping a PA frame read before the cached one");
         return;
     }
-    state.temp_mean.add_sample(status.temperature);
-    state.humidity_mean.add_sample(status.humidity);
-    state.dewpoint_mean.add_sample(status.dewpoint);
+    let at = read_at.into_std();
+    state.temp_mean.add_sample(status.temperature, at);
+    state.humidity_mean.add_sample(status.humidity, at);
+    state.dewpoint_mean.add_sample(status.dewpoint, at);
 }
 
 /// Store a `PC` frame read at `read_at`, unless the cache holds one read
@@ -1057,6 +1062,29 @@ mod tests {
                 mean.sample_count(),
                 1,
                 "the older frame fed the {sensor} window"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pa_frame_dates_its_samples_by_its_read_instant() {
+        // An hour from the clock's own reading, so a sample dated by a
+        // clock read cannot pass for one dated by the frame.
+        let mut state = CachedState::default();
+        let read_at = tokio::time::Instant::now() + Duration::from_hours(1);
+        let asked_at = (read_at + Duration::from_secs(7)).into_std();
+
+        apply_status(&mut state, &Upbv2Status::default(), read_at);
+
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.time_since_last_update(asked_at),
+                Some(Duration::from_secs(7)),
+                "the {sensor} sample is not dated by the frame's read instant"
             );
         }
     }

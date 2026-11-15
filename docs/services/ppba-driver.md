@@ -406,7 +406,11 @@ the range, the instantaneous window and the mapping above are the
 shared verbatim with `upbv2-driver` and `gemini-powerbox-adv3-driver`, so a
 change to the policy reaches all three drivers at once.
 
-`TimeSinceLastUpdate` with an empty sensor name is the freshest of the three
+`TimeSinceLastUpdate` counts from the instant the status frame that carried
+the newest sample was read off the wire, on the monotonic clock, so a step
+of the wall clock does not move it
+([Values that carry their time](../workspace.md#values-that-carry-their-time)).
+With an empty sensor name it is the freshest of the three
 windows, through the same module. While all three are empty — the state a
 window shrink that evicts every sample leaves behind — it answers what one
 empty window answers, the no-data value, not zero: a client asking whether

@@ -445,7 +445,11 @@ All three checks — the device, the manager, and the setup page's bound
 below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant, so the
 runtime range and the persisted range cannot drift apart.
 
-`TimeSinceLastUpdate` with an empty sensor name is the freshest of the three
+`TimeSinceLastUpdate` counts from the instant the status frame that carried
+the newest sample was read off the wire, on the monotonic clock, so a step
+of the wall clock does not move it
+([Values that carry their time](../workspace.md#values-that-carry-their-time)).
+With an empty sensor name it is the freshest of the three
 windows. While all three are empty it answers what one empty window
 answers, the no-data value, not zero: a client asking whether the readings
 are fresh must not be told "updated just now" when there are none.
