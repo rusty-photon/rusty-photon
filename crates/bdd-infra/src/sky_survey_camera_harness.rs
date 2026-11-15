@@ -8,17 +8,15 @@
 //! - [`SkyViewStub`] — an in-process axum server that emulates NASA
 //!   `SkyView`. It parses `Position` / `Pixels` / `Size` query params
 //!   from the camera's request and returns a minimal FITS that
-//!   advertises matching `CRVAL1` / `CRVAL2`. The rp closed-loop
-//!   centering scenarios don't actually consume those CRVAL records
-//!   — `rp`'s persistence layer writes its own FITS from the
-//!   camera's `ImageArray` and strips the camera-side WCS, so the
-//!   scenarios fake solve outcomes via
-//!   [`crate::rp_harness::StubBehavior::Sequence`] instead. The
-//!   CRVAL-bearing FITS the stub mints is still useful as a
-//!   general-purpose primitive for tests that hand a synthetic
-//!   `imagebytes` payload directly to a downstream consumer that
-//!   *does* honour camera-side WCS (e.g. unit tests that pair the
-//!   stub with [`crate::rp_harness::StubBehavior::EchoFitsCenter`]).
+//!   advertises matching `CRVAL1` / `CRVAL2`, as `SkyView`'s cutout
+//!   carries a WCS. The rp closed-loop centering scenarios don't
+//!   consume those CRVAL records — `rp`'s persistence layer writes
+//!   its own FITS from the camera's `ImageArray` and strips the
+//!   camera-side WCS, so the scenarios fake solve outcomes via
+//!   [`crate::rp_harness::StubBehavior::Sequence`] instead. Only a
+//!   consumer handed the stub's FITS itself, such as
+//!   [`crate::rp_harness::StubBehavior::EchoFitsCenter`], can read
+//!   them.
 //! - [`SkySurveyCameraConfig`] / [`SkySurveyCameraConfigBuilder`] —
 //!   builds the JSON config the production binary expects.
 //! - [`start_sky_survey_camera`] — spawns the binary via
@@ -97,13 +95,11 @@ impl Drop for SkyViewStub {
     }
 }
 
-/// Hard cap on the rendered cutout. Production cameras top out at
-/// roughly 60 megapixels (Fujifilm GFX series, etc.); 8192 × 8192 ≈
-/// 67 megapixels is a comfortable upper bound that still fits in
-/// ~128 MB at u16 + a few hundred MB at i32 — enough headroom for
-/// any plausible test scenario without letting a malformed
-/// `Pixels=` query allocate a runaway buffer that OOMs the test
-/// process.
+/// Hard cap on the rendered cutout, per axis. 8192 × 8192 ≈ 67
+/// megapixels fits in ~128 MB at u16 + a few hundred MB at i32 —
+/// far beyond the small sensors the scenarios configure — and keeps
+/// a malformed `Pixels=` query from allocating a runaway buffer that
+/// OOMs the test process. A wider request gets a 400.
 const MAX_PIXELS_PER_AXIS: u32 = 8192;
 
 async fn handle_skyview(method: Method, RawQuery(query): RawQuery) -> axum::response::Response {
@@ -116,10 +112,10 @@ async fn handle_skyview(method: Method, RawQuery(query): RawQuery) -> axum::resp
     let (w, h) = parse_pixels(params.get("Pixels").map(String::as_str)).unwrap_or((64, 48));
     let (size_x_deg, _size_y_deg) =
         parse_pair(params.get("Size").map(String::as_str)).unwrap_or((0.1, 0.1));
-    // Defensive bound on pixel dimensions: a malformed `Pixels=`
-    // query (or one with values larger than any real camera would
-    // request) would otherwise drive a `vec![0u16; w*h]` allocation
-    // that can overflow `usize::checked_mul` or OOM the test runner.
+    // Defensive bound on pixel dimensions: a malformed or oversized
+    // `Pixels=` query would otherwise drive a `vec![0u16; w*h]`
+    // allocation that can overflow `usize::checked_mul` or OOM the
+    // test runner.
     if w == 0 || h == 0 || w > MAX_PIXELS_PER_AXIS || h > MAX_PIXELS_PER_AXIS {
         return (
             StatusCode::BAD_REQUEST,
@@ -216,15 +212,15 @@ fn parse_pixels(s: Option<&str>) -> Option<(u32, u32)> {
 
 /// Build a minimal `BITPIX=16` FITS that advertises a TAN WCS at
 /// `(ra_center_deg, dec_center_deg)` with the given plate scale.
-/// Pixel data is zero-filled — the centering loop's plate-solver stub
-/// reads only header records.
+/// Pixel data is zero-filled: the plate-solver stub the centering
+/// scenarios run answers from its script, not from the frame.
 ///
 /// `width` and `height` must satisfy
 /// `width * height <= isize::MAX as usize` (Rust's `Vec` ceiling);
 /// callers are expected to apply [`MAX_PIXELS_PER_AXIS`] (the value
 /// `handle_skyview` enforces) so the multiplication can't overflow.
-/// The internal `checked_mul` is belt-and-suspenders for direct
-/// callers (unit tests / future helpers) that bypass `handle_skyview`.
+/// The internal `checked_mul` is belt-and-suspenders for a caller
+/// that bypasses `handle_skyview`.
 fn synth_fits_with_wcs(
     width: u32,
     height: u32,

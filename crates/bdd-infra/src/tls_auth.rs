@@ -155,9 +155,10 @@ impl PkiFixture {
 /// process is one suite, so this holds one entry in almost every case.
 ///
 /// The fixtures live for the process: their `TempDir`s are never dropped, so
-/// the PKI stays readable for scenarios still running at shutdown. Bazel gives
-/// each test action a private `TMPDIR` and reclaims it, so nothing outlives
-/// the run.
+/// the PKI stays readable for scenarios still running at shutdown, and the
+/// process never removes the directories. [`PkiFixture::generate`] creates
+/// them under the system temp directory, not Bazel's per-action
+/// `TEST_TMPDIR` ([`crate::scratch`] says why that matters).
 #[allow(clippy::type_complexity)]
 static SHARED_PKI: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<PkiFixture>>>> = OnceLock::new();
 
@@ -167,11 +168,11 @@ static SHARED_PKI: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<PkiFixture>>>
 /// Both halves matter, and a step should never call [`PkiFixture::generate`]
 /// directly instead:
 ///
-/// *Once per process.* Generating per scenario meant a suite paid for five or
-/// more identical PKIs. `service_name` is the suite's own package name, so
-/// every one of them was interchangeable — the scenarios prove that a valid
-/// credential is accepted and an invalid one refused, and none needs a CA or
-/// password distinct from another scenario's.
+/// *Once per process.* Generating per scenario would make a suite pay for five
+/// or more identical PKIs. `service_name` is the suite's own package name, so
+/// every one of them would be interchangeable — the scenarios prove that a
+/// valid credential is accepted and an invalid one refused, and none needs a
+/// CA or password distinct from another scenario's.
 ///
 /// *Off the poll loop.* Generation is CPU-bound and slow: two keypairs, a
 /// signature, and an Argon2id hash whose whole purpose is to be expensive —
@@ -338,7 +339,7 @@ pub async fn spawn_service_handle(
 }
 
 /// How long [`wait_until_ready`] keeps starting attempts. A fast-failing
-/// server gets 60 attempts in it, the count the probe used to make.
+/// server gets 60 attempts in it.
 const READY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The pause between two of [`wait_until_ready`]'s attempts.

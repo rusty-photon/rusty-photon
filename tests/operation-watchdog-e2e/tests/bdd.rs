@@ -44,9 +44,11 @@ bdd_infra::bdd_main! {
         .fail_on_skipped()
         .before(|_feature, _rule, _scenario, _world| {
             Box::pin(async move {
-                // Reset OmniSim devices between scenarios (the singleton leaks
-                // state otherwise). Non-fatal before the first scenario starts
-                // OmniSim — the rp-unresponsive scenario never spawns it.
+                // The scenarios of this process share one OmniSim, so each
+                // starts with every device class restarted to its defaults.
+                // Until a step has started that OmniSim (the rp-unresponsive
+                // scenario never starts it), the call sends nothing and
+                // returns Ok. See docs/skills/testing.md § 5.5.
                 let _ = bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
             })
         })

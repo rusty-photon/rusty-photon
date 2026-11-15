@@ -203,9 +203,9 @@ const DROP_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 /// is not part of the contract and is not what this test guards, so it polls
 /// to a deadline instead of sleeping a fixed budget and asserting once. A
 /// fixed budget measures runner load: `Drop` only sends the signal, and on a
-/// contended Windows runner a hard-killed child released its listener later
-/// than a 200 ms sleep allowed, failing the test for a reason the test does
-/// not test (docs/skills/testing.md §5.10).
+/// contended Windows runner a hard-killed child can release its listener
+/// later than a 200 ms sleep allows, which fails the test for a reason the
+/// test does not test (docs/skills/testing.md §5.10).
 #[tokio::test]
 async fn test_drop_cleans_up_process() {
     init_test_binary_env();
@@ -263,18 +263,19 @@ fn probe_observed_broken_pipe(marker: &std::path::Path) -> bool {
     }
 }
 
-/// Regression guard for the stdout-drain shutdown race that flooded BDD/CI logs
-/// with "[tracing-subscriber] Unable to write an event ... Broken pipe".
+/// Regression guard for the stdout-drain shutdown race, which floods BDD/CI
+/// logs with "[tracing-subscriber] Unable to write an event ... Broken pipe".
 ///
 /// `stop()` must keep draining the child's stdout until the child has exited.
 /// The probe child (`test_service` `--epipe-probe`) installs a SIGTERM handler and
 /// keeps writing to stdout through its shutdown window; if `stop()` aborts the
-/// drain *before* the child exits (the old bug), those writes hit a broken pipe
-/// and the child records it. A correct `stop()` leaves the marker empty.
+/// drain *before* the child exits, those writes hit a broken pipe and the
+/// child records it. A correct `stop()` leaves the marker empty.
 ///
 /// Unix-gated because the probe relies on a SIGTERM handler to keep writing
-/// during shutdown; multi-threaded to match the real `#[tokio::main]` BDD
-/// harness, where the aborted drain is dropped on another worker promptly.
+/// during shutdown; multi-threaded to match the runtime `bdd_main!` builds
+/// for a BDD suite, where an aborted drain is dropped on another worker
+/// promptly.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_stop_does_not_break_child_stdout_pipe() {
@@ -309,9 +310,9 @@ async fn test_stop_does_not_break_child_stdout_pipe() {
     );
 }
 
-/// Regression guard for the analogous stderr-forwarder shutdown race (issue
-/// #578's labeled-stderr-forwarding change gave stderr the same piped-drain
-/// shutdown hazard stdout already had — see
+/// Regression guard for the analogous stderr-forwarder shutdown race: the
+/// labeled stderr forwarding reads stderr through a pipe too, so it has the
+/// same piped-drain shutdown hazard as stdout (see
 /// `test_stop_does_not_break_child_stdout_pipe`). Same probe binary, same
 /// invariant, `--epipe-probe-stderr` instead of `--epipe-probe`.
 #[cfg(unix)]
@@ -353,9 +354,10 @@ async fn test_stop_does_not_break_child_stderr_pipe() {
 // deliberately do not add a `Drop` analogue of the probe test: on `Drop` the
 // child handle's `kill_on_drop(true)` SIGKILLs the child near-instantly, so the
 // probe's shutdown burst is cut off before it can deterministically observe the
-// broken pipe under the *old* ordering — such a test passes under both orderings
-// and would be a vacuous guard. `test_drop_cleans_up_process` covers `Drop`'s
-// process teardown; the `stop()` probes above guard the broken-pipe invariant.
+// broken pipe under an abort-first ordering — such a test passes under both
+// orderings and would be a vacuous guard. `test_drop_cleans_up_process` covers
+// `Drop`'s process teardown; the `stop()` probes above guard the broken-pipe
+// invariant.
 
 /// `stop()` must leave the service's own shutdown path *run*, not merely leave
 /// the process dead.

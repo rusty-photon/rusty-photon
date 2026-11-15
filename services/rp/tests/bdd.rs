@@ -50,10 +50,10 @@ static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 /// Emit a one-line breadcrumb to stderr (bypassing cucumber's buffered writer),
 /// tagged with elapsed seconds. The bdd leg runs with `--test_output=all`
 /// (`.github/workflows/bazel.yml`), so these surface **even when `rp:bdd`
-/// passes** — which is the failure mode we actually hit: the suite runs slow
-/// (~36 min) but *completes*, so the time has to be read from a passing run.
-/// `BDD-TRACE` makes the trail greppable; the `ENTER → reset-ok → EXIT` deltas
-/// localise where the minutes go (per-scenario `OmniSim` reset vs the steps).
+/// passes**: a suite that runs slow but *completes* leaves its timings only in
+/// a passing run's log. `BDD-TRACE` makes the trail greppable; the
+/// `ENTER → reset-ok → EXIT` deltas localise where the minutes go
+/// (per-scenario `OmniSim` reset vs the steps).
 fn trace(msg: &str) {
     use std::io::Write as _;
     eprintln!(
@@ -79,24 +79,10 @@ bdd_infra::bdd_main! {
                 trace(&format!(
                     "ENTER feature={feature_name:?} scenario={scenario_name:?}"
                 ));
-                // Reset every OmniSim device class our scenarios touch
-                // (telescope, camera, filter wheel, focuser, cover
-                // calibrator) to defaults before each scenario. The
-                // shared OmniSim is a singleton across the BDD process,
-                // so device state leaks between scenarios; the mount
-                // leak that hung `park` in issue #143 is the case we
-                // already hit. Each reset is a localhost PUT, run
-                // sequentially (parallel resets raced OmniSim's
-                // unsynchronised `AlpacaDevices` list — see
-                // `reset_all_devices` for the writeup). We panic on
-                // any reset failure that happens *after* the suite has
-                // started its OmniSim — that's the loud-reset
-                // diagnostic from #172. Failures from the very first
-                // scenario's hook (before any Given step has called
-                // `OmniSimHandle::start()`) are non-fatal:
-                // connection-refused against the default port is the
-                // expected case there and we don't want scenario 1 to
-                // panic just because no stale OmniSim is around.
+                // The scenarios of this process share one OmniSim, so each
+                // starts with every device class restarted to its defaults.
+                // Until a step has started that OmniSim, the call sends
+                // nothing and returns Ok. See docs/skills/testing.md § 5.5.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {
@@ -143,9 +129,10 @@ bdd_infra::bdd_main! {
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
-            // Bazel sharding (BUILD `shard_count`): each shard process runs
-            // only its deterministic slice of the scenarios, against its own
-            // private OmniSim. Outside Bazel sharding this always passes.
+            // Sharding (docs/skills/testing.md § 5.5): with `TEST_SHARD_INDEX`
+            // and `TEST_TOTAL_SHARDS` set, as Bazel's `shard_count` sets them,
+            // this process runs only its slice of the scenarios, against its own
+            // private OmniSim; without them it runs every scenario.
             let in_shard = bdd_infra::sharding::scenario_in_current_shard(
                 feat.path.as_deref(),
                 &feat.name,
@@ -155,15 +142,14 @@ bdd_infra::bdd_main! {
         })
         .await;
 
-    // The cucumber suite has returned (all scenarios passed; `filter_run_and_exit`
-    // returns rather than `process::exit`-ing on success — cucumber 0.22). Anything
+    // The cucumber suite has returned, so every scenario passed
+    // (`filter_run_and_exit` panics on a failure and returns otherwise). Anything
     // that elapses on the rp:bdd action wall *after* this breadcrumb is teardown:
-    // the `#[tokio::main]` runtime drop (which joins the blocking pool — a stuck
-    // reqwest getaddrinfo here would park the process), then process exit +
-    // `PR_SET_PDEATHSIG` reaping OmniSim. A post-scenario park here used to add
-    // 20-37 min to the rp:bdd action wall; it was fixed by the CI park mitigations
-    // (`--spawn_strategy=local` + `--remote_timeout=3`, now in `.bazelrc` — see
-    // docs/plans/archive/bazel-migration.md). If this line prints but the action hangs
-    // again, the hang is in/after the runtime drop, not in any scenario.
+    // the drop of `bdd_main!`'s tokio runtime (which waits for the blocking pool —
+    // a stuck reqwest getaddrinfo there would park the process), then process exit
+    // and `PR_SET_PDEATHSIG` reaping OmniSim. The CI park mitigations in `.bazelrc`
+    // (`test:ci --spawn_strategy=local`, `build:ci --remote_timeout`) keep a
+    // post-scenario park off that wall; if this line prints but the action hangs,
+    // the hang is in or after the runtime drop, not in any scenario.
     trace("POST-RUN cucumber suite returned; entering tokio runtime drop (teardown)");
 }

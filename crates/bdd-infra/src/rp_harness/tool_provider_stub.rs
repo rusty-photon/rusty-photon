@@ -5,7 +5,7 @@
 //!
 //! rp's tool-provider BDD scenarios need a provider they can register,
 //! call through rp, take down and bring back **on the same port** — so
-//! the stub binds with `SO_REUSEADDR` like the Alpaca device stub — and
+//! the stub rebinds its port with `SO_REUSEADDR` on a restart — and
 //! whose own view of events they can assert on: every call it served and
 //! every request it saw cancelled by its client (rp forwarding a safety
 //! stop) are recorded.
@@ -299,8 +299,8 @@ impl ToolProviderStub {
     fn spawn(&mut self, listener: tokio::net::TcpListener) {
         let handler = StubHandler::new(&self.tools, &self.log);
         // Session-less, like rp's own transport: every request is served
-        // statelessly, which is what rp's client (2026-07-28, discover
-        // bootstrap) speaks.
+        // statelessly, which is what rp's client (MCP revision 2026-07-28,
+        // `server/discover` bootstrap) speaks.
         let mut config = StreamableHttpServerConfig::default();
         config.legacy_session_mode = false;
         config.json_response = true;

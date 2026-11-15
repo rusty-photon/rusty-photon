@@ -1,6 +1,6 @@
 //! Shared doctor-subcommand smoke: the fixture and steps behind every
 //! service suite's two `doctor` scenarios (docs/services/doctor.md
-//! §Per-service doctors).
+//! § The per-service subcommand).
 //!
 //! A valid config yields a clean report; an unknown key yields a failing
 //! report that names it. The runner's deep behavior (rendering, absent

@@ -1,19 +1,19 @@
 //! Direct ConformU-CLI runner.
 //!
-//! A feature-gated replacement for `ascom_alpaca::test::ConformUTestBuilder`.
-//! The builder is a thin wrapper that runs the external `conformu` binary; the
-//! only reason it lived behind `ascom-alpaca`'s `test` feature is that feature's
-//! transitive `dtor` dependency — which `crate_universe` (Bazel) resolves only
-//! from default features and therefore drops, keeping the conformu integration
-//! tests out of the Bazel build entirely. Driving the CLI directly here removes
-//! that dependency, so the tests compile under both Cargo and Bazel.
+//! It runs the external `conformu` binary itself rather than through
+//! `ascom_alpaca::test::ConformUTestBuilder`, a thin wrapper around the same
+//! binary that sits behind `ascom-alpaca`'s `test` feature. That feature's
+//! transitive `dtor` dependency is one `crate_universe` (Bazel) resolves only
+//! from default features and therefore drops, so a test built on the builder
+//! would stay out of the Bazel build entirely. Driving the CLI here needs no
+//! such dependency, and the tests compile under both Cargo and Bazel.
 //!
 //! The `ConformU` binary is located via the `CONFORMU_PATH` env var (set by the
 //! conformu CI workflow and forwarded into the Bazel test sandbox). When it is
 //! unset the run is **skipped**, so the conformu integration tests stay inert in
 //! the normal cargo/bazel suites and fire only when `ConformU` is explicitly
-//! provided — preserving the old `#[ignore]` ergonomics without `#[ignore]`
-//! (which Bazel cannot selectively run via a tag).
+//! provided — what `#[ignore]` would give, without `#[ignore]`, which Bazel
+//! cannot selectively run via a tag.
 //!
 //! # Two runners, two contracts
 //!
@@ -177,8 +177,8 @@ impl FullRunSettings {
         let dir = scratch::new_dir("conformu-settings-")?;
         let path = dir.path().join("conformu-settings.json");
         let json = serde_json::to_string_pretty(&self.to_json())?;
-        // The test log used to show the settings literal in the test source;
-        // keep what ConformU actually received visible in the run output.
+        // The settings are built from a type, not written as a literal in the
+        // test source: print what ConformU receives so the run output shows it.
         println!("[conformu settings] {json}");
         std::fs::write(&path, json)?;
         Ok((dir, path))
@@ -193,9 +193,9 @@ impl FullRunSettings {
 /// suite's methods phase all seventeen — so a missing key throws a
 /// `KeyNotFoundException` wherever a suite first reaches it, abandoning the
 /// rest of that suite as an error or issue that names only that one key. The
-/// list is pinned to the version the nightly installs today. A newer
-/// `ConformU` that adds a key still fails a file written to this list —
-/// loudly, the same way — and the key then belongs here.
+/// nightly installs `ConformU`'s latest release, and one that adds a key
+/// fails a file written to this list — loudly, the same way — so the key
+/// then belongs here.
 const TELESCOPE_TESTS: [&str; 17] = [
     "CanMoveAxis",
     "Park/Unpark",

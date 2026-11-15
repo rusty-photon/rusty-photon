@@ -31,7 +31,7 @@
 //! sees as a dead service, while the port can never be handed to
 //! another process in the meantime. Test shards run concurrently and
 //! bind OS-assigned ports of their own; a port released between a stop
-//! and a restart was taken by another shard's Alpaca server often
+//! and a restart is taken by another shard's Alpaca server often
 //! enough to fail a scenario on a healthy tree.
 
 use std::net::SocketAddr;
@@ -303,8 +303,9 @@ impl AlpacaDeviceStub {
         self.state.disconnect_requests.load(Ordering::SeqCst)
     }
 
-    /// How many restart requests (`POST /service/v1/restart`) the stub has
-    /// taken.
+    /// How many restart requests (`POST /service/v1/restart`) the current
+    /// incarnation has taken. Resets to zero on [`Self::restart`]; the
+    /// restart a request plays does not reset it.
     #[must_use]
     pub fn restart_requests(&self) -> u32 {
         self.state.restart_requests.load(Ordering::SeqCst)

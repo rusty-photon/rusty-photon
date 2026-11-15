@@ -99,9 +99,8 @@ rust_test(
     # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
     # be the service name (rules_rust would otherwise use the crate name "bdd").
     rustc_env = {"CARGO_PKG_NAME": "focus-model"},
-    # `resources:omnisim:1`: see the longer note in services/rp/BUILD.bazel.
-    # Each OmniSim-spawning BDD action takes one token from the `omnisim`
-    # pool; the harness gives every test process a private OmniSim.
+    # `resources:omnisim:1`: each OmniSim-spawning BDD action takes one token
+    # from the `omnisim` pool, which .bazelrc defines and explains.
     tags = [
         "bdd",
         "resources:omnisim:1",
