@@ -9284,6 +9284,48 @@ async fn guide_train_auto_focus_fails_fast_when_guiding_stops_mid_sweep() {
     assert_tool_error(result, "guiding stopped during the metric sweep");
 }
 
+#[tokio::test]
+async fn guide_train_auto_focus_goes_on_through_star_lost_frames() {
+    // At deep defocus the guider loses its star and reports `star_lost`
+    // with `guiding: false`. Those frames are null samples, not a
+    // stopped run: the sweep goes on, and with no valid sample at all
+    // it ends on too few samples rather than on "guiding stopped".
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    let next_frame = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    mock.expect_guiding_metrics().returning(move || {
+        let start = next_frame.fetch_add(5, std::sync::atomic::Ordering::SeqCst);
+        Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::StarLost,
+            guiding: false,
+            epoch: "test-epoch".to_string(),
+            frames: (start + 1..=start + 5)
+                .map(|frame| rp_guider::FrameMetrics {
+                    frame,
+                    hfd: None,
+                    snr: None,
+                    star_mass: None,
+                    star_count: 0,
+                    star_lost: true,
+                })
+                .collect(),
+        })
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(guide_sweep_focuser()),
+        None,
+        None,
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    assert_tool_error(result, "not enough valid guide samples: 0 of");
+}
+
 #[tokio::test(start_paused = true)]
 async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
     // The mock always returns the same three frames: after the first

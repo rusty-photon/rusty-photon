@@ -167,7 +167,8 @@ struct Inner {
     lease: Option<HeldLease>,
     lease_calls: Vec<LeaseCall>,
     requests: Vec<StubRequest>,
-    hfd_script: Vec<f64>,
+    /// `None` is a star-lost frame.
+    hfd_script: Vec<Option<f64>>,
     metrics_polls: u64,
     totals: Option<CannedTotals>,
     stats_reads: u32,
@@ -195,7 +196,7 @@ impl Inner {
             lease: None,
             lease_calls: Vec::new(),
             requests: Vec::new(),
-            hfd_script: vec![2.5],
+            hfd_script: vec![Some(2.5)],
             metrics_polls: 0,
             totals: None,
             stats_reads: 0,
@@ -489,17 +490,26 @@ impl Inner {
             let index = usize::try_from(poll)
                 .unwrap_or(usize::MAX)
                 .min(self.hfd_script.len().saturating_sub(1));
-            let hfd = self.hfd_script.get(index).copied();
+            let hfd = self.hfd_script.get(index).copied().flatten();
+            // A star-lost frame moves a run that guides to `star_lost`,
+            // and a frame with the stars back moves it to `guiding`
+            // (guider.md § States).
+            match (hfd, self.state) {
+                (None, "guiding") => self.state = "star_lost",
+                (Some(_), "star_lost") => self.state = "guiding",
+                _ => {}
+            }
             let frame_end = poll.saturating_add(1).saturating_mul(5);
+            let lost = hfd.is_none();
             (frame_end.saturating_sub(11).max(1)..=frame_end)
                 .map(|frame| {
                     json!({
                         "frame": frame,
                         "hfd": hfd,
-                        "snr": 25.0,
-                        "star_mass": 5432.0,
-                        "star_count": 5,
-                        "star_lost": false,
+                        "snr": if lost { Value::Null } else { json!(25.0) },
+                        "star_mass": if lost { Value::Null } else { json!(5432.0) },
+                        "star_count": if lost { 0 } else { 5 },
+                        "star_lost": lost,
                     })
                 })
                 .collect()
@@ -882,6 +892,18 @@ impl GuiderStub {
     ///
     /// Panics on an empty script.
     pub fn set_hfd_script(&self, script: Vec<f64>) {
+        self.set_hfd_script_with_lost(script.into_iter().map(Some).collect());
+    }
+
+    /// As [`Self::set_hfd_script`], where `None` serves star-lost
+    /// frames: no HFD, no star, `star_lost: true`. Such an answer moves
+    /// a run in `guiding` to `star_lost`, and the next answer with an
+    /// HFD moves it back.
+    ///
+    /// # Panics
+    ///
+    /// Panics on an empty script.
+    pub fn set_hfd_script_with_lost(&self, script: Vec<Option<f64>>) {
         assert!(!script.is_empty(), "the HFD script must not be empty");
         self.shared.lock().hfd_script = script;
     }
@@ -1656,6 +1678,27 @@ mod tests {
         assert_eq!(frames[0]["frame"], 4);
         assert_eq!(frames[11]["frame"], 15);
         assert_eq!(frames[11]["hfd"], 3.0);
+    }
+
+    #[tokio::test]
+    async fn a_star_lost_frame_moves_a_guiding_run_to_star_lost_and_back() {
+        let stub = GuiderStub::start("guiding").await;
+        stub.set_hfd_script_with_lost(vec![None, Some(2.0)]);
+
+        let (_, lost) = get(&stub, "/guiding/metrics").await;
+        assert_eq!(lost["state"], "star_lost");
+        assert_eq!(lost["guiding"], false);
+        let frame = &lost["frames"][0];
+        assert_eq!(frame["star_lost"], true);
+        assert_eq!(frame["hfd"], Value::Null);
+        assert_eq!(frame["star_count"], 0);
+        assert_eq!(stub.state(), "star_lost");
+
+        let (_, back) = get(&stub, "/guiding/metrics").await;
+        assert_eq!(back["state"], "guiding");
+        assert_eq!(back["guiding"], true);
+        assert_eq!(back["frames"][9]["star_lost"], false);
+        assert_eq!(back["frames"][9]["hfd"], 2.0);
     }
 
     #[tokio::test]

@@ -469,9 +469,15 @@ impl McpHandler {
                 .guiding_metrics()
                 .await
                 .map_err(|e| format!("failed to read guider metrics: {e}"))?;
-            if !metrics.guiding {
-                // No fresh frames will ever arrive — fail now instead
-                // of burning the per-position ceiling.
+            // A star-lost frame moves the guider to `star_lost`, and
+            // its frames are the invalid ones below: at deep defocus
+            // the star vanishes. Any other state is a run that ended
+            // or was paused, which sends no fresh frame — fail now
+            // instead of burning the per-position ceiling.
+            if !matches!(
+                metrics.state,
+                rp_guider::GuiderState::Guiding | rp_guider::GuiderState::StarLost
+            ) {
                 return Err(format!(
                     "guiding stopped during the metric sweep (the guider's state: {})",
                     metrics.state

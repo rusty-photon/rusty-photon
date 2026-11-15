@@ -6120,8 +6120,12 @@ Requirements, checked before any motion:
    during the motion (or, at the first position, before the sweep)
    would pass as fresh. Then poll until `frames_per_step` frames above
    it arrive, bounded by a fixed 30 s-per-frame ceiling — guide
-   exposures are seconds; expiry errors the run, and a metrics
-   response reporting guiding stopped fails it immediately. The
+   exposures are seconds; expiry errors the run. A metrics response
+   whose state is neither `guiding` nor `star_lost`, a run that ended
+   or was paused and sends no fresh frame, fails it immediately; a
+   star-lost frame moves the guider to `star_lost`
+   ([guider.md § States](guider.md#states)) and is one of the invalid
+   frames below, so the sweep goes on through it. The
    **earliest** `frames_per_step` fresh frames form the position's
    sample set, so a slow poll cannot inflate it; the sample is the
    median HFD of the valid ones among them. Frames flagged

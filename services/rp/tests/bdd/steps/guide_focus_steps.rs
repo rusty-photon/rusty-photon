@@ -24,11 +24,18 @@ use crate::world::RpWorld;
 
 #[given(expr = "the stub guider serves the HFD script {string}")]
 fn stub_serves_hfd_script(world: &mut RpWorld, script: String) {
-    let values: Vec<f64> = script
+    // `lost` serves star-lost frames.
+    let values: Vec<Option<f64>> = script
         .split(',')
-        .map(|s| s.trim().parse().expect("HFD script values must be numbers"))
+        .map(str::trim)
+        .map(|s| {
+            (s != "lost").then(|| {
+                s.parse()
+                    .expect("HFD script values must be numbers or lost")
+            })
+        })
         .collect();
-    stub(world).set_hfd_script(values);
+    stub(world).set_hfd_script_with_lost(values);
 }
 
 // --- Given steps: equipment compositions ----------------------------
