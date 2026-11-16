@@ -398,7 +398,7 @@ server-rendered fragments — no hand-written JavaScript.
 - **The feed** (`sse-swap="feed"` with `hx-swap="afterbegin"`): every rp event
   envelope renders as one card — severity dot (`*_failed` and
   `safety_changed:unsafe` are bad; `*_complete`/`*_settled` ok; `*_started`
-  live; `stream_gap`, `guide_stopped` and `guide_star_lost` warn), event
+  live; `stream_error`, `guide_stopped` and `guide_star_lost` warn), event
   title, payload-specific detail line (target coordinates, exposure
   duration, HFR, RMS error, error messages, a `guide_stopped`'s `reason`
   and the guider's `stop_reason` beside it, how long a guide star has
