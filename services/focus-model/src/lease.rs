@@ -2,9 +2,9 @@
 //! runs on a guiding train).
 //!
 //! A training run on the guiding train captures through the guide
-//! camera under `rp`'s train lease, which holds the guider's camera
-//! lease and with it the guider idle, and holds mount motion and every
-//! other client's work on the train's light path off the run
+//! camera under `rp`'s train lease, which `rp` grants only with the
+//! guider idle and which holds `rp`'s starts of guiding, mount motion
+//! and every other client's work on the train's light path off the run
 //! (rp.md § Train Lease). This module names the lease, sizes it from
 //! the sweep, and tells `rp`'s refusal of a lease that is no longer
 //! held from any other failure.
@@ -100,8 +100,8 @@ fn whole_seconds(duration: Duration) -> Duration {
 /// Whether `error` is `rp` refusing a call under the lease `lease_id`.
 ///
 /// `rp` refuses a call under a lease it no longer holds: one released,
-/// ended idle, at its `max_duration`, on the safety transition, or with
-/// the guider's camera lease lost. rp.md § Train Lease names the phrase.
+/// ended idle, at its `max_duration`, on the safety transition or at
+/// `rp`'s shutdown. rp.md § Train Lease names the phrase.
 #[must_use]
 pub fn is_not_held(error: &FocusModelError, lease_id: &str) -> bool {
     matches!(error, FocusModelError::ToolCall(message)

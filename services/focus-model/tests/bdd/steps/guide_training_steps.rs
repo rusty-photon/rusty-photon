@@ -4,14 +4,13 @@
 //! The guiding train's camera is the simulator's camera, a roster
 //! camera of rp's like any other, so rp's captures under the train
 //! lease take the simulator's frames. The guider is `bdd-infra`'s stub
-//! guider: the steps here name the camera its device report gives and
-//! assert on the camera-lease calls it recorded. The stub guider's Given
-//! and its pause assertions are in `focus_steps.rs`.
-
-use std::time::Duration;
+//! guider: the steps here name the camera its device report gives, which
+//! the check rp makes before a start of guiding compares with the
+//! train's, and assert on the requests it recorded. The stub guider's
+//! Given and its pause assertions are in `focus_steps.rs`.
 
 use bdd_infra::rp_harness::{
-    CameraConfig, FilterWheelConfig, FocuserConfig, LeaseCall, MountConfig, OpticalTrainConfig,
+    CameraConfig, FilterWheelConfig, FocuserConfig, MountConfig, OpticalTrainConfig,
 };
 use cucumber::{given, then};
 
@@ -24,11 +23,6 @@ use super::focus_steps::{read_focuser_position, start_provider_then_rp};
 const FOCAL_LENGTH_MM: f64 = 500.0;
 const APERTURE_MM: f64 = 100.0;
 
-/// How long a step waits for rp to give the guider's camera lease back:
-/// rp releases it once the train lease has given everything back, a
-/// moment after `release_train_lease` answered.
-const CAMERA_LEASE_RELEASE_WAIT: Duration = Duration::from_secs(10);
-
 // ---------------------------------------------------------------------------
 // Given steps
 // ---------------------------------------------------------------------------
@@ -38,11 +32,6 @@ const CAMERA_LEASE_RELEASE_WAIT: Duration = Duration::from_secs(10);
 async fn stub_camera_is_simulators(world: &mut FocusModelWorld) {
     let camera_id = world.simulator_unique_id("Camera").await;
     world.guider().set_camera_unique_id(Some(&camera_id));
-}
-
-#[given(expr = "the stub guider reports the camera unique_id {string}")]
-fn stub_reports_camera_unique_id(world: &mut FocusModelWorld, unique_id: String) {
-    world.guider().set_camera_unique_id(Some(&unique_id));
 }
 
 #[given(
@@ -71,83 +60,39 @@ async fn focuser_still_at(world: &mut FocusModelWorld, expected: i64) {
     assert_eq!(position, expected, "the focuser moved");
 }
 
-#[then("the error message should name the simulator camera's unique id")]
-async fn error_names_simulator_camera(world: &mut FocusModelWorld) {
-    let unique_id = world.simulator_unique_id("Camera").await;
-    let message = world
-        .last_result()
-        .as_ref()
-        .expect_err("the tool call succeeded, so there is no error message");
+/// The guider was read, and every request it received was a read of
+/// its state: rp's guide camera guard reads `guiding/stats` as a
+/// guiding train's lease is acquired and before each capture through
+/// the guide camera, and the provider's handshake reads it through rp.
+/// Nothing paused, started or stopped the guider.
+#[then("the stub guider should have received state reads and no other request")]
+fn stub_received_only_state_reads(world: &mut FocusModelWorld) {
+    let requests = world.guider().requests();
     assert!(
-        message.contains(&unique_id),
-        "error message {message:?} does not name the simulator camera's unique id {unique_id:?}"
+        !requests.is_empty(),
+        "the stub guider received no request: nothing read its state"
+    );
+    let others: Vec<_> = requests
+        .iter()
+        .filter(|request| request.method != "GET" || request.path != "/guiding/stats")
+        .collect();
+    assert!(
+        others.is_empty(),
+        "expected only reads of the guider's state, got {others:?}; all: {requests:?}"
     );
 }
 
-/// Every `POST /camera/lease` counts, granted or refused.
-#[then(expr = "the stub guider should have been asked for {int} camera lease(s)")]
-fn stub_asked_for_camera_leases(world: &mut FocusModelWorld, count: usize) {
-    let acquires = world.guider().requests_to("/camera/lease");
-    assert_eq!(
-        acquires.len(),
-        count,
-        "the stub guider's camera lease acquires: {acquires:?}"
-    );
-}
-
-/// Every token rp named in an acquire is named in a release after it.
-#[then("every camera lease the stub guider was asked for should be released by its token")]
-async fn every_camera_lease_released(world: &mut FocusModelWorld) {
-    let deadline = tokio::time::Instant::now() + CAMERA_LEASE_RELEASE_WAIT;
-    loop {
-        let unreleased = unreleased_tokens(&world.guider().lease_calls());
-        if unreleased.is_empty() {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "no release named {unreleased:?} within {CAMERA_LEASE_RELEASE_WAIT:?}; calls: {:?}",
-            world.guider().lease_calls()
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-#[then("the stub guider should hold no camera lease")]
-async fn stub_holds_no_camera_lease(world: &mut FocusModelWorld) {
-    let deadline = tokio::time::Instant::now() + CAMERA_LEASE_RELEASE_WAIT;
-    while let Some(lease) = world.guider().lease() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the stub guider still holds a camera lease under {:?} after \
-             {CAMERA_LEASE_RELEASE_WAIT:?}; calls: {:?}",
-            lease.token,
-            world.guider().lease_calls()
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+/// Not even a read: rp reads the guider's state as it acquires a
+/// guiding train's lease, so no lease was asked for.
+#[then("the stub guider should have received no request")]
+fn stub_received_no_request(world: &mut FocusModelWorld) {
+    let requests = world.guider().requests();
+    assert!(requests.is_empty(), "the stub guider received {requests:?}");
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// The acquired tokens no later release names.
-fn unreleased_tokens(calls: &[LeaseCall]) -> Vec<String> {
-    calls
-        .iter()
-        .enumerate()
-        .filter_map(|(at, call)| match call {
-            LeaseCall::Acquire { token, .. } => {
-                let released = calls[at + 1..].iter().any(
-                    |later| matches!(later, LeaseCall::Release { token: t, .. } if t == token),
-                );
-                (!released).then(|| token.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
 
 /// A rig whose only train is the guiding train: the simulator's
 /// camera and focuser, and its wheel when `wheel` says so. Guiding is

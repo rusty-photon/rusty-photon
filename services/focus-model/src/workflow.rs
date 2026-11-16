@@ -847,9 +847,9 @@ impl Guard {
 
 /// A put-back's move, under the run's lease. `rp` refuses a call under a
 /// lease it no longer holds (one that ended idle, at its
-/// `max_duration`, on the safety transition, or with the guider's
-/// camera lease lost), and the put-back is then sent again without the
-/// lease, as an ordinary move that waits its turn.
+/// `max_duration`, or on the safety transition), and the put-back is
+/// then sent again without the lease, as an ordinary move that waits
+/// its turn.
 async fn put_back_move(
     rig: &dyn FocusRig,
     focuser_id: &str,
@@ -4911,8 +4911,8 @@ mod tests {
     /// The guiding train's active client, logging the acquire, the
     /// guider read, and each move and capture with the lease it ran
     /// under. Its plan is guide-coupled, so the handshake reads the
-    /// guider, which reports no loop: a guider holding its camera lease
-    /// is idle.
+    /// guider, which reports no loop: `rp` grants a guiding train's
+    /// lease only with the guider idle.
     /// An answer `rig` already holds keeps winning.
     fn guiding_rig(
         mut rig: MockFocusRig,
@@ -5133,8 +5133,8 @@ mod tests {
     async fn a_refused_lease_moves_nothing_is_released_and_is_recorded() {
         let position = Position::new(25_000);
         let log = Log::default();
-        let refusal = "acquire_train_lease: the guider refused the camera lease: not_idle: a \
-                       camera lease needs an idle guider (the guider's state: guiding)";
+        let refusal = "acquire_train_lease: the guider is guiding; rp uses the guide camera \
+                       'guide-cam' only while the guider is idle";
         let active = guiding_rig(MockFocusRig::new(), &position, &log, Some(refusal));
         let cleanup = guiding_cleanup(&position, &log, true);
         let (store, _dir) = temp_store().await;
@@ -5159,7 +5159,7 @@ mod tests {
             record.runs[0]
                 .error
                 .as_deref()
-                .is_some_and(|e| e.contains("the guider refused the camera lease")),
+                .is_some_and(|e| e.contains("the guider is guiding")),
             "{:?}",
             record.runs[0].error
         );

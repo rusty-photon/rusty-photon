@@ -1674,13 +1674,16 @@ is `bdd-infra`'s guider stub, which answers the state reads of the
 guider's contract and records every request. A training run on a
 guiding train whose focuser the imaging train has is refused before
 anything moves, for `focus_train` and `determine_filter_offsets`
-alike. A `focus_train` run holds one train lease across both its
-attempts, puts the focuser back and releases it, and the guider is
-sent nothing but reads. A guider reported guiding refuses the run at
-the lease before anything moves. A run too long for one lease is
-refused naming the numbers before the lease is asked for. The offsets
-procedure takes one lease for each of its sweeps, releases each, and
-puts the wheel back.
+alike. A `focus_train` run through both its attempts puts the focuser
+back and sends the guider nothing but reads, and a `start_guiding`
+after it goes through: the run's lease is released before the call
+answers. A guider reported guiding refuses the run at the lease before
+anything moves, and `rp`'s refusal reaches the caller. A run too long
+for one lease is refused naming the numbers before the lease is asked
+for, so the guider is sent nothing. The offsets procedure gives each
+sweep's lease back before the next sweep, which `rp` would otherwise
+refuse, sends the guider nothing but reads, puts the wheel back, and
+leaves the guide camera free for a `start_guiding`.
 
 `auth.feature` spawns only focus-model with `server.tls` and
 `server.auth` and proves `/health` and `/mcp` both require the
