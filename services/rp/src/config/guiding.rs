@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// unrepresentable.
 ///
 /// `timeout` bounds a request the guider answers at once: a stop, a
-/// pause, a resume, a read, a lease call. The two that wait for a
+/// pause, a resume, a read. The two that wait for a
 /// settle outlast it: a `dither` runs under the resolved settle
 /// timeout plus 15 s, and a `start_guiding` under
 /// `calibration_timeout` plus that, since a start calibrates when the

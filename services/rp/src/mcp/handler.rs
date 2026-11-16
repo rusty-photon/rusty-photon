@@ -85,7 +85,7 @@ pub struct McpHandler {
     /// keeps rp's captures through the guiding train's camera and its
     /// starts of guiding off each other. It applies while a guider is
     /// configured, to the guiding train's camera
-    /// ([`Self::guide_camera_guard`]). Behind an `Arc` so every clone of
+    /// ([`Self::guarded_guide_camera`]). Behind an `Arc` so every clone of
     /// the handler shares it.
     pub guide_camera: Arc<crate::guide_camera::GuideCameraGuard>,
     /// Per-rig estimates sizing the advisory `center_on_target` deadline
