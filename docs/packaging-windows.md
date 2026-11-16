@@ -6,11 +6,9 @@ installer on an imaging box. Architecture decisions live in
 model, LocalSystem, config/log locations) and
 [ADR-013](decisions/013-native-sdk-payload-policy.md) /
 [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md)
-(native camera-SDK
-payloads); the full design in
-[docs/plans/archive/windows-packaging.md](plans/archive/windows-packaging.md); the WiX
-source contract in [installer/README.md](../installer/README.md). The Linux
-guide is [docs/packaging.md](packaging.md).
+(native camera-SDK payloads); the WiX source contract in
+[installer/README.md](../installer/README.md). The Linux guide is
+[docs/packaging.md](packaging.md).
 
 ## What gets installed
 
@@ -97,7 +95,7 @@ no sensible default config. Each checks for its own when it starts, as
 the Linux units' `ConditionPathExists=` does: without
 `%ProgramData%\rusty-photon\<svc>.json` it stops at once with exit code 0,
 which the failure actions leave alone, and its log says the config does
-not exist ([ADR-025](decisions/025-config-gated-services-gate-themselves-on-windows.md)).
+not exist.
 Services.msc shows it as Automatic and stopped. Write the config by
 hand, then start the service, or reboot:
 
@@ -117,7 +115,7 @@ services serve with no hardware attached.
 
 ## First wiring: rusty-photon-doctor
 
-The installer puts bytes on disk; doctor wires the configs (ADR-016).
+The installer puts bytes on disk; doctor wires the configs.
 After installing — or later modifying — the feature set, run once from an
 elevated prompt:
 
@@ -196,7 +194,7 @@ match it, the build refuses a mismatch.)
 
 The MSI ships no config files. Daemons self-create their config on first
 start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
-the Linux `/etc/rusty-photon` path). Exceptions: the config-gated five
+the Linux `/etc/rusty-photon` path). Exceptions: the config-gated six
 (above) never write one; the two cameras, `zwo-focuser`, and
 `phd2-guider` run on built-in defaults without writing a file until
 settings are saved on the service's setup page (`/setup`) or one is
@@ -219,13 +217,12 @@ hand-edits and page edits share the same file.
 **ui-htmx config**: self-created like every other service — the default
 (the required `rp` target on localhost) is correct for every install,
 since the device list lives in rp's equipment roster, not in ui-htmx
-config (#569). The former install-time driver-map seed action is gone
-with the map itself. **Upgrading an install whose config predates #569**
-(it was seeded with a `drivers` map): the new service refuses to start
-until the retired top-level `drivers` key is deleted from
+config ([ui-htmx.md § Configuration](services/ui-htmx.md#configuration)).
+**An install whose `ui-htmx.json` carries a top-level `drivers` map**
+(an earlier installer seeded one): the service refuses to start until
+that retired key is deleted from
 `%ProgramData%\rusty-photon\ui-htmx.json` — the pre-1.0 fail-loudly
-contract; doctor's `config.retired-keys` fix does the deletion where
-doctor is available.
+contract; doctor's `config.retired-keys` fix deletes it (§First wiring).
 
 ## Logs
 
@@ -249,8 +246,8 @@ until the device answers.
 
 ## Camera specifics
 
-**qhy-camera** — QHYCCD's SDK is proprietary and never redistributed
-(ADR-013). Install [QHY's All-in-One driver
+**qhy-camera** — QHYCCD's SDK is proprietary and never redistributed.
+Install [QHY's All-in-One driver
 pack](https://www.qhyccd.com/download/) first (needed for the signed
 camera driver anyway); it provides the `qhyccd.dll` the service
 delay-loads at startup. Without it the service logs an actionable
@@ -266,7 +263,7 @@ All-in-One installed, and the doctor makes that visible.
 
 **zwo-camera / zwo-focuser** — each feature bundles its own MIT-licensed
 SDK DLL (`ASICamera2.dll` / `EAF_focuser.dll`, license in the install
-dir), so nothing extra is needed for the *software* (ADR-014). ZWO
+dir), so nothing extra is needed for the *software*. ZWO
 cameras additionally need [ZWO's signed camera driver
 installer](https://www.zwoastro.com/downloads/); the EAF speaks inbox HID
 and needs no vendor driver.
@@ -315,9 +312,7 @@ cargo ci verify-msi --msi dist\<fullversion>\rusty-photon-<fullversion>-x64.msi
 so the main install runs as an in-place upgrade over it, then runs the
 shipped doctor's `--fix` — the §Upgrading migration path — before the
 lifecycle asserts, which probe provisioned services over HTTPS with the
-observatory credential. The mode was suspended 2026-07-18 while doctor
-was not yet in the packages and re-enabled once D7 shipped it,
-[#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
+observatory credential.)
 
 `cargo ci build-msi` stages the pinned native SDKs (QHYCCD import lib for
 the delay-load link; the ZWO MIT DLLs that become payloads, from the

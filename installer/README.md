@@ -1,8 +1,8 @@
 # installer/ — the Windows suite MSI (WiX v5)
 
-One `rusty-photon-<version>-x64.msi` for the whole family (ADR-015;
-design + phase log: `docs/plans/archive/windows-packaging.md`). Hand-authored WiX v5
-sources, no generator — the same explicitness rule as the Linux
+One `rusty-photon-<version>-x64.msi` for the whole family
+([ADR-015](../docs/decisions/015-windows-packaging-architecture.md) holds
+why). Hand-authored WiX v5 sources, no generator — the same explicitness rule as the Linux
 `services/<svc>/pkg/` dirs: `git grep` must find the real bytes that ship.
 
 ## Layout
@@ -13,15 +13,16 @@ sources, no generator — the same explicitness rule as the Linux
   Automation), and the `rusty-photon-renew` scheduled-task custom actions
   (daily `rusty-photon-doctor.exe tls renew` as LocalSystem, registered
   via `schtasks` — WiX has no native scheduled-task element; removed on
-  uninstall, rollback-guarded). The former ui-htmx seed custom action is
-  gone (#569).
+  uninstall, rollback-guarded). No action seeds ui-htmx's config: the
+  service creates its own
+  ([ui-htmx.md § Configuration](../docs/services/ui-htmx.md#configuration)).
 - `fragments/<svc>.wxs` — one fragment per packaged service (the Linux
   package set plus session-runner). Each installs
   `rusty-photon-<svc>.exe` (renamed from the Cargo bin), a Windows service
   named `rusty-photon-<svc>` running as LocalSystem with `--service`,
   restart-after-5s failure actions **plus the failure-actions flag** (see
   below), and a per-port firewall exception. The two zwo fragments bundle
-  their MIT SDK DLL (ADR-013/014); `zwo-sdk-license.wxs` is the shared
+  their MIT SDK DLL; `zwo-sdk-license.wxs` is the shared
   license component. The sentinel fragment additionally installs
   `rusty-photon-doctor.exe` (doctor ships in Core with sentinel — no
   separate package; the renewal scheduled task in `Package.wxs` runs it).
@@ -66,8 +67,9 @@ parity) on every pull request. Run it after any edit here, with
   import library embeds the DLL name it was generated from, so the exe's
   import table asks the loader for that exact name (the `EAFFocuser.lib`
   rename exists only for the `-lEAFFocuser` link directive).
-- **qhy-camera ships no DLL** (ADR-013): `qhyccd.dll` comes from QHY's
-  operator-installed All-in-One pack; the exe delay-loads it and the
+- **qhy-camera ships no DLL**: QHYCCD's SDK is proprietary and never
+  redistributed, so `qhyccd.dll` comes from QHY's operator-installed
+  All-in-One pack; the exe delay-loads it and the
   fragment adds a Start-Menu shortcut for the interactive `doctor`.
 
 ## Building and verifying
@@ -83,8 +85,7 @@ CI: the `msi` workflow (`.github/workflows/msi.yml`) runs both on
 the release upload; and the `msi` leg of `nightly-packages.yml` runs them
 nightly with `cargo ci build-msi --version <nightly stamp>`, installing
 over the previously published nightly MSI with the shipped doctor's
-`--fix` in the loop (`cargo ci verify-msi --upgrade-from`;
-`docs/plans/archive/nightly-releases.md` N3).
+`--fix` in the loop (`cargo ci verify-msi --upgrade-from`).
 Operator guide: `docs/packaging-windows.md`.
 
 The build always defines two preprocessor variables: `Version` (the MSI
