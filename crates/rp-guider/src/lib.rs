@@ -6,7 +6,7 @@
 //! (`guiding/start`, `guiding/stop`, `guiding/pause`,
 //! `guiding/resume`, `dither`, `dither/abort`), the reads
 //! (`guiding/stats`, `guiding/metrics`, `devices`), the calibration
-//! store's clear, the star re-selection and the camera lease. `rp`
+//! store's clear and the star re-selection. `rp`
 //! uses it for its guiding MCP tools, for the safety enforcer's
 //! stop-guiding-on-unsafe step, and for what it consumes of the guider
 //! internally (rp.md § Guider Service).
@@ -358,12 +358,6 @@ struct AbortOutcome {
     aborted: bool,
 }
 
-/// Success body of `DELETE /api/v1/camera/lease/{token}`.
-#[derive(Debug, Deserialize)]
-struct ReleaseOutcome {
-    released: bool,
-}
-
 /// The error envelope the guider answers with (guider.md § Error
 /// envelope).
 #[derive(Debug, Clone, Deserialize)]
@@ -460,18 +454,6 @@ pub trait GuiderClient: Send + Sync {
     /// `POST /api/v1/star/reselect` — choose the guide stars anew on
     /// the next frame.
     async fn reselect_star(&self) -> Result<GuiderState, GuiderError>;
-
-    /// `POST /api/v1/camera/lease` — take the camera lease under
-    /// `token` for `ttl`.
-    async fn acquire_camera_lease(&self, token: &str, ttl: Duration) -> Result<(), GuiderError>;
-
-    /// `PUT /api/v1/camera/lease/{token}` — renew the lease for `ttl`.
-    /// A token that holds no lease answers the code `lease_not_found`.
-    async fn renew_camera_lease(&self, token: &str, ttl: Duration) -> Result<(), GuiderError>;
-
-    /// `DELETE /api/v1/camera/lease/{token}` — release the lease.
-    /// `false` when the token held none.
-    async fn release_camera_lease(&self, token: &str) -> Result<bool, GuiderError>;
 }
 
 /// Concrete reqwest-backed implementation of [`GuiderClient`].
@@ -486,7 +468,7 @@ pub struct GuiderServiceClient {
 impl GuiderServiceClient {
     /// Build a client against the given base URL. `timeout` is the
     /// deadline of a request the guider answers at once (stop, pause,
-    /// resume, a read, a lease call). The two that wait for a settle
+    /// resume, a read). The two that wait for a settle
     /// run under [`dither_deadline`] and [`start_deadline`], the
     /// latter with `calibration_timeout`.
     ///
@@ -595,11 +577,6 @@ fn trim_trailing_slash(mut s: String) -> String {
     s
 }
 
-/// A `ttl` as the guider reads a duration: humantime text.
-fn ttl_text(ttl: Duration) -> String {
-    humantime_serde::re::humantime::format_duration(ttl).to_string()
-}
-
 #[async_trait]
 impl GuiderClient for GuiderServiceClient {
     async fn start_guiding(
@@ -678,37 +655,6 @@ impl GuiderClient for GuiderServiceClient {
     async fn reselect_star(&self) -> Result<GuiderState, GuiderError> {
         self.post_for_state("/api/v1/star/reselect").await
     }
-
-    async fn acquire_camera_lease(&self, token: &str, ttl: Duration) -> Result<(), GuiderError> {
-        let url = format!("{}/api/v1/camera/lease", self.base_url);
-        self.execute::<serde::de::IgnoredAny>(
-            self.client
-                .post(&url)
-                .timeout(self.timeout)
-                .json(&serde_json::json!({ "token": token, "ttl": ttl_text(ttl) })),
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn renew_camera_lease(&self, token: &str, ttl: Duration) -> Result<(), GuiderError> {
-        let url = format!("{}/api/v1/camera/lease/{token}", self.base_url);
-        self.execute::<serde::de::IgnoredAny>(
-            self.client
-                .put(&url)
-                .timeout(self.timeout)
-                .json(&serde_json::json!({ "ttl": ttl_text(ttl) })),
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn release_camera_lease(&self, token: &str) -> Result<bool, GuiderError> {
-        let url = format!("{}/api/v1/camera/lease/{token}", self.base_url);
-        self.execute::<ReleaseOutcome>(self.client.delete(&url).timeout(self.timeout))
-            .await
-            .map(|outcome| outcome.released)
-    }
 }
 
 #[cfg(test)]
@@ -726,7 +672,6 @@ mod tests {
     use serde_json::{json, Value};
     use tokio::sync::RwLock;
 
-    const TOKEN: &str = "5f2b8c1e9a4d47c3b0e6a1d2c3f4e5a6";
     const EPOCH: &str = "0b9f6a0e-3c1d-4f6e-9a57-5d1c2e8f7a10";
 
     type Requests = Arc<RwLock<Vec<(Method, String, Value)>>>;
@@ -859,7 +804,6 @@ mod tests {
                     "reachable": true,
                     "connected": true,
                     "unique_id": "5b0f6c1e-93a4-4f7d-8a2e-1c7d40e9b6f3",
-                    "leased": false,
                     "sensor_type": "rggb",
                     "pixel_size_um": 1.45,
                     "width": 3840,
@@ -875,10 +819,6 @@ mod tests {
                 },
                 "rotator": null,
             }),
-            ("POST", "/api/v1/camera/lease") | ("PUT", _) => {
-                json!({ "token": TOKEN, "expires_in": "60s" })
-            }
-            ("DELETE", _) => json!({ "released": true }),
             other => panic!("the stub has no answer for {other:?}"),
         }
     }
@@ -1297,63 +1237,6 @@ mod tests {
         let requests = stub.requests.read().await.clone();
         assert_eq!(requests[0].1, "/api/v1/calibration/clear");
         assert_eq!(requests[1].1, "/api/v1/star/reselect");
-    }
-
-    #[tokio::test]
-    async fn the_camera_lease_is_acquired_renewed_and_released_by_its_token() {
-        let stub = spawn_stub(StubBehavior::Success).await;
-        let client = client_for(&stub);
-        let ttl = Duration::from_secs(45);
-
-        client.acquire_camera_lease(TOKEN, ttl).await.unwrap();
-        client.renew_camera_lease(TOKEN, ttl).await.unwrap();
-        assert!(client.release_camera_lease(TOKEN).await.unwrap());
-
-        let requests = stub.requests.read().await.clone();
-        let lease_path = format!("/api/v1/camera/lease/{TOKEN}");
-        assert_eq!(
-            requests[0],
-            (
-                Method::POST,
-                "/api/v1/camera/lease".to_string(),
-                json!({ "token": TOKEN, "ttl": "45s" })
-            )
-        );
-        assert_eq!(
-            requests[1],
-            (Method::PUT, lease_path.clone(), json!({ "ttl": "45s" }))
-        );
-        assert_eq!(requests[2], (Method::DELETE, lease_path, Value::Null));
-    }
-
-    #[tokio::test]
-    async fn releasing_a_lease_the_token_does_not_hold_answers_false() {
-        let stub = spawn_stub(StubBehavior::Answer {
-            status: StatusCode::OK,
-            body: json!({ "released": false }),
-        })
-        .await;
-
-        assert!(!client_for(&stub).release_camera_lease(TOKEN).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn renewing_a_lease_the_guider_no_longer_holds_carries_its_code() {
-        let stub = spawn_stub(StubBehavior::Answer {
-            status: StatusCode::NOT_FOUND,
-            body: json!({
-                "error": "lease_not_found",
-                "message": "the token holds no lease",
-            }),
-        })
-        .await;
-
-        let err = client_for(&stub)
-            .renew_camera_lease(TOKEN, Duration::from_mins(1))
-            .await
-            .unwrap_err();
-
-        assert_eq!(err.code(), Some("lease_not_found"));
     }
 
     #[tokio::test]

@@ -13314,18 +13314,6 @@ impl rp_guider::GuiderClient for ReleasableDitherGuider {
     async fn reselect_star(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
-
-    async fn acquire_camera_lease(&self, _token: &str, _ttl: Duration) -> Result<(), GuiderError> {
-        panic!("not exercised by these tests")
-    }
-
-    async fn renew_camera_lease(&self, _token: &str, _ttl: Duration) -> Result<(), GuiderError> {
-        panic!("not exercised by these tests")
-    }
-
-    async fn release_camera_lease(&self, _token: &str) -> Result<bool, GuiderError> {
-        panic!("not exercised by these tests")
-    }
 }
 
 fn handler_with_releasable_guider() -> (McpHandler, Arc<ReleasableDitherGuider>) {
@@ -13748,7 +13736,6 @@ async fn an_imaging_trains_lease_answers_what_it_holds_and_holds_the_gate() {
     assert_eq!(json["train_id"], "main");
     assert_eq!(json["focuser_id"], "foc");
     assert_eq!(json["cameras"], serde_json::json!(["cam"]));
-    assert_eq!(json["camera_lease"], false);
     chrono::DateTime::parse_from_rfc3339(json["ends_by"].as_str().unwrap()).unwrap();
 
     let slew = tokio::time::timeout(
@@ -13831,94 +13818,274 @@ async fn a_move_naming_no_lease_waits_for_the_lease_on_its_focuser() {
     ok_text(ordinary.await.unwrap().unwrap());
 }
 
-/// A fake guider whose camera is the fixture camera "cam".
-fn lease_guider() -> Arc<crate::camera_lease::test_support::FakeGuider> {
-    let guider = crate::camera_lease::test_support::FakeGuider::default();
-    *guider.devices.lock().unwrap() = Some(guider_devices(None, Some(MOCK_UNIQUE_ID)));
+/// A fake guider, idle, whose camera is the fixture camera "cam".
+fn lease_guider() -> Arc<crate::guide_camera::test_support::FakeGuider> {
+    let guider = crate::guide_camera::test_support::FakeGuider::default();
+    *guider.devices.lock().unwrap() =
+        Some(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID)));
     Arc::new(guider)
 }
 
-/// [`lease_handler`] over a guiding train, with `guider` configured.
-fn guided_lease_handler(guider: &Arc<crate::camera_lease::test_support::FakeGuider>) -> McpHandler {
+/// [`lease_handler`] over a guiding train on `cam`, with `guider`
+/// configured.
+fn guided_handler(
+    cam: Arc<dyn ascom_alpaca::api::Camera>,
+    guider: &Arc<crate::guide_camera::test_support::FakeGuider>,
+) -> McpHandler {
     let client: Arc<dyn rp_guider::GuiderClient> = guider.clone();
-    lease_handler(Arc::new(MockCamera::default()), "guiding")
-        .with_guider(Some(client), GuiderDefaults::default())
+    lease_handler(cam, "guiding").with_guider(Some(client), GuiderDefaults::default())
+}
+
+/// [`guided_handler`] over a mock camera.
+fn guided_lease_handler(guider: &Arc<crate::guide_camera::test_support::FakeGuider>) -> McpHandler {
+    guided_handler(Arc::new(MockCamera::default()), guider)
+}
+
+fn set_guider_stats(
+    guider: &crate::guide_camera::test_support::FakeGuider,
+    stats: crate::guide_camera::test_support::Stats,
+) {
+    *guider.stats.lock().unwrap() = stats;
+}
+
+/// Whether a start of guiding through `handler` finds the guide camera
+/// guard on "cam" free, giving it back at once when it does.
+fn guard_is_free(handler: &McpHandler) -> bool {
+    handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .is_ok()
+}
+
+/// Waits, at most 5 s, for the guide camera guard to be given back.
+async fn guard_given_back(handler: &McpHandler) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !guard_is_free(handler) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the guide camera guard stayed held");
 }
 
 #[tokio::test]
-async fn a_guiding_trains_lease_holds_no_camera_lease_with_no_guider_configured() {
+async fn a_guiding_trains_lease_takes_no_guard_with_no_guider_configured() {
     let handler = lease_handler(Arc::new(MockCamera::default()), "guiding");
 
-    let json = ok_text(acquire_lease(&handler, "a").await);
+    ok_text(acquire_lease(&handler, "a").await);
 
-    assert_eq!(json["camera_lease"], false);
+    assert!(guard_is_free(&handler));
 }
 
 #[tokio::test]
-async fn a_guiding_trains_lease_takes_the_camera_lease_and_releases_it_with_the_lease() {
-    use crate::camera_lease::test_support::Call;
+async fn a_guiding_trains_lease_holds_the_guard_after_an_idle_read_and_gives_it_back_with_the_lease(
+) {
     let guider = lease_guider();
     let handler = guided_lease_handler(&guider);
 
-    let json = ok_text(acquire_lease(&handler, "a").await);
-    assert_eq!(json["camera_lease"], true);
-    let calls = guider.calls();
-    let [Call::Acquire { token, ttl }] = calls.as_slice() else {
-        panic!("one acquire and nothing else: {calls:?}");
-    };
-    assert!(
-        token.len() == 32 && token.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-        "{token:?}"
+    ok_text(acquire_lease(&handler, "a").await);
+    assert_eq!(guider.stats_reads(), 1);
+    assert_eq!(
+        handler
+            .guide_camera
+            .take_for_start("cam", "start_guiding")
+            .unwrap_err(),
+        "the guide camera 'cam' is in use by train lease 'a'"
     );
-    assert_eq!(*ttl, Duration::from_secs(60));
 
     release_lease(&handler, "a").await;
-    let entry = handler.equipment.find_camera("cam").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
-        .await
-        .expect("the released lease kept the camera");
-    assert_eq!(guider.released().as_slice(), std::slice::from_ref(token));
+    guard_given_back(&handler).await;
 }
 
 #[tokio::test]
-async fn a_guiders_refusal_is_relayed_and_its_token_released() {
-    use crate::camera_lease::test_support::{Answer, Call};
+async fn a_guiding_trains_lease_checks_none_of_the_guiders_devices() {
     let guider = lease_guider();
-    *guider.acquire.lock().unwrap() = Answer::Refuse("camera_leased", "another token holds it");
+    *guider.devices.lock().unwrap() = None;
     let handler = guided_lease_handler(&guider);
 
-    let result = acquire_lease(&handler, "a").await;
+    ok_text(acquire_lease(&handler, "a").await);
+}
+
+#[tokio::test]
+async fn a_guider_that_is_not_idle_refuses_a_guiding_trains_lease_which_gives_back_what_it_took() {
+    use crate::guide_camera::test_support::Stats;
+    let guider = lease_guider();
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Looping));
+    let handler = guided_lease_handler(&guider);
+
     assert_tool_error(
-        Ok(result),
-        "the guider refused the camera lease: camera_leased: another token holds it",
+        Ok(acquire_lease(&handler, "a").await),
+        "acquire_train_lease: the guider is looping; rp uses the guide camera 'cam' only while the guider is idle",
     );
+
     let entry = handler.equipment.find_camera("cam").unwrap();
     tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
         .await
         .expect("a refused acquire kept the camera's slot");
-    // The token was named before the acquire, so it is released even
-    // though the guider said no: an answer lost in transit is never a
-    // lease left held.
-    let calls = guider.calls();
-    let Some(Call::Acquire { token, .. }) = calls.first() else {
-        panic!("the first call is the acquire: {calls:?}");
-    };
-    assert_eq!(guider.released().as_slice(), std::slice::from_ref(token));
+    guard_given_back(&handler).await;
 }
 
 #[tokio::test]
-async fn a_guider_on_another_camera_refuses_the_lease_before_it_is_asked() {
+async fn a_guiding_trains_lease_is_refused_at_once_while_a_start_holds_the_guard() {
     let guider = lease_guider();
-    *guider.devices.lock().unwrap() = Some(guider_devices(None, Some("another-camera")));
     let handler = guided_lease_handler(&guider);
-
-    let result = acquire_lease(&handler, "a").await;
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .unwrap();
 
     assert_tool_error(
-        Ok(result),
-        "the guider's camera 'another-camera' is not the guiding train's camera 'mock-id'",
+        Ok(acquire_lease(&handler, "a").await),
+        "acquire_train_lease: the guide camera 'cam' is in use by start_guiding",
     );
-    assert_eq!(guider.calls(), [], "the guider was asked for its lease");
+    assert_eq!(guider.stats_reads(), 0, "a refused acquire read the guider");
+    drop(start);
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_is_refused_unless_the_guider_reads_idle() {
+    use crate::guide_camera::test_support::Stats;
+    for (stats, expected) in [
+        (
+            Stats::In(rp_guider::GuiderState::Guiding),
+            "the guider is guiding; rp uses the guide camera 'cam' only while the guider is idle",
+        ),
+        (
+            Stats::Unreachable,
+            "could not read the guider's state before using the guide camera 'cam': \
+             service unreachable: connection refused",
+        ),
+    ] {
+        let cam = Arc::new(MockCamera::default());
+        let guider = lease_guider();
+        set_guider_stats(&guider, stats);
+        let handler = guided_handler(cam.clone(), &guider);
+
+        let err = handler
+            .do_capture(capture_request("cam", 1), None, &Cancel::never())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, expected);
+        assert_eq!(calls(&cam.start_exposure_calls), 0);
+        assert!(guard_is_free(&handler), "a refused capture kept the guard");
+    }
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_is_refused_at_once_while_a_start_holds_the_guard() {
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "move_rotator")
+        .unwrap();
+
+    let err = handler
+        .do_capture(capture_request("cam", 1), None, &Cancel::never())
+        .await
+        .unwrap_err();
+
+    assert_eq!(err, "the guide camera 'cam' is in use by move_rotator");
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+    assert_eq!(guider.stats_reads(), 0, "a refused capture read the guider");
+    drop(start);
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_gives_the_guard_back_when_it_succeeds_or_fails() {
+    for cam in [
+        MockCamera::default(),
+        MockCamera {
+            fail_start_exposure: true,
+            ..Default::default()
+        },
+        MockCamera {
+            fail_image_array: true,
+            ..Default::default()
+        },
+    ] {
+        let guider = lease_guider();
+        let handler = guided_handler(Arc::new(cam), &guider);
+
+        let _ = handler
+            .do_capture(capture_request("cam", 1), None, &Cancel::never())
+            .await;
+
+        assert!(
+            guard_is_free(&handler),
+            "a capture that ended kept the guard"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_capture_through_the_guide_camera_keeps_the_guard_until_the_camera_idles() {
+    let cam = Arc::new(MockCamera {
+        never_ready: true,
+        ..Default::default()
+    });
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+
+    handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .expect_err("a cancelled capture must fail");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !guard_is_free(&handler),
+        "the guard went back while the camera was still exposing"
+    );
+
+    cam.idle_now
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    guard_given_back(&handler).await;
+}
+
+#[tokio::test]
+async fn a_capture_under_a_guiding_trains_lease_reads_the_guider_too() {
+    use crate::guide_camera::test_support::Stats;
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    ok_text(acquire_lease(&handler, "a").await);
+
+    // Another client of the guider's started it after the lease's read.
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Guiding));
+    let result = handler
+        .capture_inner(lease_capture(Some("a")), None, &Cancel::never())
+        .await;
+
+    assert_tool_error(
+        result,
+        "the guider is guiding; rp uses the guide camera 'cam' only while the guider is idle",
+    );
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+}
+
+#[tokio::test]
+async fn a_capture_through_another_camera_takes_no_guard_whatever_the_guider_does() {
+    use crate::guide_camera::test_support::Stats;
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Guiding));
+    let client: Arc<dyn rp_guider::GuiderClient> = guider.clone();
+    let handler =
+        lease_handler(cam, "imaging").with_guider(Some(client), GuiderDefaults::default());
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .unwrap();
+
+    handler
+        .do_capture(capture_request("cam", 1), None, &Cancel::never())
+        .await
+        .unwrap();
+    drop(start);
 }
 
 #[tokio::test(start_paused = true)]

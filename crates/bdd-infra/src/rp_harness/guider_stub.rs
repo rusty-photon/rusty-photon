@@ -10,9 +10,8 @@
 //! answering or restarts.
 //!
 //! Every request is recorded as it arrives, as method, path (with the
-//! `/api/v1` prefix taken off) and JSON body. The camera-lease calls
-//! are recorded a second time with their token and `ttl`, so that
-//! `Then` steps assert on what was sent.
+//! `/api/v1` prefix taken off) and JSON body, so that `Then` steps
+//! assert on what was sent.
 //!
 //! The wire shapes are written out here and not taken from `rp-guider`,
 //! the crate that holds rp's client: a double that shared the client's
@@ -23,10 +22,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use tokio::sync::watch;
@@ -126,34 +125,6 @@ pub struct StubRequest {
     pub body: Value,
 }
 
-/// One call to a camera-lease endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LeaseCall {
-    /// `POST /camera/lease`, and whether the double granted it.
-    Acquire {
-        token: String,
-        ttl: Duration,
-        granted: bool,
-    },
-    /// `PUT /camera/lease/{token}`, and whether the token held the
-    /// lease.
-    Renew {
-        token: String,
-        ttl: Duration,
-        found: bool,
-    },
-    /// `DELETE /camera/lease/{token}`, and whether the token held the
-    /// lease.
-    Release { token: String, released: bool },
-}
-
-/// The camera lease the double holds for a client.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeldLease {
-    pub token: String,
-    pub ttl: Duration,
-}
-
 struct Inner {
     state: &'static str,
     /// The reason of the latest stop, as `last_stop` reports it.
@@ -163,9 +134,6 @@ struct Inner {
     camera_unique_id: Option<String>,
     mount_unique_id: Option<String>,
     settle_delay: Duration,
-    lease_grant_never_answers: bool,
-    lease: Option<HeldLease>,
-    lease_calls: Vec<LeaseCall>,
     requests: Vec<StubRequest>,
     /// `None` is a star-lost frame.
     hfd_script: Vec<Option<f64>>,
@@ -192,9 +160,6 @@ impl Inner {
             camera_unique_id: Some(STUB_GUIDE_CAMERA_ID.to_string()),
             mount_unique_id: Some(STUB_GUIDE_MOUNT_ID.to_string()),
             settle_delay: Duration::ZERO,
-            lease_grant_never_answers: false,
-            lease: None,
-            lease_calls: Vec::new(),
             requests: Vec::new(),
             hfd_script: vec![Some(2.5)],
             metrics_polls: 0,
@@ -267,12 +232,6 @@ impl Inner {
     /// acceptance.
     fn accept_start(&mut self) -> Result<u64, Refusal> {
         self.injected("/guiding/start")?;
-        if self.lease.is_some() {
-            return Err(Refusal::new(
-                "camera_leased",
-                "a client holds the camera lease",
-            ));
-        }
         self.state = "guiding";
         Ok(self.stops)
     }
@@ -362,80 +321,6 @@ impl Inner {
             return Err(Refusal::new("not_idle", "a run is in progress"));
         }
         Ok(json!({ "state": self.state }))
-    }
-
-    fn acquire_lease(&mut self, body: &Value) -> Answer {
-        self.injected("/camera/lease")?;
-        let token = body.get("token").and_then(Value::as_str).unwrap_or("");
-        let (true, Some(ttl)) = (well_formed_token(token), lease_ttl(body)) else {
-            return Err(Refusal::new(
-                "invalid_request",
-                "a lease needs a token of 32 lowercase hex digits and a ttl of 10s to 5m",
-            ));
-        };
-        let refused = if self.state != "idle" {
-            Some(Refusal::new(
-                "not_idle",
-                "a camera lease needs an idle guider",
-            ))
-        } else if self.lease.as_ref().is_some_and(|held| held.token != token) {
-            Some(Refusal::new(
-                "camera_leased",
-                "another token holds the camera lease",
-            ))
-        } else {
-            None
-        };
-        self.lease_calls.push(LeaseCall::Acquire {
-            token: token.to_string(),
-            ttl,
-            granted: refused.is_none(),
-        });
-        if let Some(refused) = refused {
-            return Err(refused);
-        }
-        let lease = HeldLease {
-            token: token.to_string(),
-            ttl,
-        };
-        let answer = lease_answer(&lease);
-        self.lease = Some(lease);
-        Ok(answer)
-    }
-
-    fn renew_lease(&mut self, token: String, body: &Value) -> Answer {
-        let Some(ttl) = lease_ttl(body) else {
-            return Err(Refusal::new(
-                "invalid_request",
-                "a lease needs a ttl of 10s to 5m",
-            ));
-        };
-        let found = self.lease.as_ref().is_some_and(|held| held.token == token);
-        self.lease_calls.push(LeaseCall::Renew {
-            token: token.clone(),
-            ttl,
-            found,
-        });
-        if !found {
-            return Err(Refusal::new(
-                "lease_not_found",
-                "the token holds no camera lease",
-            ));
-        }
-        let lease = HeldLease { token, ttl };
-        let answer = lease_answer(&lease);
-        self.lease = Some(lease);
-        Ok(answer)
-    }
-
-    fn release_lease(&mut self, token: String) -> Value {
-        let released = self.lease.as_ref().is_some_and(|held| held.token == token);
-        if released {
-            self.lease = None;
-        }
-        self.lease_calls
-            .push(LeaseCall::Release { token, released });
-        json!({ "released": released })
     }
 
     fn stats(&mut self) -> Answer {
@@ -529,7 +414,6 @@ impl Inner {
                 "reachable": true,
                 "connected": true,
                 "unique_id": self.camera_unique_id,
-                "leased": self.lease.is_some(),
                 "sensor_type": "monochrome",
                 "pixel_size_um": 3.76,
                 "width": 1920,
@@ -653,12 +537,11 @@ impl Drop for DitherInFlight {
 fn status_of(code: &str) -> StatusCode {
     match code {
         "invalid_request" => StatusCode::BAD_REQUEST,
-        "lease_not_found" | "no_frame" => StatusCode::NOT_FOUND,
+        "no_frame" => StatusCode::NOT_FOUND,
         "not_configured"
         | "not_guiding"
         | "not_idle"
         | "not_exposing"
-        | "camera_leased"
         | "device_not_connected"
         | "mount_not_ready"
         | "stopped"
@@ -670,35 +553,6 @@ fn status_of(code: &str) -> StatusCode {
         "settle_timeout" | "stop_timeout" => StatusCode::GATEWAY_TIMEOUT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
-}
-
-/// A lease token as the contract wants it: 32 lowercase hexadecimal
-/// digits.
-fn well_formed_token(token: &str) -> bool {
-    token.len() == 32
-        && token
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-/// The `ttl` of a lease body: `"60s"` when left out, and between 10 s
-/// and 5 min.
-fn lease_ttl(body: &Value) -> Option<Duration> {
-    let ttl = match body.get("ttl") {
-        None | Some(Value::Null) => Duration::from_secs(60),
-        Some(ttl) => humantime::parse_duration(ttl.as_str()?).ok()?,
-    };
-    (Duration::from_secs(10)..=Duration::from_secs(300))
-        .contains(&ttl)
-        .then_some(ttl)
-}
-
-/// The answer to an acquire and to a renewal.
-fn lease_answer(lease: &HeldLease) -> Value {
-    json!({
-        "token": lease.token,
-        "expires_in": humantime::format_duration(lease.ttl).to_string(),
-    })
 }
 
 /// The double of the guider's HTTP contract. See the module docs.
@@ -733,11 +587,6 @@ impl GuiderStub {
             .route("/dither/abort", post(dither_abort_handler))
             .route("/star/reselect", post(reselect_handler))
             .route("/calibration/clear", post(calibration_clear_handler))
-            .route("/camera/lease", post(lease_acquire_handler))
-            .route(
-                "/camera/lease/{token}",
-                put(lease_renew_handler).delete(lease_release_handler),
-            )
             .route("/guiding/stats", get(stats_handler))
             .route("/guiding/metrics", get(metrics_handler))
             .route("/devices", get(devices_handler));
@@ -809,14 +658,13 @@ impl GuiderStub {
         inner.record_stop("requested");
     }
 
-    /// Restart: `idle`, no latest stop, no camera lease, a new epoch,
+    /// Restart: `idle`, no latest stop, a new epoch,
     /// and answering again. The record of requests stays.
     pub fn restart(&self) {
         {
             let mut inner = self.shared.lock();
             inner.state = "idle";
             inner.last_stop = None;
-            inner.lease = None;
             inner.epoch = inner.epoch.saturating_add(1);
             inner.metrics_polls = 0;
         }
@@ -875,12 +723,6 @@ impl GuiderStub {
         self.shared.lock().settle_delay = delay;
     }
 
-    /// Grant every camera-lease acquire and never answer it: a grant
-    /// whose answer is lost.
-    pub fn grant_lease_and_never_answer(&self) {
-        self.shared.lock().lease_grant_never_answers = true;
-    }
-
     /// The HFD `guiding/metrics` serves, one entry per request: request
     /// N serves `script[min(N-1, len-1)]` for every frame of its
     /// answer, so the last value repeats. Each request moves the frame
@@ -921,8 +763,7 @@ impl GuiderStub {
     }
 
     /// The bodies of the requests to exactly `path`, in order of
-    /// arrival. `/camera/lease` is the acquire alone: a renewal and a
-    /// release carry their token in the path.
+    /// arrival.
     #[must_use]
     pub fn requests_to(&self, path: &str) -> Vec<Value> {
         self.shared
@@ -931,46 +772,6 @@ impl GuiderStub {
             .iter()
             .filter(|request| request.path == path)
             .map(|request| request.body.clone())
-            .collect()
-    }
-
-    /// The camera lease held, if any.
-    #[must_use]
-    pub fn lease(&self) -> Option<HeldLease> {
-        self.shared.lock().lease.clone()
-    }
-
-    /// Every call to a camera-lease endpoint, in order of arrival.
-    #[must_use]
-    pub fn lease_calls(&self) -> Vec<LeaseCall> {
-        self.shared.lock().lease_calls.clone()
-    }
-
-    /// The tokens of the acquires the double granted, in order.
-    #[must_use]
-    pub fn granted_tokens(&self) -> Vec<String> {
-        self.lease_calls()
-            .into_iter()
-            .filter_map(|call| match call {
-                LeaseCall::Acquire {
-                    token,
-                    granted: true,
-                    ..
-                } => Some(token),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The tokens of the releases received, in order.
-    #[must_use]
-    pub fn released_tokens(&self) -> Vec<String> {
-        self.lease_calls()
-            .into_iter()
-            .filter_map(|call| match call {
-                LeaseCall::Release { token, .. } => Some(token),
-                _ => None,
-            })
             .collect()
     }
 
@@ -1033,39 +834,6 @@ async fn calibration_clear_handler(State(shared): State<Arc<Shared>>, body: Byte
     shared.read(Inner::clear_calibration).map(Json)
 }
 
-async fn lease_acquire_handler(State(shared): State<Arc<Shared>>, body: Bytes) -> Answered {
-    let body = shared.arrive("POST", "/camera/lease", &body).await;
-    let answer = shared.with(|inner| inner.acquire_lease(&body))?;
-    if shared.read(|inner| inner.lease_grant_never_answers) {
-        std::future::pending::<()>().await;
-    }
-    Ok(Json(answer))
-}
-
-async fn lease_renew_handler(
-    State(shared): State<Arc<Shared>>,
-    Path(token): Path<String>,
-    body: Bytes,
-) -> Answered {
-    let body = shared
-        .arrive("PUT", &format!("/camera/lease/{token}"), &body)
-        .await;
-    shared
-        .with(|inner| inner.renew_lease(token, &body))
-        .map(Json)
-}
-
-async fn lease_release_handler(
-    State(shared): State<Arc<Shared>>,
-    Path(token): Path<String>,
-    body: Bytes,
-) -> Json<Value> {
-    shared
-        .arrive("DELETE", &format!("/camera/lease/{token}"), &body)
-        .await;
-    Json(shared.with(|inner| inner.release_lease(token)))
-}
-
 async fn stats_handler(State(shared): State<Arc<Shared>>, body: Bytes) -> Answered {
     shared.arrive("GET", "/guiding/stats", &body).await;
     shared.with(Inner::stats).map(Json)
@@ -1108,9 +876,6 @@ async fn unknown_handler(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 mod tests {
     use super::*;
-
-    const TOKEN: &str = "5f2b8c1e9a4d47c3b0e6a1d2c3f4e5a6";
-    const OTHER_TOKEN: &str = "00000000000000000000000000000001";
 
     async fn send(
         stub: &GuiderStub,
@@ -1278,13 +1043,11 @@ mod tests {
     fn every_code_of_the_contract_has_its_status() {
         for (code, status) in [
             ("invalid_request", 400),
-            ("lease_not_found", 404),
             ("no_frame", 404),
             ("not_configured", 409),
             ("not_guiding", 409),
             ("not_idle", 409),
             ("not_exposing", 409),
-            ("camera_leased", 409),
             ("device_not_connected", 409),
             ("mount_not_ready", 409),
             ("stopped", 409),
@@ -1423,160 +1186,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_camera_lease_is_granted_renewed_and_released_by_its_token() {
-        let stub = GuiderStub::start("idle").await;
-
-        let (status, body) = post(
-            &stub,
-            "/camera/lease",
-            json!({ "token": TOKEN, "ttl": "1m" }),
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert_eq!(body["token"], TOKEN);
-        assert_eq!(
-            stub.lease(),
-            Some(HeldLease {
-                token: TOKEN.to_string(),
-                ttl: Duration::from_secs(60),
-            })
-        );
-
-        let (status, _) = send(
-            &stub,
-            reqwest::Method::PUT,
-            &format!("/camera/lease/{TOKEN}"),
-            Some(json!({ "ttl": "30s" })),
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert_eq!(stub.lease().unwrap().ttl, Duration::from_secs(30));
-
-        let (status, body) = send(
-            &stub,
-            reqwest::Method::DELETE,
-            &format!("/camera/lease/{TOKEN}"),
-            None,
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert_eq!(body, json!({ "released": true }));
-        assert_eq!(stub.lease(), None);
-        assert_eq!(
-            stub.lease_calls(),
-            vec![
-                LeaseCall::Acquire {
-                    token: TOKEN.to_string(),
-                    ttl: Duration::from_secs(60),
-                    granted: true,
-                },
-                LeaseCall::Renew {
-                    token: TOKEN.to_string(),
-                    ttl: Duration::from_secs(30),
-                    found: true,
-                },
-                LeaseCall::Release {
-                    token: TOKEN.to_string(),
-                    released: true,
-                },
-            ]
-        );
-        assert_eq!(stub.granted_tokens(), vec![TOKEN.to_string()]);
-        assert_eq!(stub.released_tokens(), vec![TOKEN.to_string()]);
-        assert_eq!(stub.requests_to("/camera/lease").len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_camera_lease_is_refused_outside_idle_and_to_a_second_token() {
-        let stub = GuiderStub::start("guiding").await;
-
-        let (status, body) = post(&stub, "/camera/lease", json!({ "token": TOKEN })).await;
-        assert_eq!(status, 409);
-        assert_eq!(body["error"], "not_idle");
-        assert_eq!(stub.lease(), None);
-
-        stub.set_state("idle");
-        post(&stub, "/camera/lease", json!({ "token": TOKEN })).await;
-        let (status, body) = post(&stub, "/camera/lease", json!({ "token": OTHER_TOKEN })).await;
-        assert_eq!(status, 409);
-        assert_eq!(body["error"], "camera_leased");
-        let (status, _) = post(&stub, "/camera/lease", json!({ "token": TOKEN })).await;
-        assert_eq!(status, 200);
-        assert_eq!(stub.granted_tokens().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn a_malformed_token_or_a_ttl_out_of_range_is_an_invalid_request() {
-        let stub = GuiderStub::start("idle").await;
-
-        for body in [
-            json!({ "token": "ABCDEF" }),
-            json!({ "token": TOKEN.to_uppercase() }),
-            json!({ "token": TOKEN, "ttl": "5s" }),
-            json!({ "token": TOKEN, "ttl": "10m" }),
-            json!({ "token": TOKEN, "ttl": 60 }),
-        ] {
-            let (status, answer) = post(&stub, "/camera/lease", body.clone()).await;
-            assert_eq!(status, 400, "{body}");
-            assert_eq!(answer["error"], "invalid_request", "{body}");
-        }
-        assert_eq!(stub.lease(), None);
-    }
-
-    #[tokio::test]
-    async fn a_renewal_of_no_lease_is_not_found_and_a_release_of_none_is_false() {
-        let stub = GuiderStub::start("idle").await;
-
-        let (status, body) = send(
-            &stub,
-            reqwest::Method::PUT,
-            &format!("/camera/lease/{TOKEN}"),
-            Some(json!({ "ttl": "60s" })),
-        )
-        .await;
-        assert_eq!(status, 404);
-        assert_eq!(body["error"], "lease_not_found");
-
-        let (status, body) = send(
-            &stub,
-            reqwest::Method::DELETE,
-            &format!("/camera/lease/{TOKEN}"),
-            None,
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert_eq!(body, json!({ "released": false }));
-    }
-
-    #[tokio::test]
-    async fn a_held_camera_lease_refuses_a_start() {
-        let stub = GuiderStub::start("idle").await;
-        post(&stub, "/camera/lease", json!({ "token": TOKEN })).await;
-
-        let (status, body) = post(&stub, "/guiding/start", json!({})).await;
-
-        assert_eq!(status, 409);
-        assert_eq!(body["error"], "camera_leased");
-        assert_eq!(stub.state(), "idle");
-    }
-
-    #[tokio::test]
-    async fn a_grant_that_never_answers_still_holds_the_lease() {
-        let stub = GuiderStub::start("idle").await;
-        stub.grant_lease_and_never_answer();
-
-        let outcome = reqwest::Client::new()
-            .post(format!("{}/api/v1/camera/lease", stub.url))
-            .json(&json!({ "token": TOKEN }))
-            .timeout(Duration::from_millis(300))
-            .send()
-            .await;
-
-        assert!(outcome.unwrap_err().is_timeout());
-        assert_eq!(stub.lease().unwrap().token, TOKEN);
-    }
-
-    #[tokio::test]
     async fn stats_follow_the_state() {
         let stub = GuiderStub::start("idle").await;
 
@@ -1708,16 +1317,13 @@ mod tests {
         let (_, defaults) = get(&stub, "/devices").await;
         assert_eq!(defaults["camera"]["unique_id"], STUB_GUIDE_CAMERA_ID);
         assert_eq!(defaults["mount"]["unique_id"], STUB_GUIDE_MOUNT_ID);
-        assert_eq!(defaults["camera"]["leased"], false);
         assert_eq!(defaults["rotator"], Value::Null);
 
         stub.set_camera_unique_id(None);
         stub.set_mount_unique_id(Some(""));
-        post(&stub, "/camera/lease", json!({ "token": TOKEN })).await;
         let (_, scripted) = get(&stub, "/devices").await;
         assert_eq!(scripted["camera"]["unique_id"], Value::Null);
         assert_eq!(scripted["mount"]["unique_id"], "");
-        assert_eq!(scripted["camera"]["leased"], true);
     }
 
     #[tokio::test]
@@ -1736,9 +1342,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_restart_idles_the_stub_and_drops_what_it_held() {
+    async fn a_restart_idles_the_stub_under_a_new_epoch_and_keeps_the_record() {
         let stub = GuiderStub::start("idle").await;
-        post(&stub, "/camera/lease", json!({ "token": TOKEN })).await;
+        get(&stub, "/devices").await;
         stub.set_state("guiding");
         stub.set_last_stop("mount_slewing");
         stub.stop_answering();
@@ -1749,8 +1355,7 @@ mod tests {
         assert_eq!(stats["state"], "idle");
         assert_eq!(stats["last_stop"], Value::Null);
         assert_eq!(stats["totals"]["epoch"], "stub-epoch-1");
-        assert_eq!(stub.lease(), None);
-        assert_eq!(stub.requests_to("/camera/lease").len(), 1);
+        assert_eq!(stub.requests_to("/devices").len(), 1);
     }
 
     #[tokio::test]

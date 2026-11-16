@@ -4,7 +4,8 @@
 //! wheel and camera, in one train "main". The guiding-train rigs pair
 //! the simulator's focuser with the simulator's camera, behind the stub
 //! guider a prior Given started, since a guiding train needs the
-//! guiding config; its camera lease is in `guider_camera_lease.feature`.
+//! guiding config; its guide camera guard is in
+//! `guide_camera_guard.feature`.
 //!
 //! Shared steps live elsewhere: `the tool call should return an error`
 //! and `the error message should contain {string}` in `tool_steps.rs`,

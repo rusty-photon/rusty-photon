@@ -4,17 +4,18 @@ Feature: Train lease
   between them. rp's train lease holds three things off the run for its
   whole length: rp's own captures, focuser moves and filter changes on
   the train's light path, mount motion (the lease holds the motion gate
-  shared, so slews and dithers wait), and, on a guiding train, the
-  guider's exposures, through the guider's camera lease. The caller
-  names the lease id, acquires it before the first move, passes it on
-  every capture, move_focuser and set_filter of the run, and releases
-  it after the put-back. A call that names no lease, through a camera
-  or a device the lease reserves, waits for the lease to end. An
-  acquire whose reservation overlaps another lease is refused at once,
-  naming it, and so is an auto_focus sweep over a leased light path. A
-  call that names a lease which is not held is refused, saying why.
-  The camera lease of a guiding train's lease is in
-  guider_camera_lease.feature; an imaging train's lease takes none.
+  shared, so slews and dithers wait), and, on a guiding train, rp's
+  starts of guiding, through the guide camera guard, which it takes
+  only with the guider idle. The caller names the lease id, acquires
+  it before the first move, passes it on every capture, move_focuser
+  and set_filter of the run, and releases it after the put-back. A
+  call that names no lease, through a camera or a device the lease
+  reserves, waits for the lease to end. An acquire whose reservation
+  overlaps another lease is refused at once, naming it, and so is an
+  auto_focus sweep over a leased light path. A call that names a lease
+  which is not held is refused, saying why.
+  The guide camera guard of a guiding train's lease is in
+  guide_camera_guard.feature; an imaging train's lease takes none.
 
   Scenario: A granted lease names what it moves, holds still and holds
     Given rp is running with imaging train "main" of a focuser, a filter wheel and a camera on the simulator
@@ -25,7 +26,6 @@ Feature: Train lease
     And the train lease result list "held_focuser_ids" should be empty
     And the train lease result list "held_rotator_ids" should be empty
     And the train lease result list "cameras" should be "main-cam"
-    And the train lease result field "camera_lease" should be false
     And the train lease result should carry an RFC 3339 "ends_by" time
 
   Scenario: Calls that name the held lease run under it

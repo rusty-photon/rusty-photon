@@ -311,7 +311,7 @@ async fn call_named_guider_tool(world: &mut RpWorld, tool: String) {
 
 // --- When steps: what happens to the stub guider ---------------------
 
-/// A guider that restarts: `idle`, no latest stop, no camera lease.
+/// A guider that restarts: `idle`, no latest stop, a new epoch.
 #[when("the stub guider restarts")]
 fn stub_guider_restarts(world: &mut RpWorld) {
     guider_stub(world).restart();

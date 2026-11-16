@@ -11,9 +11,11 @@
 //! `amount_arcsec`, and `main_px` is multiplied by the imaging train's
 //! pixel scale (rp.md § Optical Trains) and goes out as arcseconds.
 //!
-//! Before a start, and before a camera lease, `rp` checks that the
-//! guider's devices are its own ([`McpHandler::check_guider_devices`],
-//! rp.md § Guider Service).
+//! Before a start, `rp` checks that the guider's devices are its own
+//! ([`McpHandler::check_guider_devices`], rp.md § Guider Service), and
+//! then takes the guide camera guard, which refuses the start at once
+//! while a capture through the guide camera or a guiding train's lease
+//! holds it (rp.md § The guide camera guard).
 //!
 //! The settle-blocking operations emit operation-event triples that
 //! terminate in `*_settled` rather than `*_complete`:
@@ -142,21 +144,10 @@ pub struct ResumeGuidingParams {}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetGuidingStatsParams {}
 
-/// Which of the guider's devices a call has checked against rp's own
-/// (rp.md § Guider Service).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DevicesCheck {
-    /// Before a start: the guider's mount and its camera.
-    Start,
-    /// Before a camera lease: the camera alone, since the lease moves
-    /// no mount.
-    CameraLease,
-}
-
 #[tool_router(router = tool_router_guider, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "Start guiding via the guider service and block until settled. The guider selects its guide stars, and calibrates first when it holds no calibration it can use. Settle overrides (settle_pixels, settle_time, settle_timeout) fall back to rp's guiding config, then to the guider's own defaults. Refused when the guider's camera or mount is not the one rp holds. Returns the guider's state and the rolling RMS in guide-camera pixels and in arcseconds."
+        description = "Start guiding via the guider service and block until settled. The guider selects its guide stars, and calibrates first when it holds no calibration it can use. Settle overrides (settle_pixels, settle_time, settle_timeout) fall back to rp's guiding config, then to the guider's own defaults. Refused when the guider's camera or mount is not the one rp holds, and at once while a capture through the guide camera or a guiding train's lease is under way. Returns the guider's state and the rolling RMS in guide-camera pixels and in arcseconds."
     )]
     pub(crate) async fn start_guiding(
         &self,
@@ -427,18 +418,21 @@ impl McpHandler {
 
 impl McpHandler {
     /// Start a guiding run and wait for it to settle: the devices
-    /// check ([`DevicesCheck::Start`]), then the `guide` event triple
+    /// check, the guide camera guard, then the `guide` event triple
     /// around the guider's start. The `start_guiding` tool and the
     /// rotate-while-guiding ladder both start a run here, so both emit
     /// the same events.
     ///
-    /// `what` leads the error text. A refusal of the devices check is
-    /// an error with no event: nothing has been asked of the guider. A
-    /// cancellation after `guide_started` stops the guider (rp.md
-    /// § In-Flight Tool Calls) and reports `guide_failed`.
+    /// `what` leads the error text and names the start in a refusal the
+    /// guard gives a capture or a lease. A refusal of the devices check
+    /// or of the guard is an error with no event: nothing has been asked
+    /// of the guider. The guard is held until the call ends, the stop
+    /// that undoes a cancelled start included (rp.md § The guide camera
+    /// guard). A cancellation after `guide_started` stops the guider
+    /// (rp.md § In-Flight Tool Calls) and reports `guide_failed`.
     pub(crate) async fn start_guiding_run(
         &self,
-        what: &str,
+        what: &'static str,
         client: &dyn rp_guider::GuiderClient,
         request: rp_guider::StartGuidingRequest,
         cancel: &Cancel,
@@ -446,9 +440,14 @@ impl McpHandler {
         let checked = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancel.error()),
-            checked = self.check_guider_devices(client, DevicesCheck::Start) => checked,
+            checked = self.check_guider_devices(client) => checked,
         };
         checked.map_err(|e| format!("{what}: {e}"))?;
+        let _guard = self
+            .guarded_guide_camera()
+            .map(|camera_id| self.guide_camera.take_for_start(camera_id, what))
+            .transpose()
+            .map_err(|e| format!("{what}: {e}"))?;
 
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
@@ -526,25 +525,22 @@ impl McpHandler {
         Ok(state)
     }
 
-    /// The same camera and mount check (rp.md § Guider Service): read
-    /// the guider's `devices` and compare the `unique_id` it reports
-    /// for each device with the one rp's own session bound. A
-    /// difference refuses, naming both ids, and so does an id that is
-    /// missing or blank on either side: an identity that cannot be
-    /// checked never passes. The check reads and compares, and sends
-    /// no device anything.
+    /// The same camera and mount check before a start (rp.md § Guider
+    /// Service): read the guider's `devices` and compare the
+    /// `unique_id` it reports for each device with the one rp's own
+    /// session bound. A difference refuses, naming both ids, and so
+    /// does an id that is missing or blank on either side: an identity
+    /// that cannot be checked never passes. The check reads and
+    /// compares, and sends no device anything.
     pub(crate) async fn check_guider_devices(
         &self,
         client: &dyn rp_guider::GuiderClient,
-        scope: DevicesCheck,
     ) -> Result<(), String> {
         let devices = client
             .devices()
             .await
             .map_err(|e| format!("the guider's devices could not be read: {e}"))?;
-        if scope == DevicesCheck::Start {
-            self.check_guider_mount(devices.mount.as_ref())?;
-        }
+        self.check_guider_mount(devices.mount.as_ref())?;
         self.check_guider_camera(devices.camera.as_ref())
     }
 
@@ -578,7 +574,7 @@ impl McpHandler {
 
     /// The guider's camera is the guiding train's camera. On a rig
     /// with no guiding train it is none of the cameras rp holds a
-    /// session with, since rp would expose on it with no camera lease.
+    /// session with, since rp guards no camera there.
     fn check_guider_camera(&self, camera: Option<&rp_guider::GuiderDevice>) -> Result<(), String> {
         let theirs = reported_id(camera);
         let Some(train) = self.trains.guiding_train() else {
@@ -596,7 +592,7 @@ impl McpHandler {
             });
             return held.map_or(Ok(()), |entry| {
                 Err(format!(
-                    "the guider's camera '{theirs}' is rp's camera '{}', which rp exposes on with no camera lease: no guiding train holds it",
+                    "the guider's camera '{theirs}' is rp's camera '{}', which rp captures through unguarded: no guiding train holds it",
                     entry.id
                 ))
             });

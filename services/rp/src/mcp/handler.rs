@@ -81,6 +81,13 @@ pub struct McpHandler {
     /// live lease. Shared with the safety enforcer, whose unsafe
     /// transition ends them, and with the server, whose shutdown does.
     pub leases: Arc<crate::train_lease::TrainLeases>,
+    /// The guide camera guard (rp.md § The guide camera guard), which
+    /// keeps rp's captures through the guiding train's camera and its
+    /// starts of guiding off each other. It applies while a guider is
+    /// configured, to the guiding train's camera
+    /// ([`Self::guide_camera_guard`]). Behind an `Arc` so every clone of
+    /// the handler shares it.
+    pub guide_camera: Arc<crate::guide_camera::GuideCameraGuard>,
     /// Per-rig estimates sizing the advisory `center_on_target` deadline
     /// (§2.5) carried on `centering_started`. Wired by
     /// `with_centering_config` from the `centering` block in rp config;
@@ -159,6 +166,7 @@ impl McpHandler {
             trains: crate::equipment::trains::TrainModel::default(),
             motion_gate,
             leases: Arc::new(crate::train_lease::TrainLeases::default()),
+            guide_camera: Arc::new(crate::guide_camera::GuideCameraGuard::default()),
             centering: crate::config::CenteringConfig::default(),
             cooling: None,
             target_store: None,

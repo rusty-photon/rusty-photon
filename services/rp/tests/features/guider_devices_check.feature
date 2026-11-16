@@ -1,18 +1,19 @@
 @serial
 Feature: The guider's camera and mount are rp's
   The guider's devices are configured apart from rp's roster. So before
-  rp asks the guider to start guiding, or for its camera lease, it
-  reads the guider's GET /api/v1/devices and compares the unique_id
-  reported there for each device with the one its own session bound.
-  The guider's mount has to be rp's mount; that is checked before a
-  start only, since a camera lease moves no mount. The guider's camera
-  has to be the guiding train's camera, and on a rig with no guiding
-  train it has to be none of the cameras rp holds a session with, since
-  rp would expose on it with no camera lease. A difference refuses the call,
-  naming both ids. An id that is missing or blank on either side
-  refuses it too: an identity that cannot be checked never passes. A
-  refused call has sent the guider no start and has asked it for no
-  camera lease. A stop, a pause and a resume run no check.
+  rp asks the guider to start guiding, it reads the guider's GET
+  /api/v1/devices and compares the unique_id reported there for each
+  device with the one its own session bound. The guider's mount has to
+  be rp's mount. The guider's camera has to be the guiding train's
+  camera, and on a rig with no guiding train it has to be none of the
+  cameras rp holds a session with, since rp guards no camera there. A
+  difference refuses the call, naming both ids. An id that is missing
+  or blank on either side refuses it too: an identity that cannot be
+  checked never passes. A refused call has sent the guider no start. A
+  stop, a pause and a resume run no check, and neither do a capture
+  through the guide camera and a guiding train's lease: a run rp
+  started is on the guide camera by the check, and the guide camera
+  guard's read refuses whatever run the guider has.
 
   The stub guider's device report names the simulator's mount and a
   camera of its own unless a scenario gives it another.
@@ -101,17 +102,17 @@ Feature: The guider's camera and mount are rp's
     And the error message should contain "camera"
     And the stub guider should not have received a "/guiding/start" request
 
-  Scenario: A camera lease is refused when the guider's camera is not the train's, naming both ids
+  Scenario: A guiding train's lease and a capture through the guide camera run no check
     Given a running Alpaca simulator
     And a stub guider in state "idle"
     And the stub guider reports the camera unique_id "another-camera"
     And rp is running with guiding train "guide" of a focuser and a camera on the simulator
     And an MCP client connected to rp
     When the MCP client calls "acquire_train_lease" for train "guide" with lease id "lease-a"
-    Then the tool call should return an error
-    And the error message should contain "another-camera"
-    And the error message should name the simulator camera's unique id
-    And the stub guider should not have received a "/camera/lease" request
+    Then the train lease call should succeed
+    When the MCP client calls "capture" with camera "main-cam" for 200 ms under lease "lease-a"
+    Then the train lease call should succeed
+    And the stub guider should not have received a "/devices" request
 
   Scenario Outline: <tool> goes through whatever devices the guider reports
     Given a running Alpaca simulator

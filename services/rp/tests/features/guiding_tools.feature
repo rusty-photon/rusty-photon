@@ -235,7 +235,7 @@ Feature: Guiding tools on the guider's contract
       | mount_not_ready      | the mount is parked                            |
       | device_not_connected | the camera is not connected                    |
       | device_unreachable   | the mount did not answer                       |
-      | camera_leased        | the camera is leased                           |
+      | not_configured       | devices.camera is not set                      |
       | internal             | broken pipe                                    |
 
   Scenario: A start the guider refuses emits guide_failed and no guide_settled

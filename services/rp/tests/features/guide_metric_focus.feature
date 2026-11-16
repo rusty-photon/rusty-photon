@@ -8,8 +8,8 @@ Feature: Guide-train focus on the guider's metrics
   those frames only in a run, so the sweep requires the guider's stats
   to report the state guiding, and it is refused in every other state
   before anything moves. The guide corrections stay active for the
-  whole sweep: rp pauses nothing, stops nothing and asks for no camera
-  lease. focus_started names the guiding train, no camera, and the
+  whole sweep: rp pauses nothing, stops nothing and starts nothing.
+  focus_started names the guiding train, no camera, and the
   method guider_hfd. A fit that fails moves the focuser back to where
   the sweep started.
 
@@ -48,7 +48,7 @@ Feature: Guide-train focus on the guider's metrics
     And the test webhook receiver should receive a "focus_failed" event
     And the stub guider should not have received a pause request
     And the stub guider should not have received a "/guiding/stop" request
-    And the stub guider should not have received a "/camera/lease" request
+    And the stub guider should not have received a "/guiding/start" request
     When the MCP client calls "get_focuser_position" with focuser "main-focuser"
     Then the get_focuser_position result position should be 25000
 

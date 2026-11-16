@@ -150,9 +150,9 @@ impl McpHandler {
 
         // A lease that holds the train's camera or focuser refuses the
         // sweep, naming the lease, before the guider is read. A guiding
-        // train's lease holds the guider's camera lease, which keeps
-        // the guider out of a run, so the guiding check would refuse
-        // the sweep too, naming the guider's state and not the lease.
+        // train's lease is granted only with the guider idle and keeps
+        // rp from starting it, so the guiding check would refuse the
+        // sweep too, naming the guider's state and not the lease.
         let _sweep = match self.enter_guide_sweep(train_id, &focuser_id) {
             Ok(guard) => guard,
             Err(e) => return Ok(tool_error!("{}", e)),

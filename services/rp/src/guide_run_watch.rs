@@ -347,18 +347,6 @@ impl GuiderClient for WatchedGuider {
     async fn reselect_star(&self) -> Result<GuiderState, GuiderError> {
         self.inner.reselect_star().await
     }
-
-    async fn acquire_camera_lease(&self, token: &str, ttl: Duration) -> Result<(), GuiderError> {
-        self.inner.acquire_camera_lease(token, ttl).await
-    }
-
-    async fn renew_camera_lease(&self, token: &str, ttl: Duration) -> Result<(), GuiderError> {
-        self.inner.renew_camera_lease(token, ttl).await
-    }
-
-    async fn release_camera_lease(&self, token: &str) -> Result<bool, GuiderError> {
-        self.inner.release_camera_lease(token).await
-    }
 }
 
 #[cfg(test)]
@@ -629,15 +617,6 @@ mod tests {
         }
         async fn reselect_star(&self) -> Result<GuiderState, GuiderError> {
             Ok(GuiderState::Guiding)
-        }
-        async fn acquire_camera_lease(&self, _: &str, _: Duration) -> Result<(), GuiderError> {
-            Ok(())
-        }
-        async fn renew_camera_lease(&self, _: &str, _: Duration) -> Result<(), GuiderError> {
-            Ok(())
-        }
-        async fn release_camera_lease(&self, _: &str) -> Result<bool, GuiderError> {
-            Ok(true)
         }
     }
 
@@ -963,14 +942,5 @@ mod tests {
             GuiderState::Idle
         );
         assert_eq!(watched.reselect_star().await.unwrap(), GuiderState::Guiding);
-        watched
-            .acquire_camera_lease("token", Duration::from_secs(60))
-            .await
-            .unwrap();
-        watched
-            .renew_camera_lease("token", Duration::from_secs(60))
-            .await
-            .unwrap();
-        assert!(watched.release_camera_lease("token").await.unwrap());
     }
 }

@@ -60,8 +60,7 @@ pub use focus_model_provider::{
     FOCUS_MODEL_REQUIRED_RP_TOOLS, FOCUS_MODEL_TOOLS,
 };
 pub use guider_stub::{
-    CannedTotals, GuiderStub, HeldLease, LeaseCall, StubRequest, STUB_GUIDE_CAMERA_ID,
-    STUB_GUIDE_MOUNT_ID,
+    CannedTotals, GuiderStub, StubRequest, STUB_GUIDE_CAMERA_ID, STUB_GUIDE_MOUNT_ID,
 };
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;

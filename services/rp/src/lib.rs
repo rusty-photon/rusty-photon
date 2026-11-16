@@ -32,13 +32,13 @@
     )
 )]
 
-pub mod camera_lease;
 pub mod config;
 pub mod cooling;
 pub mod doctor;
 pub mod equipment;
 pub mod error;
 pub mod events;
+pub mod guide_camera;
 pub mod guide_run_watch;
 pub mod guiding_watch;
 pub mod imaging;
@@ -331,8 +331,9 @@ fn build_class_table(
 }
 
 /// How long shutdown waits for the train leases to give everything back
-/// (rp.md § Train Lease): the release of the guider's camera lease is
-/// one bounded call.
+/// (rp.md § Train Lease): a lease gives back once the last call under it
+/// has ended, and the bound keeps a call still winding down from holding
+/// the process.
 const LEASE_SHUTDOWN_BOUND: std::time::Duration = std::time::Duration::from_secs(12);
 
 /// Safety enforcement (rp.md § Safety): the enforcer writes the safety
@@ -813,7 +814,7 @@ pub struct BoundServer {
     temperature_watch: Option<crate::temperature_watch::TemperatureWatch>,
     /// The train leases (rp.md § Train Lease), shared with the MCP
     /// handler: shutdown ends every one and waits, bounded, for each to
-    /// give everything back and release the guider's camera lease.
+    /// give everything back.
     leases: Arc<crate::train_lease::TrainLeases>,
 }
 
@@ -902,9 +903,8 @@ impl BoundServer {
         if let Some(task) = temperature_task {
             let _ = task.await;
         }
-        // Each ended lease releases the guider's camera lease once
-        // nothing runs under it; one still giving back at the bound is
-        // left to that lease's ttl.
+        // Each ended lease gives everything back once nothing runs under
+        // it; one still giving back at the bound ends with the process.
         self.leases.settle(LEASE_SHUTDOWN_BOUND).await;
 
         debug!("rp service shut down");

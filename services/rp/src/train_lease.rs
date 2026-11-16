@@ -2,32 +2,31 @@
 //!
 //! A lease is what a training run on an optical train holds for its
 //! whole length, so neither rp's own work on the train's light path,
-//! nor mount motion, nor the guider's exposures can land between two of
-//! its samples.
+//! nor mount motion, nor a start of guiding of rp's can land between two
+//! of its samples.
 //!
 //! [`TrainLeases`] is the book: the ids rp has seen, the reservation
 //! table that leases and rp's own `auto_focus` sweeps share, and every
 //! live [`Lease`]. The acquire's five steps run in the tool body
-//! (`mcp::built_in::train_lease`), which pushes each slot and the gate
-//! permit into the lease as it takes them. Each lease has a keeper task,
-//! spawned at its reservation, that renews the guider's camera lease,
-//! ends the lease idle or at its `max_duration`, and gives everything
-//! back once the lease has ended and nothing runs under it.
+//! (`mcp::built_in::train_lease`), which pushes each slot, the guide
+//! camera guard and the gate permit into the lease as it takes them.
+//! Each lease has a keeper task, spawned at its reservation, that ends
+//! the lease idle or at its `max_duration`, and gives everything back
+//! once the lease has ended and nothing runs under it.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use rp_guider::GuiderClient;
 use tokio::sync::{Notify, OwnedRwLockReadGuard};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::debug;
 
-use crate::camera_lease;
 use crate::config::optical_train::TrainPurpose;
 use crate::equipment::trains::{TrainDeviceKind, TrainModel};
 use crate::equipment::{DeviceSlot, SlotGuard};
+use crate::guide_camera::GuardHold;
 
 /// How long rp remembers an id after its lease ends, or after a release
 /// recorded it: longer than the longest wait before a grant plus
@@ -68,9 +67,6 @@ pub enum LeaseEnd {
     Released,
     Idle,
     MaxDuration,
-    /// The guider answered a renewal with `lease_not_found`: its camera
-    /// lease is no longer held.
-    CameraLeaseLost(String),
     Safety,
     Shutdown,
     /// Its acquire failed or was cancelled before the grant.
@@ -88,9 +84,6 @@ impl LeaseEnd {
                 IDLE_TIMEOUT.as_secs()
             ),
             Self::MaxDuration => "it reached its max_duration".to_string(),
-            Self::CameraLeaseLost(reason) => {
-                format!("it lost the guider's camera lease ({reason})")
-            }
             Self::Safety => "the safety transition ended it".to_string(),
             Self::Shutdown => "rp is shutting down".to_string(),
             Self::AcquireFailed => "its acquire did not complete".to_string(),
@@ -107,7 +100,7 @@ fn not_held(lease_id: &str, why: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeasePlan {
     pub train_id: String,
-    /// A guiding train's lease takes the guider's camera lease when a
+    /// A guiding train's lease takes the guide camera guard when a
     /// guider is configured.
     pub guiding: bool,
     pub camera_id: String,
@@ -255,18 +248,13 @@ enum Phase {
     Ending(LeaseEnd),
 }
 
-/// The guider's camera lease a guiding train's lease took.
-struct CameraLeaseHold {
-    guider: Arc<dyn GuiderClient>,
-    token: String,
-    /// When the next renewal is due; `None` until the guider granted it.
-    next_renewal: Option<Instant>,
-}
-
 #[derive(Default)]
 struct Holdings {
     slots: Vec<SlotGuard>,
     permit: Option<OwnedRwLockReadGuard<()>>,
+    /// The guide camera guard a guiding train's lease took; given back
+    /// after the slots and the permit.
+    guard: Option<GuardHold>,
 }
 
 struct LeaseState {
@@ -283,7 +271,8 @@ struct LeaseState {
     /// idle timeout counts from.
     last_activity: Instant,
     holdings: Holdings,
-    camera_lease: Option<CameraLeaseHold>,
+    /// Set once the lease has given everything back.
+    given_back: bool,
 }
 
 /// One lease, from its reservation until it has given everything back.
@@ -295,7 +284,7 @@ pub struct Lease {
     ending: CancellationToken,
     /// Fired once it has given everything back and left the table.
     released: CancellationToken,
-    /// Wakes the keeper when a call starts or ends, the camera lease is
+    /// Wakes the keeper when a call starts or ends, the lease is
     /// granted, or the lease ends. Only the keeper waits on it, so
     /// `notify_one`'s stored permit loses no wake-up.
     changed: Notify,
@@ -322,7 +311,7 @@ impl Lease {
                 uncancelled_captures: 0,
                 last_activity: Instant::now(),
                 holdings: Holdings::default(),
-                camera_lease: None,
+                given_back: false,
             }),
             ending: CancellationToken::new(),
             released: CancellationToken::new(),
@@ -372,23 +361,10 @@ impl Lease {
         drop(refused);
     }
 
-    /// Record the guider's camera lease under `token` before asking for
-    /// it, so the lease releases it whatever the acquire comes to, even
-    /// when the answer never arrives.
-    pub fn record_camera_lease(&self, guider: Arc<dyn GuiderClient>, token: String) {
-        self.state().camera_lease = Some(CameraLeaseHold {
-            guider,
-            token,
-            next_renewal: None,
-        });
-    }
-
-    /// The guider granted its camera lease: renew it from now on.
-    pub fn camera_lease_granted(&self) {
-        if let Some(hold) = self.state().camera_lease.as_mut() {
-            hold.next_renewal = Some(later(Instant::now(), camera_lease::RENEW_INTERVAL));
-        }
-        self.changed.notify_one();
+    /// Keep the guide camera guard until the lease gives everything
+    /// back.
+    pub fn hold_guard(&self, guard: GuardHold) {
+        self.state().holdings.guard = Some(guard);
     }
 
     /// Grant the lease for `max_duration` from now.
@@ -424,21 +400,13 @@ impl Lease {
         } else {
             None
         };
-        self.log_end(&end);
+        debug!(lease_id = %self.id, train_id = %self.plan.train_id, ?end, "train lease ended");
         state.phase = Phase::Ending(end);
         drop(state);
         drop(permit);
         self.ending.cancel();
         self.changed.notify_one();
         true
-    }
-
-    fn log_end(&self, end: &LeaseEnd) {
-        if let LeaseEnd::CameraLeaseLost(reason) = end {
-            warn!(lease_id = %self.id, train_id = %self.plan.train_id, %reason, "train lease ended: the guider no longer holds its camera lease");
-        } else {
-            debug!(lease_id = %self.id, train_id = %self.plan.train_id, ?end, "train lease ended");
-        }
     }
 
     /// End the lease when it has reached `ends_by`, or has sat idle for
@@ -462,32 +430,17 @@ impl Lease {
         }
     }
 
-    /// When the keeper must next look at the lease: its end, its idle
-    /// timeout, and its camera lease's renewal.
-    fn next_wake(&self) -> (Option<Instant>, Option<Instant>) {
+    /// When the keeper must next look at the lease: its end, or its idle
+    /// timeout.
+    fn next_wake(&self) -> Option<Instant> {
         let state = self.state();
-        let end = match state.phase {
+        match state.phase {
             Phase::Granted { ends_by } if state.calls == 0 => {
                 Some(ends_by.min(later(state.last_activity, IDLE_TIMEOUT)))
             }
             Phase::Granted { ends_by } => Some(ends_by),
             Phase::Acquiring | Phase::Ending(_) => None,
-        };
-        let renewal = state.camera_lease.as_ref().and_then(|h| h.next_renewal);
-        drop(state);
-        (end, renewal)
-    }
-
-    /// The camera lease to renew now, if one is due, with its next
-    /// renewal scheduled.
-    fn due_renewal(&self, now: Instant) -> Option<(Arc<dyn GuiderClient>, String)> {
-        let mut state = self.state();
-        let hold = state.camera_lease.as_mut()?;
-        let due = hold.next_renewal.filter(|at| *at <= now)?;
-        hold.next_renewal = Some(later(due, camera_lease::RENEW_INTERVAL).max(now));
-        let renewal = (Arc::clone(&hold.guider), hold.token.clone());
-        drop(state);
-        Some(renewal)
+        }
     }
 
     fn admit(self: &Arc<Self>, call: CallKind<'_>) -> Result<LeaseCall, String> {
@@ -802,9 +755,10 @@ impl TrainLeases {
     }
 
     /// End the lease `lease_id` names, granted or still being acquired.
-    /// `true` when this call ended it. An id rp has not seen is recorded,
-    /// below the cap, so an acquire that arrives after the release is
-    /// refused.
+    /// `true` when this call ended it. A lease that nothing runs under
+    /// has given everything back by the time this returns. An id rp has
+    /// not seen is recorded, below the cap, so an acquire that arrives
+    /// after the release is refused.
     pub fn release(&self, lease_id: &str) -> bool {
         let now = Instant::now();
         let mut book = self.lock();
@@ -813,7 +767,7 @@ impl TrainLeases {
             Some(Seen::Live(lease)) => {
                 let lease = lease.clone();
                 drop(book);
-                lease.end(LeaseEnd::Released)
+                self.end_released(&lease)
             }
             Some(Seen::Ended { .. } | Seen::ReleasedFirst { .. }) => false,
             None if book.seen.len() < SEEN_ID_CAP => {
@@ -830,6 +784,18 @@ impl TrainLeases {
                 false
             }
         }
+    }
+
+    /// End `lease` on its release. A lease nothing runs under gives
+    /// everything back before the release answers, so a call sent after
+    /// the answer (a start of guiding, another acquire) finds it all
+    /// free. An ended lease admits no call, so a quiet one stays quiet.
+    fn end_released(&self, lease: &Lease) -> bool {
+        let ended = lease.end(LeaseEnd::Released);
+        if lease.quiet() {
+            self.give_back(lease);
+        }
+        ended
     }
 
     /// Admit one call under `lease_id`.
@@ -936,43 +902,42 @@ impl TrainLeases {
         }
     }
 
-    /// The keeper: renew the guider's camera lease, end the lease idle
-    /// or at its `max_duration`, then give everything back once it has
-    /// ended and nothing runs under it.
+    /// The keeper: end the lease idle or at its `max_duration`, then
+    /// give everything back once it has ended and nothing runs under it.
     async fn keep(self: Arc<Self>, lease: Arc<Lease>) {
         loop {
-            let (end_at, renew_at) = lease.next_wake();
+            let end_at = lease.next_wake();
             tokio::select! {
                 biased;
                 () = lease.ending.cancelled() => break,
                 () = lease.changed.notified() => {}
                 () = sleep_until(end_at) => lease.end_if_due(Instant::now()),
-                () = sleep_until(renew_at) => {
-                    if let Some((guider, token)) = lease.due_renewal(Instant::now()) {
-                        match camera_lease::renew(guider.as_ref(), &token).await {
-                            camera_lease::Renewal::Renewed => {
-                                debug!(lease_id = %lease.id, "renewed the guider's camera lease");
-                            }
-                            camera_lease::Renewal::Lost(reason) => {
-                                lease.end(LeaseEnd::CameraLeaseLost(reason));
-                            }
-                            camera_lease::Renewal::Unreached(reason) => {
-                                debug!(lease_id = %lease.id, %reason, "a renewal of the guider's camera lease did not reach it; trying again at the next tick");
-                            }
-                        }
-                    }
-                }
             }
         }
         while !lease.quiet() {
             lease.changed.notified().await;
         }
-        let hold = lease.state().camera_lease.take();
-        if let Some(hold) = hold {
-            camera_lease::release(hold.guider.as_ref(), &hold.token).await;
+        self.give_back(&lease);
+    }
+
+    /// Give back everything an ended, quiet lease holds: the slots and
+    /// the gate permit, then the guide camera guard. Then the lease
+    /// leaves the table and its waiters are woken. Only the first call
+    /// for a lease does anything.
+    fn give_back(&self, lease: &Lease) {
+        let mut state = lease.state();
+        if state.given_back {
+            return;
         }
-        let holdings = std::mem::take(&mut lease.state().holdings);
-        drop(holdings);
+        state.given_back = true;
+        let Holdings {
+            slots,
+            permit,
+            guard,
+        } = std::mem::take(&mut state.holdings);
+        drop(state);
+        drop((slots, permit));
+        drop(guard);
         let end = lease.end_reason().unwrap_or(LeaseEnd::AcquireFailed);
         self.lock().seen.insert(
             lease.id.clone(),
@@ -1019,7 +984,8 @@ mod tests {
     use tokio::sync::RwLock;
 
     use super::*;
-    use crate::camera_lease::test_support::{Answer, Call, FakeGuider};
+    use crate::guide_camera::test_support::FakeGuider;
+    use crate::guide_camera::{GuideCameraGuard, User};
 
     /// The reference rig of rp.md § Optical Trains, as `pier1` is: the
     /// EAF shared by both trains, the wheel and the rotator in the main
@@ -1467,105 +1433,151 @@ mod tests {
         drop(leases.reserve("late", plan("main")).unwrap());
     }
 
-    /// A guiding train's granted lease whose camera lease `guider`
-    /// granted under `token`.
-    fn with_camera_lease(
+    /// A guiding train's lease, reserved, holding `guard` as step 2 of
+    /// its acquire takes it, its acquire still running.
+    async fn holding_the_guard(
         leases: &Arc<TrainLeases>,
-        guider: &Arc<FakeGuider>,
-        token: &str,
-    ) -> Arc<Lease> {
+        guard: &Arc<GuideCameraGuard>,
+    ) -> Acquiring {
         let acquiring = leases.reserve("g", plan("guide")).unwrap();
-        let client: Arc<dyn GuiderClient> = guider.clone();
-        acquiring
-            .lease()
-            .record_camera_lease(client, token.to_string());
-        acquiring.lease().camera_lease_granted();
-        acquiring.lease().grant(Duration::from_mins(5)).unwrap();
-        acquiring.lease().clone()
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_camera_lease_is_renewed_every_20_s_and_released_with_the_lease() {
-        let leases = Arc::new(TrainLeases::default());
-        let guider = Arc::new(FakeGuider::default());
-        let lease = with_camera_lease(&leases, &guider, "tok");
-        // A call in flight keeps the idle timeout out of the way.
-        let call = leases.admit("g", capture_through("guide-cam")).unwrap();
-
-        tokio::time::sleep(Duration::from_millis(19_900)).await;
-        assert_eq!(guider.renewals(), 0, "renewed early");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(guider.renewals(), 1);
-        tokio::time::sleep(Duration::from_secs(40)).await;
-        assert_eq!(guider.renewals(), 3);
-        assert_eq!(
-            guider.calls().first(),
-            Some(&Call::Renew {
-                token: "tok".to_string(),
-                ttl: Duration::from_secs(60),
-            })
-        );
-
-        drop(call);
-        leases.release("g");
-        tokio::time::timeout(Duration::from_secs(5), lease.released.cancelled())
+        let hold = guard
+            .take_for_use(
+                "guide-cam",
+                User::Lease("g"),
+                &FakeGuider::default(),
+                Duration::from_secs(90),
+            )
             .await
             .unwrap();
-        assert_eq!(guider.released(), vec!["tok".to_string()]);
+        acquiring.lease().hold_guard(hold);
+        acquiring
+    }
+
+    /// Whether a start of guiding finds the guard free, giving it back
+    /// at once when it does.
+    fn guard_is_free(guard: &Arc<GuideCameraGuard>) -> bool {
+        guard.take_for_start("guide-cam", "start_guiding").is_ok()
+    }
+
+    async fn given_everything_back(lease: &Lease) {
+        tokio::time::timeout(Duration::from_secs(5), lease.released.cancelled())
+            .await
+            .expect("the lease did not give everything back");
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_lease_that_outlives_the_camera_leases_ttl_keeps_it_renewed() {
-        let leases = Arc::new(TrainLeases::default());
-        let guider = Arc::new(FakeGuider::default());
-        let lease = with_camera_lease(&leases, &guider, "tok");
-        let call = leases.admit("g", capture_through("guide-cam")).unwrap();
+    async fn a_guiding_trains_lease_gives_the_guard_back_however_it_ends() {
+        type Ending = fn(&Arc<TrainLeases>);
+        let endings: [(&str, Ending); 3] = [
+            ("a release", |leases| assert!(leases.release("g"))),
+            ("the safety transition", |leases| {
+                leases.end_all(&LeaseEnd::Safety);
+            }),
+            ("shutdown", |leases| leases.end_all(&LeaseEnd::Shutdown)),
+        ];
+        for (ending, end) in endings {
+            let leases = Arc::new(TrainLeases::default());
+            let guard = Arc::new(GuideCameraGuard::default());
+            let acquiring = holding_the_guard(&leases, &guard).await;
+            acquiring.lease().grant(Duration::from_mins(5)).unwrap();
+            let lease = acquiring.lease().clone();
+            drop(acquiring);
+            assert!(
+                !guard_is_free(&guard),
+                "a granted lease let a start through"
+            );
 
-        tokio::time::sleep(Duration::from_secs(150)).await;
+            end(&leases);
 
-        assert_eq!(
-            guider.renewals(),
-            7,
-            "a renewal every 20 s, past the 60 s ttl"
-        );
-        assert_eq!(lease.end_reason(), None);
-        assert_eq!(guider.released(), Vec::<String>::new());
-        drop(call);
+            given_everything_back(&lease).await;
+            assert!(guard_is_free(&guard), "{ending} left the guard held");
+        }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_lost_renewal_ends_the_lease_and_an_unreached_one_does_not() {
-        let leases = Arc::new(TrainLeases::default());
-        let guider = Arc::new(FakeGuider::default());
-        let lease = with_camera_lease(&leases, &guider, "tok");
-        let call = leases.admit("g", capture_through("guide-cam")).unwrap();
+    async fn a_lease_that_ends_idle_or_at_its_max_duration_gives_the_guard_back() {
+        for (life, wait) in [
+            (Duration::from_mins(5), IDLE_TIMEOUT),
+            (Duration::from_secs(30), Duration::from_secs(30)),
+        ] {
+            let leases = Arc::new(TrainLeases::default());
+            let guard = Arc::new(GuideCameraGuard::default());
+            let acquiring = holding_the_guard(&leases, &guard).await;
+            acquiring.lease().grant(life).unwrap();
+            let lease = acquiring.lease().clone();
+            drop(acquiring);
 
-        *guider.renewal.lock().unwrap() = Answer::Unreachable;
-        tokio::time::sleep(Duration::from_secs(21)).await;
-        assert_eq!(
-            lease.end_reason(),
-            None,
-            "an unreached renewal ended the lease"
-        );
+            tokio::time::sleep(wait.saturating_add(Duration::from_secs(1))).await;
 
-        *guider.renewal.lock().unwrap() = Answer::Refuse("lease_not_found", "no such lease");
-        tokio::time::sleep(Duration::from_secs(20)).await;
-        let Some(LeaseEnd::CameraLeaseLost(reason)) = lease.end_reason() else {
-            panic!(
-                "a lost renewal left the lease live: {:?}",
+            given_everything_back(&lease).await;
+            assert!(lease.end_reason().is_some());
+            assert!(
+                guard_is_free(&guard),
+                "{:?} left the guard held",
                 lease.end_reason()
             );
-        };
-        assert_eq!(reason, "no such lease");
-        let err = leases
-            .admit("g", capture_through("guide-cam"))
-            .err()
-            .unwrap();
-        assert_eq!(
-            err,
-            "lease 'g' is not held: it lost the guider's camera lease (no such lease)"
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_acquire_gives_the_guard_back() {
+        let leases = Arc::new(TrainLeases::default());
+        let guard = Arc::new(GuideCameraGuard::default());
+        let acquiring = holding_the_guard(&leases, &guard).await;
+        let lease = acquiring.lease().clone();
+
+        drop(acquiring);
+
+        given_everything_back(&lease).await;
+        assert_eq!(lease.end_reason(), Some(LeaseEnd::AcquireFailed));
+        assert!(guard_is_free(&guard));
+    }
+
+    #[tokio::test]
+    async fn a_release_of_a_quiet_lease_gives_everything_back_before_it_answers() {
+        let leases = Arc::new(TrainLeases::default());
+        let guard = Arc::new(GuideCameraGuard::default());
+        let acquiring = holding_the_guard(&leases, &guard).await;
+        acquiring.lease().grant(Duration::from_mins(5)).unwrap();
+        let lease = acquiring.lease().clone();
+        drop(acquiring);
+
+        assert!(leases.release("g"));
+
+        assert!(
+            lease.released.is_cancelled(),
+            "the lease had not given back"
         );
+        assert!(
+            guard_is_free(&guard),
+            "the release answered with the guard held"
+        );
+        assert!(
+            leases.reserving(&["guide-cam"]).is_none(),
+            "the released lease still reserves its camera"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_ended_lease_keeps_the_guard_until_its_last_call_ends() {
+        let leases = Arc::new(TrainLeases::default());
+        let guard = Arc::new(GuideCameraGuard::default());
+        let acquiring = holding_the_guard(&leases, &guard).await;
+        acquiring.lease().grant(Duration::from_mins(5)).unwrap();
+        let lease = acquiring.lease().clone();
+        drop(acquiring);
+        let call = leases.admit("g", capture_through("guide-cam")).unwrap();
+
+        leases.release("g");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            !guard_is_free(&guard),
+            "the guard went back while a capture under the lease ran"
+        );
+
         drop(call);
+        given_everything_back(&lease).await;
+        assert!(guard_is_free(&guard));
     }
 
     #[tokio::test]

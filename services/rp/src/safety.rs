@@ -942,26 +942,6 @@ mod tests {
         async fn reselect_star(&self) -> Result<rp_guider::GuiderState, rp_guider::GuiderError> {
             unreachable!("not exercised by this test")
         }
-
-        async fn acquire_camera_lease(
-            &self,
-            _token: &str,
-            _ttl: Duration,
-        ) -> Result<(), rp_guider::GuiderError> {
-            unreachable!("not exercised by this test")
-        }
-
-        async fn renew_camera_lease(
-            &self,
-            _token: &str,
-            _ttl: Duration,
-        ) -> Result<(), rp_guider::GuiderError> {
-            unreachable!("not exercised by this test")
-        }
-
-        async fn release_camera_lease(&self, _token: &str) -> Result<bool, rp_guider::GuiderError> {
-            unreachable!("not exercised by this test")
-        }
     }
 
     /// A guider service that never confirms the stop must not delay
