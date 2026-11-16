@@ -715,9 +715,11 @@ to the record the reset had just emptied.
 A **training run** is a `focus_train` call without `shared`, or a
 `determine_filter_offsets` call, addressed to the guiding train. It
 captures through the guide camera under `rp`'s train lease
-([rp.md § Train Lease](rp.md#train-lease)), which holds the guider's
-camera lease ([guider.md § The camera lease](guider.md#the-camera-lease))
-and with it the guider idle. In-session guide focus is
+([rp.md § Train Lease](rp.md#train-lease)), which holds `rp`'s guide
+camera guard
+([rp.md § The guide camera guard](rp.md#the-guide-camera-guard)): the
+lease is granted only with the guider idle, and `rp` starts no guiding
+while it lasts. In-session guide focus is
 not a training run: a `shared: true` walk on the guiding train keeps
 its guide step on `rp`'s guide-metric `auto_focus`. An imaging train's
 run takes no lease.
@@ -754,12 +756,15 @@ A training run keeps these rules:
   focuses it"*. An upstream focuser the two trains share is no reason
   to refuse. `pier1`'s guiding train sweeps its Scops OAG, and its
   lease holds the shared EAF still.
-- **The guider.** That the guider is idle, and that the camera it
-  exposes on is the train's, is `rp`'s to check when it grants the
-  lease. A guiding train whose guider is in any other state, or names
-  another camera, is refused at the acquire, and the provider relays
-  `rp`'s refusal. Where `rp` has no guider configured, it grants the
-  lease with no camera lease in it.
+- **The guider.** That the guider is idle is `rp`'s to check when it
+  grants the lease, and every capture of the run reads it again. A
+  guiding train whose guider is in any other state, or whose state
+  cannot be read, is refused at the acquire, and so is one while a
+  start of guiding through `rp` is under way; the provider relays
+  `rp`'s refusal. A guider that a client other than `rp` starts mid-run
+  fails the run's next capture with `rp`'s refusal, and the run puts
+  back and records like any failed run. Where `rp` has no guider
+  configured, it grants the lease with no guard and reads no guider.
 - **One lease per run.** `focus_train` takes one lease for the whole
   run, its retried attempts included, so neither guiding nor mount
   motion can slip in between two attempts. `determine_filter_offsets`
@@ -807,10 +812,9 @@ A training run keeps these rules:
   included. A put-back refused because the lease is no longer held
   (`rp`'s `lease '<id>' is not held: …`) is sent again without the id,
   as an ordinary call that waits its turn. A lease that ends mid-run,
-  at its `max_duration`, on the safety transition, or when the guider
-  no longer holds the camera lease (a restart of the guider), fails
-  the run's next call with `rp`'s reason, and the run puts back and
-  records like any failed run.
+  at its `max_duration` or on the safety transition, fails the run's
+  next call with `rp`'s reason, and the run puts back and records like
+  any failed run.
 - **The release.** The lease is released after the put-back on every
   path: a run that focused, one that failed, one that was cancelled,
   and an acquire that was refused or cancelled, so that a lease `rp`
@@ -872,7 +876,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | A `temperature_sensor` that names a focuser `rp` does not know (the same calls) | `train 'main' names temperature_sensor 'oag-focusr', which rp does not know (focuser not found: oag-focusr); name a focuser in rp's config, or remove trains.main.temperature_sensor from focus-model.json` |
 | A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
 | A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 11m 19s under rp's train lease, longer than the 10m a lease may last: …` |
-| `rp` refuses the train lease (the guider is not idle or names another camera, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
+| `rp` refuses the train lease (the guider is not idle or its state cannot be read, a start of guiding holds the guide camera guard, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
 | The train lease ended mid-run | the refused call's error, which carries `lease '<id>' is not held: <why>`, after the put-back |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |
@@ -1666,19 +1670,17 @@ naming each threshold.
 `guide_training.feature` runs training runs on a guiding train. Its
 camera is the simulator's camera, a roster camera of `rp`'s like any
 other, so the sweep takes the simulator's starless frames. Its guider
-is `bdd-infra`'s guider stub, which answers the camera-lease requests
-and the device report of the guider's contract and records each. A
-training run on a guiding train whose
-focuser the imaging train has is refused before anything moves, for
-`focus_train` and `determine_filter_offsets` alike. A `focus_train`
-run holds one camera lease of the guider's across both its attempts,
-puts the focuser back, and the lease's token is released. A guider
-reported guiding refuses the run at the lease before anything moves,
-and so does a guider that reports another camera than the train's,
-naming both ids. A run too long for one lease is refused naming the
-numbers before the lease is asked for. The offsets procedure asks for
-one lease for each of its sweeps, releases each, and puts the wheel
-back.
+is `bdd-infra`'s guider stub, which answers the state reads of the
+guider's contract and records every request. A training run on a
+guiding train whose focuser the imaging train has is refused before
+anything moves, for `focus_train` and `determine_filter_offsets`
+alike. A `focus_train` run holds one train lease across both its
+attempts, puts the focuser back and releases it, and the guider is
+sent nothing but reads. A guider reported guiding refuses the run at
+the lease before anything moves. A run too long for one lease is
+refused naming the numbers before the lease is asked for. The offsets
+procedure takes one lease for each of its sweeps, releases each, and
+puts the wheel back.
 
 `auth.feature` spawns only focus-model with `server.tls` and
 `server.auth` and proves `/health` and `/mcp` both require the

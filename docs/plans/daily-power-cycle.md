@@ -384,8 +384,9 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     them through rp and tries once more. A second wedge gives the camera up
     for the night, with a log line that says so. The guide camera takes
     its test frame as any roster camera does: rp's `capture` holds the
-    guider's camera lease for the frame (rp.md § Capture Tool Details),
-    and its retry restarts its service like any other camera's. The restart
+    guide camera guard for the frame and goes ahead with the guider
+    idle, as a guider is at dusk (rp.md § The guide camera guard), and
+    its retry restarts its service like any other camera's. The restart
     makes a wedge rare without ruling one out (decision 5), a wedge that
     slips through costs the camera its night, and the test frame costs
     seconds.

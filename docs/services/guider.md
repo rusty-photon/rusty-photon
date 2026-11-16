@@ -32,9 +32,9 @@ Four properties shape the design:
   service starts idle. On disk it keeps the calibration and the guide
   logs, nothing else.
 - **Its authority over the devices is fixed.** It sends `PulseGuide`
-  and no other command to the mount, it exposes only while no client
-  holds the [camera lease](#the-camera-lease), and it never changes
-  `Connected` on either device.
+  and no other command to the mount, it uses the camera's exposure
+  members and writes only the frame settings they need, and it never
+  changes `Connected` on either device.
 
 **Cross-platform support:** Linux x64, Linux aarch64 (Pi 5), macOS
 Apple Silicon and Windows x64, as a service with nobody logged on.
@@ -46,7 +46,7 @@ graph LR
     rp[rp gateway] -->|"HTTP /api/v1/…"| guider[guider]
     guider -->|"Alpaca Camera<br/>exposures, frames"| cam[guide camera driver]
     guider -->|"Alpaca Telescope<br/>PulseGuide, state reads"| mount[mount driver]
-    rp -->|"Alpaca<br/>Connected, captures under the lease"| cam
+    rp -->|"Alpaca<br/>Connected, captures while the guider is idle"| cam
     rp -->|"Alpaca<br/>Connected, slews, park"| mount
     sentinel[sentinel] -.->|"GET /health"| guider
 ```
@@ -54,8 +54,12 @@ graph LR
 `rp` and the guider are both clients of the guide camera and of the
 mount. The division is fixed: `rp` connects and disconnects the
 devices, slews and parks the mount, and exposes on the guide camera
-only while it holds the guider's camera lease. The guider exposes on
-the camera while nobody holds the lease, and sends guide pulses.
+only while the guider is `idle`. The guider exposes on the camera when
+a client has asked it to loop, calibrate or guide, has the camera to
+itself while it does, and sends guide pulses. Keeping `rp`'s captures
+and the guider's runs apart is `rp`'s
+([rp.md § The guide camera guard](rp.md#the-guide-camera-guard)): the
+guider serves nothing for it, and refuses no request on its account.
 
 ### Pieces
 
@@ -188,8 +192,8 @@ that address says which device it is, and the guider's devices and
 `rp`'s are configured apart. So the guider reports the `UniqueID` the
 list gives for each of its devices, as `unique_id` in
 [`GET /api/v1/devices`](#get-apiv1devices), and `rp` compares it with
-the identity of its own device before it asks for a run or for the
-camera lease ([rp.md § Guider Service](rp.md#guider-service)). The
+the identity of its own device before it asks for a run
+([rp.md § Guider Service](rp.md#guider-service)). The
 guider itself pins no identity and refuses nothing over one.
 
 **The guider never writes `Connected`.** `rp` owns device connections.
@@ -244,10 +248,13 @@ after another. One cycle is:
 binning, the region (the full frame at that binning) and, when
 `camera.gain` or `camera.offset` is set, the gain and the offset. A
 `null` gain or offset leaves the camera's value as the last client left
-it. The settings are written again after every frame failure. Another
-client may change them only under the [lease](#the-camera-lease), and
-the lease is granted only in `idle`, so settings written on leaving
-`idle` hold for as long as the guider exposes.
+it. The settings are written again after every frame failure. `rp`
+writes the camera's settings only for captures it makes while the
+guider is `idle`
+([rp.md § The guide camera guard](rp.md#the-guide-camera-guard)), so
+settings written on leaving `idle` hold for as long as the guider
+exposes. A client outside `rp` that commands the camera is outside that
+rule.
 
 **Frame failures.** A frame fails when a camera call fails, when the
 frame has not arrived `camera.frame_timeout` after its exposure should
@@ -268,7 +275,8 @@ settings again; a read that fails there fails the next frame.
 **Stopping the loop.** When the loop ends for any reason the guider
 aborts its own exposure if the camera reports `CanAbortExposure`, and
 waits for it to end otherwise. It never aborts an exposure it did not
-start: while the lease is held it has none.
+start: in `idle`, the one state in which `rp` exposes on the camera, it
+has none.
 
 **One frame in memory.** The guider keeps the latest measured frame,
 for `GET /api/v1/frame/latest`, and writes no frame to disk.
@@ -309,42 +317,6 @@ camera's frame depends on `SensorType`:
   it is at or above that level, which the guider judges on the camera's
   frame before it sums: a star whose green pixels clip is saturated
   although its sums stay below four times the level.
-
-### The camera lease
-
-An Alpaca camera has one exposure in flight and one image for all its
-clients, and the standard has no session that would tell them apart.
-`rp` needs the guide camera for itself at times: a focus sweep of the
-guiding train, a plate solve through it. The guider serves a lease so
-that the two never expose at once.
-
-- **A client acquires the lease with a token it chooses**: 32 lowercase
-  hexadecimal digits, new for every lease. Because the client names the
-  token, an acquire it repeats after a lost answer is the same lease
-  and not a second one.
-- **The lease is granted only in `idle`**, with no mutating request in
-  flight or queued. Otherwise the answer is `not_idle`. An acquire is
-  answered at once against the state as it is; it never waits.
-- **One lease at a time.** While one token holds the lease, an acquire
-  with another token is refused with `camera_leased`.
-- **A lease lasts for its `ttl`** and is renewed by its holder. When it
-  expires it ends without notice, so a holder that died does not keep
-  the guider from exposing for longer than that. No request ends a
-  lease without its token, so the lease of a holder that died or
-  restarted ends only when its `ttl` runs out. A holder asks for a
-  short `ttl`, 60 s by default, and renews it.
-- **While a lease is held**, `loop`, `calibrate` and `guiding/start`
-  are refused with `camera_leased`, and the guider sends the camera
-  nothing but the reads of the device poll.
-- **The lease lives in memory.** After a restart of the guider nobody
-  holds it. A holder whose renewal is answered with `lease_not_found`
-  has lost it and acquires again before its next exposure.
-- **`guiding/stop` does not touch the lease.**
-- **The lease binds its two parties.** It keeps `rp` and the guider
-  apart. A third Alpaca client that commands the camera is outside it.
-
-The endpoints are under
-[`/api/v1/camera/lease`](#post-apiv1cameralease).
 
 ### The mount: checks and pulses
 
@@ -734,7 +706,6 @@ the request.
 | `POST /api/v1/star/reselect` | Choose the guide stars anew | The next frame |
 | `GET /api/v1/calibration` | The stored calibrations | — |
 | `POST /api/v1/calibration/clear` | Empty the calibration store | — |
-| `POST /api/v1/camera/lease`, `PUT`/`DELETE …/{token}` | The camera lease | — |
 | `GET /api/v1/guiding/stats` | State, RMS, running totals | — |
 | `GET /api/v1/guiding/metrics` | The per-frame window | — |
 | `GET /api/v1/devices` | What the guider knows of its devices | — |
@@ -961,36 +932,6 @@ record of the run's own pier side: it leaves the other slot as it was,
 and its own too when the calibration is made more than 60° from the
 celestial equator ([Calibration](#calibration)).
 
-#### `POST /api/v1/camera/lease`
-
-Acquires the [camera lease](#the-camera-lease).
-
-```json
-{ "token": "5f2b8c1e9a4d47c3b0e6a1d2c3f4e5a6", "ttl": "60s" }
-```
-
-```json
-{ "token": "5f2b8c1e9a4d47c3b0e6a1d2c3f4e5a6", "expires_in": "60s" }
-```
-
-- `ttl` is optional (default `"60s"`) and lies between `"10s"` and
-  `"5m"`.
-- An acquire with the token that holds the lease succeeds and sets the
-  `ttl` anew.
-- `not_idle` unless the state is `idle` and no mutating request is in
-  flight or queued; `camera_leased` while another token holds the
-  lease. It never waits.
-
-#### `PUT /api/v1/camera/lease/{token}` and `DELETE /api/v1/camera/lease/{token}`
-
-- `PUT` renews the lease for the `ttl` in its body, and answers in the
-  shape of the acquire. A token that holds no lease, because it never
-  did, the lease expired or the guider restarted, answers
-  `lease_not_found`.
-- `DELETE` releases the lease and answers `{ "released": true }`. A
-  token that holds no lease answers `{ "released": false }`, also with
-  `200`: releasing twice is not an error.
-
 #### `GET /api/v1/guiding/stats`
 
 ```json
@@ -1066,7 +1007,6 @@ Acquires the [camera lease](#the-camera-lease).
     "reachable": true,
     "connected": true,
     "unique_id": "5b0f6c1e-93a4-4f7d-8a2e-1c7d40e9b6f3",
-    "leased": false,
     "sensor_type": "rggb",
     "pixel_size_um": 1.45,
     "width": 3840,
@@ -1087,7 +1027,7 @@ Acquires the [camera lease](#the-camera-lease).
 - The answer comes from the device poll and is at most
   `devices.poll_interval` old, plus the
   [deadline of a call](#devices-and-connections) to a device that has
-  stopped answering; `leased` is current.
+  stopped answering.
 - A device that is not configured is `null`. A property that has not
   been read yet is `null`. `binning` is the effective binning.
 - `unique_id` is the `UniqueID` the device's server listed for it at
@@ -1177,8 +1117,6 @@ Each axis's count and sum is a `SquareSums` from
 - **`guiding/stop` and `dither/abort` never queue.** They act at once,
   whatever is waiting. `guiding/stop` answers every waiting and queued
   mutating request with `stopped`.
-- **The lease endpoints never queue.** An acquire is answered against
-  the state as it is.
 - **Reads take no turn.** `stats`, `metrics`, `devices`, `calibration`,
   `frame/latest` and `health` answer while a mutating request waits.
 
@@ -1193,14 +1131,12 @@ left out when there is nothing to attach):
 
 | Code | HTTP status | Trigger |
 |------|-------------|---------|
-| `invalid_request` | 400 | A body that does not match its schema, an unparseable duration, a non-positive or non-finite amount or tolerance, both or neither of a pixel and an arcsecond field, a malformed lease token, a `ttl` out of range. Refused before anything else happens |
-| `lease_not_found` | 404 | `PUT` on a lease token that holds no lease |
+| `invalid_request` | 400 | A body that does not match its schema, an unparseable duration, a non-positive or non-finite amount or tolerance, both or neither of a pixel and an arcsecond field. Refused before anything else happens |
 | `no_frame` | 404 | `frame/latest` with no measured frame |
 | `not_configured` | 409 | `loop`, `calibrate` or `guiding/start` while `devices.camera`, `devices.mount` or `optics.focal_length_mm` is not set |
 | `not_guiding` | 409 | `dither` outside `guiding`; `pause` or `resume` outside a run that guides |
-| `not_idle` | 409 | `loop`, `calibrate` or `calibration/clear` in a run state; a lease acquire outside `idle` or with a mutating request pending |
+| `not_idle` | 409 | `loop`, `calibrate` or `calibration/clear` in a run state |
 | `not_exposing` | 409 | `star/reselect` while no frames are taken |
-| `camera_leased` | 409 | `loop`, `calibrate` or `guiding/start` while a lease is held; a lease acquire while another token holds it |
 | `device_not_connected` | 409 | A device answers and reports `Connected` false when a request starts the loop or a run |
 | `mount_not_ready` | 409 | At `calibrate` or `guiding/start`: `CanPulseGuide` false, or the mount not tracking, slewing or parked |
 | `stopped` | 409 | A `guiding/stop` arrived while the request was waiting or queued |
@@ -1475,8 +1411,8 @@ its own exposure. A pulse in flight ends on the mount by itself.
 
 **What a restart costs.** A restart of the guider ends a guiding run.
 The calibration store and the guide logs survive it; the RMS window,
-the metrics window, the running totals (under a new `epoch`) and the
-camera lease do not. An exposure of `rp`'s that spans the restart
+the metrics window and the running totals (under a new `epoch`) do
+not. An exposure of `rp`'s that spans the restart
 records that guiding did not run throughout.
 
 **Sentinel.** Sentinel discovers the installed `rusty-photon-guider`
@@ -1511,7 +1447,7 @@ clients as they cover `rp`'s.
   measurement.
 - **The service.** BDD scenarios start the `guider` binary against
   `guide-simulator`'s Alpaca devices and hold it to this document
-  section by section: the states, starting idle, the lease, the mount
+  section by section: the states, starting idle, the mount
   check and each stop reason, the calibration and its store, each
   endpoint and each error code.
 - **The guide log.** Fixture tests, as [Guide log](#guide-log) says.
@@ -1531,7 +1467,7 @@ clients as they cover `rp`'s.
 - Hysteresis on RA, direction-holding on Dec, a minimum move, a pulse
   floor and cap, the runaway stop.
 - Dither with settling and abort.
-- The mount check, the stop reasons and the camera lease.
+- The mount check and the stop reasons.
 - Arcseconds beside pixels.
 - The guide log in PHD2's format.
 - The setup page, `guider doctor`, packaging and sentinel supervision
@@ -1568,9 +1504,11 @@ clients as they cover `rp`'s.
   speaks until it moves to this one.
 - [rp.md § Component Categories](rp.md#component-categories),
   [§ Guider Service](rp.md#guider-service),
+  [§ The guide camera guard](rp.md#the-guide-camera-guard),
   [§ Mount Motion Gate](rp.md#mount-motion-gate),
-  [§ Train Lease](rp.md#train-lease) — where `rp` places the guider and
-  what it expects of one.
+  [§ Train Lease](rp.md#train-lease) — where `rp` places the guider,
+  what it expects of one and how it keeps its own captures through the
+  guide camera apart from the guider's runs.
 - [star-adventurer-gti.md § PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle)
   — what a guide pulse is on the pier1 mount.
 - [sentinel.md § Service health supervision](sentinel.md#service-health-supervision).
