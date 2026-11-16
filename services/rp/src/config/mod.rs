@@ -443,7 +443,7 @@ pub fn has_tool_providers(plugins: &[Value]) -> bool {
 /// `session.session_state_file` key ends with it (mcp-sessionless D11),
 /// at load, on a setup-page save and in `rp doctor` alike.
 pub const ORCHESTRATOR_REGISTRATION_REMOVED: &str = "orchestrator registrations were removed; \
-     start runs at session-runner — see docs/plans/archive/mcp-sessionless.md";
+     start runs at session-runner — see docs/services/session-runner.md";
 
 /// The name a registration is reported under. Optional on the entry —
 /// rp only labels errors and logs with it and the index is what
@@ -1634,7 +1634,7 @@ mod tests {
                 error.contains("plugins.1.type")
                     && error.contains(name)
                     && error.contains("session-runner")
-                    && error.contains("docs/plans/archive/mcp-sessionless.md"),
+                    && error.contains("docs/services/session-runner.md"),
                 "must name the entry and the migration: {error}"
             );
         }
@@ -1680,7 +1680,7 @@ mod tests {
         assert!(
             error.contains("session.session_state_file")
                 && error.contains("delete the key")
-                && error.contains("docs/plans/archive/mcp-sessionless.md"),
+                && error.contains("docs/services/session-runner.md"),
             "must name the key and the migration: {error}"
         );
     }

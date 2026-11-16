@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_placeholder_whose_port_now_holds_a_device_says_a_reload_would_place_it() {
+    fn test_a_placeholder_whose_port_now_holds_a_device_asks_whether_a_restart_would_place_it() {
         let devices = [device(
             "Guide port",
             "Camera",

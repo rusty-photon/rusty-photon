@@ -115,10 +115,13 @@ mod tests {
     #[test]
     fn test_sans_lists_dns_names_and_ip_addresses() {
         let expires = time::OffsetDateTime::now_utc() + time::Duration::days(30);
-        let pem = cert_pem(expires, &["localhost", "observatory.local"]);
+        let pem = cert_pem(
+            expires,
+            &["localhost", "127.0.0.1", "::1", "observatory.local"],
+        );
         assert_eq!(
             sans(&pem),
-            vec!["localhost".to_string(), "observatory.local".to_string()]
+            ["localhost", "127.0.0.1", "::1", "observatory.local"]
         );
     }
 

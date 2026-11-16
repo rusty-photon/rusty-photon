@@ -1145,7 +1145,7 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
                 "server.auth without server.tls sends HTTP Basic credentials in \
                  cleartext on the wire"
                     .to_string(),
-                Some("add a server.tls block (ADR-003: Basic auth over TLS)".to_string()),
+                Some("add a server.tls block: Basic auth needs TLS".to_string()),
             ));
         }
     }
@@ -1902,37 +1902,27 @@ fn plan_client_auth_value(ctx: &Context) -> Option<serde_json::Value> {
 /// matching `auth.mismatch`'s severity — a wrong or missing credential
 /// 401s every request, but (as with that check) a *present* mismatched
 /// credential may be intentional, so only the absent case is fix-eligible.
-/// `auth_pointer` is `None` only for a target with no credential field to
-/// wire a fix into at all; the one caller, [`judge_client_target`], runs
-/// this check only for a registry entry that has one, so it passes `Some`.
+/// `auth_pointer` is the client's credential field, where the fix writes.
 fn credential_check(
     ctx: &Context,
     client_service: &str,
     client_field: &str,
     target: &ServiceScan,
-    auth_pointer: Option<&str>,
+    auth_pointer: &str,
     current: Option<&ClientAuthView>,
 ) -> Option<Check> {
     let target_auth = target.server().and_then(|s| s.auth.as_ref())?;
     let credential = current.and_then(|c| Some((c.username.as_deref()?, c.password.as_deref()?)));
     match credential {
         None => {
-            let fixes = match (auth_pointer, plan_client_auth_value(ctx)) {
-                (Some(pointer), Some(value)) => vec![crate::report::FixOp::SetObject {
+            let fixes = plan_client_auth_value(ctx)
+                .map(|value| crate::report::FixOp::SetObject {
                     service: client_service.to_string(),
-                    pointer: pointer.to_string(),
+                    pointer: auth_pointer.to_string(),
                     value,
-                }],
-                _ => Vec::new(),
-            };
-            let suggestion = if auth_pointer.is_some() {
-                "run `doctor --fix` to wire the observatory credential".to_string()
-            } else {
-                format!(
-                    "{client_service} has no credential field for this target yet — \
-                     wiring one needs a config-schema change"
-                )
-            };
+                })
+                .into_iter()
+                .collect();
             Some(
                 Check::warn(
                     "joins.client-auth",
@@ -1942,7 +1932,7 @@ fn credential_check(
                          credential — every request will get 401",
                         target.entry.name
                     ),
-                    Some(suggestion),
+                    Some("run `doctor --fix` to wire the observatory credential".to_string()),
                 )
                 .with_fixes(fixes),
             )
@@ -2056,7 +2046,7 @@ fn judge_client_target(ctx: &Context, t: &ClientTarget) -> Vec<Check> {
             t.client,
             &auth.field,
             target,
-            Some(&auth.pointer),
+            &auth.pointer,
             auth.current.as_ref(),
         ));
     }
@@ -2892,7 +2882,7 @@ fn rp_retired_orchestrator_surface(ctx: &Context) -> Vec<Check> {
     // Verbatim rp's `config::ORCHESTRATOR_REGISTRATION_REMOVED`, so the
     // remediation reads the same from rp's own refusal and from doctor.
     const MIGRATION: &str = "orchestrator registrations were removed; start runs at \
-                             session-runner — see docs/plans/archive/mcp-sessionless.md";
+                             session-runner — see docs/services/session-runner.md";
     let mut checks = Vec::new();
     let Some(rp_scan) = ctx.scan("rp") else {
         return checks;
@@ -4897,9 +4887,7 @@ mod tests {
             assert_eq!(check.service.as_deref(), Some("rp"));
             assert!(
                 check.detail.contains(&format!("plugins.{idx} ({name})"))
-                    && check
-                        .detail
-                        .contains("docs/plans/archive/mcp-sessionless.md"),
+                    && check.detail.contains("docs/services/session-runner.md"),
                 "{}",
                 check.detail
             );
@@ -4933,9 +4921,7 @@ mod tests {
         assert_eq!(check.status, Status::Fail);
         assert!(
             check.detail.contains("session.session_state_file")
-                && check
-                    .detail
-                    .contains("docs/plans/archive/mcp-sessionless.md"),
+                && check.detail.contains("docs/services/session-runner.md"),
             "{}",
             check.detail
         );

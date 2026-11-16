@@ -159,11 +159,10 @@ impl UiWorld {
         self.rp = Some(handle);
     }
 
-    /// Spawn rp with an empty roster and a site.
+    /// Spawn rp with an empty roster.
     pub async fn start_rp_with_empty_roster(&mut self) {
-        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
-        builder.with_site(47.6, -122.3);
-        self.start_rp(&builder).await;
+        self.start_rp(&bdd_infra::rp_harness::RpConfigBuilder::new())
+            .await;
     }
 
     /// Spawn rp with an otherwise empty roster and one stub safety monitor,

@@ -4,7 +4,7 @@ Feature: URL convention diagnosis
   resolves nothing and 404s every request while leaving the config file
   individually valid. Only a cross-convention check catches it; it is a
   warning because a deliberate reverse proxy could legitimately rewrite
-  paths. Sentinel derives all its URLs (D3s) and ui-htmx carries no device
+  paths. Sentinel derives all its URLs and ui-htmx carries no device
   URL (rp's roster is its only device source), so doctor checks no other
   config for the suffix.
 

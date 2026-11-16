@@ -335,7 +335,7 @@ daemon to supervise.
 Packages ship no config files. Daemons self-create their config on first
 start at `/var/lib/rusty-photon/.config/rusty-photon/<svc>.json` (the
 shared user's XDG path), reachable via the `/etc/rusty-photon` symlink.
-Exceptions: the config-gated five (above) never write one. To change
+Exceptions: the config-gated six (above) never write one. To change
 settings:
 
 ```sh

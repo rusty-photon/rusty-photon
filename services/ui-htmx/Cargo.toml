@@ -139,7 +139,7 @@ scraper = { workspace = true }
 # Layer B: byte-equivalence snapshots of the server's HTML output, the
 # cross-OS-comparable artifact (P2). `filters` scrubs run/OS-varying tokens
 # before compare.
-insta = { version = "1.48", features = ["filters", "redactions"] }
+insta = { version = "1.48", features = ["filters"] }
 # Layer C: a real WebDriver browser for behaviors only a browser can prove
 # (P3 — htmx actually executes the swap/poll). Pure Rust, no Node. The @browser
 # scenarios it drives are gated behind UI_BROWSER_TESTS=1 (see tests/bdd.rs), so
