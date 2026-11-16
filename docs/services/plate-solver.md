@@ -497,8 +497,7 @@ for "where is ASTAP" — see [Configuration Validation](#configuration-validatio
 ## Subprocess Test Doubles
 
 The service ships an in-tree `mock_astap` `[[bin]]` that mimics the
-ASTAP CLI surface and is used in BDD and runner integration tests. The
-pattern mirrors `services/phd2-guider/src/bin/mock_phd2.rs`.
+ASTAP CLI surface and is used in BDD and runner integration tests.
 
 Behavior is selected via the `MOCK_ASTAP_MODE` environment variable
 the test sets before spawning the wrapper:
@@ -548,8 +547,7 @@ discover it in this order: explicit `MOCK_ASTAP_BINARY` env var
 run under Cargo and Bazel without divergent code paths. Pure
 `env!()` is intentionally avoided because `CARGO_BIN_EXE_*` is
 unset under Bazel and unset for `#[cfg(test)] mod tests` inside
-`src/`. Same lookup `services/phd2-guider/tests/test_integration.rs`
-uses for `mock_phd2`.
+`src/`.
 
 ### Real-ASTAP Coverage Cadence
 
@@ -650,5 +648,3 @@ autonomous restart. The wrapper's graceful-shutdown semantics
 - rp design doc, §"Plate Solver" — `docs/services/rp.md`
 - rp design doc, §"Sentinel Watchdog Integration" — `docs/services/rp.md`
 - rp design doc, §"File Accessibility" — `docs/services/rp.md`
-- Reference service shape — `docs/services/phd2-guider.md`
-- Mock-binary precedent — `services/phd2-guider/src/bin/mock_phd2.rs`

@@ -817,23 +817,19 @@ is the shared helper for suites built on `bdd-infra` (calibrator-flats' suite
 pins rp's port with it so the provider's config can name rp before rp
 starts). It probes on the blocking pool, and has no synchronous form outside
 the crate, because a probe is a wait
-([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop));
-`reserved_test_port()` in `services/phd2-guider/tests/test_integration.rs` is
-a self-contained implementation of the same band.
+([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)).
 
 Do **not** probe by binding `:0` and releasing it. Two things go wrong:
 
 - The port comes from the range the OS hands to every other `bind(0)` in the
   process, so a server started concurrently can be given that port between the
-  probe and its use. In phd2-guider's integration tests the losing test's
-  `Phd2ProcessManager` would find the winner's mock on "its" port, report
-  success without spawning anything, then shut that mock down over RPC —
-  failing whichever unrelated test owned it.
+  probe and its use.
 - The probe's own listener is duplicated into any child a sibling thread forks in
   that instant, and survives the probe's close until that child execs. So the
-  probe can hand back a port that still answers — measured at ~6% of probes at
-  that suite's spawn rate. **Probe by connecting instead**: a refused connect is
-  the same "nobody is there" answer and leaves nothing behind.
+  probe can hand back a port that still answers — measured at ~6% of probes in
+  an integration suite whose tests each spawned a mock server child. **Probe by
+  connecting instead**: a refused connect is the same "nobody is there" answer
+  and leaves nothing behind.
 
 Where a bind-and-release probe does survive, it is
 `bdd_infra::ephemeral_ports::<N>()`, for a child that cannot bind port 0 and
@@ -1240,9 +1236,9 @@ worker.
 
 A wait does not have to look like one. A port probe is a loopback
 `connect()` that is meant to be refused, and on the Windows CI runner each
-refusal takes about 2 s. Probing once from a step on the loop,
-phd2-guider's camera-facade scenarios start their services 2.00 s apart,
-while its scenarios that probe nothing start theirs milliseconds apart. The
+refusal takes about 2 s. Probing once from a step on the loop, a suite's
+scenarios that probe a port start their services 2.00 s apart, while its
+scenarios that probe nothing start theirs milliseconds apart. The
 poll loop stands still for each of those 2 s, and every other scenario's
 health wait runs out with its service up and connected: in the measured
 run, 48 of 58 scenarios failed on a service that had done nothing wrong.
@@ -1271,8 +1267,8 @@ listener keeps its port bound after the probe let it go. So the lock
 orders process creation against other process creation and against
 `ephemeral_ports`, which takes it itself. The lock covers the spawn or the
 probe alone, never the child's life, a wait or a binary lookup.
-`ServiceHandle`, `run_once`, phd2-guider's mock, doctor's Pebble pair,
-OmniSim, ConformU, geckodriver and bdd-infra's own unit tests all take it.
+`ServiceHandle`, `run_once`, doctor's Pebble pair, OmniSim, ConformU,
+geckodriver and bdd-infra's own unit tests all take it.
 
 That is all it orders. A socket made anywhere else at the instant of a fork
 (a step's stub listener, a reqwest connection, on the poll loop or a runtime
@@ -1362,7 +1358,8 @@ endpoint, a health probe, a status poll):
    client per poll rebuilds a connection pool and pays a fresh TCP
    connect every iteration, which is exactly the cost that blows the
    deadline. `services/star-adventurer-gti/tests/bdd/world.rs`
-   (`wait_for_command_log`) and `services/phd2-guider/tests/bdd/world.rs`
+   (`wait_for_command_log`) and
+   `services/gemini-powerbox-adv3-driver/tests/bdd/world.rs`
    (`http_client`) are the reference shapes.
 
    Size the deadline against the *poll loop*, not against any call it

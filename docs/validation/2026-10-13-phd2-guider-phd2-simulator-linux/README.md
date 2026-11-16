@@ -1,7 +1,7 @@
 # phd2-guider camera facade — PHD2 2.6.14 Simulator, Linux (device claims C6)
 
 `phd2-guider`'s opt-in camera facade
-([phd2-guider.md § Camera facade](../../services/phd2-guider.md#camera-facade-camera))
+([phd2-guider.md § Camera facade](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md#camera-facade-camera))
 against a live PHD2. ConformU 4.5.0 ran its `alpacaprotocol` and
 `conformance` suites, and both were **clean**: every count in
 `conformance-results.json` is 0.
@@ -9,7 +9,7 @@ against a live PHD2. ConformU 4.5.0 ran its `alpacaprotocol` and
 The same session made the measurement the device-claims plan's C6 was
 waiting on: how PHD2 2.6.14 completes a single frame (plan D9, "Settled in
 C6"). It also ran the `image_dir` sharing recipe from
-[packaging.md](../../packaging.md#phd2-guider-the-camera-facade) as the
+[packaging.md](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/packaging.md#phd2-guider-the-camera-facade) as the
 acceptance test the plan asks for: a frame PHD2 wrote, read and deleted by
 the service account.
 

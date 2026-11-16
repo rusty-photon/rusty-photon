@@ -586,8 +586,8 @@ Sections:
 - **usb_devices** — Optional. Each entry pins the camera on one USB port to one
   Alpaca device number, so a camera plugged into that socket is the same ASCOM
   device every time, and a camera on any other port is never served (U1-U5).
-  That is how a camera another application owns — PHD2's guide camera — is kept
-  out of this driver: it is left off the list. The `usb_port` is the platform's
+  That is how a camera another application owns is kept out of this driver: it
+  is left off the list. The `usb_port` is the platform's
   native spelling (udev's `ID_PATH_WITH_USB_REVISION` on Linux, the `PCIROOT(…)`
   location path on Windows, the location id on macOS — [doctor.md](doctor.md),
   "USB inventory"), pasted from `qhy-camera doctor --devices` (U8), never typed
@@ -774,7 +774,8 @@ with a wheel column:
   opens every camera the join placed, and the QHY SDK does not refuse an
   open of a camera another application holds (U11's measurement), so every
   placed camera is taken as served by the reload, a list's unlisted ones
-  too — the guide camera PHD2 streams among them, served with no wheel.
+  too — a camera another application streams among them, served with no
+  wheel.
   Only a camera a no-list start's probe could not open or close (U11) may
   be served by the reload or not, which the page cannot tell. The reload
   serves each camera it opens in its place in port order, so the
@@ -937,8 +938,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   0 at the ≈100 ms pace of a wheel that does not answer: every other read while
   the second's plug queries were 300 ms apart, and every read once it queried
   the wheel back to back. The first recovered with the second's close, reading
-  slot 3 at rest again and keeping its session. A camera PHD2 streams is kept
-  out of this service by a list that leaves it off (U1), never by the probe.
+  slot 3 at rest again and keeping its session. A camera another application
+  streams is kept out of this service by a list that leaves it off (U1), never
+  by the probe.
 
   **A CFW is only found if it has power when this runs.** The wheel is fed from
   the camera's 12V, while the camera's own logic runs off USB — so a camera whose
@@ -1702,7 +1704,7 @@ replaces with the declaration.
     pci-0000:c1:00.4-usbv3-0:1.3         QHY178M  QHY178M-222b16468c5966524  —           0
 
   To pin the cameras this driver serves, paste this into qhy-camera.json.
-  Leave out any camera another application owns (PHD2's guide camera), and
+  Leave out any camera another application owns, and
   keep the numbers running 0..N-1.
   --devices opens no camera, so it cannot see a filter wheel:
   add "filter_wheel_number" to the entry of each camera that has one,

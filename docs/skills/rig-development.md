@@ -5,7 +5,7 @@ Raspberry Pi that runs the packaged rusty-photon stack on the telescope.
 
 The model: **drivers stay on the rig, the service you are editing runs
 locally.** Every non-driver service (rp, sentinel, ui-htmx, session-runner,
-plate-solver, calibrator-flats, phd2-guider, new tools such as autofocus) is
+plate-solver, calibrator-flats, new tools such as autofocus) is
 an HTTP client of the ASCOM Alpaca drivers, so it can run on the dev machine
 and talk to the rig's live drivers over the LAN. That gives an edit → `cargo
 run` → real-hardware loop of a few seconds with no deploy step. Driver work

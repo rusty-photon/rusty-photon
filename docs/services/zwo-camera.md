@@ -433,8 +433,8 @@ Sections:
 - **usb_devices** — Optional. Each entry pins the camera on one USB port to
   one Alpaca device number, so a camera plugged into that socket is the same
   ASCOM device every time, and a camera on any other port is never opened
-  (U1-U5). That is how a camera another application owns — PHD2's guide
-  camera — is kept out of this driver: it is left off the list. The `usb_port`
+  (U1-U5). That is how a camera another application owns is kept out of
+  this driver: it is left off the list. The `usb_port`
   is the platform's native spelling (udev's `ID_PATH_WITH_USB_REVISION` on
   Linux, the `PCIROOT(…)` location path on Windows, the location id on macOS —
   [doctor.md](doctor.md), "USB inventory"), pasted from `zwo-camera doctor
@@ -1139,8 +1139,8 @@ on its own (U5).
   first held the camera open, and while it held it open *and* initialised, as
   a guider does; after the second process's `ASICloseCamera` the first's
   session still read its gain, set its region and completed an exposure. So a
-  camera PHD2 holds is not refused by its open: the list, not the open, is
-  what keeps another application's camera out of this service.
+  camera another application holds is not refused by its open: the list, not
+  the open, is what keeps another application's camera out of this service.
   Windows is unmeasured.
 - **U6. A failed scan serves placeholders, and is retried until it
   succeeds.** A scan that could not run — sysfs unreadable, `powershell.exe`
@@ -1217,7 +1217,7 @@ on its own (U5).
   Cannot tell which row is which camera? Unplug one and run this again: the port that disappears is the one you unplugged.
 
   To pin the cameras this driver serves, paste this into zwo-camera.json.
-  Leave out any camera another application owns (PHD2's guide camera), and
+  Leave out any camera another application owns, and
   keep the numbers running 0..N-1:
 
       "usb_devices": [

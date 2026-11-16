@@ -14,7 +14,6 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [filemonitor](services/filemonitor) | ASCOM SafetyMonitor | 11111 | Monitors file content for observatory safety status |
 | [ppba-driver](services/ppba-driver) | ASCOM Switch + ObservingConditions | 11112 | Driver for Pegasus Astro Pocket Powerbox Advance Gen2 |
 | [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | Driver for QHY Q-Focuser (EAF) |
-| [phd2-guider](services/phd2-guider) | Guider service; opt-in ASCOM Camera | 11130; 11128 (loopback) | Guider service wrapping PHD2 for rp, plus an opt-in Camera that serves PHD2's guide frames |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | Polls devices, sends notifications, serves web dashboard |
 | [calibrator-flats](services/calibrator-flats) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11170 | `train_flats` / `take_flats` / `get_flat_training` per optical train, flat timing remembered in a redb store |
 | [focus-model](services/focus-model) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11173 | `focus_train` / `determine_filter_offsets` / `calibrate_temperature` / `get_sweep_plan` / `get_focus_model` / `get_focus_runs` / `set_focus_offsets` / `reset_focus_model` per optical train, sweeps sized from the optics and every run remembered in a redb store |
@@ -57,12 +56,6 @@ See [docs/services/ppba-driver.md](docs/services/ppba-driver.md) for design docu
 ASCOM Alpaca Focuser driver for the QHY Q-Focuser (Electronic Auto Focuser). Communicates via a JSON-based command/response protocol over USB-CDC serial. Supports absolute and relative moves, speed configuration, temperature readout, and motor hold current settings.
 
 See [docs/services/qhy-focuser.md](docs/services/qhy-focuser.md) for design documentation.
-
-### PHD2 Guider
-
-Rust client library for programmatic control of [PHD2](https://openphdguiding.org/) autoguiding. Provides JSON RPC 2.0 communication, event subscription, guiding control (start, stop, dither, pause), calibration, camera control, profile management, and auto-reconnect logic. Includes a `mock_phd2` binary for testing without hardware.
-
-See [docs/services/phd2-guider.md](docs/services/phd2-guider.md) for design documentation.
 
 ### Sentinel
 
@@ -272,7 +265,6 @@ rusty-photon/
     zwo-camera/            ASCOM Camera — ZWO ASI hardware (implemented; vendored zwo-rs bindings, MIT SDK)
     zwo-focuser/           ASCOM Focuser — ZWO EAF (implemented; vendored zwo-rs bindings, MIT SDK)
     planetarium-bridge/    ASCOM Telescope (virtual) — planetarium Align gestures become paused rp targets
-    phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
     calibrator-flats/      Flat-field tool provider (train_flats / take_flats through rp)
     focus-model/           Focus tool provider (focus_train / determine_filter_offsets / calibrate_temperature through rp)
@@ -290,7 +282,6 @@ rusty-photon/
     workspace.md           Workspace architecture and shared patterns
   scripts/                 CI and ConformU setup scripts
   external/
-    phd2/                  PHD2 source (git submodule, reference only)
     homebrew-rusty-photon/ Homebrew tap (git submodule)
 ```
 

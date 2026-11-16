@@ -149,8 +149,8 @@ there is no `~/.config` here and no `/etc/rusty-photon` symlink. Under
 root's home: `/var/root/Library/Application Support/rusty-photon/`.
 
 The same class exceptions as Linux apply: the config-gated three never
-write one, and the two cameras, `zwo-focuser`, and `phd2-guider` run on
-built-in defaults without writing a file until settings are saved on the
+write one, and the two cameras and `zwo-focuser` run on built-in
+defaults without writing a file until settings are saved on the
 service's setup page (`/setup`) or one is created by hand.
 
 To change settings, edit the file and restart (there is no `systemctl
