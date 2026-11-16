@@ -118,11 +118,10 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 }
 
 fieldset { border: 0; margin: 0 0 8px; padding: 0; }
-/* A labeled config section is an enclosed sub-panel: grouping by
- * containment, not separator lines (drivers can serve several devices —
- * e.g. falcon's rotator + status switch — and their sections must read
- * as distinct boxes). Legendless fieldsets (the equipment add/edit form)
- * are a single unlabeled group and get no chrome. */
+/* A labeled fieldset is an enclosed sub-panel (the review form's acquisition
+ * goals): grouping by containment, not separator lines, so a form's sections
+ * read as distinct boxes. A legendless fieldset is a single unlabeled group
+ * and gets no chrome. */
 fieldset:has(> legend) {
   border: 1px solid var(--edge);
   border-radius: 8px;
@@ -180,9 +179,10 @@ button.primary {
 }
 button.primary:hover { filter: brightness(1.08); }
 
-/* Inline, link-styled htmx button — the unlock/lock/retry affordances. They are
- * <button hx-get> (JS-required; no non-JS <a href> fallback, plan §7), styled to
- * read as the inline links they replaced (matching the `a` rule above). */
+/* Inline, link-styled htmx button — the targets pages' retry and back
+ * affordances. They are <button hx-get> (htmx is required; there is no <a href>
+ * fallback, docs/services/ui-htmx.md § Overview), styled to read as inline
+ * links (matching the `a` rule above). */
 button.link {
   font: inherit;
   color: var(--accent-a);
@@ -214,9 +214,9 @@ button.link:hover { text-decoration: underline; }
 .banner code { font-family: var(--mono); color: var(--dim); }
 .banner .mono { font-family: var(--mono); color: var(--dim); }
 
-/* Restart-via-Sentinel affordance (config-actions plan Phase 4): a footer on
- * the config card, separated from Apply so a process restart is never a
- * one-pixel slip away from a config save. */
+/* Restart-via-Sentinel affordance: a footer on the config card, separated
+ * from Apply so a process restart is never a one-pixel slip away from a config
+ * save. */
 .card-footer {
   margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--edge);
   display: flex; align-items: center; gap: 14px;
@@ -418,7 +418,8 @@ button.link.danger { color: var(--bad); }
   padding: 6px 12px;
 }
 
-/* Strip chips (session state / SAFE-UNSAFE), from the mock's chip set. */
+/* Strip chips (the safety chip's SAFE / UNSAFE / unknown states), from the
+ * mock's chip set. */
 .chip {
   font-size: 11px; padding: 2px 8px; border-radius: 4px; white-space: nowrap;
   background: rgba(255, 255, 255, .05); color: var(--dim);

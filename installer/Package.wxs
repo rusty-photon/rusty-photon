@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Rusty Photon suite MSI (ADR-015, docs/plans/archive/windows-packaging.md W4).
+  Rusty Photon suite MSI (why one installer for the whole family:
+  docs/decisions/015-windows-packaging-architecture.md).
 
   One installer for the whole family: Core (required: sentinel + ui-htmx),
   Drivers (optional, one sub-feature per device driver), Automation (optional:
@@ -50,29 +51,26 @@
     <ui:WixUI Id="WixUI_FeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="installer\License.rtf" />
 
-    <!-- Flat install layout (docs/plans/archive/windows-packaging.md): every selected
-         rusty-photon-<svc>.exe plus the ZWO DLLs and licenses in one folder.
-         No PATH manipulation (the old filemonitor WXS's PATH component is
-         deliberately not carried over). -->
+    <!-- Flat install layout: every selected rusty-photon-<svc>.exe plus the
+         ZWO DLLs and licenses in one folder. No PATH entry. -->
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="rusty-photon" />
     </StandardDirectory>
 
     <!-- %ProgramData%\rusty-photon: the operator folder for self-created
-         configs (W2 default config path) and \logs for the SCM rolling log
-         files (W1). Pre-created empty so the first service start never races
-         directory creation; LocalSystem-writable by ProgramData's default
-         ACL. Configs and logs are self-created (untracked by the MSI), so
-         upgrade and uninstall leave them behind — deb `remove` parity; full
-         purge is a documented manual step. -->
+         configs (the services' default config path) and \logs for the SCM
+         rolling log files. Pre-created empty so the first service start
+         never races directory creation; LocalSystem-writable by
+         ProgramData's default ACL. Configs and logs are self-created
+         (untracked by the MSI), so upgrade and uninstall leave them behind
+         — deb `remove` parity; full purge is a documented manual step. -->
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="RustyPhotonDataFolder" Name="rusty-photon">
         <Directory Id="RustyPhotonLogsFolder" Name="logs" />
       </Directory>
     </StandardDirectory>
 
-    <!-- Start-Menu folder (currently: the QHY doctor shortcut, see
-         fragments/qhy-camera.wxs). -->
+    <!-- Start-Menu folder: the QHY doctor shortcut (fragments/qhy-camera.wxs). -->
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="RustyPhotonMenuFolder" Name="Rusty Photon" />
     </StandardDirectory>
@@ -93,12 +91,6 @@
         <File Id="LicenseApacheFile" Name="LICENSE-APACHE.txt" Source="!(bindpath.repo)\LICENSE-APACHE" KeyPath="yes" />
       </Component>
     </ComponentGroup>
-
-    <!-- The former ui-htmx driver-map seed action (W4) is gone with the
-         drivers map itself (#569): ui-htmx's self-created default — the
-         required rp target on localhost — is correct for every install, and
-         the device list lives in rp's equipment roster, not in ui-htmx
-         config. -->
 
     <!-- The TLS renewal scheduled task (docs/services/doctor.md §Renewal):
          daily "rusty-photon-doctor.exe tls renew" as LocalSystem — the

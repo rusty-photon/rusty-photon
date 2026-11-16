@@ -6,8 +6,8 @@
 //! configured devices (it already enumerated its hardware at startup); an
 //! **inactive** unit's own binary is run as `doctor --json` and the
 //! returned checks merge into the report. Units whose staged facts carry
-//! no run state have no aggregation story and are skipped — which is also
-//! what keeps every pre-D5 staged scenario meaning what it meant.
+//! no run state have no aggregation story and are skipped, so a staged
+//! scenario that records no run state runs no probe.
 //!
 //! Both probes are bounded (a short HTTP timeout, a generous shell-out
 //! one), and an answer that never comes is a diagnosis, not a crash.
@@ -56,8 +56,7 @@ enum Probe<'a> {
 /// state.
 ///
 /// Pure fan-out over [`Probe`]; returns no checks (and builds no runtime)
-/// on a host with nothing to probe — a dev checkout diagnosis stays
-/// exactly what it was.
+/// on a host with nothing to probe, such as a dev checkout.
 #[must_use]
 pub fn checks(ctx: &Context) -> Vec<Check> {
     let probes: Vec<Probe> = ctx
@@ -150,10 +149,10 @@ struct FakeMountProbe {
 }
 
 /// The `UniqueID` leg of `joins.fake-mount` (planetarium-bridge.md §
-/// Doctor integration): the static port join (`crate::checks`) only
-/// resolves loopback URLs, but a rig config addresses services by host
-/// name (`<svc>.rig.rustyphoton.io`), where the port join is silently
-/// skipped by design. This leg asks the configured mount itself —
+/// Doctor integration): the static port join (`crate::checks`) resolves
+/// a loopback host and, on an ACME install, the exact `<svc>.<domain>`
+/// name, and silently skips any other host name by design. This leg asks
+/// the configured mount itself —
 /// `GET /management/v1/configureddevices` on rp's
 /// `equipment.mount.alpaca_url` — and fails when any reported device's
 /// `UniqueID` is the locally-installed bridge's minted `device.unique_id`.
@@ -566,8 +565,8 @@ fn describe_devices(devices: &[&ConfiguredDevice]) -> String {
 /// Run an inactive unit's own binary as `doctor --json --config <file>` and
 /// merge the returned checks. Every way the probe itself can go wrong is a
 /// `warn` under `service.doctor-probe` — most of them are the version-skew
-/// signature (a binary from before D5 does not know the subcommand), and an
-/// old binary is not a broken rig.
+/// signature (a service binary without the `doctor` subcommand rejects it),
+/// and an old binary is not a broken rig.
 async fn probe_shell_out(ctx: &Context, scan: &ServiceScan, unit: &UnitFacts) -> Vec<Check> {
     let name = scan.entry.name;
     let Some(binary) = &unit.binary_path else {

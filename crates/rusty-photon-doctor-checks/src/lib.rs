@@ -1,17 +1,16 @@
 //! rusty-photon-doctor-checks: what central doctor and the per-service
-//! `doctor` subcommands share (docs/services/doctor.md) — ADR-016
-//! decision 6: the similarity between doctors lives in a shared library,
-//! not a shared binary. That is the no-SDK hardware facts and predicates
-//! behind the `hardware.*` check family, and, since D5, the canonical
-//! report schema, the text renderer, and the per-service runner every
-//! service binary's `doctor` subcommand calls. Since device claims
-//! (docs/plans/archive/device-claims-and-phd2-camera.md), the camera drivers read
-//! the USB scan here too: [`claims`] places each SDK camera on a port before
-//! a driver registers anything.
+//! `doctor` subcommands share (docs/services/doctor.md): the similarity
+//! between doctors lives in a shared library, not a shared binary. That is
+//! the no-SDK hardware facts and predicates behind the `hardware.*` check
+//! family, the canonical report schema, the text renderer, and the
+//! per-service runner every service binary's `doctor` subcommand calls.
+//! The camera drivers with device claims read the USB scan here too:
+//! [`claims`] places each SDK camera on a port before a driver registers
+//! anything.
 //!
 //! Everything here is read-only: `stat`, directory listings, and inventory
 //! queries. Nothing ever opens a device — a running service holds its
-//! hardware, and doctor must never contend for it (ADR-016 decision 5).
+//! hardware, and doctor must never contend for it.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.

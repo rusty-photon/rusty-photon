@@ -2,14 +2,13 @@ Feature: Certificate issuance via doctor tls issue
   doctor tls issue creates the self-signed CA (if absent) and a
   certificate pair for each installed service that lacks one, under the
   config root's pki directory. The service set is derived from the
-  catalog and what is installed — not from a hand-typed default list —
-  so services the retired rp_tls DEFAULT_SERVICES list missed (dsd-fp2
-  among them) are covered. Configs are never touched; that is the --fix
-  provisioning pass. A missing explicit --config-dir is created rather
-  than rejected — issuance materializes a tree from nothing, and the
-  recommended ACME staging rehearsal targets a scratch directory —
-  while every other doctor entry point keeps rejecting it, so a typo'd
-  path never silently diagnoses an empty directory.
+  catalog and what is installed — not from a hand-typed list — so every
+  installed catalog service is covered. Configs are never touched; that
+  is the --fix provisioning pass. A missing explicit --config-dir is
+  created rather than rejected — issuance materializes a tree from
+  nothing, and the recommended ACME staging rehearsal targets a scratch
+  directory — while every other doctor entry point keeps rejecting it, so
+  a typo'd path never silently diagnoses an empty directory.
 
   Scenario: tls issue creates a missing --config-dir
     When I run doctor tls issue pointed at a config directory that does not exist

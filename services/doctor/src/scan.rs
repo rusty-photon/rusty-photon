@@ -31,7 +31,8 @@ pub enum ReadError {
 /// The `server` block, parsed under the catalog-declared shape.
 #[derive(Debug)]
 pub enum ServerBlock {
-    /// No config file — the service will self-create defaults on first run.
+    /// No config file — a self-defaulting service creates one on first run;
+    /// a config-gated one cannot start without it.
     FileAbsent,
     /// No parseable `server` block to judge: the file has no `server` key
     /// (the service applies its defaults), or the file itself is unreadable
@@ -62,8 +63,7 @@ pub struct ServiceScan {
 }
 
 impl ServiceScan {
-    /// Whether this service takes part in diagnosis: its unit is installed
-    /// or its config file exists.
+    /// Whether the config file exists, readable or not.
     #[must_use]
     pub const fn config_present(&self) -> bool {
         self.raw.is_some()
@@ -270,9 +270,10 @@ pub struct WatchdogView {
 
 /// A plaintext HTTP Basic credential.
 ///
-/// sentinel's doctor-written `service_auth`/per-monitor `auth`, and
-/// ui-htmx's client target `auth` (docs/services/sentinel.md,
-/// docs/services/doctor.md §Client-target joins).
+/// sentinel's doctor-written `service_auth`/per-monitor `auth`, ui-htmx's
+/// client target `auth`, and rp's per-target `auth` blocks
+/// (docs/services/sentinel.md, docs/services/doctor.md §Client-target
+/// joins).
 #[derive(Debug, Deserialize, Default, Clone)]
 pub struct ClientAuthView {
     #[serde(default)]
@@ -314,8 +315,8 @@ fn default_monitor_scheme() -> String {
 /// sentinel: the blocks doctor joins across.
 ///
 /// The retired `services` map is read only to diagnose it
-/// (`config.retired-keys`) — since D3s sentinel discovers its services
-/// from the platform service manager. `ca_cert` is the single top-level
+/// (`config.retired-keys`): sentinel discovers its services from the
+/// platform service manager. `ca_cert` is the single top-level
 /// CA every sentinel client trusts — the watchdog's `rp_url` and each
 /// monitor alike, the same shape as `RpView::ca_cert`.
 #[derive(Debug, Deserialize, Default)]
@@ -367,10 +368,10 @@ pub struct BridgeDeviceView {
 }
 
 /// rp: the client target block for `plate_solver` — a URL plus an
-/// optional per-target credential (issue #620).
+/// optional per-target credential.
 ///
 /// CA trust is a separate, top-level `RpView::ca_cert` shared by every rp
-/// client (issue #609 / PR #612), not per-target. The guider's equivalent
+/// client, not per-target. The guider's equivalent
 /// block (nested inside `equipment.mount.guiding`) is read via
 /// `RpView::mount_guiding_url` / `RpView::mount_guiding_auth` instead,
 /// since `equipment` stays an opaque `Value`.
@@ -385,12 +386,12 @@ pub struct RpUrlTargetView {
 /// rp: the blocks doctor reads.
 ///
 /// `equipment` stays a `Value` — device usage is opaque; only each entry's
-/// `alpaca_url` and the mount's nested `guiding.url` are extracted.
-/// `plugins` is opaque for the same reason: registrations are a
-/// plugin-author surface, and only the URL rp dials — an event plugin's
-/// `webhook_url` (issue #800), a tool provider's `mcp_server_url`
-/// (mcp-sessionless slice 8) — and that entry's `auth` are extracted,
-/// plus each entry's `type`, for the retired-orchestrator check.
+/// `alpaca_url` and `auth` and the mount's nested `guiding.url` and
+/// `guiding.auth` are extracted. `plugins` is opaque for the same reason:
+/// registrations are a plugin-author surface, and only the URL rp dials —
+/// an event plugin's `webhook_url`, a tool provider's `mcp_server_url` —
+/// and that entry's `auth` are extracted, plus each entry's `type`, for
+/// the retired-orchestrator check.
 #[derive(Debug, Deserialize, Default)]
 pub struct RpView {
     #[serde(default)]
@@ -459,9 +460,9 @@ impl RpView {
         serde_json::from_value(auth.clone()).ok()
     }
 
-    /// The guider service's credential at `equipment.mount.guiding.auth`
-    /// (issue #620) — `None` when absent or when the block does not parse
-    /// as a `ClientAuthView`.
+    /// The guider service's credential at `equipment.mount.guiding.auth` —
+    /// `None` when absent or when the block does not parse as a
+    /// `ClientAuthView`.
     #[must_use]
     pub fn mount_guiding_auth(&self) -> Option<ClientAuthView> {
         let auth = self
@@ -474,12 +475,11 @@ impl RpView {
     }
 
     /// Every generic equipment client target — each `equipment.<kind>[].alpaca_url`
-    /// entry plus the singular `equipment.mount.alpaca_url` (issue #663) —
-    /// alongside its own `auth` field. Kind-agnostic by construction (any
-    /// object under `equipment` carrying an `alpaca_url`, whether nested in
-    /// an array or standalone like `mount`), so a future equipment kind
-    /// picks up scheme/auth join checking without new doctor code, mirroring
-    /// `alpaca_urls()`'s existing walk. The guider's URL
+    /// entry plus the singular `equipment.mount.alpaca_url` — alongside its
+    /// own `auth` field. Kind-agnostic by construction (any object under
+    /// `equipment` carrying an `alpaca_url`, whether nested in an array or
+    /// standalone like `mount`), so a future equipment kind picks up
+    /// scheme/auth join checking without new doctor code. The guider's URL
     /// (`equipment.mount.guiding.url`) lives under a `url` key, not
     /// `alpaca_url`, so it never collides with this walk.
     pub fn equipment_targets(&self) -> Vec<RpClientTarget> {
@@ -491,9 +491,7 @@ impl RpView {
             // `kind` is a JSON object key from the opaque `equipment` value
             // (never validated against `EquipmentConfig`'s known field
             // names before this point), so it must be RFC-6901-escaped
-            // before it becomes a pointer segment — same reason ui-htmx's
-            // free-form `drivers` map keys go through `escape_token`
-            // (fix.rs) rather than straight into a pointer string.
+            // before it becomes a pointer segment.
             let escaped_kind = crate::fix::escape_token(kind);
             match value {
                 Value::Array(entries) => {
@@ -535,8 +533,7 @@ impl RpView {
     /// Delivery: Webhooks), and a tool provider's `mcp_server_url`, the
     /// MCP server it discovers and proxies tools from (rp.md § Tool
     /// Provider Registration) — alongside that registration's own `auth`
-    /// field (issue #800), which rp presents as the observatory
-    /// credential on both.
+    /// field, which rp presents as the observatory credential on both.
     ///
     /// Deliberately narrower than [`Self::equipment_targets`]'s
     /// walk-anything-with-an-`alpaca_url` rule: a registration is an
@@ -546,10 +543,10 @@ impl RpView {
     /// and file a transport verdict on a URL rp never calls. The scope
     /// mirrors rp's own `config::EVENT_URL_FIELD` /
     /// `config::TOOL_PROVIDER_URL_FIELD` mapping; the two must agree, or
-    /// doctor advises a fix rp ignores. (The orchestrator's `invoke_url`
-    /// left the set with mcp-sessionless D6: rp dials no orchestrator,
-    /// and such an entry is reported by
-    /// `rp.orchestrator-registration-removed` instead.)
+    /// doctor advises a fix rp ignores. (An orchestrator registration's
+    /// `invoke_url` is not in the set: rp dials no orchestrator, and such
+    /// an entry is reported by `rp.orchestrator-registration-removed`
+    /// instead.)
     #[must_use]
     pub fn plugin_targets(&self) -> Vec<RpClientTarget> {
         self.plugins
@@ -585,8 +582,8 @@ impl RpView {
 /// registration it cannot deliver to (rp.md § Delivery: Webhooks) or a
 /// tool provider it cannot reach (rp.md § Tool Provider Registration),
 /// so an entry that reaches a running rig is one rp dials. A `type:
-/// "orchestrator"` entry is not dialed — rp rejects it at load
-/// (mcp-sessionless D11) — so it is never joined.
+/// "orchestrator"` entry is not dialed — rp rejects it at load — so it
+/// is never joined.
 fn dialed_url_field(entry: &Value) -> Option<&'static str> {
     match entry.get("type").and_then(Value::as_str)? {
         "event" => Some("webhook_url"),
@@ -601,11 +598,10 @@ fn dialed_url_field(entry: &Value) -> Option<&'static str> {
 ///
 /// `field` is a dotted path (the same convention rp's own `field_errors`
 /// uses, e.g. `equipment.cameras.0.alpaca_url`) for **display only** —
-/// unlike `rp_client_joins`'s other two call sites, this is not run back
-/// through `field.replace('.', "/")` to derive a pointer, because a `kind`
-/// key is config-controlled and may itself need RFC-6901 escaping.
-/// `url_pointer`/`auth_pointer` are pre-built, already-escaped JSON
-/// pointers.
+/// no pointer is derived from it, because a `kind` key is
+/// config-controlled and may itself need the RFC-6901 escaping a `.` → `/`
+/// substitution would not apply. `url_pointer`/`auth_pointer` are
+/// pre-built, already-escaped JSON pointers.
 #[derive(Debug, Clone)]
 pub struct RpClientTarget {
     pub field: String,
@@ -841,9 +837,8 @@ mod tests {
     fn test_rp_view_equipment_targets_escapes_a_slash_in_the_kind_key() {
         // `equipment` is opaque (never checked against EquipmentConfig's
         // known field names before this runs), so a stray '/' or '~' in a
-        // kind key must not mis-segment the fix pointer — RFC 6901, same
-        // reason ui-htmx's free-form `drivers` map keys go through
-        // `fix::escape_token`.
+        // kind key must not mis-segment the fix pointer: the key goes
+        // through `fix::escape_token` (RFC 6901).
         let view: RpView = serde_json::from_str(
             r#"{ "equipment": { "weird/kind": [ { "alpaca_url": "http://localhost:11122" } ],
                                  "weird~kind": { "alpaca_url": "http://localhost:11117" } } }"#,

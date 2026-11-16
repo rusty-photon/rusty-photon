@@ -161,7 +161,7 @@ pub fn resolve_credentials<S1: std::hash::BuildHasher, S2: std::hash::BuildHashe
 /// Returns an empty map, not an error, when the file is absent.
 ///
 /// This is the unattended path for `$VAR`-indirected `dns_credentials`
-/// (ADR-002, docs/services/doctor.md §Renewal): `doctor tls renew` runs off
+/// (docs/services/doctor.md §Renewal): `doctor tls renew` runs off
 /// a platform scheduler (systemd timer, launchd interval, a Windows
 /// scheduled task) whose process has no inherited shell environment, so
 /// without this file `$CLOUDFLARE_API_TOKEN` (or any other indirected
@@ -275,8 +275,9 @@ mod tests {
 
     #[test]
     fn acme_config_defaults() {
-        // The exact shape a pre-D6b acme.json carries — it must keep parsing
-        // with the endpoint/trust/propagation knobs defaulted.
+        // Only the four required keys: every optional knob takes its
+        // default, so an acme.json without the endpoint, trust and
+        // propagation keys parses.
         let json = r#"{
             "email": "user@example.com",
             "domain": "example.com",
@@ -451,7 +452,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("renew.env"), "KEY=value\n").unwrap();
         // Strip search permission from the parent dir so read_to_string
-        // fails with EACCES rather than NotFound — the loop must
+        // fails with EACCES rather than NotFound — the parse must
         // distinguish "absent" (tolerated) from "unreadable" (an error).
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
         let result = parse_renew_env(dir.path());

@@ -1,5 +1,5 @@
-//! The doctor report schema (docs/services/doctor.md §Report) — the
-//! canonical home since D5, because every service binary serializes it
+//! The doctor report schema (docs/services/doctor.md §Report). This crate
+//! is its canonical home, because every service binary serializes it
 //! from its `doctor` subcommand and central doctor aggregates it.
 //!
 //! The schema crosses a binary boundary, so unlike every config shape it

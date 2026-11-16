@@ -1,6 +1,10 @@
 //! Device claims: the vendor-neutral half of a camera driver's `usb_devices`
-//! list ([device-claims plan](../../../docs/plans/archive/device-claims-and-phd2-camera.md),
-//! Part A).
+//! list.
+//!
+//! Its rules are numbered under "Device claims" in each camera driver's
+//! design doc ([svbony-camera.md](../../../docs/services/svbony-camera.md),
+//! `zwo-camera.md`, `qhy-camera.md`); the U2, U3, U4 and U8 cited below are
+//! the same rule in all three.
 //!
 //! A list pins each USB port to an Alpaca device number. What is the same in
 //! every camera driver lives here, beside the USB inventory it reads: the
@@ -496,7 +500,7 @@ fn keyed_match(normalizer: &Normalizer<'_>, camera: &SdkCamera, record: &UsbDevi
 }
 
 /// Place each SDK camera on a port: a passive join of what the SDK
-/// enumerated with the scan's working records (the plan's D4.2).
+/// enumerated with the scan's working records (U2).
 ///
 /// A camera is placed only on a **one-to-one** match: it matches exactly one
 /// of this vendor's records, and that record matches no other camera. After
@@ -506,7 +510,7 @@ fn keyed_match(normalizer: &Normalizer<'_>, camera: &SdkCamera, record: &UsbDevi
 /// camera (see [`Normalizer`]'s rule for that), the record's product id is not one the normalizer gives any
 /// model, and their serials, when both have one, agree. A known model is never
 /// paired this way — its product id is known, and a record under another one
-/// is some other device. Everything else is refused, never guessed (D4.3).
+/// is some other device. Everything else is refused, never guessed (U3).
 #[must_use]
 pub fn place(normalizer: &Normalizer<'_>, sdk: &[SdkCamera], scan: &UsbScan) -> Placement {
     let records: Vec<&UsbDevice> = scan
@@ -681,11 +685,11 @@ impl<'a> Claims<'a> {
     }
 
     /// What a listed port resolves to: the camera placed there, or why a
-    /// placeholder holds it — the first reason that applies (the plan's
-    /// D4.5): the scan failed; a fault located at the port; a look-alike or an
-    /// unrecognised camera whose record is there; a working record no SDK
-    /// camera is placed on; otherwise no working camera on the port. Every
-    /// reason ends with the way back.
+    /// placeholder holds it — the first reason that applies (U4): the scan
+    /// failed; a fault located at the port; a look-alike or an unrecognised
+    /// camera whose record is there; a working record no SDK camera is
+    /// placed on; otherwise no working camera on the port. Every reason
+    /// ends with the way back.
     #[must_use]
     pub fn resolve(&self, port: &str) -> Resolution {
         let reason = match &self.joined {
@@ -707,8 +711,8 @@ impl<'a> Claims<'a> {
     }
 
     /// The reason a placeholder holds a listed port whose camera the join
-    /// placed but the driver could not open (the plan's D4.4): the SDK's
-    /// `error`, and the way back.
+    /// placed but the driver could not open: the SDK's `error`, and the way
+    /// back.
     #[must_use]
     pub fn open_failure(&self, port: &str, error: &str) -> String {
         self.with_the_way_back(&format!(
@@ -900,7 +904,7 @@ impl<'a> Claims<'a> {
 
 // --- port order -----------------------------------------------------------------
 
-/// Compare two ports hop by hop from the root (the plan's D4.7).
+/// Compare two ports hop by hop from the root.
 ///
 /// The port is cut into the runs of letters and digits between its
 /// separators, and runs compare by width without their leading zeros, then as
@@ -1066,7 +1070,7 @@ pub struct DisplayNames {
 }
 
 impl Claims<'_> {
-    /// What `doctor --devices` prints (the plan's D5): a row per SDK camera
+    /// What `doctor --devices` prints (U8): a row per SDK camera
     /// the join placed, in port order; the paste-ready block; and the notes
     /// after the table.
     ///
@@ -1095,7 +1099,7 @@ impl Claims<'_> {
                     sdk_id: facts.and_then(|f| f.sdk_id.clone()),
                     usb_serial: self.record_on(port).and_then(|r| r.serial.clone()),
                     // Without a list a placed camera is served at its place in
-                    // port order (the plan's D4.7).
+                    // port order.
                     device: list.map_or_else(
                         || position.to_string(),
                         |list| {
@@ -3076,7 +3080,7 @@ mod tests {
         assert!(output.contains("Fix it from the ports above."), "{output}");
     }
 
-    // --- C5: the placeholder's port, and the doctor checks ---------------------
+    // --- the placeholder's port, and the doctor checks ----------------------
 
     #[test]
     fn a_placeholder_unique_id_gives_back_the_port_it_stands_in_for() {

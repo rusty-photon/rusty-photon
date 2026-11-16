@@ -267,7 +267,7 @@ impl DnsProvider for ChalltestsrvDnsProvider {
 
 /// Build a DNS provider from a provider name and credentials.
 ///
-/// Currently supports:
+/// Supports:
 /// - `"cloudflare"` — requires `api_token` in credentials
 /// - `"challtestsrv"` (mock builds only) — Pebble's DNS sidecar; the
 ///   `api_token` credential slot carries its management base URL, which is

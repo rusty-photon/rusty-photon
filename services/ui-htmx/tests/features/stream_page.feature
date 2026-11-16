@@ -33,9 +33,9 @@ Feature: Activity stream
     When I open the stream page reached as "rig.local"
     Then the navigation links rp's setup page at "rig.local" on rp's port
 
-  # rp keeps no session (mcp-sessionless D6), so the events a harness can
-  # provoke on an empty roster are safety transitions: a stub safety
-  # monitor flipped unsafe and back emits one safety_changed each.
+  # rp keeps no session, so the events a harness can provoke on an empty
+  # roster are safety transitions: a stub safety monitor flipped unsafe and
+  # back emits one safety_changed each.
   Scenario: Safety events arrive as rendered feed cards with the rp sequence as SSE id
     Given a running rp with a stub safety monitor and an empty roster
     And a BFF pointed at rp

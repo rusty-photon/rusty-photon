@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  rusty-photon-session-runner — Windows service fragment (suite MSI; ADR-015).
+  rusty-photon-session-runner — Windows service fragment (suite MSI).
   Port 11171/tcp; gated: no defaultable config — its workflows_dir/state_dir
   are required fields with no usable defaults, per
   docs/services/session-runner.md.
@@ -25,9 +25,9 @@
                         Account="LocalSystem"
                         Arguments="--service"
                         Vital="yes">
-          <!-- systemd Restart=on-failure / RestartSec=5 translation (ADR-015
-               decision 2): restart after 5 s on every failure, indefinitely
-               (failure count resets daily). -->
+          <!-- systemd Restart=on-failure / RestartSec=5 translation: restart
+               after 5 s on every failure, indefinitely (failure count resets
+               daily). -->
           <util:ServiceConfig FirstFailureActionType="restart"
                               SecondFailureActionType="restart"
                               ThirdFailureActionType="restart"
@@ -44,8 +44,7 @@
                          OnReinstall="yes" />
         </ServiceInstall>
         <!-- Started on install and at boot like every other service, which
-             does itself what the Linux unit's ConditionPathExists= does
-             (ADR-025).
+             does itself what the Linux unit's ConditionPathExists= does.
              Without %ProgramData%\rusty-photon\session-runner.json it stops at
              once with exit code 0, which the failure actions leave alone:
              the operator writes the file, then starts the service (sc start /

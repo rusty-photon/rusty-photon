@@ -4,7 +4,7 @@
 //! The struct serializes so doctor's `--platform-facts` test seam can
 //! stage any host state on any OS; parsing is permissive
 //! (`#[serde(default)]`, unknown fields tolerated) per the report-side
-//! convention — facts cross the doctor↔service binary boundary from D5 on.
+//! convention — facts cross the doctor↔service binary boundary.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -564,7 +564,7 @@ pub struct ProbeRequest {
 /// Gather hardware facts from the running host, read-only.
 ///
 /// A path, group or rule file that cannot be read degrades to absence (a
-/// path with a `debug!` trail); absence does not yet tell "not there" from
+/// path with a `debug!` trail); absence does not tell "not there" from
 /// "unreadable". The two host-wide listings do tell them apart: a USB scan
 /// or a Windows COM-port listing that could not be read is recorded as
 /// unavailable ([`HardwareFacts::usb_unavailable`],
@@ -1478,9 +1478,9 @@ mod macos {
     fn walk(item: &serde_json::Value, report: &UsbReport, scan: &mut UsbScan) {
         // A device record is one carrying the report's vendor id key; the
         // tree also carries controllers and other non-device nodes, which
-        // are skipped silently as they always were. A device record whose
-        // ids or port cannot be read is a fault, never skipped, so the
-        // inventory is never shorter than the bus without saying why.
+        // are skipped silently. A device record whose ids or port cannot
+        // be read is a fault, never skipped, so the inventory is never
+        // shorter than the bus without saying why.
         if let Some(raw_vendor) = item.get(report.vendor) {
             let raw_product = item.get(report.product);
             let vendor = vendor_field(raw_vendor);
@@ -4565,7 +4565,7 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         /// The asymmetry is deliberate and has a reason: `usb_unavailable`
         /// is an `Option` on `HardwareFacts`, so `null` there is how a
         /// *successful* scan serializes — rejecting it would break staging
-        /// a real capture, which the round-trip test above pins.
+        /// a real capture, which the round-trip test below pins.
         #[test]
         fn test_a_nulled_failure_reason_is_a_successful_scan() {
             let dir = tempfile::tempdir().unwrap();

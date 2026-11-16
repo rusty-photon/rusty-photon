@@ -4,9 +4,9 @@
 //! listening server plus the required [`RpTarget`], edited on the BFF's own
 //! setup page ([`crate::setup`]). The retired `drivers` override map fails
 //! loudly at load (`deny_unknown_fields`); the retired `sentinel` block is
-//! ignored with a warning, since doctor once wired it into every install and
-//! an upgrade runs no doctor. Doctor's `config.retired-keys` fix deletes both
-//! (see `docs/services/ui-htmx.md`).
+//! ignored with a warning, because installs an earlier doctor wired carry it
+//! and an upgrade runs no doctor. Doctor's `config.retired-keys` fix deletes
+//! both (`docs/services/ui-htmx.md` § Configuration).
 
 use tracing::warn;
 
@@ -28,12 +28,12 @@ pub struct Config {
     /// block (or with `"rp": null`) fails loudly at load instead of starting
     /// a useless server.
     pub rp: RpTarget,
-    /// The retired `sentinel` block: the BFF restarts nothing since its
-    /// configuration pages retired. Doctor wrote it into the installs it
-    /// wired, and an upgrade runs no doctor, so it is accepted and ignored
-    /// rather than refused — [`load_config`] warns, doctor's
-    /// `config.retired-keys` fix deletes it, and the setup page's next save
-    /// drops it. It never reaches the page or a file the BFF writes.
+    /// The retired `sentinel` block, which nothing reads: the BFF restarts no
+    /// service. Installs an earlier doctor wired carry it, and an upgrade
+    /// runs no doctor, so it is accepted and ignored rather than refused —
+    /// [`load_config`] warns, doctor's `config.retired-keys` fix deletes it,
+    /// and the setup page's next save drops it. It never reaches the page or
+    /// a file the BFF writes.
     #[serde(default, skip_serializing)]
     #[schemars(skip)]
     pub sentinel: Option<serde::de::IgnoredAny>,
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn defaults_are_roster_first() {
         // The single-box default: rp on localhost — rp's roster is the only
-        // device source (ADR-016 decision 9, tightened by #569).
+        // device source.
         let c = Config::default();
         assert_eq!(c.server.bind_address.to_string(), "0.0.0.0");
         assert_eq!(c.server.port, 11120);
@@ -161,17 +161,18 @@ mod tests {
 
     #[test]
     fn retired_drivers_map_is_rejected() {
-        // The static drivers override map is retired (#569): rp's roster is
-        // the only device source, and a config still carrying the key —
-        // even empty — fails loudly instead of being silently ignored.
+        // The static drivers override map is retired: rp's roster is the
+        // only device source, and a config carrying the key — even empty —
+        // fails loudly instead of being silently ignored.
         let err = serde_json::from_str::<Config>(r#"{ "rp": {}, "drivers": {} }"#).unwrap_err();
         assert!(err.to_string().contains("drivers"), "{err}");
     }
 
     #[test]
     fn default_scaffold_round_trips_through_load_config() {
-        // main() writes `Config::default()` to the XDG path on first start
-        // (resolve_and_init); that serialized form must load back cleanly.
+        // main() writes `Config::default()` to the platform config path on
+        // first start (resolve_and_init); that serialized form must load back
+        // cleanly.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ui-htmx.json");
         let scaffold = serde_json::to_string_pretty(&Config::default()).unwrap();
@@ -183,8 +184,8 @@ mod tests {
 
     #[test]
     fn retired_sentinel_block_is_ignored_and_never_written_back() {
-        // Doctor wired the block into every install it fixed, and an
-        // upgrade runs no doctor: the BFF must still start over it.
+        // Installs an earlier doctor wired carry the block, and an upgrade
+        // runs no doctor: the BFF must start over it.
         let c: Config = serde_json::from_str(
             r#"{ "rp": {}, "sentinel": { "base_url": "http://127.0.0.1:11114" } }"#,
         )
@@ -216,8 +217,8 @@ mod tests {
 
     #[test]
     fn rp_target_null_is_rejected() {
-        // The pre-#569 "run without rp (pure driver UI)" mode is gone with
-        // the drivers map; an explicit null is a config error, not a mode.
+        // The BFF has no rp-less mode: an explicit null is a config error,
+        // as a missing block is.
         serde_json::from_str::<Config>(r#"{ "rp": null }"#).unwrap_err();
     }
 

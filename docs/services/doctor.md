@@ -238,7 +238,7 @@ Doctor diagnoses one config directory per run, resolved in order:
    invoking user is a hard error** (exit 2, "run with sudo"), never a
    fall-through: the tree is 0750-owned by `rusty-photon`, and silently
    diagnosing the operator's own empty config directory instead would report
-   seventeen missing configs on a healthy rig — and scan polkit rule
+   every config missing on a healthy rig — and scan polkit rule
    directories it cannot read. A dangling symlink (packages removed) falls
    through to step 3.
 3. The platform default the services themselves use —
@@ -822,8 +822,8 @@ reaches the join exactly as the config spells it.
 fix-eligible there: the scheme is rewritten in place (preserving the
 URL's path/query byte-for-byte — round-tripping through a URL parser's
 `to_string()` would silently append a trailing `/` to an origin-only URL,
-which some client call sites concatenate a `/`-prefixed path onto without
-trimming), the CA path is written from the resolved pki tree, and the
+which a client that concatenates a `/`-prefixed path onto its base URL
+without trimming would turn into a double-slashed request), the CA path is written from the resolved pki tree, and the
 credential is written from `pki/credential` — the same material
 `plan_client_wiring` already distributes, following the same "absent gets
 it, present is operator intent, never overwritten" contract as every

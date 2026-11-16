@@ -57,7 +57,7 @@ async fn feed_shows_card(world: &mut UiWorld, needle: String) {
     );
 }
 
-// --- Tier 0 step 3: coverage invariant (graceful shutdown with a browser) ----
+// --- coverage invariant: graceful shutdown with a browser --------------------
 
 #[when("I quit the browser and then stop the BFF")]
 async fn quit_browser_then_stop_bff(world: &mut UiWorld) {
@@ -77,13 +77,12 @@ fn bff_graceful_shutdown(world: &mut UiWorld) {
     // The timing assertion above is the active, runner-agnostic invariant — it
     // runs on every @browser run. The check below is an additional *direct* proof
     // (the BFF actually wrote a `.profraw`) that only fires when this @browser
-    // scenario itself runs under coverage with COVERAGE_DIR set: a local
-    // `UI_BROWSER_TESTS=1 cargo llvm-cov … --test bdd`, or a future nightly
-    // @browser-under-coverage job. It is deliberately NOT wired into the required
-    // bazel-coverage CI job, which never sets UI_BROWSER_TESTS — the plan keeps the
-    // browser layer out of the required gate (§3/§8). So this branch is dormant in
-    // current CI by design, not dead: it activates the moment @browser is run under
-    // coverage. Skipped (COVERAGE_DIR unset) under plain `cargo test` / `bazel test`.
+    // scenario itself runs under coverage with COVERAGE_DIR set, as a local
+    // `UI_BROWSER_TESTS=1 cargo llvm-cov … --test bdd` does. The required
+    // bazel-coverage CI job never sets UI_BROWSER_TESTS — the browser layer stays
+    // out of the required gate — so there this branch is dormant by design, not
+    // dead: it activates whenever @browser runs under coverage. Skipped
+    // (COVERAGE_DIR unset) under plain `cargo test` / `bazel test`.
     if let Some(coverage_dir) = std::env::var_os("COVERAGE_DIR") {
         assert!(
             crate::browser::bff_profraw_flushed(&coverage_dir),
@@ -92,7 +91,7 @@ fn bff_graceful_shutdown(world: &mut UiWorld) {
     }
 }
 
-// --- Tier 0 step 4: worst-case orphan reaping + failure artifacts ------------
+// --- worst-case orphan reaping + failure artifacts ---------------------------
 
 #[when("the geckodriver process is killed and the session is reaped")]
 async fn crash_and_reap(world: &mut UiWorld) {

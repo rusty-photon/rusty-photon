@@ -73,8 +73,9 @@ pub fn generate_ca(output_dir: &Path) -> Result<()> {
 
 /// Generate a service certificate signed by the CA.
 ///
-/// The certificate includes SANs for `localhost`, `127.0.0.1`, the system
-/// hostname, and any additional SANs provided.
+/// The certificate includes SANs for `localhost`, both loopback addresses
+/// (`127.0.0.1`, `::1`), the system hostname, and any additional SANs
+/// provided — an address as an IP SAN, anything else as a DNS SAN.
 ///
 /// Writes `{service_name}.pem` and `{service_name}-key.pem` to `output_dir`.
 /// Creates `output_dir` if it does not exist.
@@ -126,7 +127,7 @@ pub fn generate_service_cert(
     // write the leaf's own SKI; `use_authority_key_identifier_extension`
     // makes it write the AKI, derived from the CA's actual SKI via the
     // `issuer` loaded above. Without both, strict verifiers (e.g. Python
-    // 3.13's default `VERIFY_X509_STRICT`) reject the cert (issue #621).
+    // 3.13's default `VERIFY_X509_STRICT`) reject the cert.
     params.is_ca = IsCa::ExplicitNoCa;
     params.use_authority_key_identifier_extension = true;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
