@@ -5308,8 +5308,10 @@ ending lease gives the gate back at once, and keeps only its camera's
 slot until the camera is idle, as a cancelled capture outside a lease
 does ([Capture Tool Details](#capture-tool-details), Concurrency). Once
 everything is given back, rp gives the guide camera guard back and
-removes the reservation. If rp crashes, the lease and its guard end
-with the process.
+removes the reservation. A release of a lease with no call under it in
+flight gives everything back before it answers, so a `start_guiding`
+sent after the answer finds the guard free. If rp crashes, the lease
+and its guard end with the process.
 
 The lease emits no events of its own. A run learns that its lease ended
 from the refusal of its next call.
@@ -5469,9 +5471,10 @@ kind is refused at once, naming the holder:
   '<lease_id>'"* when a lease holds it. The start's tool leads the
   error, as it leads the device check's: `start_guiding: …`,
   `move_rotator: …`.
-- A capture or a lease that finds a start:
+- A capture, a lease or a second start that finds a start:
   *"the guide camera '<camera_id>' is in use by start_guiding"*, or
-  *"… by move_rotator"* for the ladder's start.
+  *"… by move_rotator"* for the ladder's start. Two starts are never
+  in flight at once.
 
 **The guider idle.** Having taken the guard, a capture or a guiding
 train's lease reads the guider's
