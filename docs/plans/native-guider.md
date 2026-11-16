@@ -826,7 +826,7 @@ train's camera becomes an ordinary roster camera, on which `rp` exposes
 only with the guider read `idle`, under a guard of its own that a
 start of guiding cannot take while a capture or a guiding train's lease
 holds it (decision 14). A guiding train's train lease takes that guard
-where it takes the facade's sweep lease today. The
+at the second step of its acquire. The
 motion gate's text about pulses names the guider, not PHD2.
 `restart_guider` goes. The rotate-while-guiding ladder
 ([rp.md § Rotator Tool Details](../services/rp.md#rotator-tool-details))
