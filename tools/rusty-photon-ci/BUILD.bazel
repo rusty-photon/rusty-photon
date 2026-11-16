@@ -93,6 +93,7 @@ _MEMBERS = [
     "crates/skywatcher-motor-protocol",
     "crates/svbony-rs",
     "crates/svbony-rs/libsvbony-sys",
+    "crates/transport-doubles",
     "crates/zwo-rs",
     "crates/zwo-rs/libzwo-sys",
     "services/calibrator-flats",

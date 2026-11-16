@@ -4,8 +4,8 @@
 //! everything a plugin or workflow service needs to run BDD tests against a
 //! real rp process:
 //!
-//! - [`OmniSimHandle`] — singleton ASCOM simulator process (camera, filter
-//!   wheel, cover calibrator).
+//! - [`OmniSimHandle`] — the test process's private ASCOM Alpaca simulator,
+//!   shared by its scenarios, serving every device class rp drives.
 //! - [`RpConfigBuilder`] + [`CameraConfig`], [`FilterWheelConfig`],
 //!   [`CoverCalibratorConfig`] — accumulate equipment/plugin entries and emit
 //!   a JSON config for rp.
@@ -33,6 +33,7 @@ mod computed_sky;
 mod config;
 mod focus_model_provider;
 mod guider_stub;
+mod held_port;
 mod launcher;
 mod mcp_client;
 mod omnisim;

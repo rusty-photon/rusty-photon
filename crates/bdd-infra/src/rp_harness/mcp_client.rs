@@ -1,14 +1,13 @@
-//! Persistent MCP test client, backed by the standard `rp-mcp-client`
-//! crate (ADR-017).
+//! Persistent MCP test client, backed by the standard `rp-mcp-client` crate.
 //!
 //! [`McpTestClient`] wraps one connected client. It is created once per
 //! scenario (typically in an "MCP client connected to rp" Given step) and
 //! reused for all tool calls within that scenario — mirroring how a real
-//! MCP client (e.g. calibrator-flats) works. The transport is
-//! session-less (ADR-021): the client bootstraps with `server/discover`
-//! and every call is self-contained. [`McpTestClient::connect_authed`]
-//! is the TLS + Basic-auth variant for the scenarios that prove rp's /mcp
-//! honors the server-wide `server.tls` / `server.auth`.
+//! MCP client (e.g. calibrator-flats) works. The transport is session-less:
+//! the client bootstraps with `server/discover` and every call is
+//! self-contained. [`McpTestClient::connect_authed`] is the TLS + Basic-auth
+//! variant for the scenarios that prove rp's /mcp honors the server-wide
+//! `server.tls` / `server.auth`.
 
 use std::path::Path;
 use std::time::Duration;
@@ -19,19 +18,18 @@ use serde_json::Value;
 /// Upper bound on a single MCP request (`call_tool` / `list_tools`).
 ///
 /// rmcp's `Peer::call_tool` has no built-in client timeout: if an rp tool
-/// handler never returns, the `await` here hangs *forever*. Two centering-BDD
-/// hangs traced to that: `do_capture` looping on a failed `sky-survey-camera`
-/// exposure (fixed in `services/rp/src/mcp/internals.rs::do_capture`), and —
-/// issue #319 — a per-iteration mount read stalling because rp's Alpaca client
-/// had no per-request timeout (fixed in rp's `equipment::alpaca`). This timeout
-/// is a defense-in-depth backstop: any *future* handler hang fails the scenario
-/// fast and legibly here, rather than hanging the BDD binary until the CI
-/// job's `timeout-minutes` kills it.
+/// handler never returns — a `do_capture` loop spinning on a failed
+/// `sky-survey-camera` exposure, say, or a mount read stalled behind an
+/// Alpaca request with no deadline — the `await` here hangs *forever*, and
+/// the BDD binary with it until the CI job's `timeout-minutes` kills it.
+/// This bound is the backstop that fails such a scenario fast and legibly
+/// here instead.
 ///
 /// 360 s sits comfortably above rp's worst-case single blocking operation
-/// (the 300 s slew/park deadlines), so a genuinely slow-but-progressing call
-/// still completes and a *server-produced* error still propagates with its
-/// real message; only a true hang trips this bound.
+/// (the 300 s its slew and park deadlines fall back to when it cannot size
+/// one), so a genuinely slow-but-progressing call still completes and a
+/// *server-produced* error still propagates with its real message; only a
+/// true hang trips this bound.
 const MCP_CALL_TIMEOUT: Duration = Duration::from_mins(6);
 
 /// A persistent MCP client for one scenario.
@@ -73,8 +71,8 @@ impl McpTestClient {
 
     /// Connect over TLS presenting HTTP Basic credentials — the
     /// authenticated path the `mcp_auth` scenarios exercise. `ca_cert` is the
-    /// scenario CA (e.g. `PkiFixture::ca_path`); per the ADR-017 policy the
-    /// credential is only sent because the CA is given and the URL is https.
+    /// scenario CA (e.g. `PkiFixture::ca_path`); `rp-mcp-client` sends the
+    /// credential only when a CA is given and the URL is https.
     ///
     /// # Errors
     ///

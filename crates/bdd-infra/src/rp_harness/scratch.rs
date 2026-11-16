@@ -1,5 +1,6 @@
 //! The per-process scratch directory every harness-written file lives in:
-//! rp configs and data directories.
+//! the configs it writes, rp's data directories and the focus-model
+//! provider's stores.
 //!
 //! One directory per test process, created on first use with a random name
 //! component by [`crate::scratch::new_dir`], so two paths can only collide
@@ -7,9 +8,9 @@
 //! can therefore never hand a scenario another process's leftovers. That
 //! matters for the data directory in particular: frames and the target store
 //! survive a stop on purpose (progress is derived from them), so a directory
-//! left by an earlier process at a name a later process reuses — same PID,
-//! same sequence number, which Windows recycles freely — would be *reused*,
-//! and the scenario would inherit progress it never captured.
+//! an earlier process left at a name a later process mints again — as a
+//! `<pid>-<seq>` name would be, since Windows recycles PIDs freely — would
+//! be *reused*, and the scenario would inherit progress it never captured.
 
 use std::path::Path;
 use std::sync::OnceLock;

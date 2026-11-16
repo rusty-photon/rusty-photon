@@ -315,15 +315,16 @@ pub struct RpConfigBuilder {
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     pub focusers: Vec<FocuserConfig>,
-    /// Safety monitors gating the session (see rp.md § Safety).
+    /// Safety monitors rp polls to gate its tools (see rp.md § Safety).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
-    /// Switches — roster membership + connectivity status only (rp.md §
-    /// Equipment Integration); no MCP tool integration yet.
+    /// Switches — power boxes whose outputs rp reads and switches through
+    /// each entry's power map (rp.md § Power Switching).
     pub switches: Vec<SwitchConfig>,
-    /// Rotators — roster membership + connectivity status only.
+    /// Rotators — moved and read through `move_rotator` /
+    /// `get_rotator_position` (rp.md § Rotator Tool Details).
     pub rotators: Vec<RotatorConfig>,
-    /// `ObservingConditions` devices — roster membership + connectivity
-    /// status only.
+    /// `ObservingConditions` devices — read into each frame's rig state
+    /// (rp.md § Rig state); no MCP tool reads them.
     pub observing_conditions: Vec<ObservingConditionsConfig>,
     /// Domes — roster membership + connectivity status only.
     pub domes: Vec<DomeConfig>,
@@ -391,7 +392,8 @@ pub struct RpConfigBuilder {
     /// kills and restarts rp pins the first instance's port so a client
     /// configured with rp's URL — session-runner's `mcp_server_url` —
     /// finds the restarted instance where it left the old one, as a
-    /// real restart would.
+    /// real restart would. A tool provider's suite pins it too, so the
+    /// provider's config can name rp before rp starts.
     pub port: Option<u16>,
 }
 
@@ -550,8 +552,7 @@ impl RpConfigBuilder {
         self
     }
 
-    /// Pin `server.port` (see the field). Used by the rp-outage BDD
-    /// scenarios to restart rp on the port the run was configured for.
+    /// Pin `server.port` (see the field).
     pub const fn with_port(&mut self, port: u16) -> &mut Self {
         self.port = Some(port);
         self
@@ -645,7 +646,7 @@ impl RpConfigBuilder {
             // Target-store settings (`config["target_store"]`) are injected
             // by rp's own BDD world when a scenario needs them; targets
             // themselves are seeded post-boot via the `add_target` MCP tool
-            // (the legacy `targets[]` config array was retired).
+            // — rp's config has no `targets` key, and its load refuses one.
             "planner": {
                 "min_altitude_degrees": 20,
                 "dawn_buffer_minutes": 30,
@@ -1515,10 +1516,10 @@ mod tests {
 
     #[test]
     fn build_omits_the_retired_targets_key() {
-        // The legacy `targets[]` planner array is gone; targets live in
-        // the redb store (seeded post-boot via the `add_target` MCP
-        // tool). The shared builder emits no `targets` key, and rp opens
-        // the store with defaults when `target_store` is absent — the
+        // rp's load refuses a `targets` key: targets live in the redb
+        // store (seeded post-boot via the `add_target` MCP tool). The
+        // shared builder emits no `targets` key, and rp opens the store
+        // with defaults when `target_store` is absent — the
         // store-settings override is injected by rp's own BDD world.
         let cfg = RpConfigBuilder::new().build();
         assert!(
@@ -1563,8 +1564,8 @@ mod tests {
 
     /// The default data directory lives in this process's scratch
     /// directory and differs from build to build. No `session_state_file`
-    /// is minted: rp keeps no session registry (mcp-sessionless D6), and
-    /// a config carrying the key would fail rp's load.
+    /// is minted: rp keeps no session registry, and a config carrying the
+    /// key fails rp's load.
     #[test]
     fn default_data_directory_is_distinct_and_inside_the_scratch_dir() {
         let first = RpConfigBuilder::new().build();

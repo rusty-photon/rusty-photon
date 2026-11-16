@@ -180,7 +180,7 @@ pub async fn mount_matches_site_and_target(world: &mut SessionRunnerWorld) {
         .expect("compute the planner targets before configuring the mount");
     // Capture the site before overwriting it — it is a profile setting
     // the per-scenario restart does not reset, so the after-hook puts
-    // it back for whatever suite reuses this OmniSim next.
+    // it back for the later scenarios on this process's OmniSim.
     world.original_telescope_site = Some(
         OmniSimHandle::get_telescope_site()
             .await

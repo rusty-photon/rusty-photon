@@ -625,92 +625,15 @@ mod tests {
 
     // ---- a poll against a move or a refresh -----------------------------
 
-    /// How long a test waits for a request to reach its held reply, or for
-    /// the cache to show a move, before declaring the code under test
-    /// stuck: a failure deadline, not a duration.
-    const HOLD_DEADLINE: Duration = Duration::from_secs(10);
+    use transport_doubles::HoldingFactory;
 
-    /// Wraps the canonical mock and, once armed with a command, holds the
-    /// reply to the next send of it: `recv_frame` says it has been reached
-    /// and waits to be let go. The device has the command by then, so the
-    /// held reply is already decided.
-    #[derive(Default, Clone)]
-    struct HoldingFactory {
-        inner: MockScopsTransportFactory,
-        hold: Arc<ReplyHold>,
-    }
+    /// How long a test waits for the cache to show a move before declaring
+    /// the code under test stuck: a failure deadline, not a duration.
+    const CACHE_DEADLINE: Duration = Duration::from_secs(10);
 
-    #[derive(Default)]
-    struct ReplyHold {
-        /// The command whose reply is held next, as it goes on the wire.
-        armed: std::sync::Mutex<Option<Vec<u8>>>,
-        holding: AtomicBool,
-        reached: tokio::sync::Notify,
-        released: tokio::sync::Notify,
-    }
-
-    impl HoldingFactory {
-        fn hold_next_reply_to(&self, command: &Command) {
-            *self.hold.armed.lock().unwrap() = Some(ScopsCodec.encode(command));
-        }
-
-        /// Wait until the armed command's reply is held, or fail at
-        /// [`HOLD_DEADLINE`].
-        async fn reply_held(&self) {
-            tokio::time::timeout(HOLD_DEADLINE, self.hold.reached.notified())
-                .await
-                .unwrap_or_else(|_| panic!("no request reached its reply in {HOLD_DEADLINE:?}"));
-        }
-
-        fn release_reply(&self) {
-            self.hold.released.notify_one();
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for HoldingFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(HoldingTransport {
-                inner,
-                hold: Arc::clone(&self.hold),
-            }))
-        }
-    }
-
-    struct HoldingTransport {
-        inner: Box<dyn FrameTransport>,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for HoldingTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            let armed_command = self
-                .hold
-                .armed
-                .lock()
-                .unwrap()
-                .take_if(|command| bytes.starts_with(command));
-            if armed_command.is_some() {
-                self.hold.holding.store(true, Ordering::SeqCst);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            if self.hold.holding.swap(false, Ordering::SeqCst) {
-                self.hold.reached.notify_one();
-                self.hold.released.notified().await;
-            }
-            self.inner.recv_frame(buf).await
-        }
-    }
-
-    fn make_manager_polling_fast(factory: &Arc<HoldingFactory>) -> Arc<FocuserManager> {
+    fn make_manager_polling_fast(
+        factory: &Arc<HoldingFactory<MockScopsTransportFactory>>,
+    ) -> Arc<FocuserManager> {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_millis(20);
         FocuserManager::new(&config, Arc::clone(factory) as Arc<dyn TransportFactory>)
@@ -718,7 +641,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_poll_read_before_a_move_does_not_clear_it() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockScopsTransportFactory::default()));
         let manager = make_manager_polling_fast(&factory);
         let session = manager.transport().acquire().await.unwrap();
         assert!(!manager.get_cached_state().await.is_moving, "idle at start");
@@ -726,14 +649,14 @@ mod tests {
         // A poll's report is on the wire: the focuser idle at 0. The next
         // poll's is held too, so that its report — read after the move —
         // never reaches the cache before the assertion.
-        factory.hold_next_reply_to(&Command::Status);
+        factory.hold_next_reply_to(ScopsCodec.encode(&Command::Status));
         factory.reply_held().await;
-        factory.hold_next_reply_to(&Command::Status);
+        factory.hold_next_reply_to(ScopsCodec.encode(&Command::Status));
 
         // The move commits to the cache and waits for the wire; once the
         // commit shows, the poll's idle report goes on to be stored.
         let (moved, ()) = tokio::join!(manager.move_absolute(&session, 50000), async {
-            tokio::time::timeout(HOLD_DEADLINE, async {
+            tokio::time::timeout(CACHE_DEADLINE, async {
                 while manager.get_cached_state().await.target_position != Some(50000) {
                     tokio::task::yield_now().await;
                 }
@@ -760,7 +683,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_move_whose_caller_hangs_up_mid_request_does_not_hold_is_moving_up() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockScopsTransportFactory::default()));
         let manager = make_manager_polling_fast(&factory);
         let session = manager.transport().acquire().await.unwrap();
 
@@ -768,7 +691,7 @@ mod tests {
         // — an HTTP client hanging up mid-request. The mock steps 1000 per
         // report, so the move to 1500 ends at the second report.
         let move_command = Command::MoveAbsolute { position: 1500 };
-        factory.hold_next_reply_to(&move_command);
+        factory.hold_next_reply_to(ScopsCodec.encode(&move_command));
         let mut moving = Box::pin(manager.move_absolute(&session, 1500));
         tokio::select! {
             result = &mut moving => panic!("the move ended with its echo held: {result:?}"),
@@ -782,7 +705,7 @@ mod tests {
         factory.release_reply();
 
         // Reports clear the move once the focuser says it is idle.
-        tokio::time::timeout(HOLD_DEADLINE, async {
+        tokio::time::timeout(CACHE_DEADLINE, async {
             while manager.get_cached_state().await.is_moving {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -822,14 +745,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_poll_read_before_a_refresh_does_not_replace_the_refreshed_arrival() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockScopsTransportFactory::default()));
         let manager = make_manager_polling_fast(&factory);
         let session = manager.transport().acquire().await.unwrap();
 
         // The mock steps 1000 per report: the poll's read lands at 1000,
         // still moving, and the next read arrives at 1500.
         manager.move_absolute(&session, 1500).await.unwrap();
-        factory.hold_next_reply_to(&Command::Status);
+        factory.hold_next_reply_to(ScopsCodec.encode(&Command::Status));
         factory.reply_held().await;
 
         // With the cache held, the poll reads its report and cannot store
@@ -847,7 +770,7 @@ mod tests {
         apply_status(&mut cache, &refreshed, timing.received_at);
 
         // The poll stores next, and its next report is the sign it has.
-        factory.hold_next_reply_to(&Command::Status);
+        factory.hold_next_reply_to(ScopsCodec.encode(&Command::Status));
         drop(cache);
         factory.reply_held().await;
 

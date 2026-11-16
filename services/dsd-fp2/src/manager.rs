@@ -480,114 +480,22 @@ mod mock_tests {
 
     // ---- a poll against a command ---------------------------------------
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::{Codec as _, FrameTransport, TransportError};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::PoisonError;
-
-    /// How long a test waits for a request to reach its held reply before
-    /// declaring the poll loop dead: a failure deadline, not a duration.
-    const HOLD_DEADLINE: Duration = Duration::from_secs(10);
-
-    /// Wraps the canonical mock and, once armed with a command, holds the
-    /// reply to the next send of it: `recv_frame` says it has been reached
-    /// and waits to be let go. The panel has the command by then, so the
-    /// held reply is already decided.
-    #[derive(Default, Clone)]
-    struct HoldingFactory {
-        inner: MockTransportFactory,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[derive(Default)]
-    struct ReplyHold {
-        /// The command whose reply is held next, as it goes on the wire.
-        armed: std::sync::Mutex<Option<Vec<u8>>>,
-        holding: AtomicBool,
-        reached: tokio::sync::Notify,
-        released: tokio::sync::Notify,
-    }
-
-    impl HoldingFactory {
-        fn hold_next_reply_to(&self, command: &Command) {
-            *self
-                .hold
-                .armed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(Fp2Codec.encode(command));
-        }
-
-        /// Wait until the armed command's reply is held, or fail at
-        /// [`HOLD_DEADLINE`].
-        async fn reply_held(&self) {
-            let reached = tokio::time::timeout(HOLD_DEADLINE, self.hold.reached.notified()).await;
-            assert!(
-                reached.is_ok(),
-                "no request reached its reply in {HOLD_DEADLINE:?}"
-            );
-        }
-
-        fn release_reply(&self) {
-            self.hold.released.notify_one();
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for HoldingFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(HoldingTransport {
-                inner,
-                hold: Arc::clone(&self.hold),
-            }))
-        }
-    }
-
-    struct HoldingTransport {
-        inner: Box<dyn FrameTransport>,
-        hold: Arc<ReplyHold>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for HoldingTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            let armed_command = self
-                .hold
-                .armed
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take_if(|command| bytes.starts_with(command));
-            if armed_command.is_some() {
-                self.hold.holding.store(true, Ordering::SeqCst);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            if self.hold.holding.swap(false, Ordering::SeqCst) {
-                self.hold.reached.notify_one();
-                self.hold.released.notified().await;
-            }
-            self.inner.recv_frame(buf).await
-        }
-    }
+    use rusty_photon_shared_transport::Codec as _;
+    use transport_doubles::HoldingFactory;
 
     #[tokio::test]
     async fn a_light_turned_on_after_the_poll_read_it_off_stays_on() {
-        let factory = Arc::new(HoldingFactory::default());
+        let factory = Arc::new(HoldingFactory::new(MockTransportFactory::default()));
         let mut config = test_config();
         config.serial.polling_interval = Duration::from_millis(20);
-        let dyn_factory: Arc<dyn TransportFactory> = Arc::<HoldingFactory>::clone(&factory);
+        let dyn_factory: Arc<dyn TransportFactory> = Arc::<HoldingFactory<_>>::clone(&factory);
         let manager = FlatPanelManager::new(&config, dyn_factory);
         let session = manager.transport().acquire().await.unwrap();
         let snap = manager.snapshot();
 
         // A poll's light read is on the wire: the panel has it, the light
         // still off.
-        factory.hold_next_reply_to(&Command::GetLight);
+        factory.hold_next_reply_to(Fp2Codec.encode(&Command::GetLight));
         factory.reply_held().await;
 
         // With the cache held, the poll reads the light off and cannot
@@ -603,7 +511,7 @@ mod mock_tests {
         cache.store_light_on(true, timing.received_at);
 
         // The poll stores next, and its next motor read is the sign it has.
-        factory.hold_next_reply_to(&Command::GetMotorState);
+        factory.hold_next_reply_to(Fp2Codec.encode(&Command::GetMotorState));
         drop(cache);
         factory.reply_held().await;
 

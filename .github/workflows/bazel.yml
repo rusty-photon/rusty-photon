@@ -95,10 +95,9 @@ jobs:
     # changed and only rebuilds those; everything else is a cache hit.
     #
     # 40-min timeout: the OmniSim-backed BDD suites run in parallel and
-    # rp:bdd is sharded on every OS (private OmniSim per test process since
-    # #467 — --multi-instance + OMNISIM_SETTINGS_DIR), so the BDD step is
-    # bounded by the slowest shard; 40 leaves generous headroom for a
-    # cold-cache first run.
+    # rp:bdd is sharded on every OS (each test process spawns a private
+    # OmniSim), so the BDD step is bounded by the slowest shard; 40 leaves
+    # generous headroom for a cold-cache first run.
     timeout-minutes: 40
     defaults:
       run:

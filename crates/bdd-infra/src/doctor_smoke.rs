@@ -1,6 +1,6 @@
 //! Shared doctor-subcommand smoke: the fixture and steps behind every
 //! service suite's two `doctor` scenarios (docs/services/doctor.md
-//! §Per-service doctors).
+//! § The per-service subcommand).
 //!
 //! A valid config yields a clean report; an unknown key yields a failing
 //! report that names it. The runner's deep behavior (rendering, absent
@@ -49,7 +49,7 @@ pub trait DoctorSmokeWorld {
 pub fn stage_config(state: &mut DoctorSmokeState, config: &serde_json::Value) {
     let dir = state
         .config_dir
-        .get_or_insert_with(|| TempDir::new().unwrap());
+        .get_or_insert_with(|| crate::scratch::new_dir("doctor-smoke-").unwrap());
     let path = dir.path().join("doctor-smoke-config.json");
     std::fs::write(&path, config.to_string()).unwrap();
     state.config_path = Some(path);

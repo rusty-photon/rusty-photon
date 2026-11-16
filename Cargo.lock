@@ -1325,6 +1325,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "transport-doubles",
 ]
 
 [[package]]
@@ -1810,6 +1811,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "transport-doubles",
 ]
 
 [[package]]
@@ -3319,6 +3321,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "transport-doubles",
 ]
 
 [[package]]
@@ -3805,6 +3808,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "transport-doubles",
 ]
 
 [[package]]
@@ -4001,6 +4005,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "transport-doubles",
 ]
 
 [[package]]
@@ -6330,6 +6335,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "transport-doubles"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "rusty-photon-shared-transport",
+ "tokio",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6588,6 +6602,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "transport-doubles",
 ]
 
 [[package]]

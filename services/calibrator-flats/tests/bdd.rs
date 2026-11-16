@@ -49,23 +49,10 @@ bdd_infra::bdd_main! {
         .fail_on_skipped()
         .before(|_feature, _rule, _scenario, _world| {
             Box::pin(async move {
-                // Reset every OmniSim device class our scenarios touch
-                // (telescope, camera, filter wheel, focuser, cover
-                // calibrator) to defaults before each scenario. OmniSim
-                // is a per-process singleton; without this, state from
-                // scenario N (cover position, calibrator brightness,
-                // filter slot, camera config) leaks into scenario N+1.
-                // Each reset is a localhost PUT, run sequentially
-                // (parallel resets raced OmniSim's unsynchronised
-                // `AlpacaDevices` list — see `reset_all_devices` for
-                // the writeup). We panic on any reset failure that
-                // happens *after* the suite has started its OmniSim
-                // — that's the loud-reset diagnostic from #172.
-                // Failures from the very first scenario's hook
-                // (before any Given step has called
-                // `OmniSimHandle::start()`) are non-fatal:
-                // connection-refused against the default port is the
-                // expected case there.
+                // The scenarios of this process share one OmniSim, so each
+                // starts with every device class restarted to its defaults.
+                // Until a step has started that OmniSim, the call sends
+                // nothing and returns Ok. See docs/skills/testing.md § 5.5.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {

@@ -68,8 +68,8 @@ pub fn advertise_bazel_sharding_support() {
 /// Whether the given scenario belongs to this process's shard.
 ///
 /// Outside Bazel sharding (no/invalid `TEST_SHARD_INDEX` /
-/// `TEST_TOTAL_SHARDS`, or a total of 1) every scenario belongs — the suite
-/// behaves exactly as before. Pass the feature's `path`, its `name` (used
+/// `TEST_TOTAL_SHARDS`, or a total of 1) every scenario belongs, as in an
+/// unsharded run. Pass the feature's `path`, its `name` (used
 /// only when the parser supplied no path), and the scenario's `position.line`.
 ///
 /// Takes primitives instead of `gherkin` types so the base `bdd-infra`

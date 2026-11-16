@@ -6,16 +6,16 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared BDD test infrastructure: process lifecycle (ServiceHandle) plus the optional rp-harness feature (OmniSim, rp config builder, webhook receiver, test orchestrator, MCP client) for plugin/workflow BDD tests"
+description = "Shared BDD test infrastructure: process lifecycle (ServiceHandle) plus the optional rp-harness feature (OmniSim, rp config builder, webhook receiver, MCP client) for plugin/workflow BDD tests"
 
 [lints]
 workspace = true
 
 [features]
 default = []
-# Enables the rp-ecosystem test harness: OmniSim, webhook receiver, test
-# orchestrator, MCP client, rp config builder, and rp launcher. Opt-in so that
-# services whose tests only need `ServiceHandle` don't compile axum/reqwest/rmcp.
+# Enables the rp-ecosystem test harness: OmniSim, webhook receiver, MCP
+# client, rp config builder, and rp launcher. Opt-in so that services whose
+# tests only need `ServiceHandle` don't compile axum/reqwest/rmcp.
 rp-harness = [
     "dep:axum",
     "dep:chrono",
@@ -28,9 +28,10 @@ rp-harness = [
 ]
 # Enables the `conformu` module: a direct ConformU-CLI runner used by services'
 # conformu_integration tests, which runs each mode under a deadline through
-# rusty-photon-process. Replaces ascom_alpaca::test::ConformUTestBuilder so the
-# conformu tests no longer pull `ascom-alpaca/test` — whose transitive `dtor`
-# dep crate_universe can't resolve, which kept them out of the Bazel build.
+# rusty-photon-process. It stands in for ascom_alpaca::test::ConformUTestBuilder,
+# whose `ascom-alpaca/test` feature pulls a transitive `dtor` dep
+# crate_universe can't resolve, which would keep the conformu tests out of
+# the Bazel build.
 conformu = ["dep:rusty-photon-process"]
 # Enables the `tls_auth` module: the shared PKI + credentials fixture and the
 # `tls_auth_smoke_steps!` macro every service's BDD suite uses to prove the
@@ -64,7 +65,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# Optional — only pulled in when the rp-harness feature is enabled.
 axum = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 humantime = { workspace = true, optional = true }
@@ -77,10 +77,8 @@ rp-auth = { workspace = true, optional = true }
 rp-ephemeris = { workspace = true, optional = true }
 rp-fits = { workspace = true, optional = true }
 rp-mcp-client = { workspace = true, optional = true }
-# Only pulled in when the conformu feature is enabled.
 rusty-photon-process = { workspace = true, optional = true }
 rusty-photon-tls = { workspace = true, optional = true }
-# Only pulled in when the setup-pages feature is enabled.
 scraper = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 

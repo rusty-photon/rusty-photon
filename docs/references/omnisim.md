@@ -283,9 +283,10 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
 
 ### Filter wheel
 
-- **Default position is 0.** Restart resets to slot 0. Slew between
-  adjacent slots is ~500 ms; full traversal (slot 0 → 4) is ~2 s.
-  Cheap enough that resetting between scenarios is free.
+- **Default position is 0.** Restart resets to slot 0. The wheel has
+  six slots and turns one slot a second, the shorter way round: slot
+  0 → 4 passes slot 5 and takes ~2 s, and the farthest move (three
+  slots) ~3 s. Cheap enough that resetting between scenarios is free.
 
 ### Cover calibrator
 
