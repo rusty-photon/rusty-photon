@@ -49,15 +49,10 @@ bdd_infra::bdd_main! {
         .fail_on_skipped()
         .before(|_feature, _rule, _scenario, _world| {
             Box::pin(async move {
-                // Reset every OmniSim device class our scenarios touch to
-                // defaults before each scenario — OmniSim is a per-process
-                // singleton, so scenario N's state (cover position,
-                // calibrator brightness, filter slot, camera config) would
-                // otherwise leak into scenario N+1. Failures from the very
-                // first scenario's hook (before any Given step has called
-                // `OmniSimHandle::start()`) are non-fatal: connection-
-                // refused against the default port is the expected case
-                // there.
+                // The scenarios of this process share one OmniSim, so each
+                // starts with every device class restarted to its defaults.
+                // Until a step has started that OmniSim, the call sends
+                // nothing and returns Ok. See docs/skills/testing.md § 5.5.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {
@@ -80,12 +75,9 @@ bdd_infra::bdd_main! {
                     // Put back OmniSim's telescope site when a deep-sky
                     // scenario overwrote it with a computed one. The
                     // site is a profile setting the per-scenario
-                    // restart does NOT reset, and on platforms without
-                    // PR_SET_PDEATHSIG (macOS, Windows) the OmniSim
-                    // process outlives this test binary — a leaked
-                    // site fails rp's own planner scenarios, which pin
-                    // their config to OmniSim's default site, on the
-                    // reused instance.
+                    // restart does NOT reset, so it would otherwise
+                    // stay on this process's OmniSim for every scenario
+                    // after this one (`OmniSimHandle::set_telescope_site`).
                     if let Some((lat, lon)) = world.original_telescope_site {
                         bdd_infra::rp_harness::OmniSimHandle::set_telescope_site(lat, lon)
                             .await
@@ -99,9 +91,10 @@ bdd_infra::bdd_main! {
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
-            // Bazel sharding (BUILD `shard_count`): each shard process runs
-            // only its deterministic slice of the scenarios, against its own
-            // private OmniSim. Outside Bazel sharding this always passes.
+            // Sharding (docs/skills/testing.md § 5.5): with `TEST_SHARD_INDEX`
+            // and `TEST_TOTAL_SHARDS` set, as Bazel's `shard_count` sets them,
+            // this process runs only its slice of the scenarios, against its own
+            // private OmniSim; without them it runs every scenario.
             let in_shard = bdd_infra::sharding::scenario_in_current_shard(
                 feat.path.as_deref(),
                 &feat.name,

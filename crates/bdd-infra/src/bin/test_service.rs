@@ -107,16 +107,17 @@ const GRACEFUL_MARKER: &str = "GRACEFUL";
 
 /// Regression probe for the service shutdown path.
 ///
-/// Shuts down through the **real** [`ServiceRunner`], so what it proves is
-/// that the workspace's own signal watcher handles the platform's graceful
-/// stop event — a hand-rolled `tokio::signal` await here would pass whatever
-/// the watcher does, which is exactly the vacuum that let an unhandled
-/// Windows `CTRL_BREAK` go unnoticed. On an unhandled event the OS default
-/// handler terminates the process, no cancellation is ever observed, and the
-/// marker stays empty.
+/// Shuts down through the **real**
+/// [`ServiceRunner`](rusty_photon_service_lifecycle::ServiceRunner), so what
+/// it proves is that the workspace's own signal watcher handles the
+/// platform's graceful stop event — a hand-rolled `tokio::signal` await here
+/// would pass whatever the watcher does, an unhandled Windows `CTRL_BREAK`
+/// included. On an unhandled event the OS default handler terminates the
+/// process, no cancellation is ever observed, and the marker stays empty.
 ///
 /// Deliberately not platform-gated: the graceful-stop contract is
-/// cross-platform, and gating this to Unix would re-hide the Windows gap.
+/// cross-platform, and gating this to Unix would leave the Windows stop
+/// event unguarded.
 ///
 /// The bind and the `bound_addr=` handshake both happen *inside* the run
 /// closure, as they do in every real service. The handshake is what releases
@@ -153,8 +154,7 @@ enum ProbeStream {
 }
 
 impl ProbeStream {
-    /// Write `data` then flush, locking the stream fresh each call (matching
-    /// the original stdout-only probe's per-write locking).
+    /// Write `data` then flush, locking the stream fresh each call.
     fn write_all(self, data: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
         match self {
@@ -214,11 +214,11 @@ fn run_probe_mode(marker: String, stream: ProbeStream) {
 /// a short "shutdown" burst, just like a real service logging while it tears
 /// down. A correct `ServiceHandle` keeps draining/forwarding our stream until
 /// we have exited, so every write (including the shutdown burst) succeeds and
-/// `marker` is left untouched. The old buggy ordering aborted the drain
-/// (closing the read end of the pipe) *before* the child exited; the
-/// shutdown-burst writes then fail with `BrokenPipe` — exactly the condition
-/// that made services' `tracing_subscriber` echo "Unable to write an event
-/// ... Broken pipe" to stderr. We record that broken pipe to `marker` so the
+/// `marker` is left untouched. A `ServiceHandle` that aborts the drain
+/// (closing the read end of the pipe) *before* the child exits makes the
+/// shutdown-burst writes fail with `BrokenPipe` — the condition under which
+/// services' `tracing_subscriber` echoes "Unable to write an event ...
+/// Broken pipe" to stderr. We record that broken pipe to `marker` so the
 /// test can assert it never happens. We use `write_all` (not `println!`,
 /// which *panics* on a broken pipe) so we can observe the error instead of
 /// dying on it.
@@ -237,7 +237,7 @@ fn run_epipe_probe(marker: &str, stream: ProbeStream, shutdown: &std::sync::atom
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
-    // Shutdown burst: this is the window where the bug bites.
+    // Shutdown burst: the window in which an aborted drain breaks the pipe.
     for _ in 0..50 {
         if let Err(e) = stream.write_all(b"shutting down\n") {
             if e.kind() == std::io::ErrorKind::BrokenPipe {

@@ -8,33 +8,33 @@
 // OMNISIM_SETTINGS_DIR, with --multi-instance also skipping the Windows
 // tray icon.
 //
-// 467.x (rusty-photon #467) enables one private OmniSim per test process
-// — the enabler for parallel OmniSim BDD suites and rp:bdd sharding.
+// The 467.x series gives every test process a private OmniSim, which is
+// what lets the OmniSim BDD suites run in parallel and rp:bdd shard.
 // 467.1 adds `--multi-instance` (skips upstream's machine-global
 // single-instance guard: named Mutex + named-pipe command server);
 // 467.2 adds the OMNISIM_SETTINGS_DIR env var (re-roots the profile
 // store — the default location is not redirectable on Windows or macOS,
 // where concurrent instances otherwise share one store and leak
-// persisted settings across suites; that took down 4 of 8 rp:bdd shards
-// on macOS CI); 467.3 makes --multi-instance skip the Windows tray icon
-// too, whose identity (a hash of the binary's path) is as machine-global
-// as the mutex: instances starting together fight over it, and the loser
-// dies of an unhandled .NET exception (exit code 0xe0434352) before it
-// serves anything. bdd-infra ALWAYS passes both, so this pin is a hard
-// floor: an older binary exits at startup whenever another instance is
-// running, silently shares the profile store, or crashes on the icon.
+// persisted settings across suites); 467.3 makes --multi-instance skip
+// the Windows tray icon too, whose identity (a hash of the binary's
+// path) is as machine-global as the mutex: instances starting together
+// fight over it, and the loser dies of an unhandled .NET exception (exit
+// code 0xe0434352) before it serves anything. bdd-infra ALWAYS passes
+// both, so this pin is a hard floor: an older binary exits at startup
+// whenever another instance is running, silently shares the profile
+// store, or crashes on the icon.
 //
-// The carried 326.x series fixes TelescopeHardware slew bugs behind the
-// center_on_target hang/flake (rusty-photon/rusty-photon #326, #319):
-// 326.1 locked the slew-engine writers + IsSlewing/RA/Dec readers;
-// 326.2 adds the AtPark/SlewState readers (closes the park-poll hang);
+// The carried 326.x series fixes races in TelescopeHardware's slew
+// engine; on upstream's build they hang rp's park poll and wedge
+// center_on_target on IsSlewing. 326.1 locks the slew-engine writers and
+// the IsSlewing/RA/Dec readers; 326.2 the AtPark/SlewState readers;
 // 326.3 disposes the prior slew timer on Init() and resets the slew
-// state under hardwareLock; 326.4 closes the center_on_target IsSlewing
-// wedge proper (issue #319). ConformU-clean vs upstream.
+// state under hardwareLock; 326.4 closes the IsSlewing wedge.
+// ConformU-clean against upstream.
 //
-// Reverting to upstream (REPO = ASCOMInitiative/ASCOM.Alpaca.Simulators,
-// VERSION = v0.5.0) is no longer SHA-refresh-only: upstream has no
-// --multi-instance, so the bdd-infra spawn path would have to be reverted
+// Moving to upstream (REPO = ASCOMInitiative/ASCOM.Alpaca.Simulators,
+// VERSION = v0.5.0) is more than a SHA refresh: upstream has no
+// --multi-instance, so the bdd-infra spawn path would have to change
 // too. Moving REPO or VERSION requires refreshing the SHAs — the download
 // fails closed on any mismatch.
 

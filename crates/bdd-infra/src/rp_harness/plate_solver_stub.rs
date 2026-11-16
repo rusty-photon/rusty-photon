@@ -88,10 +88,9 @@ pub enum StubBehavior {
     /// camera-side WCS, so the `fits_path` rp hands to the stub has
     /// no `CRVAL1/2` to echo. The closed-loop scenarios use
     /// [`Sequence`] instead, feeding pre-computed solve outcomes
-    /// in the order the loop will request them. This variant
-    /// remains useful for unit tests / future flows that hand the
-    /// stub a WCS-bearing FITS directly (e.g. paired with
-    /// [`crate::sky_survey_camera_harness::SkyViewStub`]).
+    /// in the order the loop will request them. This variant is for
+    /// a test that hands the stub a WCS-bearing FITS directly (e.g.
+    /// one minted by [`crate::sky_survey_camera_harness::SkyViewStub`]).
     ///
     /// [`Sequence`]: StubBehavior::Sequence
     EchoFitsCenter { template: CannedWcs },
@@ -431,10 +430,8 @@ mod tests {
     }
 
     /// Build a 1×1 BITPIX=16 FITS with the requested CRVAL header
-    /// records. `with_crval = false` produces a header that's missing
-    /// CRVAL1/CRVAL2, used to drive the absent-keyword error path.
-    /// Local to the test module so the stub's no-production-crate-dep
-    /// invariant stays intact.
+    /// records. `None` produces a header that's missing CRVAL1/CRVAL2,
+    /// used to drive the absent-keyword error path.
     fn minimal_fits(with_crval: Option<(f64, f64)>) -> Vec<u8> {
         const BLOCK: usize = 2880;
         fn pad(s: &str) -> String {
@@ -534,11 +531,11 @@ mod tests {
                 .await
         });
         // Wait until the handler has entered the Hang branch (it records
-        // the request before parking). A blind sleep raced request
-        // delivery on slow CI runners: if `stop()` fired before hyper had
-        // read the request head, graceful shutdown closed the connection
-        // unreplied and the client saw `IncompleteMessage` instead of the
-        // released 500 (issue #434). Once the handler is entered the
+        // the request before parking), not for a fixed sleep: a `stop()`
+        // that lands before hyper has read the request head makes graceful
+        // shutdown close the connection unreplied, and the client sees
+        // `IncompleteMessage` instead of the released 500 — a race a
+        // sleep loses on a slow CI runner. Once the handler is entered the
         // request is in flight, and graceful shutdown drains its response.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while stub.requests().await.is_empty() {

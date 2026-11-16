@@ -20,7 +20,7 @@ static CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);
 ///
 /// The `prefix` disambiguates configs across services (e.g. `"rp-test-config"`
 /// vs `"calibrator-flats-config"`); the monotonic sequence keeps concurrent
-/// calls apart even under coarse system clocks.
+/// calls apart.
 ///
 /// # Panics
 ///
