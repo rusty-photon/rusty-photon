@@ -15,9 +15,8 @@ records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
 [`docs/plans/native-guider.md`](../plans/native-guider.md) holds the
 evidence and orders the work in stages G0 to G7. `rp`'s side of the
-contract below is designed in
-[rp.md § Guider Service](rp.md#guider-service). Until stage G6 builds
-it, `rp` speaks the contract of [`phd2-guider`](phd2-guider.md).
+contract below is built, and tested against a double of this API
+([rp.md § Guider Service](rp.md#guider-service)).
 
 Four properties shape the design:
 
