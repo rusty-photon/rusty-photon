@@ -70,7 +70,7 @@ Feature: Safety enforcement
   Scenario: An unsafe transition stops guiding and parks the mount
     Given a running Alpaca simulator
     And a safety monitor on the simulator
-    And a stub guider returning canned guiding stats
+    And a stub guider in state "guiding"
     And a test webhook receiver subscribed to "guide_stopped"
     And rp is running with a camera and a mount on the simulator
     And an MCP client connected to rp

@@ -16,8 +16,7 @@ static SCHEMA: &str = include_str!("../../schema/workflow-v1.schema.json");
 /// Resolve this package's directory at runtime for both Cargo and Bazel.
 /// Cargo: `CARGO_MANIFEST_DIR` is the package source dir. Bazel: `rules_rust`
 /// bakes a compile-time `CARGO_MANIFEST_DIR` that no longer exists at test
-/// runtime, so fall back to the runfiles tree via `TEST_SRCDIR`/`TEST_WORKSPACE`
-/// (same approach as services/phd2-guider/tests/test_integration.rs).
+/// runtime, so fall back to the runfiles tree via `TEST_SRCDIR`/`TEST_WORKSPACE`.
 fn workflows_dir() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     if manifest.join("workflows").is_dir() {

@@ -216,7 +216,7 @@ Feature: Deep-sky workflow document
     Given a running Alpaca simulator
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
-    And a stub guider accepting guide commands
+    And a stub guider in state "idle"
     And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
       | exposure_duration      | 500ms |
       | max_frames     | 3     |
@@ -244,10 +244,11 @@ Feature: Deep-sky workflow document
     Given a running Alpaca simulator
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
-    # Lifecycle mode: the stub serves no guide frames until the
+    # The stub guider is idle and serves no guide frames until the
     # document starts guiding, so rp's watch degrades (2.0 -> 3.0)
     # only during the run — the engine's intake sees the events.
-    And a lifecycle stub guider with the HFD script "2.0,3.0"
+    And a stub guider in state "idle"
+    And the stub guider serves the HFD script "2.0,3.0"
     And the stub guider has a focus watch of window 3, poll interval "250ms", and escalation deadline "3s"
     And a guiding train "guide" on the simulator's focuser with a metric auto_focus block
     And rp is running with a camera, a mount, and session-runner running the "deep_sky" workflow with parameters:
@@ -282,7 +283,8 @@ Feature: Deep-sky workflow document
     Given a running Alpaca simulator
     And an observing site where it is astronomical night with one planner target
     And the simulated mount matches the site and points at the first target
-    And a lifecycle stub guider with the HFD script "2.0,3.0"
+    And a stub guider in state "idle"
+    And the stub guider serves the HFD script "2.0,3.0"
     And the stub guider has a focus watch of window 3, poll interval "250ms", and escalation deadline "3s"
     And a guiding train "guide" sharing the imaging train's focuser
     And rp is running with a camera, a mount, a focuser, and session-runner running the "deep_sky" workflow with parameters:

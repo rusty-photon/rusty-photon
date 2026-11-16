@@ -9,16 +9,9 @@ Feature: Rotator MCP tools
   resolves through the optical-train model and requires the train to
   contain exactly one rotator. The angle is validated before any
   motion. move_rotator reports moved_trains, every train containing
-  the rotator. When the moved trains include the guiding train and
-  the guider reports an active guide loop, the move runs the
-  rotate-while-guiding ladder: pause corrections (output-only), move,
-  decide the calibration (kept when PHD2 has a connected rotator or
-  the sky-angle change is within recalibrate_above_deg, cleared
-  otherwise), re-select the guide star, resume. The result's
-  guiding_ladder field records the outcome and is null whenever the
-  ladder did not engage — including rotators outside the guiding
-  train and moves while guiding is idle, which run bare. The move
-  emits a move_rotator_started / move_rotator_complete /
+  the rotator. A move that turns the guiding train runs the
+  rotate-while-guiding ladder around it (rotate_while_guiding.feature).
+  The move emits a move_rotator_started / move_rotator_complete /
   move_rotator_failed operation triple carrying no predictive
   deadline.
 
@@ -137,59 +130,3 @@ Feature: Rotator MCP tools
     When the MCP client calls "move_rotator" with train "main" to angle 5.0
     Then the tool call should return an error
     And the error message should contain "pass rotator_id"
-
-  Scenario: Moving a guiding-train rotator while guiding runs the rotate-while-guiding ladder
-    Given a running Alpaca simulator
-    And a stub guider returning canned guiding stats
-    And rp is running with a rotator on the simulator inside guiding train "guide"
-    And an MCP client connected to rp
-    When the MCP client calls "move_rotator" with rotator "main-rotator" to angle 10.0
-    Then the rotator result field "angle" should be 10.0 within 0.1
-    And the stub guider should have received a pause request with full false
-    And the stub guider should have received a "/star/reselect" request
-    And the stub guider should have received a "/guiding/resume" request
-    And the stub guider should have received a "/calibration/clear" request
-    And the rotator result ladder field "calibration_cleared" should be true
-    And the rotator result ladder field "phd2_has_rotator" should be false
-
-  Scenario: A rotation inside the recalibration threshold keeps PHD2's calibration
-    Given a running Alpaca simulator
-    And a stub guider returning canned guiding stats
-    And rp is running with a rotator on the simulator inside guiding train "guide"
-    And an MCP client connected to rp
-    When the MCP client calls "move_rotator" with rotator "main-rotator" to angle 2.0
-    Then the rotator result field "angle" should be 2.0 within 0.1
-    And the stub guider should have received a "/star/reselect" request
-    And the stub guider should not have received a "/calibration/clear" request
-    And the rotator result ladder field "calibration_cleared" should be false
-
-  Scenario: A rotator PHD2 knows about needs no calibration clearing
-    Given a running Alpaca simulator
-    And a stub guider with a connected PHD2 rotator
-    And rp is running with a rotator on the simulator inside guiding train "guide"
-    And an MCP client connected to rp
-    When the MCP client calls "move_rotator" with rotator "main-rotator" to angle 90.0
-    Then the rotator result ladder field "phd2_has_rotator" should be true
-    And the rotator result ladder field "calibration_cleared" should be false
-    And the stub guider should not have received a "/calibration/clear" request
-    And the stub guider should have received a "/guiding/resume" request
-
-  Scenario: Moving a rotator outside the guiding train never touches the guider
-    Given a running Alpaca simulator
-    And a stub guider returning canned guiding stats
-    And rp is running with a rotator on the simulator inside train "main"
-    And an MCP client connected to rp
-    When the MCP client calls "move_rotator" with rotator "main-rotator" to angle 45.0
-    Then the rotator result field "angle" should be 45.0 within 0.1
-    And the stub guider should not have received a pause request
-    And the rotator result should have no guiding ladder
-
-  Scenario: Moving a guiding-train rotator while guiding is idle runs bare
-    Given a running Alpaca simulator
-    And a stub guider reporting guiding inactive
-    And rp is running with a rotator on the simulator inside guiding train "guide"
-    And an MCP client connected to rp
-    When the MCP client calls "move_rotator" with rotator "main-rotator" to angle 45.0
-    Then the rotator result field "angle" should be 45.0 within 0.1
-    And the stub guider should not have received a pause request
-    And the rotator result should have no guiding ladder

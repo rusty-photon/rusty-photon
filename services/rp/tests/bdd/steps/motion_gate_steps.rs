@@ -10,33 +10,28 @@
 //! background {tool} call should succeed" so a stray capture cannot
 //! hold the shared simulator into the next scenario. Event waits and
 //! `event_seq`-based ordering assertions live in `event_steps.rs`;
-//! the stub guider's `settle_delay` (`guider_stub.rs`) is what holds a
-//! dither in flight long enough for a concurrent capture to contend.
+//! the stub guider's settle delay is what holds a dither in flight long
+//! enough for a concurrent capture to contend.
 
 use std::time::Duration;
 
 use cucumber::{given, then, when};
 use serde_json::{json, Value};
 
-use bdd_infra::rp_harness::{
-    CannedGuiding, GuiderConfig, GuiderStub, GuiderStubBehavior, McpTestClient, MountConfig,
-    OpticalTrainConfig,
-};
+use bdd_infra::rp_harness::{McpTestClient, MountConfig};
 
+use crate::steps::guider_steps::{guider_stub, start_stub_guider};
 use crate::steps::rotator_steps::push_train;
 use crate::steps::tool_steps::{add_camera, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
 
 // --- Given steps: equipment compositions ----------------------------
 
+/// A stub guider that guides, so it accepts a dither, and answers one
+/// after `settle_delay`.
 pub async fn add_stub_guider(world: &mut RpWorld, settle_delay: Duration) {
-    let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
-        settle_delay,
-        ..CannedGuiding::default()
-    }))
-    .await;
-    world.guider = Some(GuiderConfig::url_only(stub.url.clone()));
-    world.guider_stub = Some(stub);
+    start_stub_guider(world, "guiding").await;
+    guider_stub(world).set_settle_delay(settle_delay);
 }
 
 #[given(
@@ -68,31 +63,6 @@ async fn rp_without_trains_and_slow_guider(world: &mut RpWorld, delay_ms: u64) {
     ensure_omnisim(world).await;
     add_camera(world);
     add_stub_guider(world, Duration::from_millis(delay_ms)).await;
-    start_rp(world).await;
-}
-
-#[given(
-    expr = "rp is running with a camera on the simulator in guiding train {string} and a stub guider settling after {int} ms"
-)]
-async fn rp_with_guiding_train_and_slow_guider(
-    world: &mut RpWorld,
-    train_id: String,
-    delay_ms: u64,
-) {
-    ensure_omnisim(world).await;
-    add_camera(world);
-    add_stub_guider(world, Duration::from_millis(delay_ms)).await;
-    world.optical_trains.push(OpticalTrainConfig {
-        telescope: None,
-        aperture_mm: None,
-        obstruction_mm: None,
-        id: train_id,
-        purpose: Some("guiding".to_string()),
-        focal_length_mm: None,
-        default_position_angle_degrees: None,
-        devices: vec!["main-cam".to_string()],
-        auto_focus: None,
-    });
     start_rp(world).await;
 }
 

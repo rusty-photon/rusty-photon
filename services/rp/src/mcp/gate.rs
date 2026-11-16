@@ -162,7 +162,6 @@ pub const UNGATED: &[&str] = &[
     "get_switch",
     "set_switch",
     "restart_service",
-    "restart_guider",
 ];
 
 /// The built-in class of a catalog tool.

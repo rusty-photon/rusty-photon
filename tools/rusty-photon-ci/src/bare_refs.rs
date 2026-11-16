@@ -76,8 +76,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     ("MODULE.bazel", "#796", 1),
     ("crates/rp-guider/BUILD.bazel", "#609", 1),
     ("crates/rp-guider/BUILD.bazel", "#620", 1),
-    ("crates/rp-guider/src/lib.rs", "#609", 2),
-    ("crates/rp-guider/src/lib.rs", "#620", 1),
     ("crates/rp-plate-solver/BUILD.bazel", "#609", 1),
     ("crates/rp-plate-solver/BUILD.bazel", "#620", 1),
     ("crates/rp-plate-solver/src/lib.rs", "#609", 2),

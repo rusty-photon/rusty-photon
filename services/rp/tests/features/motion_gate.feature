@@ -11,11 +11,10 @@ Feature: Mount motion gate
   own *_started envelope only after the gate is acquired, so
   predictive deadlines never include gate wait. Captures through a
   camera outside every train bypass the gate (trains are enrichment,
-  not a gate). A guiding train's camera is not exempt: a client's
-  capture through the PHD2 camera facade is a focus sample that a
-  dither mid-exposure would trail. The gate is process-wide: concurrent MCP sessions — an
+  not a gate). The gate is process-wide: concurrent MCP sessions — an
   orchestrator plus an operator UI — contend on the same gate, which
-  is what these scenarios drive with a second client.
+  is what these scenarios drive with a second client. The stub guider
+  in these scenarios guides, so it accepts a dither.
 
   Scenario: A dither waits for the in-flight imaging-train exposure
     Given a test webhook receiver subscribed to the events "exposure_started, exposure_complete, dither_started, dither_settled, mount_motion_pending"
@@ -75,13 +74,3 @@ Feature: Mount motion gate
     And the tool result should contain an image path
     And the background "dither" call should succeed
     And the test webhook receiver should not have received a "mount_motion_pending" event
-
-  Scenario: A capture through a guiding-train camera waits for the in-flight dither
-    Given a test webhook receiver subscribed to the events "exposure_started, dither_started, dither_settled, mount_motion_pending"
-    And rp is running with a camera on the simulator in guiding train "guide" and a stub guider settling after 2500 ms
-    When a second MCP client starts a dither of 3.0 pixels in the background
-    And the test webhook receiver has received a "dither_started" event
-    And the MCP client calls "capture" with camera "main-cam" for 200 ms
-    Then the "dither_settled" event should have been emitted before the "exposure_started" event
-    And the tool result should contain an image path
-    And the background "dither" call should succeed

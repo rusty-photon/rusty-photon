@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: The deep-sky document answers a lost guide star and a run the guider stopped
   rp's guide run watch reports a guided run that has lost its stars,
   guide_star_lost, and one that ended without rp asking, guide_stopped

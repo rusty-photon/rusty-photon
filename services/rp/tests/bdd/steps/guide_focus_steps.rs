@@ -1,92 +1,44 @@
-//! BDD step definitions for the T4 guiding integration:
-//! `guide_focus.feature` (the guide-train PHD2-metric sweep, the
-//! guide focus watch, the `start_guiding` rotator warning) plus the
-//! rotate-while-guiding ladder scenarios in `rotator.feature`.
+//! BDD step definitions for guide-train focus: `guide_focus.feature`
+//! (the guide-train sweep's refusals, the guide focus watch), and the
+//! stub guider and rotate-while-guiding ladder assertions other
+//! guiding scenarios share.
 //!
 //! Shared steps: tool listing / error assertions in `tool_steps.rs`,
-//! guider stub lifecycle in `guider_steps.rs`, webhook receiver in
+//! the stub guider's Given in `guider_steps.rs`, webhook receiver in
 //! `event_steps.rs`, offline-roster helpers in `rotator_steps.rs`.
-//! The stub guider's `metrics_hfd_script` (`guider_stub.rs`) drives
-//! the deterministic outcomes here: a one-value script is perfectly
-//! flat HFD (the sweep's fit then reports no minimum), a two-value
-//! script is the degradation the focus watch turns into events.
+//! The stub guider's HFD script drives the deterministic outcomes
+//! here: a one-value script is perfectly flat HFD (the sweep's fit then
+//! reports no minimum), a two-value script is the degradation the
+//! focus watch turns into events.
 
 use cucumber::{given, then, when};
 use serde_json::{Map, Value};
 
-use bdd_infra::rp_harness::{CannedGuiding, GuiderConfig, GuiderStub, GuiderStubBehavior};
-
 use crate::steps::focuser_steps::add_focuser;
-use crate::steps::rotator_steps::add_offline_camera;
+use crate::steps::guider_steps::guider_stub as stub;
+use crate::steps::rotator_steps::{add_offline_camera, last_rotator_result};
 use crate::steps::tool_steps::{ensure_mcp_client, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
 
-// --- Given steps: stub guider variants -------------------------------
+// --- Given steps: the stub guider's metrics --------------------------
 
-async fn start_stub(world: &mut RpWorld, canned: CannedGuiding) {
-    let stub = GuiderStub::start(GuiderStubBehavior::Canned(canned)).await;
-    world.guider = Some(GuiderConfig::url_only(stub.url.clone()));
-    world.guider_stub = Some(stub);
-}
-
-#[given("a stub guider with a connected PHD2 rotator")]
-async fn stub_with_phd2_rotator(world: &mut RpWorld) {
-    start_stub(
-        world,
-        CannedGuiding {
-            phd2_rotator_connected: true,
-            ..CannedGuiding::default()
-        },
-    )
-    .await;
-}
-
-#[given(expr = "a stub guider with the HFD script {string}")]
-async fn stub_with_hfd_script(world: &mut RpWorld, script: String) {
-    let values: Vec<f64> = script
+#[given(expr = "the stub guider serves the HFD script {string}")]
+fn stub_serves_hfd_script(world: &mut RpWorld, script: String) {
+    // `lost` serves star-lost frames.
+    let values: Vec<Option<f64>> = script
         .split(',')
-        .map(|s| s.trim().parse().expect("HFD script values must be numbers"))
+        .map(str::trim)
+        .map(|s| {
+            (s != "lost").then(|| {
+                s.parse()
+                    .expect("HFD script values must be numbers or lost")
+            })
+        })
         .collect();
-    start_stub(
-        world,
-        CannedGuiding {
-            metrics_hfd_script: values,
-            ..CannedGuiding::default()
-        },
-    )
-    .await;
+    stub(world).set_hfd_script_with_lost(values);
 }
 
 // --- Given steps: equipment compositions ----------------------------
-
-/// A simulator rotator inside a guiding train (the ladder and
-/// rotator-warning scenarios). Requires a prior stub-guider Given —
-/// a guiding train is rejected at load without `mount.guiding`.
-#[given(expr = "rp is running with a rotator on the simulator inside guiding train {string}")]
-async fn rp_with_sim_rotator_in_guiding_train(world: &mut RpWorld, train_id: String) {
-    ensure_omnisim(world).await;
-    let url = world.omnisim_url();
-    world.rotators.push(bdd_infra::rp_harness::RotatorConfig {
-        id: "main-rotator".to_string(),
-        alpaca_url: url,
-        device_number: 0,
-    });
-    add_offline_camera(world, "guide-cam");
-    world
-        .optical_trains
-        .push(bdd_infra::rp_harness::OpticalTrainConfig {
-            telescope: None,
-            aperture_mm: None,
-            obstruction_mm: None,
-            id: train_id,
-            purpose: Some("guiding".to_string()),
-            focal_length_mm: None,
-            default_position_angle_degrees: None,
-            devices: vec!["main-rotator".to_string(), "guide-cam".to_string()],
-            auto_focus: None,
-        });
-    start_rp(world).await;
-}
 
 fn push_guiding_focuser_train(world: &mut RpWorld, train_id: String, with_block: bool) {
     let auto_focus = with_block.then_some(bdd_infra::rp_harness::TrainAutoFocusConfig {
@@ -254,8 +206,8 @@ async fn call_auto_focus(world: &mut RpWorld, args: Map<String, Value>) {
 // --- Then steps: stub guider request assertions ----------------------
 
 #[then("the stub guider should have received a pause request with full false")]
-async fn stub_pause_request_full_false(world: &mut RpWorld) {
-    let mut pauses = stub(world).requests_to("/guiding/pause").await;
+fn stub_pause_request_full_false(world: &mut RpWorld) {
+    let mut pauses = stub(world).requests_to("/guiding/pause");
     let request = pauses.pop().expect("stub guider received no pause request");
     assert_eq!(
         request.get("full").and_then(Value::as_bool),
@@ -265,34 +217,27 @@ async fn stub_pause_request_full_false(world: &mut RpWorld) {
 }
 
 #[then("the stub guider should not have received a pause request")]
-async fn stub_no_pause_request(world: &mut RpWorld) {
-    let pauses = stub(world).requests_to("/guiding/pause").await;
+fn stub_no_pause_request(world: &mut RpWorld) {
+    let pauses = stub(world).requests_to("/guiding/pause");
     assert!(
         pauses.is_empty(),
         "expected no pause request, got {pauses:?}"
     );
 }
 
-const fn stub(world: &RpWorld) -> &bdd_infra::rp_harness::GuiderStub {
-    world
-        .guider_stub
-        .as_ref()
-        .expect("no guider stub registered for this scenario")
-}
-
 #[then(expr = "the stub guider should have received a {string} request")]
-async fn stub_received_request(world: &mut RpWorld, path_suffix: String) {
-    let requests = stub(world).requests_to(&path_suffix).await;
+fn stub_received_request(world: &mut RpWorld, path_suffix: String) {
+    let requests = stub(world).requests_to(&path_suffix);
     assert!(
         !requests.is_empty(),
         "expected a request to '{path_suffix}', got none; all: {:?}",
-        stub(world).requests().await
+        stub(world).requests()
     );
 }
 
 #[then(expr = "the stub guider should not have received a {string} request")]
-async fn stub_not_received_request(world: &mut RpWorld, path_suffix: String) {
-    let requests = stub(world).requests_to(&path_suffix).await;
+fn stub_not_received_request(world: &mut RpWorld, path_suffix: String) {
+    let requests = stub(world).requests_to(&path_suffix);
     assert!(
         requests.is_empty(),
         "expected no request to '{path_suffix}', got {requests:?}"
@@ -300,8 +245,8 @@ async fn stub_not_received_request(world: &mut RpWorld, path_suffix: String) {
 }
 
 #[then(expr = "the stub guider should have received at least {int} {string} requests")]
-async fn stub_received_at_least(world: &mut RpWorld, count: usize, path_suffix: String) {
-    let requests = stub(world).requests_to(&path_suffix).await;
+fn stub_received_at_least(world: &mut RpWorld, count: usize, path_suffix: String) {
+    let requests = stub(world).requests_to(&path_suffix);
     assert!(
         requests.len() >= count,
         "expected at least {count} requests to '{path_suffix}', got {}",
@@ -310,13 +255,6 @@ async fn stub_received_at_least(world: &mut RpWorld, count: usize, path_suffix: 
 }
 
 // --- Then steps: ladder result assertions ----------------------------
-
-const fn last_rotator_result(world: &RpWorld) -> &Value {
-    world
-        .last_rotator_result
-        .as_ref()
-        .expect("no successful rotator tool result recorded — When step missing or tool errored?")
-}
 
 #[then(expr = "the rotator result ladder field {string} should be true")]
 fn ladder_field_true(world: &mut RpWorld, field: String) {
@@ -335,6 +273,18 @@ fn ladder_field_false(world: &mut RpWorld, field: String) {
         ladder[&field].as_bool(),
         Some(false),
         "ladder field '{field}' in {ladder}"
+    );
+}
+
+#[then(expr = "the rotator result ladder field {string} should be {float} within {float}")]
+fn ladder_field_number(world: &mut RpWorld, field: String, expected: f64, tolerance: f64) {
+    let ladder = &last_rotator_result(world)["guiding_ladder"];
+    let actual = ladder[&field]
+        .as_f64()
+        .unwrap_or_else(|| panic!("expected numeric ladder field '{field}' in {ladder}"));
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "ladder field '{field}': expected {expected} ± {tolerance}, got {actual} in {ladder}"
     );
 }
 

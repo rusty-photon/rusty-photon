@@ -25,9 +25,8 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 use bdd_infra::rp_harness::{
-    CannedGuiding, CannedWcs, ComputedSky, GuiderConfig, GuiderStub, GuiderStubBehavior, IcrsCoord,
-    OmniSimHandle, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub, StubBehavior,
-    TrainAutoFocusConfig,
+    AlpacaDeviceStub, CannedWcs, ComputedSky, IcrsCoord, OmniSimHandle, OpticalTrainConfig,
+    PlateSolverConfig, PlateSolverStub, StubBehavior, StubDevice, TrainAutoFocusConfig,
 };
 
 use crate::steps::infrastructure::{
@@ -203,77 +202,12 @@ pub async fn mount_matches_site_and_target(world: &mut SessionRunnerWorld) {
 }
 
 // ---------------------------------------------------------------------------
-// Given steps: the guider stub
+// Given steps: guiding trains
 // ---------------------------------------------------------------------------
 
-/// A guider stub whose every endpoint canned-succeeds with a static
-/// active loop — the guided-cadence scenario only needs start, dither,
-/// and stop to answer.
-#[given("a stub guider accepting guide commands")]
-async fn stub_guider_accepting_commands(world: &mut SessionRunnerWorld) {
-    start_guider_stub(world, CannedGuiding::default()).await;
-}
-
-/// A guider stub in lifecycle mode: inactive (no frames, no HFD
-/// script consumption) until the document's `start_guiding` lands, so
-/// rp's focus watch fires its events only during the run — after the
-/// engine's event intake is open.
-#[given(expr = "a lifecycle stub guider with the HFD script {string}")]
-async fn lifecycle_stub_guider(world: &mut SessionRunnerWorld, script: String) {
-    let metrics_hfd_script: Vec<f64> = script
-        .split(',')
-        .map(|s| s.trim().parse().expect("HFD script entries are numbers"))
-        .collect();
-    start_guider_stub(
-        world,
-        CannedGuiding {
-            lifecycle: true,
-            metrics_hfd_script,
-            ..CannedGuiding::default()
-        },
-    )
-    .await;
-}
-
-async fn start_guider_stub(world: &mut SessionRunnerWorld, canned: CannedGuiding) {
-    let stub = GuiderStub::start(GuiderStubBehavior::Canned(canned)).await;
-    let mut guider = GuiderConfig::url_only(stub.url.clone());
-    // The document's dither call carries no amount: rp falls back to
-    // the guiding config's dither_pixels, which is rig geometry and
-    // belongs in rp's config, not in workflow parameters.
-    guider.dither_pixels = Some(1.5);
-    world.guider = Some(guider);
-    world.guider_stub = Some(stub);
-}
-
-/// rp's Guide Focus Watch config (`equipment.mount.guiding.focus_watch`).
-/// Cooldown is left long so a degradation fires exactly once.
-#[given(
-    expr = "the stub guider has a focus watch of window {int}, poll interval {string}, and escalation deadline {string}"
-)]
-async fn stub_guider_focus_watch(
-    world: &mut SessionRunnerWorld,
-    window: i64,
-    poll_interval: String,
-    escalation_deadline: String,
-) {
-    let guider = world
-        .guider
-        .as_mut()
-        .expect("add the stub guider before its focus watch");
-    guider.focus_watch = Some(serde_json::json!({
-        "window": window,
-        "degrade_ratio": 1.25,
-        "cooldown": "10m",
-        "escalation_deadline": escalation_deadline,
-        "poll_interval": poll_interval,
-    }));
-}
-
 /// The guiding train the watch events name: the simulator's focuser as
-/// its terminal focuser (the metric sweep moves it) and an offline
-/// guide camera (the metric sweep never captures, so the roster entry
-/// only has to exist).
+/// its terminal focuser (the metric sweep moves it) and the guide
+/// camera (see [`add_guide_camera`]).
 #[given(
     expr = "a guiding train {string} on the simulator's focuser with a metric auto_focus block"
 )]
@@ -288,12 +222,7 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
         max_position: None,
         backlash: None,
     });
-    world.cameras.push(bdd_infra::rp_harness::CameraConfig {
-        id: "guide-cam".to_string(),
-        alpaca_url: "not-a-url".to_string(),
-        device_number: 0,
-        cooler_targets_c: Vec::new(),
-    });
+    add_guide_camera(world);
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
@@ -302,7 +231,7 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
         default_position_angle_degrees: None,
-        devices: vec!["guide-focuser".to_string(), "guide-cam".to_string()],
+        devices: vec!["guide-focuser".to_string(), GUIDE_CAMERA_ID.to_string()],
         auto_focus: Some(TrainAutoFocusConfig {
             step_size: 50,
             half_width: 100,
@@ -315,18 +244,12 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
 /// an unmotorised OAG: its plan is that focuser's capture step in the
 /// imaging train and no guide step, so the escalation walks
 /// `focus_train {shared: true}` and rp refuses the guide-only metric
-/// `auto_focus` on it. The guide camera is offline: the walk measures
-/// through the imaging camera.
+/// `auto_focus` on it. The walk measures through the imaging camera.
 #[given(expr = "a guiding train {string} sharing the imaging train's focuser")]
 async fn guiding_train_sharing_imaging_focuser(world: &mut SessionRunnerWorld, train_id: String) {
     ensure_omnisim(world).await;
     crate::steps::infrastructure::ensure_focuser(world);
-    world.cameras.push(bdd_infra::rp_harness::CameraConfig {
-        id: "guide-cam".to_string(),
-        alpaca_url: "not-a-url".to_string(),
-        device_number: 0,
-        cooler_targets_c: Vec::new(),
-    });
+    add_guide_camera(world);
     world.optical_trains.push(OpticalTrainConfig {
         telescope: None,
         aperture_mm: None,
@@ -335,9 +258,35 @@ async fn guiding_train_sharing_imaging_focuser(world: &mut SessionRunnerWorld, t
         purpose: Some("guiding".to_string()),
         focal_length_mm: None,
         default_position_angle_degrees: None,
-        devices: vec!["main-focuser".to_string(), "guide-cam".to_string()],
+        devices: vec!["main-focuser".to_string(), GUIDE_CAMERA_ID.to_string()],
         auto_focus: None,
     });
+}
+
+/// The guiding train's camera in rp's roster.
+const GUIDE_CAMERA_ID: &str = "guide-cam";
+
+/// The `UniqueID` the guide camera's Alpaca server lists.
+const GUIDE_CAMERA_UNIQUE_ID: &str = "bdd-guide-camera";
+
+/// The guiding train's camera: an Alpaca camera served by an in-process
+/// stub, since the simulator has one camera and the imaging train holds
+/// it. rp holds a session with it, and the stub guider reports it as
+/// its camera, so rp's check of the guider's devices before the
+/// document's `start_guiding` finds the guider's camera to be the
+/// guiding train's. Neither the metric sweep nor the document captures
+/// through it.
+fn add_guide_camera(world: &mut SessionRunnerWorld) {
+    crate::steps::guider_steps::guider_stub(world)
+        .set_camera_unique_id(Some(GUIDE_CAMERA_UNIQUE_ID));
+    let stub = AlpacaDeviceStub::start_as(StubDevice::Camera, GUIDE_CAMERA_UNIQUE_ID);
+    world.cameras.push(bdd_infra::rp_harness::CameraConfig {
+        id: GUIDE_CAMERA_ID.to_string(),
+        alpaca_url: stub.url(),
+        device_number: 0,
+        cooler_targets_c: Vec::new(),
+    });
+    world.guide_camera_stub = Some(stub);
 }
 
 #[given("a stub plate solver echoing the first target")]
@@ -535,25 +484,6 @@ async fn sse_shows_at_least(world: &mut SessionRunnerWorld, minimum: usize, even
     assert!(
         count >= minimum,
         "expected at least {minimum} '{event_type}' events on the SSE stream, saw {count}"
-    );
-}
-
-#[then(expr = "the stub guider should have received exactly {int} {string} request(s)")]
-async fn stub_guider_received_exactly(
-    world: &mut SessionRunnerWorld,
-    expected: usize,
-    path_suffix: String,
-) {
-    let stub = world
-        .guider_stub
-        .as_ref()
-        .expect("no guider stub — add the 'a stub guider …' step");
-    let requests = stub.requests_to(&path_suffix).await;
-    assert_eq!(
-        requests.len(),
-        expected,
-        "expected exactly {expected} request(s) to '{path_suffix}', saw {}",
-        requests.len()
     );
 }
 

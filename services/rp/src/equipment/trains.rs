@@ -154,7 +154,7 @@ impl Train {
 /// § Optical Trains, derivation rules).
 ///
 /// Runs `focuser_id`'s AF in the context of `train_id` — capturing (or,
-/// for the guiding train, reading PHD2 metrics) through that train's
+/// for the guiding train, reading the guider's metrics) through that train's
 /// camera.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AfStep {
@@ -744,7 +744,8 @@ pub enum StepMetric {
     /// A frame through the run train's camera, measured with
     /// `measure_stars`.
     Capture,
-    /// The guiding train's PHD2-metric sweep; nothing is captured.
+    /// The guiding train's sweep over the guider's metrics; nothing is
+    /// captured.
     Guide,
 }
 

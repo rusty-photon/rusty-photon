@@ -9,10 +9,10 @@
 //! fixed 120 s ceiling: there is no per-rotator rate config yet, so
 //! the `move_rotator_started` envelope carries no predictive
 //! deadline. `moved_trains` on the result lists every train
-//! containing the rotator; when it includes the guiding train and
-//! guiding is active, the move runs the rotate-while-guiding ladder
-//! (pause corrections → move → calibration decision → re-select the
-//! star → resume).
+//! containing the rotator; when it includes the guiding train and a
+//! guider is configured, the move runs the rotate-while-guiding ladder
+//! (pause corrections → move → calibration decision → back to
+//! guiding).
 
 use std::time::Duration;
 
@@ -81,7 +81,7 @@ impl McpHandler {
     /// `RequestContext`.
     #[expect(
         clippy::too_many_lines,
-        reason = "the rotate-while-guiding ladder (pause, pre-move read, move, resume, recalibration decision) is one contract; the body was this long under the #[tool] macro, which hid it from the lint"
+        reason = "the rotate-while-guiding ladder (pause, pre-move read, move, calibration decision, back to guiding) is one contract, kept in one body so its order reads top to bottom"
     )]
     pub(crate) async fn move_rotator_inner(
         &self,
@@ -123,28 +123,29 @@ impl McpHandler {
             .map(|t| t.id.clone())
             .collect();
 
-        // Rotate-while-guiding ladder decision (rp.md § Rotator Tool
-        // Details): engage when the move rotates the guiding train,
-        // the guider is configured, and it reports an active guide
-        // loop. A stats read that fails or reports not-guiding runs
-        // the move bare — a mid-day rotation must not fail because
-        // PHD2 is closed (Tenet 2).
+        // Rotate-while-guiding ladder (rp.md § Rotator Tool Details):
+        // it runs when the move turns the guiding train and a guider
+        // is configured, and the guider's state decides what it does.
+        // A state read that fails goes on as for a guider in no run:
+        // nothing is paused, and a turn above the threshold still
+        // owes the clear.
         let rotates_guiding = self
             .trains
             .guiding_train()
             .is_some_and(|g| moved_trains.contains(&g.id));
-        let mut ladder_client = None;
-        if rotates_guiding {
-            if let Some(client) = self.guider.clone() {
-                match client.guiding_stats().await {
-                    Ok(stats) if stats.guiding => ladder_client = Some(client),
-                    Ok(_) => debug!(rotator_id, "guider not guiding; rotating bare"),
-                    Err(e) => {
-                        debug!(rotator_id, error = %e, "guider stats unreachable; rotating bare");
-                    }
+        let ladder_client = self.guider.clone().filter(|_| rotates_guiding);
+        let mut found_state = None;
+        if let Some(client) = &ladder_client {
+            match client.guiding_stats().await {
+                Ok(stats) => found_state = Some(stats.state),
+                Err(e) => {
+                    debug!(rotator_id, error = %e, "the guider's state could not be read; rotating as for a guider in no run");
                 }
             }
         }
+        // Only a run found guiding is paused, and only a run the
+        // ladder paused is brought back to guiding.
+        let guiding_paused = found_state == Some(rp_guider::GuiderState::Guiding);
 
         // The operation triple starts here: the ladder's pause and
         // pre-move read are part of the move (they issue RPCs on its
@@ -152,7 +153,6 @@ impl McpHandler {
         // `move_rotator_failed` to event subscribers, not as bare
         // tool errors. Rotator moves carry no predictive deadline, so
         // emitting `*_started` ahead of the pause costs nothing.
-        let guiding_paused = ladder_client.is_some();
         let operation_id = uuid::Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
         self.event_bus.emit_operation(EventEnvelope::started(
@@ -171,22 +171,25 @@ impl McpHandler {
         // pre-move sky angle feeds the calibration decision below.
         let mut pre_move_angle = None;
         if let Some(client) = &ladder_client {
-            if let Err(e) = client.pause_guiding(false).await {
-                let msg = format!("move_rotator: failed to pause guiding before rotating: {e}");
-                self.event_bus.emit_operation(EventEnvelope::failed(
-                    "move_rotator",
-                    &operation_id,
-                    started_at,
-                    &msg,
-                ));
-                return Ok(tool_error!("{}", msg));
+            if guiding_paused {
+                if let Err(e) = client.pause_guiding(false).await {
+                    let msg = format!("move_rotator: failed to pause guiding before rotating: {e}");
+                    self.event_bus.emit_operation(EventEnvelope::failed(
+                        "move_rotator",
+                        &operation_id,
+                        started_at,
+                        &msg,
+                    ));
+                    return Ok(tool_error!("{}", msg));
+                }
             }
             match rot.position().await {
                 Ok(a) => pre_move_angle = Some(a),
                 Err(e) => {
-                    let resume_note = match client.resume_guiding().await {
-                        Ok(()) => String::new(),
-                        Err(re) => format!("; also failed to resume guiding: {re}"),
+                    let resume_note = if guiding_paused {
+                        resume_note(client.as_ref()).await
+                    } else {
+                        String::new()
                     };
                     let msg = format!(
                         "move_rotator: failed to read the pre-move sky angle: {e}{resume_note}"
@@ -248,11 +251,13 @@ impl McpHandler {
             Ok((position, mechanical)) => {
                 let mut guiding_ladder = serde_json::Value::Null;
                 if let Some(client) = &ladder_client {
-                    let pre = pre_move_angle.unwrap_or(position);
-                    match self.run_ladder_tail(client.as_ref(), pre, position).await {
+                    let delta_deg = angular_delta_deg(pre_move_angle.unwrap_or(position), position);
+                    match self
+                        .run_ladder_tail(client.as_ref(), found_state, delta_deg, cancel)
+                        .await
+                    {
                         Ok(outcome) => guiding_ladder = outcome,
-                        Err(e) => {
-                            let msg = format!("move_rotator: {e}");
+                        Err(msg) => {
                             self.event_bus.emit_operation(EventEnvelope::failed(
                                 "move_rotator",
                                 &operation_id,
@@ -288,13 +293,11 @@ impl McpHandler {
                 // re-select and resume best-effort, reporting the move
                 // error as primary (rp.md § Rotator Tool Details).
                 let mut msg = e;
-                if let Some(client) = &ladder_client {
+                if let Some(client) = ladder_client.as_ref().filter(|_| guiding_paused) {
                     if let Err(re) = client.reselect_star().await {
                         debug!(rotator_id, error = %re, "post-failure star re-select failed");
                     }
-                    if let Err(re) = client.resume_guiding().await {
-                        msg = format!("{msg}; also failed to resume guiding: {re}");
-                    }
+                    msg.push_str(&resume_note(client.as_ref()).await);
                 }
                 self.event_bus.emit_operation(EventEnvelope::failed(
                     "move_rotator",
@@ -307,66 +310,76 @@ impl McpHandler {
         }
     }
 
-    /// Steps 3–4 of the rotate-while-guiding ladder, after a
-    /// successful move: the calibration decision, the star
-    /// re-selection, and the resume. Any failure attempts a resume
-    /// and surfaces as a hard tool error — a night with guiding
-    /// silently left paused must not look like success.
+    /// Steps 3 and 4 of the rotate-while-guiding ladder, after a
+    /// successful move: the calibration decision and, for a run the
+    /// ladder paused, the way back to guiding. `found_state` is the
+    /// guider's state before the move, `None` when it could not be
+    /// read. Every failure is a hard tool error, its text the whole
+    /// message: a night with guiding left paused, or with calibrations
+    /// of the old angle still stored, must not look like success.
     async fn run_ladder_tail(
         &self,
         client: &dyn rp_guider::GuiderClient,
-        pre_move_angle: f64,
-        post_move_angle: f64,
+        found_state: Option<rp_guider::GuiderState>,
+        delta_deg: f64,
+        cancel: &Cancel,
     ) -> Result<serde_json::Value, String> {
-        let tail: Result<serde_json::Value, String> = async {
-            let equipment = client
-                .current_equipment()
-                .await
-                .map_err(|e| format!("failed to read PHD2 equipment: {e}"))?;
-            let phd2_has_rotator = equipment.rotator.is_some_and(|r| r.connected);
-            let delta_deg = angular_delta_deg(pre_move_angle, post_move_angle);
-            let threshold = self.guider_defaults.recalibrate_above_deg;
-            let calibration_cleared = if !phd2_has_rotator && delta_deg > threshold {
-                client
-                    .clear_calibration()
-                    .await
-                    .map_err(|e| format!("failed to clear the PHD2 calibration: {e}"))?;
-                debug!(
-                    delta_deg,
-                    threshold, "cleared PHD2 calibration after rotation"
-                );
-                true
-            } else {
-                false
-            };
-            client
-                .reselect_star()
-                .await
-                .map_err(|e| format!("failed to re-select the guide star: {e}"))?;
-            Ok(serde_json::json!({
-                "phd2_has_rotator": phd2_has_rotator,
+        let paused_by_ladder = found_state == Some(rp_guider::GuiderState::Guiding);
+        let threshold = self.guider_defaults.recalibrate_above_deg;
+        if delta_deg <= threshold {
+            // The calibrations still hold. The turn moved the stars,
+            // so a run the ladder paused takes new ones before its
+            // corrections resume; a failed re-selection still resumes.
+            if paused_by_ladder {
+                let reselected = client.reselect_star().await;
+                let resumed = client.resume_guiding().await;
+                reselected.map_err(|e| {
+                    format!("move_rotator: failed to re-select the guide stars: {e}")
+                })?;
+                resumed.map_err(|e| {
+                    format!("move_rotator: failed to resume guiding after rotating: {e}")
+                })?;
+            }
+            return Ok(serde_json::json!({
                 "delta_deg": delta_deg,
-                "calibration_cleared": calibration_cleared,
-            }))
+                "calibration_cleared": false,
+                "guiding_restarted": false,
+            }));
         }
-        .await;
 
-        match tail {
-            Ok(outcome) => {
-                client
-                    .resume_guiding()
-                    .await
-                    .map_err(|e| format!("failed to resume guiding after rotating: {e}"))?;
-                Ok(outcome)
-            }
-            Err(e) => {
-                let resume_note = match client.resume_guiding().await {
-                    Ok(()) => String::new(),
-                    Err(re) => format!("; also failed to resume guiding: {re}"),
-                };
-                Err(format!("{e}{resume_note}"))
-            }
+        // The calibrations are of another angle now. The guider keeps
+        // them from run to run, so they go whether it guides or not,
+        // and it refuses the clear in a run state, so a run stops
+        // first.
+        if found_state.is_some_and(rp_guider::GuiderState::is_run) {
+            self.stop_guiding_run(client).await.map_err(|e| {
+                format!(
+                    "move_rotator: failed to stop guiding before clearing the calibrations: {e}"
+                )
+            })?;
         }
+        client
+            .clear_calibration()
+            .await
+            .map_err(|e| format!("move_rotator: failed to clear the guider's calibrations: {e}"))?;
+        debug!(
+            delta_deg,
+            threshold, "cleared the guider's calibrations after rotation"
+        );
+        if paused_by_ladder {
+            // The start calibrates at the new angle.
+            let request = rp_guider::StartGuidingRequest {
+                recalibrate: false,
+                settle: self.merge_settle(None, None, None),
+            };
+            self.start_guiding_run("move_rotator", client, request, cancel)
+                .await?;
+        }
+        Ok(serde_json::json!({
+            "delta_deg": delta_deg,
+            "calibration_cleared": true,
+            "guiding_restarted": paused_by_ladder,
+        }))
     }
 
     #[tool(
@@ -409,6 +422,16 @@ impl McpHandler {
             "mechanical_angle": mechanical,
             "is_moving": is_moving,
         }))
+    }
+}
+
+/// Resume the corrections the ladder paused on a path that already
+/// has an error to report: empty when the resume succeeds, else the
+/// clause that goes on the end of that error.
+async fn resume_note(client: &dyn rp_guider::GuiderClient) -> String {
+    match client.resume_guiding().await {
+        Ok(_) => String::new(),
+        Err(e) => format!("; also failed to resume guiding: {e}"),
     }
 }
 

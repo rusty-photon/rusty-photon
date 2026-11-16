@@ -11,9 +11,9 @@
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, GuiderConfig,
-    GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub,
-    RpConfigBuilder, SafetyMonitorConfig, SseClient,
+    AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig,
+    GuiderConfig, GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlateSolverConfig,
+    PlateSolverStub, RpConfigBuilder, SafetyMonitorConfig, SseClient,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -56,6 +56,9 @@ pub struct SessionRunnerWorld {
     /// (`equipment.mount.guiding`), plus the stub handle itself.
     pub guider: Option<GuiderConfig>,
     pub guider_stub: Option<GuiderStub>,
+    /// The Alpaca server of a guiding train's camera, which the stub
+    /// guider names as its own camera.
+    pub guide_camera_stub: Option<AlpacaDeviceStub>,
     /// Safety monitors gating the session (recovery.feature's safety
     /// interruption scenario).
     pub safety_monitors: Vec<SafetyMonitorConfig>,

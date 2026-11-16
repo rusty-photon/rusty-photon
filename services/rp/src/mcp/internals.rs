@@ -30,6 +30,7 @@ use crate::equipment::camera::{optional_read, CameraInvariants};
 use crate::equipment::trains::TrainDeviceKind;
 use crate::equipment::{DeviceSlot, SlotGuard};
 use crate::events::EventEnvelope;
+use crate::guide_camera::{GuardHold, User};
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::fits_header;
 use crate::persistence::{
@@ -739,15 +740,14 @@ struct FrameRecord<'a> {
     light_source: Option<persistence::LightSource>,
 }
 
-/// What one capture holds for its pipeline: the per-exposure snapshot
-/// of connect-time invariants, the camera's capture slot (rp.md
-/// § Capture Tool Details, "Binning" → Concurrency), and — through a
-/// train's camera — the shared motion-gate permit (§ Mount Motion
-/// Gate). A capture under a train lease holds the lease's slot for the
-/// camera and the call under the lease instead, and no permit of its
-/// own: the lease holds one (§ Train Lease). A capture of a frame that
-/// needs no sky also holds the camera's indoor slot, which keeps the
-/// unsafe transition's exposure abort off it (§ `SafetyMonitor` Polling).
+/// What one capture holds for its pipeline beside its camera
+/// ([`CameraHold`]): the per-exposure snapshot of connect-time
+/// invariants and, through a train's camera, the shared motion-gate
+/// permit (rp.md § Mount Motion Gate). A capture under a train lease
+/// holds the call under the lease instead, and no permit of its own:
+/// the lease holds one (§ Train Lease). A capture of a frame that needs
+/// no sky also holds the camera's indoor slot, which keeps the unsafe
+/// transition's exposure abort off it (§ `SafetyMonitor` Polling).
 ///
 /// The handle and the invariants come out of the session slot
 /// together, so an exposure always runs against metadata read from the
@@ -757,19 +757,43 @@ struct CameraClaim {
     cam: Arc<dyn Camera>,
     readout_time_estimate: Duration,
     invariants: CameraInvariants,
-    slot: SlotGuard,
     motion_permit: Option<OwnedRwLockReadGuard<()>>,
     lease_call: Option<LeaseCall>,
     indoor_slot: Option<SlotGuard>,
+}
+
+/// What a capture holds of its camera: the capture slot (rp.md
+/// § Capture Tool Details, "Binning" → Concurrency; under a train lease,
+/// the lease's slot for the camera) and, through the guide camera, the
+/// guide camera guard (§ The guide camera guard).
+///
+/// It is filled as the capture takes each, and [`Self::release`] gives
+/// back whatever it holds by then, the guard with the slot.
+#[derive(Default)]
+struct CameraHold {
+    slot: Option<SlotGuard>,
+    guard: Option<GuardHold>,
+}
+
+impl CameraHold {
+    fn release(&mut self) {
+        drop(self.guard.take());
+        drop(self.slot.take());
+    }
+
+    /// Everything the hold has, leaving it empty.
+    fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
 }
 
 /// How often a cancelled capture's wind-down reads its camera's state.
 const WIND_DOWN_POLL: Duration = Duration::from_millis(250);
 
 /// What a cancelled capture still held when its exposure was cancelled:
-/// its camera's slot, its gate permit, and the call under a train lease.
+/// its camera, its gate permit, and the call under a train lease.
 type Abandoned = (
-    SlotGuard,
+    CameraHold,
     Option<OwnedRwLockReadGuard<()>>,
     Option<LeaseCall>,
 );
@@ -779,10 +803,12 @@ type Abandoned = (
 /// the camera's slot until the camera stops exposing, and at most until
 /// its readout backstop (`duration` plus the grace from `started`). A
 /// driver that ignores the abort goes on exposing to the frame's end,
-/// and the next capture through the camera must not start into it.
-/// `Idle` and `Error` both mean the camera is not exposing. Under a
-/// train lease the call under it is kept too, so the lease keeps the
-/// camera until then, but no longer keeps an ending lease's permit.
+/// and the next capture through the camera must not start into it, nor
+/// a start of guiding: the guide camera guard is kept as long as the
+/// slot. `Idle` and `Error` both mean the camera is not exposing.
+/// Under a train lease the call under it is kept too, so the lease
+/// keeps the camera until then, but no longer keeps an ending lease's
+/// permit.
 fn wind_down(
     cam: &Arc<dyn Camera>,
     camera_id: &str,
@@ -790,7 +816,7 @@ fn wind_down(
     started: Instant,
     duration: Duration,
 ) {
-    let (slot, permit, mut lease_call) = abandoned;
+    let (mut hold, permit, mut lease_call) = abandoned;
     drop(permit);
     if let Some(call) = lease_call.as_mut() {
         call.mark_cancelled();
@@ -800,40 +826,41 @@ fn wind_down(
         .unwrap_or(started);
     let (cam, camera_id) = (cam.clone(), camera_id.to_string());
     tokio::spawn(async move {
-        let _held = (slot, lease_call);
+        let _call = lease_call;
         loop {
             let state = match cam.camera_state().await {
                 Ok(CameraState::Idle | CameraState::Error) => {
                     debug!(%camera_id, "a cancelled capture's camera is no longer exposing; its slot is free");
-                    return;
+                    break;
                 }
                 Ok(state) => format!("{state:?}"),
                 Err(e) => format!("unreadable ({e})"),
             };
             if Instant::now() >= backstop {
                 warn!(%camera_id, %state, "a cancelled capture's camera still was not idle at its readout backstop; giving its slot back");
-                return;
+                break;
             }
             tokio::time::sleep(WIND_DOWN_POLL).await;
         }
+        hold.release();
     });
 }
 
-/// Download the finished frame and give up the camera's capture slot
-/// (rp.md § Capture Tool Details, "Binning" → Concurrency). Nothing a
-/// capture does after its download touches the camera, so the next
+/// Download the finished frame and give up the camera: the guide camera
+/// guard when the capture holds it, and the capture slot (rp.md
+/// § Capture Tool Details, "Binning" → Concurrency). Nothing
+/// a capture does after its download touches the camera, so the next
 /// queued capture can start its exposure while this frame is still
-/// being written (tenet 2); taking the guard by value is what makes
-/// the download the last camera access the slot covers.
+/// being written (tenet 2), and the guider can start.
 async fn download_frame(
     cam: &Arc<dyn Camera>,
-    slot: SlotGuard,
+    hold: &mut CameraHold,
 ) -> std::result::Result<ImageArray, String> {
     let image_array = cam
         .image_array()
         .await
         .map_err(|e| format!("failed to download image array: {e}"))?;
-    drop(slot);
+    hold.release();
     Ok(image_array)
 }
 
@@ -1571,6 +1598,26 @@ impl McpHandler {
         progress: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
     ) -> std::result::Result<(String, String), String> {
+        let mut hold = CameraHold::default();
+        let outcome = self.capture_holding(req, &mut hold, progress, cancel).await;
+        // A capture that ends before its download still holds its
+        // camera. It goes back before the call answers, so a start of
+        // guiding sent right after a failed capture is not refused over
+        // a guard nothing exposes under.
+        hold.release();
+        drop(hold);
+        outcome
+    }
+
+    /// [`Self::do_capture`], filling `hold` with what the capture takes
+    /// of its camera. The caller releases what is left in it.
+    async fn capture_holding(
+        &self,
+        req: CaptureRequest<'_>,
+        hold: &mut CameraHold,
+        progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
+    ) -> std::result::Result<(String, String), String> {
         let camera_id = req.camera_id;
         let duration = req.duration;
         // One capture through a camera at a time (rp.md § Capture Tool
@@ -1591,7 +1638,6 @@ impl McpHandler {
             cam,
             readout_time_estimate,
             invariants,
-            slot: camera_slot,
             mut motion_permit,
             mut lease_call,
             indoor_slot: _indoor_slot,
@@ -1601,6 +1647,7 @@ impl McpHandler {
                 req.lease_id,
                 gate::capture_needs_the_sky(req.frame_type, req.light_source),
                 cancel,
+                hold,
             )
             .await?;
 
@@ -1664,7 +1711,7 @@ impl McpHandler {
                 // abort is sent, and keeps only its camera's slot while
                 // the camera winds down.
                 if cancel.is_cancelled() {
-                    let abandoned = (camera_slot, motion_permit.take(), lease_call.take());
+                    let abandoned = (hold.take(), motion_permit.take(), lease_call.take());
                     wind_down(&cam, camera_id, abandoned, exposure_start, duration);
                 }
                 return Err(e);
@@ -1694,7 +1741,7 @@ impl McpHandler {
                 image_path = rendered;
             }
 
-            let image_array = download_frame(&cam, camera_slot).await?;
+            let image_array = download_frame(&cam, hold).await?;
 
             self.persist_frame(
                 FrameRecord {
@@ -2231,6 +2278,11 @@ impl McpHandler {
     /// Without one, a capture through a camera a lease reserves waits
     /// for the lease to end before it takes the slot.
     ///
+    /// The slot goes into `hold` as soon as the capture has it, and so
+    /// does the guide camera guard, which a capture through the guide
+    /// camera takes after the slot, its own or its lease's, and before
+    /// the gate (see [`Self::take_guide_camera_guard`]).
+    ///
     /// A frame that does not `need_the_sky` (a dark, a bias, a panel
     /// flat) then takes the camera's indoor slot and holds it until the
     /// capture ends: the unsafe transition does not abort a camera whose
@@ -2260,6 +2312,7 @@ impl McpHandler {
         lease_id: Option<&str>,
         needs_the_sky: bool,
         cancel: &Cancel,
+        hold: &mut CameraHold,
     ) -> std::result::Result<CameraClaim, String> {
         let cam_entry = self
             .equipment
@@ -2272,21 +2325,25 @@ impl McpHandler {
         if cam_entry.device().is_none() {
             return Err(not_connected());
         }
-        let (slot, motion_permit) = if let Some(call) = &lease_call {
-            let slot = tokio::select! {
+        if let Some(call) = &lease_call {
+            hold.slot = Some(tokio::select! {
                 biased;
                 () = cancel.cancelled() => return Err(cancel.error()),
                 slot = call.slot() => slot,
-            };
-            (slot, None)
+            });
         } else {
             self.wait_out_leases(&[camera_id], cancel).await?;
-            let slot = tokio::select! {
+            hold.slot = Some(tokio::select! {
                 biased;
                 () = cancel.cancelled() => return Err(cancel.error()),
                 slot = cam_entry.capture_slot() => slot,
-            };
-            (slot, self.train_permit(camera_id, cancel).await?)
+            });
+        }
+        hold.guard = self.take_guide_camera_guard(camera_id, cancel).await?;
+        let motion_permit = if lease_call.is_some() {
+            None
+        } else {
+            self.train_permit(camera_id, cancel).await?
         };
         let indoor_slot = if needs_the_sky {
             None
@@ -2305,11 +2362,61 @@ impl McpHandler {
                 .readout_time_estimate
                 .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE),
             invariants,
-            slot,
             motion_permit,
             lease_call,
             indoor_slot,
         })
+    }
+
+    /// The guide camera guard for a capture through `camera_id`, under a
+    /// train lease or not (rp.md § The guide camera guard): taken, then
+    /// kept only once the guider's state reads `idle`, the read bounded
+    /// by the guiding config's `timeout`. `None` for a camera the guard
+    /// does not cover. A start of guiding that holds the guard, a guider
+    /// that is not idle and a read that fails each fail the capture,
+    /// before anything is written to the camera.
+    async fn take_guide_camera_guard(
+        &self,
+        camera_id: &str,
+        cancel: &Cancel,
+    ) -> std::result::Result<Option<GuardHold>, String> {
+        let Some(guider) = self.guide_camera_guider(camera_id) else {
+            return Ok(None);
+        };
+        debug!(%camera_id, "a capture through the guide camera takes the guide camera guard");
+        let taken = self.guide_camera.take_for_use(
+            camera_id,
+            User::Capture,
+            guider.as_ref(),
+            self.guider_defaults.timeout,
+        );
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => Err(cancel.error()),
+            taken = taken => taken.map(Some),
+        }
+    }
+
+    /// The guider, when `camera_id` is the camera the guide camera guard
+    /// covers: a guider is configured and `camera_id` is the guiding
+    /// train's camera (rp.md § The guide camera guard).
+    pub(crate) fn guide_camera_guider(
+        &self,
+        camera_id: &str,
+    ) -> Option<&Arc<dyn rp_guider::GuiderClient>> {
+        (self.guarded_guide_camera() == Some(camera_id))
+            .then_some(self.guider.as_ref())
+            .flatten()
+    }
+
+    /// The camera the guide camera guard covers: the guiding train's
+    /// camera, while a guider is configured. `None` with no guider or no
+    /// guiding train, when there is no guard.
+    pub(crate) fn guarded_guide_camera(&self) -> Option<&str> {
+        self.guider.as_ref()?;
+        self.trains
+            .guiding_train()
+            .and_then(|train| train.camera_id())
     }
 
     /// Wait until no train lease reserves any of `ids` (rp.md § Train

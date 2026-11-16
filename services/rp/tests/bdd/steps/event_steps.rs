@@ -515,7 +515,84 @@ async fn should_receive_at_least_n_events(world: &mut RpWorld, count: usize, eve
     );
 }
 
+#[then(expr = "the test webhook receiver should receive a {string} event within {int} seconds")]
+async fn should_receive_event_within(world: &mut RpWorld, event_type: String, seconds: u64) {
+    let seen = events_within(world, &event_type, 1, Duration::from_secs(seconds)).await;
+    assert!(
+        seen >= 1,
+        "no '{event_type}' event arrived within {seconds} s"
+    );
+}
+
+#[then(
+    expr = "the test webhook receiver should receive {int} {string} events within {int} seconds"
+)]
+async fn should_receive_n_events_within(
+    world: &mut RpWorld,
+    count: usize,
+    event_type: String,
+    seconds: u64,
+) {
+    let seen = events_within(world, &event_type, count, Duration::from_secs(seconds)).await;
+    assert!(
+        seen >= count,
+        "{seen} '{event_type}' event(s) arrived within {seconds} s, not {count}"
+    );
+}
+
+/// The first `event_type` event's numeric `field`, at least `minimum`.
+#[then(expr = "the {string} event payload field {string} should be at least {int}")]
+async fn event_payload_field_at_least(
+    world: &mut RpWorld,
+    event_type: String,
+    field: String,
+    minimum: u64,
+) {
+    assert!(
+        world.wait_for_events(&event_type, 1).await,
+        "expected to receive '{event_type}' event within timeout"
+    );
+    let events = world.received_events.read().await;
+    let event = events
+        .iter()
+        .find(|e| e.event_type == event_type)
+        .unwrap_or_else(|| panic!("no '{event_type}' event found"));
+    let actual = event
+        .payload
+        .get(&field)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an unsigned integer field '{field}' in the '{event_type}' event payload, got: {:?}",
+                event.payload
+            )
+        });
+    assert!(
+        actual >= minimum,
+        "expected '{event_type}' payload field '{field}' to be at least {minimum}, got {actual}"
+    );
+}
+
 // --- Helpers ---
+
+/// Waits, at most `within`, for `count` events of `event_type`, and
+/// answers how many have arrived by then.
+async fn events_within(world: &RpWorld, event_type: &str, count: usize, within: Duration) -> usize {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let seen = world
+            .received_events
+            .read()
+            .await
+            .iter()
+            .filter(|e| e.event_type == event_type)
+            .count();
+        if seen >= count || tokio::time::Instant::now() >= deadline {
+            return seen;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
 
 async fn setup_webhook_receiver(world: &mut RpWorld) {
     if world.webhook_receiver.is_some() {

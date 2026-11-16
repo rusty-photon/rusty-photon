@@ -13,6 +13,9 @@ Extends the sorting rule of
 by one case (decision 3). Holds the Windows half of decision 10 of the
 [daily power cycle plan](../plans/daily-power-cycle.md#decisions), the
 session keeper (decision 9).
+Decision 6, decision 5's clause on `rp`'s lease and decision 7's camera
+lease are superseded by
+[ADR-026](026-rp-keeps-its-guide-camera-captures-and-the-guider-apart.md).
 
 ## Context
 

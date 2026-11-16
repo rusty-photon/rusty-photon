@@ -10,9 +10,7 @@
 //! after a rejected save, whose rows follow the submission, still knows
 //! each row's entry in the file.
 
-use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use maud::{html, Markup};
 use rusty_photon_config::driver::FieldError;
@@ -24,16 +22,9 @@ use rusty_photon_setup::{
     BoxFuture, CustomSection, DriverPages, FormValues, PageScope, SectionView,
 };
 use serde_json::{json, Map, Value};
-use tokio::task::JoinSet;
-use tracing::debug;
 
 use crate::config::Config;
 use crate::equipment::EquipmentRegistry;
-use crate::train_lease::facade;
-
-/// How long the page waits for a connected camera to say whether it is
-/// `phd2-guider`'s facade: past it, the camera is drawn as any camera.
-const FACADE_PROBE: Duration = Duration::from_secs(2);
 
 /// The prefix a row's controls are rewritten to while its fields are
 /// overlaid onto its entry, whatever place the row was submitted under.
@@ -315,32 +306,6 @@ impl RosterPages {
             schema: Arc::new(schema),
         }
     }
-
-    /// The ids of the connected cameras that are `phd2-guider`'s facade:
-    /// their `SupportedActions` lists the sweep lease's acquire. A camera
-    /// that does not answer within [`FACADE_PROBE`] is taken for any
-    /// camera.
-    async fn facades(&self) -> HashSet<String> {
-        let mut probes = JoinSet::new();
-        for camera in &self.equipment.cameras {
-            let Some(device) = camera.session.device() else {
-                continue;
-            };
-            let id = camera.id.clone();
-            _ = probes.spawn(async move {
-                let offers =
-                    tokio::time::timeout(FACADE_PROBE, facade::offers_lease(device.as_ref())).await;
-                (id, matches!(offers, Ok(Ok(true))))
-            });
-        }
-        let mut facades = HashSet::new();
-        while let Some(joined) = probes.join_next().await {
-            if let Ok((id, true)) = joined {
-                _ = facades.insert(id);
-            }
-        }
-        facades
-    }
 }
 
 impl DriverPages for RosterPages {
@@ -358,16 +323,10 @@ impl DriverPages for RosterPages {
                 return Vec::new();
             }
             let live = serde_json::to_value(self.equipment.status()).unwrap_or_default();
-            let facades = self.facades().await;
-            debug!(
-                ?facades,
-                "the setup page's roster found these cameras to be the facade"
-            );
             let sections: Vec<Box<dyn CustomSection>> = vec![
                 Box::new(RosterSection {
                     schema: Arc::clone(&self.schema),
                     live,
-                    facades,
                 }),
                 Box::new(PluginsSection),
             ];
@@ -382,8 +341,6 @@ struct RosterSection {
     schema: Arc<Value>,
     /// The running registry's state, as `GET /api/equipment` serves it.
     live: Value,
-    /// The running cameras that are `phd2-guider`'s facade.
-    facades: HashSet<String>,
 }
 
 impl RosterSection {
@@ -649,7 +606,7 @@ impl RosterSection {
                     }
                 }
                 (Self::facts(live, origin))
-                (self.links(kind, id, url, number, view))
+                (Self::links(kind, url, number, view))
                 input type="hidden" name=(origin_control(prefix)) value=(origin.encode());
                 @for spec in &plain { (render::field(spec, view.config, state)) }
                 (credential_fields(prefix, entry, from, view))
@@ -698,32 +655,11 @@ impl RosterSection {
     }
 
     /// The links to the entry's driver: its server page and the device's
-    /// own, or, for `phd2-guider`'s facade, the guider's page.
-    fn links(&self, kind: Kind, id: &str, url: &str, number: u64, view: SectionView<'_>) -> Markup {
+    /// own.
+    fn links(kind: Kind, url: &str, number: u64, view: SectionView<'_>) -> Markup {
         let base = url.trim_end_matches('/');
         if base.is_empty() {
             return html! {};
-        }
-        if kind.key == "cameras" && self.facades.contains(id) {
-            let guider = view
-                .config
-                .pointer("/equipment/mount/guiding/url")
-                .and_then(Value::as_str)
-                .map(|g| link_for(&format!("{}/setup", g.trim_end_matches('/')), view.host));
-            return html! {
-                p.links {
-                    @match guider {
-                        Some(link) => {
-                            "This camera is phd2-guider's facade, configured on "
-                            a.guider-setup href=(link) { "the guider's setup page" } "."
-                        }
-                        None => {
-                            "This camera is phd2-guider's facade, configured on the guider's "
-                            "setup page; rp has no guiding address (equipment.mount.guiding.url) to link it by."
-                        }
-                    }
-                }
-            };
         }
         let server = link_for(&format!("{base}/setup"), view.host);
         let device = link_for(
@@ -1075,11 +1011,10 @@ mod tests {
 
     const CAMERAS: Kind = KINDS[0];
 
-    fn section(live: Value, facades: &[&str]) -> RosterSection {
+    fn section(live: Value) -> RosterSection {
         RosterSection {
             schema: Arc::new(serde_json::to_value(schemars::schema_for!(Config)).unwrap()),
             live,
-            facades: facades.iter().map(|f| (*f).to_string()).collect(),
         }
     }
 
@@ -1312,7 +1247,7 @@ mod tests {
             ("equipment.cameras.1.auth.username", "obs"),
             ("equipment.cameras.1.auth.password", ""),
         ]);
-        let errors = section(json!({}), &[]).apply(&submitted, &mut config);
+        let errors = section(json!({})).apply(&submitted, &mut config);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].path, "equipment.cameras.1.auth.password");
     }
@@ -1330,7 +1265,7 @@ mod tests {
             ("add.cameras.alpaca_url", "http://127.0.0.1:3"),
             ("add.cameras.device_number", "1"),
         ]);
-        let errors = section(json!({}), &[]).apply(&submitted, &mut config);
+        let errors = section(json!({})).apply(&submitted, &mut config);
         assert!(errors.is_empty(), "{errors:?}");
         let cameras = config["equipment"]["cameras"].as_array().unwrap();
         assert_eq!(cameras.len(), 2, "{cameras:?}");
@@ -1353,7 +1288,7 @@ mod tests {
             { "id": "ppba", "alpaca_url": "http://127.0.0.1:1", "device_number": 0,
               "outputs": outputs }
         ] } });
-        let html = render(&section(json!({}), &[]), &config, None, None);
+        let html = render(&section(json!({})), &config, None, None);
         assert!(html.contains("outputs"), "{html}");
 
         let submitted = form(&[
@@ -1362,7 +1297,7 @@ mod tests {
             ("equipment.switches.0.alpaca_url", "http://127.0.0.1:2"),
             ("equipment.switches.0.device_number", "0"),
         ]);
-        let errors = section(json!({}), &[]).apply(&submitted, &mut config);
+        let errors = section(json!({})).apply(&submitted, &mut config);
 
         assert!(errors.is_empty(), "{errors:?}");
         let switch = &config["equipment"]["switches"][0];
@@ -1379,14 +1314,14 @@ mod tests {
             ("origin:equipment.cameras.1", "file:1:b"),
             ("equipment.cameras.1.gain", "loud"),
         ]);
-        let errors = section(json!({}), &[]).apply(&submitted, &mut config);
+        let errors = section(json!({})).apply(&submitted, &mut config);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].path, "equipment.cameras.0.gain");
     }
 
     #[test]
     fn a_save_from_a_page_drawn_before_the_roster_changed_is_refused() {
-        let section = section(json!({}), &[]);
+        let section = section(json!({}));
         // The file gained an entry the page did not draw.
         let mut config = two_cameras();
         let errors = section.apply(
@@ -1419,7 +1354,7 @@ mod tests {
 
     #[test]
     fn a_kind_refused_as_drawn_from_an_older_file_is_drawn_as_the_file_holds_it() {
-        let section = section(json!({}), &[]);
+        let section = section(json!({}));
         // The page drew a and b; c joined the file behind it, and the save
         // removes a.
         let mut config = two_cameras();
@@ -1453,7 +1388,7 @@ mod tests {
 
     #[test]
     fn a_page_drawn_again_carries_the_entries_the_save_removes() {
-        let section = section(json!({}), &[]);
+        let section = section(json!({}));
         let submitted = form(&[
             ("origin:equipment.cameras.0", "file:0:a"),
             ("remove:equipment.cameras.0", "on"),
@@ -1485,7 +1420,7 @@ mod tests {
     #[test]
     fn a_loopback_entry_links_its_driver_at_the_browsers_host() {
         let html = render(
-            &section(json!({}), &[]),
+            &section(json!({})),
             &two_cameras(),
             None,
             Some("rig.example"),
@@ -1505,41 +1440,10 @@ mod tests {
         let config = json!({ "equipment": { "cameras": [
             { "id": "a", "alpaca_url": "https://127.0.0.1:1", "device_number": 0 }
         ] } });
-        let html = render(&section(json!({}), &[]), &config, None, Some("192.0.2.1"));
+        let html = render(&section(json!({})), &config, None, Some("192.0.2.1"));
         assert!(html.contains("--extra-san"), "{html}");
-        let html = render(&section(json!({}), &[]), &config, None, Some("rig.example"));
+        let html = render(&section(json!({})), &config, None, Some("rig.example"));
         assert!(!html.contains("--extra-san"), "{html}");
-    }
-
-    #[test]
-    fn the_facade_links_the_guiders_page_or_says_why_it_cannot() {
-        let mut config = two_cameras();
-        let html = render(
-            &section(json!({}), &["a"]),
-            &config,
-            None,
-            Some("rig.example"),
-        );
-        assert!(html.contains("no guiding address"), "{html}");
-        config["equipment"]["mount"] = json!({
-            "alpaca_url": "http://127.0.0.1:9",
-            "device_number": 0,
-            "guiding": { "url": "http://127.0.0.1:11130/" }
-        });
-        let html = render(
-            &section(json!({}), &["a"]),
-            &config,
-            None,
-            Some("rig.example"),
-        );
-        assert!(
-            html.contains(r#"class="guider-setup" href="http://rig.example:11130/setup""#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"href="http://rig.example:2/setup""#),
-            "the other camera is a camera: {html}"
-        );
     }
 
     #[test]
@@ -1547,7 +1451,7 @@ mod tests {
         let live = json!({ "cameras": [
             { "id": "a", "connected": true, "device_name": "Sim", "unique_id": "u-1" }
         ] });
-        let html = render(&section(live, &[]), &two_cameras(), None, None);
+        let html = render(&section(live), &two_cameras(), None, None);
         assert!(html.contains("connected"), "{html}");
         assert!(html.contains("Sim · u-1"), "{html}");
         assert!(
@@ -1560,12 +1464,7 @@ mod tests {
     fn an_add_block_names_its_kind_with_its_article() {
         assert_eq!(article("observing conditions device"), "an");
         assert_eq!(article("camera"), "a");
-        let html = render(
-            &section(json!({}), &[]),
-            &json!({ "equipment": {} }),
-            None,
-            None,
-        );
+        let html = render(&section(json!({})), &json!({ "equipment": {} }), None, None);
         assert!(
             html.contains("Add an observing conditions device"),
             "{html}"
@@ -1592,7 +1491,7 @@ mod tests {
 
     #[test]
     fn a_rows_error_is_shown_by_the_section() {
-        let section = section(json!({}), &[]);
+        let section = section(json!({}));
         assert!(section.shows_error("equipment.cameras.3.gain"));
         assert!(section.shows_error("equipment.cameras.0.auth.password"));
         assert!(section.shows_error("equipment.mount.device_number"));

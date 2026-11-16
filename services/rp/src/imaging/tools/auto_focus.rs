@@ -1,5 +1,5 @@
-//! The pure parts of `auto_focus`, the guiding train's PHD2-metric
-//! V-curve sweep.
+//! The pure parts of `auto_focus`, the guiding train's V-curve sweep
+//! over the guider's metrics.
 //!
 //! The grid and its walk order, the lowest-sample choice, the
 //! confirmation verdict, a fitted position rounded to a step, and the

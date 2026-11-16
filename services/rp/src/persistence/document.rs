@@ -379,22 +379,25 @@ pub struct ExposureRotator {
 /// is recorded when the guider service restarted in between.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExposureGuiding {
-    /// PHD2 reported `Guiding` at both reads, and guiding was neither
-    /// stopped nor paused, nor the totals left incomplete, in between.
+    /// The guider reported `guiding` at both reads under one `epoch`,
+    /// and counted no interruption in between.
     pub guided_throughout: bool,
-    /// The guide steps PHD2 sent between the reads.
+    /// The guide steps the guider took between the reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_steps: Option<u64>,
-    /// RMS of `RADistanceRaw` over those steps, in guide-camera pixels.
+    /// RMS of the RA guide error over those steps, in guide-camera
+    /// pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rms_ra_px: Option<f64>,
-    /// RMS of `DECDistanceRaw` over those steps, in guide-camera pixels.
+    /// RMS of the Dec guide error over those steps, in guide-camera
+    /// pixels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rms_dec_px: Option<f64>,
     /// `√(rms_ra_px² + rms_dec_px²)`; omitted unless both are present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_rms_px: Option<f64>,
-    /// The times PHD2 lost the guide star between the reads.
+    /// The frames between the reads in which the guider had too few
+    /// usable stars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub star_lost: Option<u64>,
 }

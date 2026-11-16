@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Dither on the guider's contract
   dither moves the guider's lock position and blocks until the run has
   settled again. The amount is the call's pixels, or the guiding
@@ -9,13 +9,17 @@ Feature: Dither on the guider's contract
   train for it. main_px multiplies it by the pixel scale of the one
   imaging train, 206.265 x pixel_size_x_um / focal_length_mm, and
   sends arcseconds; its error names the conversion input that is
-  missing. dither_started carries the amount as it is sent, one of
-  amount_px and amount_arcsec with the other null, and the dither's
-  deadline as max_duration_ms: the resolved settle timeout plus 15 s,
-  and no deadline when no settle timeout is resolved. The guider
-  refuses a dither outside the state guiding with not_guiding, a paused
-  or star-lost run included, and its refusals reach the caller with
-  their code and message. A dither cancelled mid-settle sends the
+  missing. dither_pixels is guide-camera pixels, so a unit other than
+  guide_px needs the amount in the call. A dither that names no amount
+  rp can resolve, or a unit it does not know, is refused before it
+  reaches the guider, and without a guiding config a dither errors with
+  "guider not configured". dither_started carries the amount as it is
+  sent, one of amount_px and amount_arcsec with the other null, and the
+  dither's deadline as max_duration_ms: the resolved settle timeout
+  plus 15 s, and no deadline when no settle timeout is resolved. The
+  guider refuses a dither outside the state guiding with not_guiding, a
+  paused or star-lost run included, and its refusals reach the caller
+  with their code and message. A dither cancelled mid-settle sends the
   guider dither/abort and fails with the cancellation's reason.
 
   The stub guider settles a dither it accepts with the figures of a
@@ -90,6 +94,54 @@ Feature: Dither on the guider's contract
     Then the tool call should return an error
     And the error message should contain "pixel size"
     And the stub guider should not have received a "/dither" request
+
+  Scenario: main_px on a rig with two imaging trains names the one imaging train it needs
+    Given a running Alpaca simulator
+    And a stub guider in state "guiding"
+    And rp is running with a camera on the simulator and two offline imaging trains
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 10.0 and unit "main_px"
+    Then the tool call should return an error
+    And the error message should contain "imaging train"
+    And the stub guider should not have received a "/dither" request
+
+  Scenario: A dither with no amount in the call and no dither_pixels configured names dither_pixels
+    Given a running Alpaca simulator
+    And a stub guider in state "guiding"
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with no arguments
+    Then the tool call should return an error
+    And the error message should contain "dither_pixels"
+    And the stub guider should not have received a "/dither" request
+
+  Scenario: A unit other than guide_px with no amount in the call is refused, whatever dither_pixels says
+    Given a running Alpaca simulator
+    And a stub guider in state "guiding"
+    And rp is running with a camera on the simulator and guider dither_pixels 3.5
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with unit "arcsec" and no pixels
+    Then the tool call should return an error
+    And the error message should contain "explicit pixels"
+    And the stub guider should not have received a "/dither" request
+
+  Scenario: A dither with a unit rp does not know is refused
+    Given a running Alpaca simulator
+    And a stub guider in state "guiding"
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 10.0 and unit "parsecs"
+    Then the tool call should return an error
+    And the error message should contain "unknown variant"
+    And the stub guider should not have received a "/dither" request
+
+  Scenario: A dither with no guider configured errors without reaching one
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "dither" with pixels 5.0 and ra_only false
+    Then the tool call should return an error
+    And the error message should contain "guider not configured"
 
   Scenario Outline: dither_started carries a <unit> amount as it is sent, and the settle timeout plus 15 s as its deadline
     Given a running Alpaca simulator

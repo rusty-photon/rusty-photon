@@ -657,7 +657,7 @@ Feature: Focus tools served through rp
   Scenario: A guide-coupled sweep pauses and resumes guiding
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
-    And a stub guider returning canned guiding stats
+    And a stub guider in state "guiding"
     And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider
     And an MCP client connected to rp
@@ -669,7 +669,7 @@ Feature: Focus tools served through rp
   Scenario: The handshake is skipped when the guider reports no active loop
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
-    And a stub guider reporting guiding inactive
+    And a stub guider in state "idle"
     And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider
     And an MCP client connected to rp
@@ -683,7 +683,7 @@ Feature: Focus tools served through rp
   Scenario: A shared walk stops at the failing step
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
-    And a stub guider returning canned guiding stats
+    And a stub guider in state "guiding"
     And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider
     And an MCP client connected to rp
@@ -699,7 +699,7 @@ Feature: Focus tools served through rp
   Scenario: A shared walk on a guiding train with no focuser of its own sweeps through the imaging camera
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
-    And a stub guider returning canned guiding stats
+    And a stub guider in state "guiding"
     And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider
     And an MCP client connected to rp

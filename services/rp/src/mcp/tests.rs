@@ -7908,7 +7908,7 @@ async fn plate_solve_maps_internal_error_with_internal_prefix() {
 // The resolution and pre-motion paths need no live devices: an unknown
 // or imaging train, the train-block fallback, the active-guiding
 // precondition. The sweep itself runs against a mock focuser and a
-// mock guider scripting PHD2's HFD (`scripted_metrics_guider`).
+// mock guider scripting the HFD (`scripted_metrics_guider`).
 // -----------------------------------------------------------------------
 
 /// The reference-rig train shape: main = [main-focuser → main-cam]
@@ -8144,22 +8144,95 @@ fn move_rot_params(angle: f64) -> MoveRotatorParams {
     }
 }
 
+/// The fixture camera entry under another id.
+fn camera_entry_named(id: &str) -> crate::equipment::CameraEntry {
+    let mut entry = camera_registry(Arc::new(MockCamera::default()))
+        .cameras
+        .remove(0);
+    entry.id = id.to_string();
+    entry.config.id = id.to_string();
+    entry
+}
+
+/// The ladder's rig: the rotator "rot", the guiding train's camera
+/// "gcam" and the mount, each a connected mock, so the devices check
+/// of a start finds rp's side of both identities.
+fn ladder_registry(rot: MockRotator) -> crate::equipment::EquipmentRegistry {
+    let mut registry = rotator_registry(Arc::new(rot));
+    registry.cameras = vec![camera_entry_named("gcam")];
+    registry.mount = mount_registry(Arc::new(MockTelescope::default()), None).mount;
+    registry
+}
+
+/// The `unique_id` every mock device lists (`impl_mock_device!`).
+const MOCK_UNIQUE_ID: &str = "mock-id";
+
+/// What a guider answers `devices` with.
+fn guider_devices(mount: Option<&str>, camera: Option<&str>) -> rp_guider::GuiderDevices {
+    let device = |id: Option<&str>| {
+        Some(rp_guider::GuiderDevice {
+            unique_id: id.map(str::to_string),
+        })
+    };
+    rp_guider::GuiderDevices {
+        camera: device(camera),
+        mount: device(mount),
+    }
+}
+
+fn stats_in(state: rp_guider::GuiderState) -> GuidingStats {
+    GuidingStats::in_state(state)
+}
+
+fn guider_down() -> GuiderError {
+    GuiderError::ServiceUnreachable("connection refused".to_string())
+}
+
+/// The names of the events on `rx` so far, oldest first.
+fn drain_event_names(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
+) -> Vec<String> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .map(|envelope| envelope.event)
+        .collect()
+}
+
 fn ladder_handler(rot: MockRotator, configure: impl FnOnce(&mut MockGuiderClient)) -> McpHandler {
     let mut mock = MockGuiderClient::new();
     configure(&mut mock);
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    test_handler(rotator_registry(Arc::new(rot)))
+    test_handler(ladder_registry(rot))
         .with_trains(rotator_guiding_trains())
         .with_guider(Some(client), GuiderDefaults::default())
+}
+
+/// A guider that guides and takes the ladder's pause.
+fn expect_guiding_and_pause(mock: &mut MockGuiderClient) {
+    mock.expect_guiding_stats()
+        .returning(|| Ok(stats_in(rp_guider::GuiderState::Guiding)));
+    mock.expect_pause_guiding()
+        .with(mockall::predicate::eq(false))
+        .times(1)
+        .returning(|_| Ok(rp_guider::GuiderState::Paused));
+}
+
+async fn ladder_result(handler: &McpHandler, angle: f64) -> serde_json::Value {
+    let json = ok_text(
+        handler
+            .move_rotator_inner(move_rot_params(angle), &Cancel::never())
+            .await
+            .unwrap(),
+    );
+    json["guiding_ladder"].clone()
 }
 
 #[tokio::test]
 async fn ladder_pause_failure_aborts_before_any_motion() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
         mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
+            .returning(|| Ok(stats_in(rp_guider::GuiderState::Guiding)));
         mock.expect_pause_guiding()
-            .returning(|_| Err(rp_guider::GuiderError::Internal("boom".to_string())));
+            .returning(|_| Err(GuiderError::Internal("boom".to_string())));
     });
     let mut rx = handler.event_bus.subscribe();
     let result = handler
@@ -8183,15 +8256,33 @@ async fn ladder_pre_move_read_failure_resumes_and_errors() {
         ..Default::default()
     };
     let handler = ladder_handler(rot, |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+        expect_guiding_and_pause(mock);
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
     let result = handler
         .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
     assert_tool_error(result, "failed to read the pre-move sky angle");
+}
+
+#[tokio::test]
+async fn ladder_pre_move_read_failure_names_a_failed_resume_too() {
+    let rot = MockRotator {
+        fail_position: true,
+        ..Default::default()
+    };
+    let handler = ladder_handler(rot, |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Err(guider_down()));
+    });
+    let result = handler
+        .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "also failed to resume guiding");
 }
 
 #[tokio::test]
@@ -8201,11 +8292,13 @@ async fn ladder_move_failure_still_reselects_and_resumes() {
         ..Default::default()
     };
     let handler = ladder_handler(rot, |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_reselect_star().times(1).returning(|| Ok(()));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Paused));
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
     let result = handler
         .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
@@ -8214,63 +8307,77 @@ async fn ladder_move_failure_still_reselects_and_resumes() {
 }
 
 #[tokio::test]
-async fn ladder_equipment_read_failure_resumes_and_errors() {
-    let handler = ladder_handler(MockRotator::default(), |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_current_equipment()
-            .returning(|| Err(rp_guider::GuiderError::Internal("down".to_string())));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+async fn ladder_move_failure_resumes_even_when_the_reselection_fails() {
+    let rot = MockRotator {
+        fail_move: true,
+        ..Default::default()
+    };
+    let handler = ladder_handler(rot, |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Err(guider_down()));
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
     let result = handler
         .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
-    assert_tool_error(result, "failed to read PHD2 equipment");
-}
-
-fn equipment_without_rotator() -> rp_guider::PhdEquipment {
-    rp_guider::PhdEquipment {
-        camera: None,
-        mount: None,
-        aux_mount: None,
-        ao: None,
-        rotator: None,
-    }
+    // The move's error leads; the re-selection's failure is only logged.
+    assert_tool_error(result, "failed to move rotator");
 }
 
 #[tokio::test]
-async fn ladder_clear_calibration_failure_resumes_and_errors() {
-    let handler = ladder_handler(MockRotator::default(), |mock| {
+async fn ladder_move_failure_sends_nothing_to_a_run_it_did_not_pause() {
+    let rot = MockRotator {
+        fail_move: true,
+        ..Default::default()
+    };
+    // No pause, re-selection or resume is expected: the mock panics on
+    // any of them.
+    let handler = ladder_handler(rot, |mock| {
         mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_current_equipment()
-            .returning(|| Ok(equipment_without_rotator()));
-        mock.expect_clear_calibration()
-            .returning(|| Err(rp_guider::GuiderError::Internal("rpc".to_string())));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+            .returning(|| Ok(stats_in(rp_guider::GuiderState::Paused)));
     });
     let result = handler
-        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
-    assert_tool_error(result, "failed to clear the PHD2 calibration");
+    assert_tool_error(result, "failed to move rotator");
 }
 
 #[tokio::test]
-async fn ladder_resume_failure_after_success_tail_is_a_hard_error() {
+async fn ladder_at_or_below_the_threshold_reselects_and_resumes() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_current_equipment()
-            .returning(|| Ok(equipment_without_rotator()));
-        mock.expect_reselect_star().returning(|| Ok(()));
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Paused));
         mock.expect_resume_guiding()
-            .returning(|| Err(rp_guider::GuiderError::Internal("gone".to_string())));
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
-    // A 2° move stays under the 5° threshold: no calibration clear,
-    // so the failure is isolated to the resume.
+    let mut rx = handler.event_bus.subscribe();
+    // A 2° turn stays under the 5° threshold: the calibrations are kept.
+    let ladder = ladder_result(&handler, 2.0).await;
+    assert_eq!(ladder["calibration_cleared"], false);
+    assert_eq!(ladder["guiding_restarted"], false);
+    assert!((ladder["delta_deg"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+    assert_eq!(
+        drain_event_names(&mut rx),
+        ["move_rotator_started", "move_rotator_complete"]
+    );
+}
+
+#[tokio::test]
+async fn ladder_resume_failure_at_or_below_the_threshold_is_a_hard_error() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .returning(|| Ok(rp_guider::GuiderState::Paused));
+        mock.expect_resume_guiding()
+            .returning(|| Err(GuiderError::Internal("gone".to_string())));
+    });
     let result = handler
         .move_rotator_inner(move_rot_params(2.0), &Cancel::never())
         .await;
@@ -8278,47 +8385,306 @@ async fn ladder_resume_failure_after_success_tail_is_a_hard_error() {
 }
 
 #[tokio::test]
-async fn ladder_runs_bare_when_the_stats_read_fails() {
+async fn ladder_reselect_failure_still_resumes_and_is_a_hard_error() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Err(rp_guider::GuiderError::Internal("down".to_string())));
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Err(GuiderError::Internal("no frame".to_string())));
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
-    let json = ok_text(
-        handler
-            .move_rotator_inner(move_rot_params(45.0), &Cancel::never())
-            .await
-            .unwrap(),
-    );
-    assert!(json["guiding_ladder"].is_null());
+    let result = handler
+        .move_rotator_inner(move_rot_params(2.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "failed to re-select the guide stars");
 }
 
 #[tokio::test]
-async fn ladder_success_reports_the_calibration_decision() {
+async fn ladder_above_the_threshold_stops_clears_and_starts_again() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding()
-            .with(mockall::predicate::eq(false))
+        expect_guiding_and_pause(mock);
+        let mut order = mockall::Sequence::new();
+        mock.expect_stop_guiding()
             .times(1)
-            .returning(|_| Ok(()));
-        mock.expect_current_equipment()
-            .returning(|| Ok(equipment_without_rotator()));
+            .in_sequence(&mut order)
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
         mock.expect_clear_calibration()
             .times(1)
-            .returning(|| Ok(()));
-        mock.expect_reselect_star().times(1).returning(|| Ok(()));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+            .in_sequence(&mut order)
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_devices()
+            .times(1)
+            .in_sequence(&mut order)
+            .returning(|| Ok(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID))));
+        mock.expect_start_guiding()
+            .withf(|request| !request.recalibrate)
+            .times(1)
+            .in_sequence(&mut order)
+            .returning(|_| Ok(settled_outcome()));
     });
-    let json = ok_text(
-        handler
-            .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
-            .await
-            .unwrap(),
-    );
-    let ladder = &json["guiding_ladder"];
-    assert_eq!(ladder["phd2_has_rotator"], false);
+    let mut rx = handler.event_bus.subscribe();
+    let ladder = ladder_result(&handler, 90.0).await;
     assert_eq!(ladder["calibration_cleared"], true);
+    assert_eq!(ladder["guiding_restarted"], true);
     assert!((ladder["delta_deg"].as_f64().unwrap() - 90.0).abs() < 1e-9);
+    // The ladder's stop and its start emit what `stop_guiding` and
+    // `start_guiding` emit.
+    assert_eq!(
+        drain_event_names(&mut rx),
+        [
+            "move_rotator_started",
+            "guide_stopped",
+            "guide_started",
+            "guide_settled",
+            "move_rotator_complete"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn ladder_restart_carries_the_configured_settle_values() {
+    let mut mock = MockGuiderClient::new();
+    expect_guiding_and_pause(&mut mock);
+    mock.expect_stop_guiding()
+        .returning(|| Ok(rp_guider::GuiderState::Idle));
+    mock.expect_clear_calibration()
+        .returning(|| Ok(rp_guider::GuiderState::Idle));
+    mock.expect_devices()
+        .returning(|| Ok(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID))));
+    mock.expect_start_guiding()
+        .withf(|request| {
+            let settle = request.settle.as_ref().expect("settle expected");
+            settle.pixels == Some(0.8)
+                && settle.time == Some(Duration::from_secs(8))
+                && settle.timeout == Some(Duration::from_secs(40))
+        })
+        .times(1)
+        .returning(|_| Ok(settled_outcome()));
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let defaults = GuiderDefaults {
+        settle_pixels: Some(0.8),
+        settle_time: Some(Duration::from_secs(8)),
+        settle_timeout: Some(Duration::from_secs(40)),
+        ..GuiderDefaults::default()
+    };
+    let handler = test_handler(ladder_registry(MockRotator::default()))
+        .with_trains(rotator_guiding_trains())
+        .with_guider(Some(client), defaults);
+    let ladder = ladder_result(&handler, 90.0).await;
+    assert_eq!(ladder["guiding_restarted"], true);
+}
+
+#[tokio::test]
+async fn ladder_stop_failure_is_a_hard_error_and_clears_nothing() {
+    // No clear is expected: the mock panics on one.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_stop_guiding()
+            .times(1)
+            .returning(|| Err(guider_down()));
+    });
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .await;
+    assert_tool_error(
+        result,
+        "failed to stop guiding before clearing the calibrations",
+    );
+    // A stop the guider did not answer is no `guide_stopped`.
+    assert_eq!(
+        drain_event_names(&mut rx),
+        ["move_rotator_started", "move_rotator_failed"]
+    );
+}
+
+#[tokio::test]
+async fn ladder_clear_failure_is_a_hard_error_and_starts_nothing() {
+    // No start is expected: the mock panics on one.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_stop_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_clear_calibration()
+            .times(1)
+            .returning(|| Err(GuiderError::Internal("store".to_string())));
+    });
+    let result = handler
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "failed to clear the guider's calibrations");
+}
+
+#[tokio::test]
+async fn ladder_start_failure_is_a_hard_error_with_guide_failed() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_stop_guiding()
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_clear_calibration()
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_devices()
+            .returning(|| Ok(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID))));
+        mock.expect_start_guiding().times(1).returning(|_| {
+            Err(GuiderError::Service {
+                code: "no_stars".to_string(),
+                message: "no star to guide on".to_string(),
+                details: serde_json::Value::Null,
+            })
+        });
+    });
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "move_rotator: no_stars: no star to guide on");
+    assert_eq!(
+        drain_event_names(&mut rx),
+        [
+            "move_rotator_started",
+            "guide_stopped",
+            "guide_started",
+            "guide_failed",
+            "move_rotator_failed"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn ladder_start_refused_by_the_devices_check_asks_the_guider_for_no_start() {
+    // No start is expected: the mock panics on one.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_stop_guiding()
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_clear_calibration()
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_devices()
+            .returning(|| Ok(guider_devices(Some("another-mount"), Some(MOCK_UNIQUE_ID))));
+    });
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .await;
+    assert_tool_error(
+        result,
+        "move_rotator: the guider's mount 'another-mount' is not rp's mount 'mock-id'",
+    );
+    assert_eq!(
+        drain_event_names(&mut rx),
+        [
+            "move_rotator_started",
+            "guide_stopped",
+            "move_rotator_failed"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn ladder_stops_and_clears_a_run_it_did_not_pause_and_does_not_start_it() {
+    for state in [
+        rp_guider::GuiderState::Paused,
+        rp_guider::GuiderState::StarLost,
+        rp_guider::GuiderState::Calibrating,
+    ] {
+        // No pause and no start is expected: the mock panics on either.
+        let handler = ladder_handler(MockRotator::default(), |mock| {
+            mock.expect_guiding_stats()
+                .returning(move || Ok(stats_in(state)));
+            mock.expect_stop_guiding()
+                .times(1)
+                .returning(|| Ok(rp_guider::GuiderState::Idle));
+            mock.expect_clear_calibration()
+                .times(1)
+                .returning(|| Ok(rp_guider::GuiderState::Idle));
+        });
+        let mut rx = handler.event_bus.subscribe();
+        let ladder = ladder_result(&handler, 90.0).await;
+        assert_eq!(ladder["calibration_cleared"], true, "{state}");
+        assert_eq!(ladder["guiding_restarted"], false, "{state}");
+        let started = rx.try_recv().unwrap();
+        assert_eq!(started.event, "move_rotator_started");
+        assert_eq!(started.payload["guiding_paused"], false, "{state}");
+        assert_eq!(
+            drain_event_names(&mut rx),
+            ["guide_stopped", "move_rotator_complete"],
+            "{state}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ladder_leaves_a_run_it_did_not_pause_alone_at_or_below_the_threshold() {
+    // Nothing but the state read is expected: the mock panics on more.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(stats_in(rp_guider::GuiderState::Paused)));
+    });
+    let ladder = ladder_result(&handler, 2.0).await;
+    assert_eq!(ladder["calibration_cleared"], false);
+    assert_eq!(ladder["guiding_restarted"], false);
+}
+
+#[tokio::test]
+async fn ladder_clears_the_calibrations_of_a_guider_in_no_run_without_a_stop() {
+    for state in [
+        rp_guider::GuiderState::Idle,
+        rp_guider::GuiderState::Looping,
+    ] {
+        // No stop is expected: the mock panics on one.
+        let handler = ladder_handler(MockRotator::default(), |mock| {
+            mock.expect_guiding_stats()
+                .returning(move || Ok(stats_in(state)));
+            mock.expect_clear_calibration()
+                .times(1)
+                .returning(|| Ok(rp_guider::GuiderState::Idle));
+        });
+        let ladder = ladder_result(&handler, 90.0).await;
+        assert_eq!(ladder["calibration_cleared"], true, "{state}");
+        assert_eq!(ladder["guiding_restarted"], false, "{state}");
+    }
+}
+
+#[tokio::test]
+async fn ladder_goes_on_as_for_a_guider_in_no_run_when_the_state_read_fails() {
+    // At or below the threshold nothing is sent...
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats().returning(|| Err(guider_down()));
+    });
+    let mut rx = handler.event_bus.subscribe();
+    let ladder = ladder_result(&handler, 2.0).await;
+    assert_eq!(ladder["calibration_cleared"], false);
+    assert_eq!(ladder["guiding_restarted"], false);
+    let started = rx.try_recv().unwrap();
+    assert_eq!(started.payload["guiding_paused"], false);
+
+    // ...and above it the clear is still owed.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats().returning(|| Err(guider_down()));
+        mock.expect_clear_calibration()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+    });
+    let ladder = ladder_result(&handler, 45.0).await;
+    assert_eq!(ladder["calibration_cleared"], true);
+    assert_eq!(ladder["guiding_restarted"], false);
+}
+
+#[tokio::test]
+async fn ladder_guider_down_after_a_turn_above_the_threshold_is_a_failed_clear() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats().returning(|| Err(guider_down()));
+        mock.expect_clear_calibration()
+            .times(1)
+            .returning(|| Err(guider_down()));
+    });
+    let result = handler
+        .move_rotator_inner(move_rot_params(45.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "failed to clear the guider's calibrations");
 }
 
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -8424,17 +8790,7 @@ fn guide_sweep_focuser() -> MockFocuser {
 }
 
 fn guiding_stats_active() -> rp_guider::GuidingStats {
-    rp_guider::GuidingStats {
-        app_state: "Guiding".to_string(),
-        guiding: true,
-        rms_ra_px: None,
-        rms_dec_px: None,
-        total_rms_px: None,
-        snr: None,
-        star_mass: None,
-        sample_count: 0,
-        totals: None,
-    }
+    rp_guider::GuidingStats::in_state(rp_guider::GuiderState::Guiding)
 }
 
 /// A mock guider whose metrics responses follow `hfd_script` one call
@@ -8458,11 +8814,14 @@ fn scripted_metrics_guider(hfd_script: Vec<f64>) -> MockGuiderClient {
                 hfd: Some(hfd),
                 snr: Some(20.0),
                 star_mass: Some(1000.0),
+                star_count: 3,
                 star_lost: false,
             })
             .collect();
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames,
         })
     });
@@ -8691,13 +9050,16 @@ async fn guide_train_auto_focus_fails_when_the_first_watermark_refresh_fails() {
             return Err(rp_guider::GuiderError::Internal("hiccup".to_string()));
         }
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames: (1..=3)
                 .map(|frame| rp_guider::FrameMetrics {
                     frame,
                     hfd: Some(2.5),
                     snr: Some(20.0),
                     star_mass: Some(1000.0),
+                    star_count: 3,
                     star_lost: false,
                 })
                 .collect(),
@@ -8742,11 +9104,14 @@ async fn guide_train_auto_focus_fails_when_the_confirmation_refresh_fails() {
                 hfd: Some(hfd),
                 snr: Some(20.0),
                 star_mass: Some(1000.0),
+                star_count: 3,
                 star_lost: false,
             })
             .collect();
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames,
         })
     });
@@ -8853,11 +9218,14 @@ async fn guide_train_auto_focus_bounds_the_minimum_by_the_positions_that_produce
                 hfd,
                 snr: Some(20.0),
                 star_mass: None,
+                star_count: 3,
                 star_lost: hfd.is_none(),
             })
             .collect();
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames,
         })
     });
@@ -8896,7 +9264,9 @@ async fn guide_train_auto_focus_fails_fast_when_guiding_stops_mid_sweep() {
         .returning(|| Ok(guiding_stats_active()));
     mock.expect_guiding_metrics().returning(|| {
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Idle,
             guiding: false,
+            epoch: "test-epoch".to_string(),
             frames: Vec::new(),
         })
     });
@@ -8914,6 +9284,48 @@ async fn guide_train_auto_focus_fails_fast_when_guiding_stops_mid_sweep() {
     assert_tool_error(result, "guiding stopped during the metric sweep");
 }
 
+#[tokio::test]
+async fn guide_train_auto_focus_goes_on_through_star_lost_frames() {
+    // At deep defocus the guider loses its star and reports `star_lost`
+    // with `guiding: false`. Those frames are null samples, not a
+    // stopped run: the sweep goes on, and with no valid sample at all
+    // it ends on too few samples rather than on "guiding stopped".
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    let next_frame = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    mock.expect_guiding_metrics().returning(move || {
+        let start = next_frame.fetch_add(5, std::sync::atomic::Ordering::SeqCst);
+        Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::StarLost,
+            guiding: false,
+            epoch: "test-epoch".to_string(),
+            frames: (start + 1..=start + 5)
+                .map(|frame| rp_guider::FrameMetrics {
+                    frame,
+                    hfd: None,
+                    snr: None,
+                    star_mass: None,
+                    star_count: 0,
+                    star_lost: true,
+                })
+                .collect(),
+        })
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(guide_sweep_focuser()),
+        None,
+        None,
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    assert_tool_error(result, "not enough valid guide samples: 0 of");
+}
+
 #[tokio::test(start_paused = true)]
 async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
     // The mock always returns the same three frames: after the first
@@ -8924,13 +9336,16 @@ async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
         .returning(|| Ok(guiding_stats_active()));
     mock.expect_guiding_metrics().returning(|| {
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames: (1..=3)
                 .map(|frame| rp_guider::FrameMetrics {
                     frame,
                     hfd: Some(2.5),
                     snr: Some(20.0),
                     star_mass: Some(1000.0),
+                    star_count: 3,
                     star_lost: false,
                 })
                 .collect(),
@@ -8984,11 +9399,14 @@ async fn guide_train_auto_focus_treats_star_lost_positions_as_null_samples() {
                 hfd: (!star_lost).then_some(3.0),
                 snr: Some(3.0),
                 star_mass: None,
+                star_count: 3,
                 star_lost,
             })
             .collect();
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames,
         })
     });
@@ -11036,22 +11454,26 @@ async fn unpark_failure_emits_started_then_failed() {
 // merging (per-call > config default > omitted), the dither-amount
 // fallback, the per-code error mapping, and the guide/dither event
 // triples. End-to-end wire-format coverage lives in the BDD suite
-// (`guider.feature`) against `GuiderStub`.
+// (`guiding_tools.feature`, `guiding_dither.feature`) against
+// `GuiderStub`.
 // ---------------------------------------------------------------------------
 
 use crate::config::GuiderDefaults;
 use crate::mcp::built_in::guider::{
-    DitherParams, DitherUnit, GetGuidingStatsParams, PauseGuidingParams, RestartGuiderParams,
-    ResumeGuidingParams, StartGuidingParams, StopGuidingParams,
+    DitherParams, DitherUnit, GetGuidingStatsParams, PauseGuidingParams, ResumeGuidingParams,
+    StartGuidingParams, StopGuidingParams,
 };
 use rp_guider::{GuiderError, GuidingStats, MockGuiderClient, SettledOutcome};
 
 fn settled_outcome() -> SettledOutcome {
     SettledOutcome {
-        state: "guiding".to_string(),
+        state: rp_guider::GuiderState::Guiding,
         rms_ra_px: Some(0.3),
         rms_dec_px: Some(0.4),
         total_rms_px: Some(0.5),
+        rms_ra_arcsec: Some(1.2),
+        rms_dec_arcsec: Some(1.6),
+        total_rms_arcsec: Some(2.0),
         sample_count: 12,
     }
 }
@@ -11646,17 +12068,30 @@ async fn captures_through_different_cameras_do_not_wait_for_each_other() {
     assert_eq!(calls(&free.start_exposure_calls), 1);
 }
 
-/// Build a handler with a configured guider client. Pass
-/// `configure` to wire up mock expectations before the handler is
-/// built.
+/// The `unique_id` the guider of `handler_with_guider` reports for its
+/// camera: none of rp's, as the devices check wants of a rig with no
+/// guiding train.
+const GUIDER_CAMERA_ID: &str = "guider-cam-id";
+
+/// Build a handler with a configured guider client and a connected
+/// mount. Pass `configure` to wire up mock expectations before the
+/// handler is built.
+///
+/// The guider answers `devices` with rp's mount and a camera of its
+/// own, so a start passes the devices check; mockall takes the first
+/// matching expectation, so one `configure` sets on `devices` wins
+/// over this default.
 fn handler_with_guider(
     configure: impl FnOnce(&mut MockGuiderClient),
     defaults: GuiderDefaults,
 ) -> McpHandler {
     let mut mock = MockGuiderClient::new();
     configure(&mut mock);
+    mock.expect_devices()
+        .returning(|| Ok(guider_devices(Some(MOCK_UNIQUE_ID), Some(GUIDER_CAMERA_ID))));
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    test_handler(empty_registry()).with_guider(Some(client), defaults)
+    test_handler(mount_registry(Arc::new(MockTelescope::default()), None))
+        .with_guider(Some(client), defaults)
 }
 
 #[tokio::test]
@@ -11777,10 +12212,10 @@ async fn start_guiding_emits_started_and_settled_with_the_settle_deadline() {
     assert_no_more_events(&mut rx).await;
 
     assert_eq!(started.event, "guide_started");
-    // predicted = settle_time; max = settle_timeout + the service's
-    // 10 s backstop grace.
+    // predicted = settle_time; max = calibration_timeout (10 min) +
+    // settle_timeout + the 15 s the guider's answer gets past it.
     assert_eq!(started.predicted_duration_ms, Some(8_000));
-    assert_eq!(started.max_duration_ms, Some(50_000));
+    assert_eq!(started.max_duration_ms, Some(655_000));
     assert_eq!(settled.event, "guide_settled");
     assert_eq!(settled.payload["total_rms_px"], 0.5);
     assert_eq!(settled.payload["sample_count"], 12);
@@ -11815,9 +12250,10 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
 
     let started = next_event(&mut rx).await;
     // predicted clamps down to the timeout (40s), not the oversized
-    // settle_time (120s); max stays timeout + 10s backstop grace.
+    // settle_time (120s); max stays calibration_timeout + timeout +
+    // the 15 s margin.
     assert_eq!(started.predicted_duration_ms, Some(40_000));
-    assert_eq!(started.max_duration_ms, Some(50_000));
+    assert_eq!(started.max_duration_ms, Some(655_000));
     assert!(started.predicted_duration_ms <= started.max_duration_ms);
 }
 
@@ -11825,7 +12261,7 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
 async fn start_guiding_saturates_instead_of_overflowing_on_an_extreme_settle_timeout() {
     // An operator-configured settle_timeout near Duration::MAX must not
     // panic the process via `Duration`'s overflow-checked `Add` (the
-    // backstop-grace addition saturates instead), and the resulting
+    // additions on top of it saturate instead), and the resulting
     // millisecond count must saturate to u64::MAX rather than silently
     // truncating (as a bare `as u64` cast on the u128 millis would).
     let defaults = GuiderDefaults {
@@ -11931,7 +12367,7 @@ async fn dither_uses_the_pixels_parameter() {
     let handler = handler_with_guider(
         |mock| {
             mock.expect_dither()
-                .withf(|req| req.amount_px == 5.0 && req.ra_only)
+                .withf(|req| req.amount == rp_guider::DitherAmount::Px(5.0) && req.ra_only)
                 .returning(|_| Ok(settled_outcome()));
         },
         GuiderDefaults::default(),
@@ -11960,7 +12396,7 @@ async fn dither_falls_back_to_the_configured_dither_pixels() {
     let handler = handler_with_guider(
         |mock| {
             mock.expect_dither()
-                .withf(|req| req.amount_px == 3.5 && !req.ra_only)
+                .withf(|req| req.amount == rp_guider::DitherAmount::Px(3.5) && !req.ra_only)
                 .returning(|_| Ok(settled_outcome()));
         },
         defaults,
@@ -12067,10 +12503,19 @@ fn dither_trains(include_imaging: bool) -> crate::equipment::trains::TrainModel 
     crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
 }
 
-fn dither_handler_with_trains(expected_amount_px: f64, include_imaging: bool) -> McpHandler {
+/// A handler over the two dither cameras whose guider accepts only a
+/// dither of `expected` (within a rounding error).
+fn dither_handler_with_trains(
+    expected: rp_guider::DitherAmount,
+    include_imaging: bool,
+) -> McpHandler {
+    use rp_guider::DitherAmount::{Arcsec, Px};
     let mut mock = MockGuiderClient::new();
     mock.expect_dither()
-        .withf(move |req| (req.amount_px - expected_amount_px).abs() < 1e-9)
+        .withf(move |req| match (req.amount, expected) {
+            (Px(sent), Px(wanted)) | (Arcsec(sent), Arcsec(wanted)) => (sent - wanted).abs() < 1e-9,
+            _ => false,
+        })
         .returning(|_| Ok(settled_outcome()));
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     test_handler(dither_dual_camera_registry())
@@ -12079,10 +12524,17 @@ fn dither_handler_with_trains(expected_amount_px: f64, include_imaging: bool) ->
 }
 
 #[tokio::test]
-async fn dither_converts_arcsec_at_the_guiding_train_pixel_scale() {
-    // 10″ at guide scale 206.265 × 3.76 µm / 200 mm ≈ 3.8778 ″/px.
-    let expected = 10.0 / (206.265 * 3.76 / 200.0);
-    let handler = dither_handler_with_trains(expected, false);
+async fn dither_sends_arcseconds_as_they_are() {
+    // The guider converts by its own pixel scale: rp's trains are not
+    // read, and none is needed.
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither()
+                .withf(|req| req.amount == rp_guider::DitherAmount::Arcsec(10.0))
+                .returning(|_| Ok(settled_outcome()));
+        },
+        GuiderDefaults::default(),
+    );
     let result = handler
         .dither_inner(
             DitherParams {
@@ -12098,10 +12550,10 @@ async fn dither_converts_arcsec_at_the_guiding_train_pixel_scale() {
 }
 
 #[tokio::test]
-async fn dither_converts_main_px_through_both_train_pixel_scales() {
-    // 10 main-camera px → arcsec at the imaging train's scale
-    // (206.265 × 2.9 / 1000) → guide px at the guiding train's scale.
-    let expected = 10.0 * (206.265 * 2.9 / 1000.0) / (206.265 * 3.76 / 200.0);
+async fn dither_sends_main_px_as_arcseconds_at_the_imaging_train_pixel_scale() {
+    // 10 main-camera px at the imaging train's scale,
+    // 206.265 × 2.9 µm / 1000 mm ≈ 0.5982 ″/px.
+    let expected = rp_guider::DitherAmount::Arcsec(10.0 * (206.265 * 2.9 / 1000.0));
     let handler = dither_handler_with_trains(expected, true);
     let result = handler
         .dither_inner(
@@ -12118,21 +12570,46 @@ async fn dither_converts_main_px_through_both_train_pixel_scales() {
 }
 
 #[tokio::test]
-async fn dither_arcsec_without_a_guiding_train_errors_without_an_rpc() {
-    // Trains default to empty on the test handler; no mock
-    // expectation — reaching the client would panic.
-    let handler = handler_with_guider(|_| {}, GuiderDefaults::default());
+async fn dither_sends_guide_px_as_they_are_whatever_the_trains() {
+    let handler = dither_handler_with_trains(rp_guider::DitherAmount::Px(4.0), true);
+    let result = handler
+        .dither_inner(
+            DitherParams {
+                pixels: Some(4.0),
+                unit: Some(DitherUnit::GuidePx),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn dither_main_px_without_an_imaging_train_errors_without_an_rpc() {
+    // A guiding train alone; no mock expectation — reaching the client
+    // would panic.
+    let handler = test_handler(dither_dual_camera_registry())
+        .with_guider(
+            Some(Arc::new(MockGuiderClient::new())),
+            GuiderDefaults::default(),
+        )
+        .with_trains(dither_trains(false));
     let result = handler
         .dither_inner(
             DitherParams {
                 pixels: Some(10.0),
-                unit: Some(DitherUnit::Arcsec),
+                unit: Some(DitherUnit::MainPx),
                 ..dither_params_empty()
             },
             &Cancel::never(),
         )
         .await;
-    assert_tool_error(result, "guiding train");
+    assert_tool_error(
+        result,
+        "dither: unit 'main_px' requires exactly one imaging train (found none)",
+    );
 }
 
 #[tokio::test]
@@ -12182,7 +12659,9 @@ async fn dither_emits_started_and_settled() {
     assert_no_more_events(&mut rx).await;
 
     assert_eq!(started.event, "dither_started");
-    assert_eq!(started.payload["pixels"], 5.0);
+    assert_eq!(started.payload["amount_px"], 5.0);
+    assert_eq!(started.payload["amount_arcsec"], serde_json::Value::Null);
+    assert_eq!(started.payload["ra_only"], false);
     assert_eq!(settled.event, "dither_settled");
     assert_end_mirrors_start(&started, &settled);
 }
@@ -12194,7 +12673,7 @@ async fn dither_failure_emits_dither_failed() {
             mock.expect_dither().returning(|_| {
                 Err(GuiderError::Service {
                     code: "not_guiding".to_string(),
-                    message: "PHD2 is not guiding".to_string(),
+                    message: "a dither needs a guiding run".to_string(),
                     details: serde_json::Value::Null,
                 })
             });
@@ -12224,7 +12703,8 @@ async fn dither_failure_emits_dither_failed() {
 async fn stop_guiding_emits_guide_stopped_with_reason_requested() {
     let handler = handler_with_guider(
         |mock| {
-            mock.expect_stop_guiding().returning(|| Ok(()));
+            mock.expect_stop_guiding()
+                .returning(|| Ok(rp_guider::GuiderState::Idle));
         },
         GuiderDefaults::default(),
     );
@@ -12235,12 +12715,13 @@ async fn stop_guiding_emits_guide_stopped_with_reason_requested() {
         .await
         .unwrap();
     let json = ok_text(result);
-    assert_eq!(json["state"], "stopped");
+    assert_eq!(json["state"], "idle");
 
     let stopped = next_event(&mut rx).await;
     assert_no_more_events(&mut rx).await;
     assert_eq!(stopped.event, "guide_stopped");
     assert_eq!(stopped.payload["reason"], "requested");
+    assert_eq!(stopped.payload["stop_reason"], serde_json::Value::Null);
     assert!(stopped.operation_id.is_none(), "point event, no operation");
 }
 
@@ -12251,7 +12732,7 @@ async fn stop_guiding_failure_errors_without_the_stopped_event() {
             mock.expect_stop_guiding().returning(|| {
                 Err(GuiderError::Service {
                     code: "stop_timeout".to_string(),
-                    message: "PHD2 did not confirm the stop".to_string(),
+                    message: "the stop took longer than stop_timeout".to_string(),
                     details: serde_json::Value::Null,
                 })
             });
@@ -12266,61 +12747,12 @@ async fn stop_guiding_failure_errors_without_the_stopped_event() {
 }
 
 #[tokio::test]
-async fn restart_guider_returns_the_services_restart() {
-    let handler = handler_with_guider(
-        |mock| {
-            mock.expect_restart_phd2().returning(|| {
-                Ok(rp_guider::RestartOutcome {
-                    phd2: "restarted".to_string(),
-                    equipment: "connected".to_string(),
-                    elapsed_ms: 18400,
-                })
-            });
-        },
-        GuiderDefaults::default(),
-    );
-
-    let result = handler
-        .restart_guider(Parameters(RestartGuiderParams {}))
-        .await
-        .unwrap();
-    let json = ok_text(result);
-    assert_eq!(json["phd2"], "restarted");
-    assert_eq!(json["equipment"], "connected");
-    assert_eq!(json["elapsed_ms"], 18400);
-}
-
-#[tokio::test]
-async fn restart_guider_carries_the_services_refusal() {
-    let handler = handler_with_guider(
-        |mock| {
-            mock.expect_restart_phd2().returning(|| {
-                Err(GuiderError::Service {
-                    code: "guiding_active".to_string(),
-                    message: "PHD2 is Guiding; stop guiding first".to_string(),
-                    details: serde_json::Value::Null,
-                })
-            });
-        },
-        GuiderDefaults::default(),
-    );
-
-    let result = handler
-        .restart_guider(Parameters(RestartGuiderParams {}))
-        .await;
-    assert_tool_error(
-        result,
-        "restart_guider: guiding_active: PHD2 is Guiding; stop guiding first",
-    );
-}
-
-#[tokio::test]
 async fn pause_guiding_forwards_full() {
     let handler = handler_with_guider(
         |mock| {
             mock.expect_pause_guiding()
                 .withf(|&full| full)
-                .returning(|_| Ok(()));
+                .returning(|_| Ok(rp_guider::GuiderState::Paused));
         },
         GuiderDefaults::default(),
     );
@@ -12333,19 +12765,54 @@ async fn pause_guiding_forwards_full() {
 }
 
 #[tokio::test]
-async fn resume_guiding_resumes() {
+async fn resume_guiding_answers_the_state_the_guider_resumed_into() {
+    for state in [
+        rp_guider::GuiderState::Guiding,
+        rp_guider::GuiderState::StarLost,
+    ] {
+        let handler = handler_with_guider(
+            |mock| {
+                mock.expect_resume_guiding().returning(move || Ok(state));
+            },
+            GuiderDefaults::default(),
+        );
+        let result = handler
+            .resume_guiding_inner(ResumeGuidingParams {}, &Cancel::never())
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["state"], state.as_str());
+    }
+}
+
+#[tokio::test]
+async fn pause_and_resume_failures_carry_the_guiders_refusal() {
+    let not_guiding = || GuiderError::Service {
+        code: "not_guiding".to_string(),
+        message: "no run to pause".to_string(),
+        details: serde_json::Value::Null,
+    };
     let handler = handler_with_guider(
         |mock| {
-            mock.expect_resume_guiding().returning(|| Ok(()));
+            mock.expect_pause_guiding()
+                .returning(move |_| Err(not_guiding()));
+            mock.expect_resume_guiding()
+                .returning(move || Err(not_guiding()));
         },
         GuiderDefaults::default(),
     );
-    let result = handler
-        .resume_guiding_inner(ResumeGuidingParams {}, &Cancel::never())
-        .await
-        .unwrap();
-    let json = ok_text(result);
-    assert_eq!(json["state"], "resumed");
+    assert_tool_error(
+        handler
+            .pause_guiding(Parameters(PauseGuidingParams { full: None }))
+            .await,
+        "pause_guiding: not_guiding: no run to pause",
+    );
+    assert_tool_error(
+        handler
+            .resume_guiding_inner(ResumeGuidingParams {}, &Cancel::never())
+            .await,
+        "resume_guiding: not_guiding: no run to pause",
+    );
 }
 
 #[tokio::test]
@@ -12354,15 +12821,16 @@ async fn get_guiding_stats_passes_the_snapshot_through() {
         |mock| {
             mock.expect_guiding_stats().returning(|| {
                 Ok(GuidingStats {
-                    app_state: "Guiding".to_string(),
-                    guiding: true,
                     rms_ra_px: Some(0.3),
                     rms_dec_px: Some(0.4),
                     total_rms_px: Some(0.5),
-                    snr: None,
-                    star_mass: None,
                     sample_count: 12,
-                    totals: None,
+                    last_stop: Some(rp_guider::LastStop {
+                        reason: "mount_slewing".to_string(),
+                        at: "2026-11-12T03:20:01Z".to_string(),
+                        message: "the mount slewed".to_string(),
+                    }),
+                    ..stats_in(rp_guider::GuiderState::Guiding)
                 })
             });
         },
@@ -12373,12 +12841,33 @@ async fn get_guiding_stats_passes_the_snapshot_through() {
         .await
         .unwrap();
     let json = ok_text(result);
-    assert_eq!(json["app_state"], "Guiding");
+    assert_eq!(json["state"], "guiding");
     assert_eq!(json["guiding"], true);
+    assert_eq!(json["settling"], false);
     assert_eq!(json["rms_ra_px"], 0.3);
+    assert_eq!(json["sample_count"], 12);
     // Never-sampled telemetry stays null, not stale numbers.
     assert_eq!(json["snr"], serde_json::Value::Null);
     assert_eq!(json["star_mass"], serde_json::Value::Null);
+    assert_eq!(json["last_stop"]["reason"], "mount_slewing");
+    // The running totals are the sidecar's, not the tool's.
+    assert!(json.get("totals").is_none(), "{json}");
+}
+
+#[tokio::test]
+async fn get_guiding_stats_failure_carries_the_guiders_error() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_guiding_stats().returning(|| Err(guider_down()));
+        },
+        GuiderDefaults::default(),
+    );
+    assert_tool_error(
+        handler
+            .get_guiding_stats(Parameters(GetGuidingStatsParams {}))
+            .await,
+        "get_guiding_stats: service unreachable: connection refused",
+    );
 }
 
 #[tokio::test]
@@ -12747,17 +13236,20 @@ async fn set_tracking_inner_with_a_cancelled_handle_never_touches_the_drive() {
 // -----------------------------------------------------------------------
 // Dither cancellation (rp.md § Mount Motion Gate + § In-Flight Tool
 // Calls): a call cancelled while queued never reaches the guider; a
-// call cancelled mid-settle answers at once but its motion permit stays
-// held until the guider's settle RPC ends, bounded by the tail cap.
+// call cancelled mid-settle answers at once and sends the guider's
+// dither abort, but its motion permit stays held until the guider has
+// answered the dither request, bounded by the tail cap.
 // -----------------------------------------------------------------------
 
 /// A guider whose `dither` blocks until [`ReleasableDitherGuider::release`]
-/// is called — stands in for PHD2 still pulsing the mount towards the
-/// new lock position after rp stopped waiting.
+/// is called — stands in for a guider still pulsing the mount towards
+/// the new lock position after rp stopped waiting. Its `abort_dither`
+/// only counts the call, so a test decides when the dither answers.
 #[derive(Default)]
 struct ReleasableDitherGuider {
     release: tokio::sync::Notify,
     dither_calls: std::sync::atomic::AtomicU32,
+    abort_calls: std::sync::atomic::AtomicU32,
 }
 
 impl ReleasableDitherGuider {
@@ -12775,15 +13267,15 @@ impl rp_guider::GuiderClient for ReleasableDitherGuider {
         panic!("not exercised by these tests")
     }
 
-    async fn stop_guiding(&self) -> Result<(), GuiderError> {
+    async fn stop_guiding(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 
-    async fn pause_guiding(&self, _full: bool) -> Result<(), GuiderError> {
+    async fn pause_guiding(&self, _full: bool) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 
-    async fn resume_guiding(&self) -> Result<(), GuiderError> {
+    async fn resume_guiding(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 
@@ -12797,6 +13289,12 @@ impl rp_guider::GuiderClient for ReleasableDitherGuider {
         Ok(settled_outcome())
     }
 
+    async fn abort_dither(&self) -> Result<bool, GuiderError> {
+        self.abort_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(true)
+    }
+
     async fn guiding_stats(&self) -> Result<rp_guider::GuidingStats, GuiderError> {
         panic!("not exercised by these tests")
     }
@@ -12805,19 +13303,15 @@ impl rp_guider::GuiderClient for ReleasableDitherGuider {
         panic!("not exercised by these tests")
     }
 
-    async fn current_equipment(&self) -> Result<rp_guider::PhdEquipment, GuiderError> {
+    async fn devices(&self) -> Result<rp_guider::GuiderDevices, GuiderError> {
         panic!("not exercised by these tests")
     }
 
-    async fn clear_calibration(&self) -> Result<(), GuiderError> {
+    async fn clear_calibration(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 
-    async fn reselect_star(&self) -> Result<(), GuiderError> {
-        panic!("not exercised by these tests")
-    }
-
-    async fn restart_phd2(&self) -> Result<rp_guider::RestartOutcome, GuiderError> {
+    async fn reselect_star(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 }
@@ -12914,11 +13408,16 @@ async fn dither_cancelled_mid_settle_keeps_the_gate_exclusive_until_the_guider_s
             .is_err(),
         "the motion permit must outlive the cancelled body while the guider is still settling"
     );
+    assert_eq!(
+        calls(&guider.abort_calls),
+        1,
+        "a cancelled dither sends the guider's dither abort"
+    );
 
     guider.release();
     let _shared = tokio::time::timeout(Duration::from_secs(5), handler.motion_gate.shared())
         .await
-        .expect("the permit must release once the guider's settle RPC ends");
+        .expect("the permit must release once the guider has answered the dither");
 }
 
 #[tokio::test(start_paused = true)]
@@ -12940,8 +13439,8 @@ async fn dither_tail_holder_releases_the_gate_at_the_cap_when_the_guider_never_s
         .await;
     assert_tool_error(result, "cancelled: safety");
 
-    // Held past the settle timeout itself (the guider may still be
-    // inside its own backstop margin)...
+    // Held past the settle timeout itself (the guider's answer gets
+    // a margin past it)...
     assert!(
         tokio::time::timeout(settle_timeout, handler.motion_gate.shared())
             .await
@@ -13203,6 +13702,31 @@ fn lease_capture(lease_id: Option<&str>) -> CaptureParams {
     }
 }
 
+/// A lease that holds the guiding train's camera refuses the sweep,
+/// naming the lease, before the guider is read: with no guider
+/// configured the guiding check would refuse it otherwise.
+#[tokio::test]
+async fn auto_focus_over_a_leased_guiding_train_is_refused_naming_the_lease() {
+    let handler = lease_handler(Arc::new(MockCamera::default()), "guiding");
+    let _granted = ok_text(acquire_lease(&handler, "a").await);
+
+    let result = handler
+        .auto_focus_inner(
+            AutoFocusToolParams {
+                train_id: Some("main".into()),
+                step_size: Some(50),
+                half_width: Some(200),
+                min_fit_points: None,
+                confirmation_tolerance: None,
+            },
+            None,
+            Cancel::never(),
+        )
+        .await;
+
+    assert_tool_error(result, "lease 'a' on train 'main' reserves camera 'cam'");
+}
+
 #[tokio::test]
 async fn an_imaging_trains_lease_answers_what_it_holds_and_holds_the_gate() {
     let handler = lease_handler(Arc::new(MockCamera::default()), "imaging");
@@ -13212,7 +13736,6 @@ async fn an_imaging_trains_lease_answers_what_it_holds_and_holds_the_gate() {
     assert_eq!(json["train_id"], "main");
     assert_eq!(json["focuser_id"], "foc");
     assert_eq!(json["cameras"], serde_json::json!(["cam"]));
-    assert_eq!(json["facade_lease"], false);
     chrono::DateTime::parse_from_rfc3339(json["ends_by"].as_str().unwrap()).unwrap();
 
     let slew = tokio::time::timeout(
@@ -13295,71 +13818,274 @@ async fn a_move_naming_no_lease_waits_for_the_lease_on_its_focuser() {
     ok_text(ordinary.await.unwrap().unwrap());
 }
 
+/// A fake guider, idle, whose camera is the fixture camera "cam".
+fn lease_guider() -> Arc<crate::guide_camera::test_support::FakeGuider> {
+    let guider = crate::guide_camera::test_support::FakeGuider::default();
+    *guider.devices.lock().unwrap() =
+        Some(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID)));
+    Arc::new(guider)
+}
+
+/// [`lease_handler`] over a guiding train on `cam`, with `guider`
+/// configured.
+fn guided_handler(
+    cam: Arc<dyn ascom_alpaca::api::Camera>,
+    guider: &Arc<crate::guide_camera::test_support::FakeGuider>,
+) -> McpHandler {
+    let client: Arc<dyn rp_guider::GuiderClient> = guider.clone();
+    lease_handler(cam, "guiding").with_guider(Some(client), GuiderDefaults::default())
+}
+
+/// [`guided_handler`] over a mock camera.
+fn guided_lease_handler(guider: &Arc<crate::guide_camera::test_support::FakeGuider>) -> McpHandler {
+    guided_handler(Arc::new(MockCamera::default()), guider)
+}
+
+fn set_guider_stats(
+    guider: &crate::guide_camera::test_support::FakeGuider,
+    stats: crate::guide_camera::test_support::Stats,
+) {
+    *guider.stats.lock().unwrap() = stats;
+}
+
+/// Whether a start of guiding through `handler` finds the guide camera
+/// guard on "cam" free, giving it back at once when it does.
+fn guard_is_free(handler: &McpHandler) -> bool {
+    handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .is_ok()
+}
+
+/// Waits, at most 5 s, for the guide camera guard to be given back.
+async fn guard_given_back(handler: &McpHandler) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !guard_is_free(handler) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the guide camera guard stayed held");
+}
+
 #[tokio::test]
-async fn a_guiding_trains_lease_needs_the_camera_facade_and_keeps_nothing_when_refused() {
+async fn a_guiding_trains_lease_takes_no_guard_with_no_guider_configured() {
     let handler = lease_handler(Arc::new(MockCamera::default()), "guiding");
+
+    ok_text(acquire_lease(&handler, "a").await);
+
+    assert!(guard_is_free(&handler));
+}
+
+#[tokio::test]
+async fn a_guiding_trains_lease_holds_the_guard_after_an_idle_read_and_gives_it_back_with_the_lease(
+) {
+    let guider = lease_guider();
+    let handler = guided_lease_handler(&guider);
+
+    ok_text(acquire_lease(&handler, "a").await);
+    assert_eq!(guider.stats_reads(), 1);
+    assert_eq!(
+        handler
+            .guide_camera
+            .take_for_start("cam", "start_guiding")
+            .unwrap_err(),
+        "the guide camera 'cam' is in use by train lease 'a'"
+    );
+
+    release_lease(&handler, "a").await;
+    guard_given_back(&handler).await;
+}
+
+#[tokio::test]
+async fn a_guiding_trains_lease_checks_none_of_the_guiders_devices() {
+    let guider = lease_guider();
+    *guider.devices.lock().unwrap() = None;
+    let handler = guided_lease_handler(&guider);
+
+    ok_text(acquire_lease(&handler, "a").await);
+}
+
+#[tokio::test]
+async fn a_guider_that_is_not_idle_refuses_a_guiding_trains_lease_which_gives_back_what_it_took() {
+    use crate::guide_camera::test_support::Stats;
+    let guider = lease_guider();
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Looping));
+    let handler = guided_lease_handler(&guider);
 
     assert_tool_error(
         Ok(acquire_lease(&handler, "a").await),
-        "camera 'cam' of guiding train 'main' does not offer the sweep lease \
-         (rustyphoton:sweep-lease-acquire): it is not the PHD2 camera facade, \
-         or its phd2-guider predates the lease",
+        "acquire_train_lease: the guider is looping; rp uses the guide camera 'cam' only while the guider is idle",
     );
+
     let entry = handler.equipment.find_camera("cam").unwrap();
     tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
         .await
         .expect("a refused acquire kept the camera's slot");
+    guard_given_back(&handler).await;
 }
 
 #[tokio::test]
-async fn a_guiding_trains_lease_takes_the_facade_lease_and_releases_it_with_the_lease() {
-    let facade = Arc::new(crate::train_lease::test_support::FakeFacade::default());
-    let handler = lease_handler(facade.clone(), "guiding");
+async fn a_guiding_trains_lease_is_refused_at_once_while_a_start_holds_the_guard() {
+    let guider = lease_guider();
+    let handler = guided_lease_handler(&guider);
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .unwrap();
 
-    let json = ok_text(acquire_lease(&handler, "a").await);
-    assert_eq!(json["facade_lease"], true);
-    let acquires = facade.calls_of(crate::train_lease::facade::ACQUIRE);
-    let token = acquires[0]["token"].as_str().unwrap().to_string();
-    assert!(
-        token.len() == 32 && token.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-        "{token:?}"
-    );
-    assert_eq!(acquires[0]["ttl_s"], 60);
-
-    release_lease(&handler, "a").await;
-    let entry = handler.equipment.find_camera("cam").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
-        .await
-        .expect("the released lease kept the camera");
-    let releases = facade.calls_of(crate::train_lease::facade::RELEASE);
-    assert_eq!(releases.len(), 1);
-    assert_eq!(releases[0]["token"], token.as_str());
-}
-
-#[tokio::test]
-async fn a_facade_refusal_is_relayed_and_its_token_released() {
-    let facade = Arc::new(crate::train_lease::test_support::FakeFacade::default());
-    *facade.refuse_acquire.lock().unwrap() =
-        Some("PHD2 is Guiding; the camera facade captures only while PHD2 is Stopped".into());
-    let handler = lease_handler(facade.clone(), "guiding");
-
-    let result = acquire_lease(&handler, "a").await;
     assert_tool_error(
-        Ok(result),
-        "the camera facade 'cam' refused the sweep lease",
+        Ok(acquire_lease(&handler, "a").await),
+        "acquire_train_lease: the guide camera 'cam' is in use by start_guiding",
     );
-    let entry = handler.equipment.find_camera("cam").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
+    assert_eq!(guider.stats_reads(), 0, "a refused acquire read the guider");
+    drop(start);
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_is_refused_unless_the_guider_reads_idle() {
+    use crate::guide_camera::test_support::Stats;
+    for (stats, expected) in [
+        (
+            Stats::In(rp_guider::GuiderState::Guiding),
+            "the guider is guiding; rp uses the guide camera 'cam' only while the guider is idle",
+        ),
+        (
+            Stats::Unreachable,
+            "could not read the guider's state before using the guide camera 'cam': \
+             service unreachable: connection refused",
+        ),
+    ] {
+        let cam = Arc::new(MockCamera::default());
+        let guider = lease_guider();
+        set_guider_stats(&guider, stats);
+        let handler = guided_handler(cam.clone(), &guider);
+
+        let err = handler
+            .do_capture(capture_request("cam", 1), None, &Cancel::never())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, expected);
+        assert_eq!(calls(&cam.start_exposure_calls), 0);
+        assert!(guard_is_free(&handler), "a refused capture kept the guard");
+    }
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_is_refused_at_once_while_a_start_holds_the_guard() {
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "move_rotator")
+        .unwrap();
+
+    let err = handler
+        .do_capture(capture_request("cam", 1), None, &Cancel::never())
         .await
-        .expect("a refused acquire kept the camera's slot");
-    // The token was named before the acquire, so it is released even
-    // though the facade said no: an answer lost in transit is never a
-    // lease left held.
-    let token = facade.calls_of(crate::train_lease::facade::ACQUIRE)[0]["token"].clone();
-    assert_eq!(
-        facade.calls_of(crate::train_lease::facade::RELEASE),
-        [serde_json::json!({ "token": token })]
+        .unwrap_err();
+
+    assert_eq!(err, "the guide camera 'cam' is in use by move_rotator");
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+    assert_eq!(guider.stats_reads(), 0, "a refused capture read the guider");
+    drop(start);
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_gives_the_guard_back_when_it_succeeds_or_fails() {
+    for cam in [
+        MockCamera::default(),
+        MockCamera {
+            fail_start_exposure: true,
+            ..Default::default()
+        },
+        MockCamera {
+            fail_image_array: true,
+            ..Default::default()
+        },
+    ] {
+        let guider = lease_guider();
+        let handler = guided_handler(Arc::new(cam), &guider);
+
+        let _ = handler
+            .do_capture(capture_request("cam", 1), None, &Cancel::never())
+            .await;
+
+        assert!(
+            guard_is_free(&handler),
+            "a capture that ended kept the guard"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_capture_through_the_guide_camera_keeps_the_guard_until_the_camera_idles() {
+    let cam = Arc::new(MockCamera {
+        never_ready: true,
+        ..Default::default()
+    });
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+
+    handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .expect_err("a cancelled capture must fail");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !guard_is_free(&handler),
+        "the guard went back while the camera was still exposing"
     );
+
+    cam.idle_now
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    guard_given_back(&handler).await;
+}
+
+#[tokio::test]
+async fn a_capture_under_a_guiding_trains_lease_reads_the_guider_too() {
+    use crate::guide_camera::test_support::Stats;
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    ok_text(acquire_lease(&handler, "a").await);
+
+    // Another client of the guider's started it after the lease's read.
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Guiding));
+    let result = handler
+        .capture_inner(lease_capture(Some("a")), None, &Cancel::never())
+        .await;
+
+    assert_tool_error(
+        result,
+        "the guider is guiding; rp uses the guide camera 'cam' only while the guider is idle",
+    );
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+}
+
+#[tokio::test]
+async fn a_capture_through_another_camera_takes_no_guard_whatever_the_guider_does() {
+    use crate::guide_camera::test_support::Stats;
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Guiding));
+    let client: Arc<dyn rp_guider::GuiderClient> = guider.clone();
+    let handler =
+        lease_handler(cam, "imaging").with_guider(Some(client), GuiderDefaults::default());
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .unwrap();
+
+    handler
+        .do_capture(capture_request("cam", 1), None, &Cancel::never())
+        .await
+        .unwrap();
+    drop(start);
 }
 
 #[tokio::test(start_paused = true)]
@@ -13854,7 +14580,7 @@ async fn no_guider_means_no_guiding() {
 
 fn guiding_stats_with_steps(guide_steps: u64) -> rp_guider::GuidingStats {
     rp_guider::GuidingStats {
-        totals: Some(rp_guider::GuidingTotals {
+        totals: rp_guider::GuidingTotals {
             epoch: "e".to_string(),
             guide_steps,
             ra_samples: guide_steps,
@@ -13863,7 +14589,7 @@ fn guiding_stats_with_steps(guide_steps: u64) -> rp_guider::GuidingStats {
             dec_sum_sq_px2: 0.0,
             star_lost: 0,
             interruptions: 0,
-        }),
+        },
         ..guiding_stats_active()
     }
 }

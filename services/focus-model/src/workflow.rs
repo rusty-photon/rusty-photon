@@ -234,7 +234,7 @@ pub trait FocusRig: Send + Sync {
     async fn guiding_active(&self) -> Result<bool>;
     async fn pause_guiding(&self) -> Result<()>;
     async fn resume_guiding(&self) -> Result<()>;
-    /// `rp`'s PHD2-metric sweep on the guiding train.
+    /// `rp`'s guide-metric sweep on the guiding train.
     async fn auto_focus_guide_train(&self, train_id: &str) -> Result<GuideFocusResult>;
     /// Take `rp`'s train lease on `train_id` under `lease_id`, for at
     /// most `max_duration` from its grant; answers once it is granted.
@@ -847,9 +847,9 @@ impl Guard {
 
 /// A put-back's move, under the run's lease. `rp` refuses a call under a
 /// lease it no longer holds (one that ended idle, at its
-/// `max_duration`, on the safety transition, or with its facade lease
-/// lost), and the put-back is then sent again without the lease, as an
-/// ordinary move that waits its turn.
+/// `max_duration`, or on the safety transition), and the put-back is
+/// then sent again without the lease, as an ordinary move that waits
+/// its turn.
 async fn put_back_move(
     rig: &dyn FocusRig,
     focuser_id: &str,
@@ -1244,8 +1244,8 @@ pub(crate) async fn focus_one(
         return Err(refuse(session, &prepared, run_base, e).await);
     }
     // A training run on the guiding train takes the train lease before
-    // the handshake and the first move, so a guiding PHD2 is refused
-    // here, before anything pauses or moves.
+    // the handshake and the first move, so a guider that is guiding
+    // refuses it here, before anything pauses or moves.
     let lease_id = match take_lease(session, &prepared).await {
         Ok(lease_id) => lease_id,
         Err(e) => return Err(refuse(session, &prepared, run_base, e).await),
@@ -3772,7 +3772,7 @@ mod tests {
         active.expect_resume_guiding().times(0);
         let mut cleanup = MockFocusRig::new();
         cleanup.expect_resume_guiding().times(1).returning(|| {
-            Box::pin(async { Err(FocusModelError::ToolCall("phd2 is gone".to_owned())) })
+            Box::pin(async { Err(FocusModelError::ToolCall("the guider is gone".to_owned())) })
         });
 
         let err = focus_train(
@@ -3800,7 +3800,7 @@ mod tests {
         assert!(runs.runs[0]
             .error
             .as_deref()
-            .is_some_and(|e| e.contains("phd2 is gone")));
+            .is_some_and(|e| e.contains("the guider is gone")));
         active.checkpoint();
         cleanup.checkpoint();
     }
@@ -4290,7 +4290,11 @@ mod tests {
             .expect_guiding_active()
             .returning(|| Box::pin(async { Ok(true) }));
         active.expect_pause_guiding().returning(|| {
-            Box::pin(async { Err(FocusModelError::ToolCall("phd2 will not pause".to_owned())) })
+            Box::pin(async {
+                Err(FocusModelError::ToolCall(
+                    "the guider will not pause".to_owned(),
+                ))
+            })
         });
         active.expect_measure_stars().times(0);
         let cleanup = MockFocusRig::new();
@@ -4307,7 +4311,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.tool_message().contains("phd2 will not pause"), "{err}");
+        assert!(
+            err.tool_message().contains("the guider will not pause"),
+            "{err}"
+        );
         assert_eq!(position.get(), 25_000, "nothing moved");
 
         let runs = get_focus_runs(&active, &store, &config(CONFIGURED), "main", 20, None)
@@ -4317,7 +4324,7 @@ mod tests {
         assert_eq!(runs.runs[0].outcome, RunOutcome::Error);
         assert_eq!(
             runs.runs[0].error.as_deref(),
-            Some("phd2 will not pause"),
+            Some("the guider will not pause"),
             "the run names what refused"
         );
         active.checkpoint();
@@ -4755,7 +4762,7 @@ mod tests {
             let first = *count == 1;
             Box::pin(async move {
                 if first {
-                    Err(FocusModelError::ToolCall("phd2 said no".to_owned()))
+                    Err(FocusModelError::ToolCall("the guider said no".to_owned()))
                 } else {
                     Ok(())
                 }
@@ -4904,7 +4911,8 @@ mod tests {
     /// The guiding train's active client, logging the acquire, the
     /// guider read, and each move and capture with the lease it ran
     /// under. Its plan is guide-coupled, so the handshake reads the
-    /// guider, which reports no loop: PHD2 is `Stopped` under a lease.
+    /// guider, which reports no loop: `rp` grants a guiding train's
+    /// lease only with the guider idle.
     /// An answer `rig` already holds keeps winning.
     fn guiding_rig(
         mut rig: MockFocusRig,
@@ -5125,8 +5133,8 @@ mod tests {
     async fn a_refused_lease_moves_nothing_is_released_and_is_recorded() {
         let position = Position::new(25_000);
         let log = Log::default();
-        let refusal = "acquire_train_lease: the camera facade 'guide-cam' refused the sweep \
-                       lease: PHD2 is Guiding";
+        let refusal = "acquire_train_lease: the guider is guiding; rp uses the guide camera \
+                       'guide-cam' only while the guider is idle";
         let active = guiding_rig(MockFocusRig::new(), &position, &log, Some(refusal));
         let cleanup = guiding_cleanup(&position, &log, true);
         let (store, _dir) = temp_store().await;
@@ -5151,7 +5159,7 @@ mod tests {
             record.runs[0]
                 .error
                 .as_deref()
-                .is_some_and(|e| e.contains("PHD2 is Guiding")),
+                .is_some_and(|e| e.contains("the guider is guiding")),
             "{:?}",
             record.runs[0].error
         );

@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: Guide-train focus on the guider's metrics
   rp's auto_focus is the guiding train's sweep, and it never captures
   through the guide camera: addressed with the guiding train's id, it
@@ -8,8 +8,8 @@ Feature: Guide-train focus on the guider's metrics
   those frames only in a run, so the sweep requires the guider's stats
   to report the state guiding, and it is refused in every other state
   before anything moves. The guide corrections stay active for the
-  whole sweep: rp pauses nothing, stops nothing and asks for no camera
-  lease. focus_started names the guiding train, no camera, and the
+  whole sweep: rp pauses nothing, stops nothing and starts nothing.
+  focus_started names the guiding train, no camera, and the
   method guider_hfd. A fit that fails moves the focuser back to where
   the sweep started.
 
@@ -25,7 +25,11 @@ Feature: Guide-train focus on the guider's metrics
   a scenario gives it a script, so a sweep's fit reports no minimum, a
   monotonic_curve error. A script names the HFD of every frame in one
   metrics answer after another, and its last value goes on for every
-  answer after it.
+  answer after it. An entry lost serves star-lost frames, which move
+  a guiding stub guider to star_lost until an answer has the star back.
+  A star-lost frame is an invalid frame of the sweep, at deep defocus
+  the expected one, and a guider in star_lost is still in its run: the
+  sweep goes on through it.
 
   Scenario: The sweep samples the guider's metrics, reports a flat curve honestly and puts the focuser back
     Given a running Alpaca simulator
@@ -44,7 +48,19 @@ Feature: Guide-train focus on the guider's metrics
     And the test webhook receiver should receive a "focus_failed" event
     And the stub guider should not have received a pause request
     And the stub guider should not have received a "/guiding/stop" request
-    And the stub guider should not have received a "/camera/lease" request
+    And the stub guider should not have received a "/guiding/start" request
+    When the MCP client calls "get_focuser_position" with focuser "main-focuser"
+    Then the get_focuser_position result position should be 25000
+
+  Scenario: Frames where the guide star is lost are null samples, and the sweep goes on through them
+    Given a running Alpaca simulator
+    And a stub guider in state "guiding"
+    And the stub guider serves the HFD script "lost, lost, lost, lost, 2.5"
+    And rp is running with a focuser on the simulator in guiding train "guide" with a metric auto_focus block
+    And an MCP client connected to rp
+    When the MCP client calls auto_focus with train "guide"
+    Then the tool call should return an error
+    And the error message should contain "not enough valid guide samples: 3 of 5 positions produced an HFD"
     When the MCP client calls "get_focuser_position" with focuser "main-focuser"
     Then the get_focuser_position result position should be 25000
 

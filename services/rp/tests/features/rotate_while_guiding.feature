@@ -1,4 +1,4 @@
-@wip @serial
+@serial
 Feature: A rotator move of the guiding train keeps the guider's calibration right
   The guider is a client of no rotator and cannot see the field turn,
   and a calibration is right only at the angle it was made at. So when
