@@ -1329,7 +1329,7 @@ client cannot be built from fails startup the same way. Doctor reports
 the join between `plugins[].webhook_url` and the plugin service's own
 `server.tls`/`server.auth` as `joins.client-transport` /
 `joins.client-auth`, and `doctor --fix` wires both (see
-[doctor.md § Client-target joins](doctor.md#client-target-joins-607)).
+[doctor.md § Client-target joins](doctor.md#client-target-joins)).
 Any number of event subscribers may be registered, because `rp`
 delivers each event to all of them. Getting a registration wrong is
 quiet: delivery is fire-and-forget with no retry, so the event is
@@ -1349,7 +1349,7 @@ all. Doctor reports the join between `plugins[].webhook_url` and the
 plugin service's own `server.tls`/`server.auth` as
 `joins.client-transport` / `joins.client-auth`, and `doctor --fix` wires
 both (see
-[doctor.md § Client-target joins](doctor.md#client-target-joins-607)).
+[doctor.md § Client-target joins](doctor.md#client-target-joins)).
 
 #### Request
 
