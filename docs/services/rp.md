@@ -5590,8 +5590,10 @@ focuser on its own initiative.
 Mechanics — the watch polls `GET /api/v1/guiding/metrics` every
 `poll_interval` (default `"5s"`) while the guider reports the state
 `guiding`, and is idle otherwise. A new `epoch` in the answer is a
-guider that has restarted and counts its frames anew, so the watch
-then forgets the highest frame number it has seen:
+guider that has restarted and counts its frames anew. What the watch
+holds was measured on the old run's frames, so it re-arms: it forgets
+the highest frame number it has seen, and drops the baseline, any open
+episode and the cooldown, as a `focus_complete` does (below):
 
 - **Baseline**: the median HFD of the first `window` (default 10)
   valid frames after guiding becomes active. The watch subscribes
