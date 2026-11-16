@@ -228,12 +228,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     ),
     ("services/pa-falcon-rotator/src/switch_device.rs", "#241", 1),
     ("services/pa-scops-oag/src/focuser_device.rs", "#250", 1),
-    ("services/phd2-guider/src/connection.rs", "#603", 1),
-    ("services/phd2-guider/tests/bdd/world.rs", "#342", 1),
-    ("services/phd2-guider/tests/test_integration.rs", "#287", 1),
-    ("services/phd2-guider/tests/test_integration.rs", "#294", 2),
-    ("services/phd2-guider/tests/test_integration.rs", "#342", 1),
-    ("services/phd2-guider/tests/test_integration.rs", "#603", 1),
     ("services/plate-solver/src/runner/wcs.rs", "#160", 2),
     ("services/plate-solver/tests/bdd.rs", "#233", 1),
     (

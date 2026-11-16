@@ -283,8 +283,6 @@ const RESERVED_PORT_TRIES: u16 = 64;
 /// instant and outlives the close until that child execs, so a bind
 /// probe can hand back a port that still answers. A refused connect
 /// carries the same "nobody is there" answer and leaves nothing behind.
-/// The same shape as `reserved_test_port` in phd2-guider's integration
-/// tests, shared here for the suites built on this crate.
 ///
 /// The probe is a synchronous `connect()`, and a refused connect is not
 /// instant everywhere: on the Windows CI runner each one takes about 2 s.

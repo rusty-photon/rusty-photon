@@ -88,19 +88,21 @@ Feature: Client-target joins (#607)
     And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
     And the config file "rp.json" has the string "observatory" at "/plate_solver/auth/username"
 
+  # The guider is not in doctor's catalog: sentinel, a catalog service with a
+  # config of its own, stands at the guiding pointer's port in its place.
   Scenario: --fix rewrites rp's guider scheme, CA trust, and credential once the target is provisioned
-    Given a config file "phd2-guider.json" containing:
+    Given a config file "sentinel.json" containing:
       """
-      { "server": { "port": 11130, "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      { "server": { "port": 11114, "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
       """
     And a config file "rp.json" containing:
       """
       { "server": { "port": 11115 },
         "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                   "guiding": { "url": "http://localhost:11130" } } } }
+                                   "guiding": { "url": "http://localhost:11114" } } } }
       """
     When I run doctor with --fix and --json
-    Then the config file "rp.json" has the string "https://localhost:11130" at "/equipment/mount/guiding/url"
+    Then the config file "rp.json" has the string "https://localhost:11114" at "/equipment/mount/guiding/url"
     And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
     And the config file "rp.json" has the string "observatory" at "/equipment/mount/guiding/auth/username"
 

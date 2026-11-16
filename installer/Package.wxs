@@ -213,9 +213,6 @@
       <Feature Id="PlateSolver" Title="plate-solver (ASTAP wrapper)" Description="HTTP plate solver wrapping the ASTAP CLI; needs a hand-written config; ASTAP is a separate install (port 11131)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="PlateSolverComponents" />
       </Feature>
-      <Feature Id="Phd2Guider" Title="phd2-guider (PHD2 client)" Description="Guider service wrapping PHD2; PHD2 is a separate install (port 11130)." Level="2" AllowAdvertise="no">
-        <ComponentGroupRef Id="Phd2GuiderComponents" />
-      </Feature>
       <Feature Id="CalibratorFlats" Title="calibrator-flats (flat capture)" Description="Flat-field tool provider aggregated by rp; needs a hand-written config (port 11170)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="CalibratorFlatsComponents" />
       </Feature>

@@ -3478,47 +3478,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phd2-guider"
-version = "0.1.0"
-dependencies = [
- "ascom-alpaca",
- "async-trait",
- "axum",
- "base64 0.23.1",
- "bdd-infra",
- "cargo-husky",
- "clap",
- "cucumber",
- "derive_more",
- "humantime",
- "humantime-serde",
- "libc",
- "mockall",
- "ndarray",
- "reqwest",
- "rp-auth",
- "rp-fits",
- "rusty-photon-camera-core",
- "rusty-photon-config",
- "rusty-photon-doctor-checks",
- "rusty-photon-process",
- "rusty-photon-rolling-stats",
- "rusty-photon-server-config",
- "rusty-photon-service-lifecycle",
- "rusty-photon-setup",
- "rusty-photon-tls",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-test",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "phf"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

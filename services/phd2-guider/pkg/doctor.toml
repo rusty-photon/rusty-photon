@@ -1,4 +1,0 @@
-# Catalog metadata for rusty-photon-doctor (docs/services/doctor.md).
-# This service's own unit tests assert these values match its config defaults.
-class = "core"
-port = 11130

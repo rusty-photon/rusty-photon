@@ -4386,8 +4386,8 @@ mod tests {
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
-            "phd2-guider.json",
-            serde_json::json!({ "server": { "port": 11130,
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4395,7 +4395,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 },
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11130" } } } }),
+                                           "guiding": { "url": "http://localhost:11114" } } } }),
         );
         let ctx = config_only_ctx(dir.path());
         let checks = client_target_joins(&ctx);
@@ -4431,8 +4431,8 @@ mod tests {
         let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
         write_json(
             dir.path(),
-            "phd2-guider.json",
-            serde_json::json!({ "server": { "port": 11130,
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4440,7 +4440,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 },
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11130",
+                                           "guiding": { "url": "http://localhost:11114",
                                                         "auth": { "username": "observatory", "password": "wrong-pw" } } } } }),
         );
         let ctx = config_only_ctx(dir.path());
@@ -4462,8 +4462,8 @@ mod tests {
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
-            "phd2-guider.json",
-            serde_json::json!({ "server": { "port": 11130,
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4471,7 +4471,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11130",
+                                           "guiding": { "url": "http://localhost:11114",
                                                         "auth": { "username": "observatory", "password": "s3cret-pw" } } } } }),
         );
         let ctx = config_only_ctx(dir.path());
