@@ -64,14 +64,14 @@ bdd_infra::bdd_main! {
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
-                    // Teardown order is load-bearing (UI-testing plan §10 and
-                    // testing.md §5.4): quit the browser FIRST so the WebDriver
-                    // session closes (and geckodriver tears Firefox down) before
-                    // the BFF stops — a live session holds connections to the
-                    // BFF open. Drop any open SSE reader for the same reason (an
-                    // open /stream/events response blocks the BFF's graceful
-                    // shutdown and silently loses its subprocess coverage). Then
-                    // stop the BFF (so it stops calling rp), then rp.
+                    // Teardown order is load-bearing (testing.md §5.4): quit the
+                    // browser FIRST so the WebDriver session closes (and
+                    // geckodriver tears Firefox down) before the BFF stops — a
+                    // live session holds connections to the BFF open. Drop any
+                    // open SSE reader for the same reason (an open
+                    // /stream/events response blocks the BFF's graceful shutdown
+                    // and silently loses its subprocess coverage). Then stop the
+                    // BFF (so it stops calling rp), then rp.
                     if let Some(browser) = world.browser.take() {
                         browser.quit().await;
                     }

@@ -1,10 +1,10 @@
-//! rusty-photon-doctor: read-only diagnosis of a multi-service install.
+//! rusty-photon-doctor: diagnosis, repair and TLS/credential provisioning
+//! of a multi-service install.
 //!
-//! Design: docs/services/doctor.md. Plan and ownership decisions:
-//! docs/plans/service-config-doctor.md, ADR-016. This crate links no
-//! service crate: it knows the derived catalog, the two shared server
-//! shapes, and the known cross-reference blocks; every other byte of every
-//! config file is opaque.
+//! Design: docs/services/doctor.md. This crate links no service crate: it
+//! knows the derived catalog, the three shared server shapes, and the
+//! known cross-reference blocks; every other byte of every config file is
+//! opaque.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(
@@ -76,8 +76,8 @@ use tracing::debug;
 /// tree exists but is **unreadable** by this user. That last one is a hard
 /// error, not a fall-through: the tree is owned by the `rusty-photon`
 /// user, and silently diagnosing the invoking user's own empty config
-/// directory instead would report seventeen missing configs on a
-/// perfectly healthy rig.
+/// directory instead would report every config missing on a perfectly
+/// healthy rig.
 pub fn resolve_config_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(dir) = explicit {
         if !dir.is_dir() {
@@ -213,9 +213,9 @@ pub fn diagnose_and_fix(config_dir: PathBuf, facts: PlatformFacts) -> Result<Rep
     for round in 0..MAX_FIX_ROUNDS {
         let (ctx, mut checks) = diagnose_static(config_dir.clone(), facts.clone());
         let planned: usize = checks.iter().map(|c| c.fixes.len()).sum();
-        // The sentinel client-block wiring is provisioning-pass work, not a
-        // check's fix plan — planned fresh each round so a second run plans
-        // (and applies) nothing.
+        // The client-block wiring (`CLIENT_WIRING`) is provisioning-pass
+        // work, not a check's fix plan — planned fresh each round so a second
+        // run plans (and applies) nothing.
         let client_ops = provision::plan_client_wiring(&config_dir);
         if planned == 0 && client_ops.is_empty() {
             debug!(round, applied = applied.len(), "fix rounds converged");
@@ -258,8 +258,8 @@ pub fn flip_verification(ctx: &checks::Context) -> Vec<report::Check> {
 /// self-signed material is created either: every service serves the
 /// shared wildcard pair, which is `tls issue --acme`'s (and renewal's) to
 /// mint, and self-signed certs would be unverifiable by the flipped
-/// fleet's clients (issue #616). The credential is trust-model-agnostic
-/// and is ensured either way.
+/// fleet's clients. The credential is trust-model-agnostic and is ensured
+/// either way.
 fn provision_material(
     config_dir: &Path,
     facts: &PlatformFacts,

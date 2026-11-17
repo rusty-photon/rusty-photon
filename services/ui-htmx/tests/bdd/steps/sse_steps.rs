@@ -1,4 +1,4 @@
-//! Step definitions for sse.feature (`@browser`) — Layer C / P3, plan §9 Tier 2.
+//! Step definitions for sse.feature (`@browser`) — Layer C / P3.
 //!
 //! These drive the test-only `/fixtures/sse` routes (present only in a
 //! `test-sse`-feature binary) to prove the browser harness observes async

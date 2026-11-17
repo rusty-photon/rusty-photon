@@ -1,12 +1,12 @@
 //! The targets-inbox seam onto rp's MCP-only target tools
 //! (`docs/services/ui-htmx.md` "Targets inbox").
 //!
-//! `McpTargetsClient` drives `rp-mcp-client` (ADR-017) with **per-request
+//! `McpTargetsClient` drives `rp-mcp-client` with **per-request
 //! clients**: every call connects, runs its tool, and drops the client.
 //! The BFF never holds a standing MCP client — an idle rmcp client holds
-//! an open POST that stalls rp's graceful stop (the transport is
-//! session-less, ADR-021, so that is the only reason left). Same
-//! philosophy as the REST reads' `Connection: close`.
+//! an open POST that stalls rp's graceful stop, and the transport is
+//! session-less, so dropping the client loses nothing. Same philosophy as
+//! the REST reads' `Connection: close`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -83,7 +83,7 @@ pub struct McpTargetsClient {
 
 impl McpTargetsClient {
     /// Build from the BFF's `rp` target block: `base_url` + `/mcp`, the
-    /// same credential and CA the REST legs use. The ADR-017 credential
+    /// same credential and CA the REST legs use. `rp-mcp-client`'s credential
     /// policy applies at connect time (Basic only over verified HTTPS).
     #[must_use]
     pub fn new(

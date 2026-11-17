@@ -45,7 +45,7 @@ fn respond(rp: &RpState, fragment: Markup, headers: &HeaderMap) -> Response {
 }
 
 /// Mutation responses push the inbox URL so a browser refresh after an
-/// activate/discard lands on `/targets` (the equipment page's pattern).
+/// activate/discard lands on `/targets`.
 fn with_push_url(mut response: Response) -> Response {
     response
         .headers_mut()
@@ -588,11 +588,11 @@ fn goal_row_markup(goal: &Goal, join: &ConfigJoin) -> Markup {
 
 // --- form parsing ----------------------------------------------------------
 
-/// The position-angle tri-state (the plan's P4 note): blank submits an
-/// explicit JSON `null` (clear back to inherit), a parseable number
-/// submits that number — so `"0"` is an explicit north-up, never
-/// collapsed with blank. Only numeric-ness is checked here; the domain
-/// rule (`[0, 360)`, finite) is rp's, surfaced from its own error.
+/// The position-angle tri-state: blank submits an explicit JSON `null`
+/// (clear back to inherit), a parseable number submits that number — so
+/// `"0"` is an explicit north-up, never collapsed with blank. Only
+/// numeric-ness is checked here; the domain rule (`[0, 360)`, finite) is
+/// rp's, surfaced from its own error.
 fn parse_position_angle(raw: &str) -> Result<Value, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -683,8 +683,9 @@ pub(crate) async fn review(
     respond(rp, review_state(rp, &slug, None, None).await, &headers)
 }
 
-/// Fetch one row + the config join and render the form. `echo`/`banner`
-/// carry a rejected submission's values and outcome.
+/// Fetch one row + the config join and render the form. `override_form`
+/// carries a rejected submission's values and field errors; `banner` the
+/// save's outcome.
 async fn review_state(
     rp: &RpState,
     slug: &str,
@@ -985,7 +986,7 @@ mod tests {
     use crate::targets_client::MockTargetsClient;
     use crate::AppState;
 
-    // --- the position-angle tri-state (the plan's P4 note) -----------------
+    // --- the position-angle tri-state --------------------------------------
 
     #[test]
     fn blank_angle_clears_to_inherit() {

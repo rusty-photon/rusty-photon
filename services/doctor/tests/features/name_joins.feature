@@ -1,11 +1,11 @@
 Feature: Cross-config name join diagnosis
-  Since sentinel discovers its services from the platform service manager
-  (D3s), the watchdog's operations.<family>.service names resolve against
+  Since sentinel discovers its services from the platform service manager,
+  the watchdog's operations.<family>.service names resolve against
   the installed rusty-photon-* units — matched by convention and validated
   by nothing at runtime until the 2am 404 — so doctor validates that join.
-  It also flags the retired config keys: sentinel's services map (D3s) and
-  ui-htmx's whole drivers override map (#569 — rp's equipment roster is the
-  only device source), each of which keeps its service from starting, and
+  It also flags the retired config keys: sentinel's services map and
+  ui-htmx's whole drivers override map (rp's equipment roster is the only
+  device source), each of which keeps its service from starting, and
   ui-htmx's sentinel block (the web UI restarts nothing; Sentinel's
   dashboard does), which ui-htmx ignores with a warning, so it warns.
 

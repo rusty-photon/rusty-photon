@@ -1,6 +1,6 @@
-//! Test-only `/fixtures/*` routes for the `@browser` BDD layer (UI-testing plan
-//! §9 Tier 1). Compiled ONLY under the `test-fixtures` cargo feature — they ship
-//! nothing in the real binary.
+//! Test-only `/fixtures/*` routes for the `@browser` BDD layer. Compiled ONLY
+//! under the `test-fixtures` cargo feature — they ship nothing in the real
+//! binary.
 //!
 //! Each fixture exercises an htmx behavior the **server-bytes** layers (P1 DOM
 //! assertions, P2 byte snapshots) cannot observe, so it proves the browser
@@ -14,7 +14,7 @@
 //!   DOM*, not the bytes.
 //! - **`HX-Retarget` / `HX-Reswap`** — response *headers* move a **byte-identical**
 //!   body to a different target and swap it differently. P1/P2 compare the body and
-//!   see nothing; the retarget/reswap live entirely in the headers (a §A
+//!   see nothing; the retarget/reswap live entirely in the headers (a Layer A
 //!   header-presence tripwire) and the landing is only browser-observable.
 //! - **`HX-Push-Url`** — a response header changes the browser URL/history without
 //!   a navigation — observable only in the browser.

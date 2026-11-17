@@ -23,8 +23,8 @@ Feature: Real-browser behavior
     And the safety monitor reports unsafe on rp
     Then the browser's feed shows a card mentioning "Safety: UNSAFE"
 
-  # Tier 0 step 3 (plan §9): quitting the browser before stopping the BFF lets the
-  # BFF shut down gracefully, so it runs its atexit handler and flushes coverage.
+  # Quitting the browser before stopping the BFF lets the BFF shut down
+  # gracefully, so it runs its atexit handler and flushes coverage.
   # Reversing the order would block the BFF on the browser's held connection until
   # the 5s SIGKILL grace and silently zero its BDD coverage (testing.md §5.4).
   Scenario: The BFF flushes coverage on graceful shutdown with a browser attached
@@ -34,13 +34,13 @@ Feature: Real-browser behavior
     And I quit the browser and then stop the BFF
     Then the BFF shuts down gracefully before the 5s SIGKILL grace elapses
 
-  # Tier 0 step 4 (plan §9): the worst case — geckodriver dies without telling
-  # Firefox to quit (a panic/timeout, or the Firefox<152 SIGTERM bug). The
-  # kill-the-tree reaper (killpg of geckodriver's process group) must still leave
-  # zero orphans, and failure-triage artifacts must land at an absolute path first.
-  # Linux-only: the orphan scan reads /proc. Like the rest of @browser it runs on
-  # Linux CI + dev; macOS/Windows browser support is plan §9 step 5 (deferred), and
-  # forcing UI_BROWSER_TESTS=1 there fails loud rather than silently passing.
+  # The worst case — geckodriver dies without telling Firefox to quit (a
+  # panic/timeout, or the Firefox<152 SIGTERM bug). The kill-the-tree reaper
+  # (killpg of geckodriver's process group) must still leave zero orphans, and
+  # failure-triage artifacts must land at an absolute path first. Linux-only:
+  # the orphan scan reads /proc. Like the rest of @browser it runs on Linux, the
+  # browser layer's one environment; forcing UI_BROWSER_TESTS=1 on macOS or
+  # Windows fails loud rather than silently passing.
   Scenario: A crashed browser session is reaped with no orphaned processes
     Given a running rp orchestrator with an empty roster
     And a BFF pointed at rp

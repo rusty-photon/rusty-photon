@@ -202,8 +202,8 @@ fn join_parts(base: &str, extras: &[Option<String>]) -> String {
 
 // --- per-event title + detail ---------------------------------------------------
 
-/// The human title and payload-specific detail parts for one envelope, per the
-/// rp event catalog (`docs/services/ui-htmx.md` "Activity stream"). The catalog
+/// The human title and payload-specific detail parts for one envelope, per
+/// rp's event catalog (`docs/services/rp.md` § Events). The catalog
 /// rows live in one family function per event domain; unknown event names
 /// degrade to a humanized name + compact payload dump rather than vanishing.
 fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
@@ -393,8 +393,8 @@ fn guiding_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
 }
 
 /// Supervisory rows of the catalog: safety, persistence and stream faults.
-/// (rp keeps no session — mcp-sessionless D6 — so there are no session
-/// lifecycle rows; run status is the orchestrator's, O2.)
+/// (rp keeps no session, so there are no session lifecycle rows; run status
+/// is `session-runner`'s, not rp's.)
 fn supervisory_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
     Some(match event {
         "safety_changed" => {

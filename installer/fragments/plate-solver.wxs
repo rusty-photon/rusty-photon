@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  rusty-photon-plate-solver — Windows service fragment (suite MSI; ADR-015).
+  rusty-photon-plate-solver — Windows service fragment (suite MSI).
   Port 11131/tcp; gated: no defaultable config. The fragment contract (service name, exe rename,
   failure actions + failure-actions flag, firewall port, start and stop) is
   checked by tools/rusty-photon-ci/src/pkg_assets.rs.
@@ -22,9 +22,9 @@
                         Account="LocalSystem"
                         Arguments="--service"
                         Vital="yes">
-          <!-- systemd Restart=on-failure / RestartSec=5 translation (ADR-015
-               decision 2): restart after 5 s on every failure, indefinitely
-               (failure count resets daily). -->
+          <!-- systemd Restart=on-failure / RestartSec=5 translation: restart
+               after 5 s on every failure, indefinitely (failure count resets
+               daily). -->
           <util:ServiceConfig FirstFailureActionType="restart"
                               SecondFailureActionType="restart"
                               ThirdFailureActionType="restart"
@@ -41,8 +41,7 @@
                          OnReinstall="yes" />
         </ServiceInstall>
         <!-- Started on install and at boot like every other service, which
-             does itself what the Linux unit's ConditionPathExists= does
-             (ADR-025).
+             does itself what the Linux unit's ConditionPathExists= does.
              Without %ProgramData%\rusty-photon\plate-solver.json it stops at
              once with exit code 0, which the failure actions leave alone:
              the operator writes the file, then starts the service (sc start /

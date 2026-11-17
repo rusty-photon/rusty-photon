@@ -624,7 +624,7 @@ fn firmware_helper(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks
             scan,
             "hardware.firmware-helper",
             "camera firmware is not installed — QHY cameras cannot boot without \
-             it, and it is never packaged (ADR-013)"
+             it, and it is never packaged"
                 .to_string(),
             Some(format!("run `{QHY_FIRMWARE_HELPER}` once as root")),
         ));

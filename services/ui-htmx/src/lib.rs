@@ -37,9 +37,8 @@
 pub mod assets;
 pub mod config;
 pub mod doctor;
-/// Test-only `/fixtures/*` routes (UI-testing plan §9 Tier 1) — compiled ONLY
-/// under the `test-fixtures` cargo feature, so they ship nothing in the real
-/// binary.
+/// Test-only `/fixtures/*` routes — compiled ONLY under the `test-fixtures`
+/// cargo feature, so they ship nothing in the real binary.
 ///
 /// `#[coverage(off)]` keeps this test-only code out of the coverage numbers
 /// even when the feature is on (e.g. the `--all-features` coverage build).
@@ -50,9 +49,8 @@ pub mod io;
 pub mod pages;
 pub mod rp_client;
 pub mod setup;
-/// Test-only Server-Sent-Events fixture routes (UI-testing plan §9 Tier 2) —
-/// compiled ONLY under the `test-sse` cargo feature, so they ship nothing in the
-/// real binary.
+/// Test-only Server-Sent-Events fixture routes — compiled ONLY under the
+/// `test-sse` cargo feature, so they ship nothing in the real binary.
 ///
 /// `#[coverage(off)]` keeps this test-only code (and the streaming
 /// `async-stream` machinery it uses) out of the coverage numbers even when the
@@ -122,9 +120,10 @@ impl RpState {
 pub struct AppState {
     rp: Arc<RpState>,
     setup: Option<setup::Pages>,
-    /// Ends open SSE proxy streams on service shutdown — axum's graceful
-    /// shutdown does not close them on its own (axum #2673); `main` links this
-    /// to the `ServiceRunner` shutdown (the same pattern as rp's `sse_shutdown`).
+    /// Ends open SSE proxy streams on service shutdown: axum's graceful
+    /// shutdown does not close an open SSE response on its own
+    /// (<https://github.com/tokio-rs/axum/issues/2673>). `main` links this to
+    /// the `ServiceRunner` shutdown (the same pattern as rp's `sse_shutdown`).
     sse_shutdown: tokio_util::sync::CancellationToken,
 }
 
@@ -258,7 +257,7 @@ impl AppState {
     }
 
     /// Point the test state's SSE proxy at an explicit rp base URL (unit tests
-    /// stub rp's subscribe endpoint with an in-test axum server — ADR-004).
+    /// stub rp's subscribe endpoint with an in-test axum server).
     #[must_use]
     pub fn with_rp_base_url(mut self, base_url: &str) -> Self {
         let mut rp = self.rp.with_targets(Arc::clone(&self.rp.targets));
@@ -293,7 +292,7 @@ pub fn build_router(state: AppState) -> Router {
     // cfg-gated router-extend; the merge runs at startup so it stays covered.
     #[cfg(feature = "test-fixtures")]
     let router = router.merge(fixtures::routes());
-    // Test-only SSE fixture routes (plan §9 Tier 2), present only with `test-sse`.
+    // Test-only SSE fixture routes, present only with `test-sse`.
     #[cfg(feature = "test-sse")]
     let router = router.merge(sse_fixtures::routes());
     let router = router.with_state(state);

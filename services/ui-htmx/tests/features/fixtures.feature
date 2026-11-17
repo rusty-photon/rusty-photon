@@ -6,8 +6,7 @@ Feature: htmx edge cases the server-bytes layers cannot observe
   snapshots) cannot: an out-of-band swap landing in a *second* region, a
   response-header retarget moving a byte-identical body elsewhere, and a
   response-header push-url changing the browser's location. Like the rest of the
-  browser layer they are advisory and run behind UI_BROWSER_TESTS=1 (UI-testing
-  plan §9 Tier 1).
+  browser layer they are advisory and run behind UI_BROWSER_TESTS=1.
 
   # hx-swap-oob: one response updates TWO regions — the hx-target and an
   # out-of-band sibling. The OOB element is in the response bytes regardless; only
@@ -32,8 +31,8 @@ Feature: htmx edge cases the server-bytes layers cannot observe
   # HX-Retarget + HX-Reswap: the response body is a plain fragment (what a normal
   # swap carries), but response headers move the swap to #secondary and re-swap it
   # as innerHTML (the page declares outerHTML). P2 would compare the body and see
-  # nothing; the divergence lives in the headers (a §A tripwire) and the landing is
-  # only browser-observable.
+  # nothing; the divergence lives in the headers (a Layer A tripwire) and the
+  # landing is only browser-observable.
   Scenario: A response-header retarget moves a byte-identical body elsewhere
     Given the ui-htmx BFF is running
     When I load the "/fixtures/retarget" fixture in a browser

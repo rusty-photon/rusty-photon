@@ -81,7 +81,7 @@ Feature: ui-htmx's setup page
     And the page shows no input named "keep-credential:rp.auth"
     And the page says "This page asks for no login"
 
-  # Doctor wrote the sentinel block into the installs it wired, and an
+  # Installs an earlier doctor wired carry the sentinel block, and an
   # upgrade runs no doctor: the BFF starts over it, and a save drops it.
   Scenario: A configuration still carrying the retired sentinel block starts, and a save drops the block
     Given ui-htmx is started for its setup page on a configuration still carrying the retired sentinel block

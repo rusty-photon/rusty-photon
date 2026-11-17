@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  rusty-photon-qhy-camera — Windows service fragment (suite MSI; ADR-015).
+  rusty-photon-qhy-camera — Windows service fragment (suite MSI).
   Port 11121/tcp. The fragment contract (service name, exe rename,
   failure actions + failure-actions flag, firewall port, start and stop) is
   checked by tools/rusty-photon-ci/src/pkg_assets.rs.
@@ -22,9 +22,9 @@
                         Account="LocalSystem"
                         Arguments="--service"
                         Vital="yes">
-          <!-- systemd Restart=on-failure / RestartSec=5 translation (ADR-015
-               decision 2): restart after 5 s on every failure, indefinitely
-               (failure count resets daily). -->
+          <!-- systemd Restart=on-failure / RestartSec=5 translation: restart
+               after 5 s on every failure, indefinitely (failure count resets
+               daily). -->
           <util:ServiceConfig FirstFailureActionType="restart"
                               SecondFailureActionType="restart"
                               ThirdFailureActionType="restart"
@@ -57,7 +57,7 @@
                               Protocol="tcp"
                               Scope="any" />
       </Component>
-      <!-- ADR-013: qhyccd.dll is proprietary and NEVER shipped. The exe
+      <!-- qhyccd.dll is proprietary and NEVER shipped. The exe
            delay-loads it (services/qhy-camera/build.rs) and a startup
            preflight probes the QHY All-in-One pack's install locations; on a
            box without the pack the service logs an actionable pointer and

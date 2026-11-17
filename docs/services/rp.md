@@ -3802,8 +3802,8 @@ this list when it became a tool provider — [calibrator-flats.md](calibrator-fl
 `plugins[]` entry with `"type": "orchestrator"` is rejected at config
 load, by a setup-page save and by `rp doctor` with a message naming
 the migration (orchestrator registrations were removed; start runs at
-`session-runner` — [`mcp-sessionless.md`](../plans/archive/mcp-sessionless.md)
-D11), as is a `session.session_state_file` key: silently accepting
+`session-runner` — see [session-runner.md](session-runner.md)), as is a
+`session.session_state_file` key: silently accepting
 either would leave an operator believing `rp` will start their session
 at dusk. `rusty-photon-doctor` reports the same on an installed config
 as `rp.orchestrator-registration-removed`.

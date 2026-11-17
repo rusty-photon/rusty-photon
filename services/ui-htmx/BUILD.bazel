@@ -20,11 +20,9 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-setup:rusty-photon-setup",
 ]
 
-# src/assets.rs embeds app.css + htmx.min.js via include_str!() at compile time,
-# so rustc must see them under the Bazel sandbox. assets/htmx-ext-sse.js is also
-# globbed here and include_str!'d by src/sse_fixtures.rs, but ONLY under the
-# `test-sse` feature — the production lib globs it as compile_data yet never embeds
-# it (no include_str!), so it stays out of the real binary.
+# src/assets.rs embeds every file under assets/ via include_str!() at compile
+# time (src/sse_fixtures.rs, under the `test-sse` feature, embeds its own copy of
+# htmx-ext-sse.js), so rustc must see them under the Bazel sandbox.
 _EMBEDDED_ASSETS = glob(["assets/**"])
 
 rust_library(
@@ -53,15 +51,12 @@ rust_binary(
 )
 
 # The BDD suite spawns a binary built with the test-route features so the @browser
-# fixture scenarios can drive the test-only routes: `test-fixtures` (plan §9 Tier 1
-# — /fixtures/* OOB/retarget/push-url) and `test-sse` (plan §9 Tier 2 — the
-# /fixtures/sse Server-Sent-Events spike). Features are compile-time, so the
-# fixtures binary needs its own lib+bin compiled with both crate_features — the same
-# pattern as dsd-fp2's `:dsd-fp2_mock`. Both fixture modules are `#[coverage(off)]`,
-# so spawning this (instead of `:ui-htmx`) from the `bdd` target adds the routes
-# without perturbing coverage (its covmap equals `:ui-htmx_lib`'s; the fixtures code
-# is excluded). (`async-stream` became an unconditional dependency with the Phase-5
-# SSE proxy, so `all_crate_deps(normal = True)` now carries it for every variant.)
+# fixture scenarios can drive the test-only routes: `test-fixtures` (/fixtures/*:
+# OOB swap, retarget, push-url) and `test-sse` (/fixtures/sse, the
+# Server-Sent-Events fixture). Features are compile-time, so the fixtures binary
+# needs its own lib+bin compiled with both crate_features — the same pattern as
+# dsd-fp2's `:dsd-fp2_mock`. Both fixture modules are `#[coverage(off)]`, so the
+# routes this binary adds stay out of the coverage numbers.
 rust_library(
     name = "ui-htmx_lib_fixtures",
     srcs = glob(
@@ -138,14 +133,12 @@ rust_test(
     crate_root = "tests/bdd.rs",
     data = [
         "Cargo.toml",
-        # The fixtures-feature binary (plan §9 Tier 1 /fixtures/* + Tier 2
-        # /fixtures/sse): adds the test-only routes the @browser scenarios drive,
-        # without changing any existing route. Coverage is unaffected (both fixture
-        # modules are #[coverage(off)]).
+        # The fixtures binary (above): it adds the test-only routes the @browser
+        # scenarios drive, without changing any existing route.
         ":ui-htmx_fixtures",
         "//services/rp",
     ] + glob(["tests/features/**"]) +
-    # insta goldens (UI-testing plan Layer B): the committed .snap files must
+    # insta goldens (Layer B): the committed .snap files must
     # reach the runfiles tree so the snapshot-path resolver can read them under
     # the Bazel sandbox (see tests/bdd/snapshot.rs).
     glob([

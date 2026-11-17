@@ -27,7 +27,7 @@ rust_library(
     # documented: Bazel refuses to let a non-testonly target depend on this,
     # so the staged inventory cannot reach a shipped binary even by an
     # accidental dep edit. It propagates to consumers, which is right — the
-    # driver sim libraries that will stage inventories are testonly already.
+    # driver sim libraries that stage inventories are testonly already.
     testonly = True,
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
