@@ -40,6 +40,20 @@ Feature: End-to-end safety monitoring
     Then the dashboard history should contain a record for "Roof Monitor"
     And the history record message should contain "Unsafe"
 
+  @wip
+  Scenario: A Pushover API that never answers costs a failed notification, not the monitoring
+    Given a monitoring file containing "OPEN"
+    And filemonitor is running with a contains rule "OPEN" as safe and 1 second polling
+    And sentinel is configured to monitor the filemonitor with 1 second polling
+    And a safe-to-unsafe transition rule for "Roof Monitor"
+    And the Pushover API never answers
+    And sentinel is running
+    Then the dashboard status should show "Safe" for "Roof Monitor"
+    When the monitoring file changes to "CLOSED"
+    Then the notification history should hold a failed notification for "Roof Monitor"
+    When the monitoring file changes to "OPEN"
+    Then the dashboard status should show "Safe" for "Roof Monitor"
+
   Scenario: Sentinel shows unknown when device is unreachable
     Given sentinel is configured to monitor a device at an unreachable address
     And sentinel is running
