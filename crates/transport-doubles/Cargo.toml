@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Test doubles for the transports of rusty-photon-shared-transport: a factory decorator that holds a reply back, so a driver's unit test can put a poll's store behind a command's"
+description = "Test doubles for the transports of rusty-photon-shared-transport: factory decorators that hold a reply back, so a driver's unit test can put a poll's store behind a command's, and that fail a send"
 
 [lints]
 workspace = true

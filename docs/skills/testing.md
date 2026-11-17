@@ -1864,7 +1864,7 @@ async fn test_focuser_position_not_connected() {
 
 #### 6.5 Mock Infrastructure Lives in Test Files
 
-Hand-written test doubles (ppba-driver's and qhy-focuser's `InjectableFactory`, ppba-driver's `FailingPpbaTransportFactory`) are defined in the `#[cfg(test)]` modules that use them. They are NOT feature-gated. A double the unit tests of several drivers share lives in the `transport-doubles` crate, a dev-dependency (`HoldingFactory`, §6.14). The `mock` feature is reserved for the device simulators in `src/mock.rs` (`MockPpbaTransportFactory`, `MockQhyTransportFactory`), which stand in for the serial port in ConformU, server and BDD tests.
+Hand-written test doubles (ppba-driver's `FailingPpbaTransportFactory`, upbv2-driver's `PpbaPingFactory`) are defined in the `#[cfg(test)]` modules that use them. They are NOT feature-gated. A double the unit tests of several drivers share lives in the `transport-doubles` crate, a dev-dependency: `HoldingFactory` (§6.14), and `FailingFactory`, which fails the next frame sent so a test reaches a driver's wire-failure branches. The `mock` feature is reserved for the device simulators in `src/mock.rs` (`MockPpbaTransportFactory`, `MockQhyTransportFactory`), which stand in for the serial port in ConformU, server and BDD tests.
 
 #### 6.6 Serialize Tests That Share Process-Global State
 

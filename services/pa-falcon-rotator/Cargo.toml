@@ -120,6 +120,7 @@ reqwest = { workspace = true }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
 cargo-husky = { workspace = true }
+transport-doubles = { workspace = true }
 
 [[test]]
 name = "bdd"

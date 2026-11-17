@@ -581,59 +581,8 @@ mod tests {
     // unreachable target (poll would never clear it).
     // ========================================================================
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::{
-        Codec as _, FrameTransport, TransportError, TransportFactory,
-    };
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    /// Wraps the canonical mock factory but gates `send_frame` behind a
-    /// shared atomic — flipping it makes the very next send return EOF.
-    /// Used to inject a wire-level failure after handshake has succeeded.
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockQhyTransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    impl InjectableFactory {
-        fn fail_next_send(&self) -> Arc<AtomicBool> {
-            Arc::clone(&self.fail_next_send)
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-    }
+    use rusty_photon_shared_transport::{Codec as _, TransportFactory};
+    use transport_doubles::FailingFactory;
 
     // ---- a poll against a refresh ---------------------------------------
 
@@ -750,7 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_position_read_before_a_move_was_sent_does_not_end_it() {
-        let manager = make_manager_with_factory(Arc::new(InjectableFactory::default()));
+        let manager = make_manager_with_factory(Arc::new(MockQhyTransportFactory::default()));
         let session = manager.transport().acquire().await.unwrap();
 
         // The focuser is on its way to 5000, and a reader has 1000 in hand
@@ -927,14 +876,13 @@ mod tests {
     async fn move_absolute_rolls_cache_back_on_transport_failure() {
         // Slow the poll loop down so it can't fire and consume the
         // armed failure before move_absolute does.
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockQhyTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
         // Arm: the next send (the AbsoluteMove issued by move_absolute)
         // will return EOF from the transport.
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
 
         let err = manager
             .move_absolute(&session, 5000)
@@ -1020,8 +968,7 @@ mod tests {
         // On transport failure, propagate the error and leave the cache
         // untouched (the device may still be moving — better to reflect
         // that uncertainty than lie about completion).
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockQhyTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
@@ -1029,7 +976,7 @@ mod tests {
         manager.move_absolute(&session, 5000).await.unwrap();
         assert!(manager.get_cached_state().await.is_moving);
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .abort(&session)
             .await
@@ -1051,12 +998,11 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_position_propagates_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockQhyTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .refresh_position(&session)
             .await
@@ -1097,11 +1043,10 @@ mod tests {
         // - leave is_available() == false (the RollbackGuard fired),
         // - leave the cache at Default::default() (no fields populated
         //   from a partial handshake).
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockQhyTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .transport()
             .acquire()
