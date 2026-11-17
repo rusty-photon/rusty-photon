@@ -67,6 +67,9 @@ pub struct SentinelWorld {
     // (an arbitrary status code) is flippable at runtime.
     pub health_stub: Option<FlippableHealthStub>,
 
+    // A device that accepts connections and never answers on them.
+    pub silent_device: Option<tokio::task::JoinHandle<()>>,
+
     // Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
 }
@@ -253,6 +256,29 @@ impl SentinelWorld {
             "device_number": 0,
             "polling_interval": "1s"
         }));
+    }
+
+    /// Start a device that accepts every connection and never answers on
+    /// it, and return its port.
+    pub async fn start_silent_device(&mut self) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind silent device listener");
+        let port = listener
+            .local_addr()
+            .expect("silent device listener has no local addr")
+            .port();
+        self.silent_device = Some(tokio::spawn(async move {
+            // Each connection is read until the client hangs up, and never
+            // answered. Aborting the stub drops the set, which ends them.
+            let mut connections = tokio::task::JoinSet::new();
+            while let Ok((mut stream, _)) = listener.accept().await {
+                connections.spawn(async move {
+                    let _ = tokio::io::copy(&mut stream, &mut tokio::io::sink()).await;
+                });
+            }
+        }));
+        port
     }
 
     /// Connect or disconnect the running filemonitor's device through its

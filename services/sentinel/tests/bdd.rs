@@ -66,6 +66,10 @@ bdd_infra::bdd_main! {
                     world.mount_stub = None;
                     // Shut down the flippable health stub, if any.
                     world.health_stub = None;
+                    // Shut down the silent device, if this scenario started one.
+                    if let Some(device) = world.silent_device.take() {
+                        device.abort();
+                    }
                 }
             })
         })
