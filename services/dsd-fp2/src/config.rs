@@ -272,8 +272,8 @@ mod tests {
         assert_eq!(c.cover_calibrator.max_brightness, 4096);
         assert_eq!(c.cover_calibrator.min_brightness, 250);
         assert_eq!(c.cover_calibrator.name, "Deep Sky Dad FP2");
-        // The id is no longer a hardcoded literal; it is minted as a UUIDv4 on
-        // first run by `materialize_identity`, so the default is empty.
+        // The id is minted as a UUIDv4 on first run by `materialize_identity`,
+        // so the default is empty.
         assert_eq!(c.cover_calibrator.unique_id, "");
     }
 

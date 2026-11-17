@@ -319,7 +319,9 @@ pub struct BoundServer {
     /// `start()`'s select so its socket closes when serving ends (reload).
     discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
     /// Held so `start()` can call `manager.transport().shutdown()` after
-    /// the HTTP server stops. No-op in `LazyAcquire` mode.
+    /// the HTTP server stops, on a shutdown and a reload alike, so the
+    /// serial port and the reconnect supervisor are released before the
+    /// service rebinds.
     manager: Arc<PpbaManager>,
 }
 

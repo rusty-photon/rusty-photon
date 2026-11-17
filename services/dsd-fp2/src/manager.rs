@@ -1,10 +1,12 @@
 //! Thin service-level wrapper around [`SharedTransport<Fp2Codec>`].
 //!
-//! All wire lifecycle (refcounting, request arbitration, while-open task,
-//! handshake/teardown) lives in [`rusty_photon_shared_transport`]. This
-//! module owns:
+//! All wire lifecycle (refcounting, request arbitration, the while-open
+//! task, running the hooks, reconnect) lives in
+//! [`rusty_photon_shared_transport`]. This module owns:
 //!
 //! * the typed shared-transport handle every device clones from,
+//! * the hooks: the `[GFRM]` handshake and the poll body, with nothing to
+//!   do on the last disconnect or at shutdown,
 //! * the cached state the device's `CoverState` / `CalibratorState` /
 //!   `Brightness` getters read from (refreshed by the while-open poll
 //!   task),
@@ -151,8 +153,8 @@ impl FlatPanelManager {
                 })
             }),
             on_last_disconnect: Box::new(|_conn| {
-                // Nothing to assert: this service holds no state that must
-                // survive a no-client gap, so the answer is trivially yes.
+                // Nothing to assert: no device state has to hold while no
+                // client is attached, so the answer is trivially yes.
                 Box::pin(async { StateAssertion::Asserted })
             }),
             shutdown: Box::new(|_conn| Box::pin(async {})),
@@ -360,12 +362,11 @@ mod tests {
 
     #[test]
     fn session_err_to_warn_logs_without_panicking() {
-        // The poll loop's Err arms log via `warn!` and never bubble. With
-        // the mock factory always succeeding in tests, those arms aren't
-        // exercised end-to-end — keep the call covered by emitting it
-        // directly so coverage stays honest. The function is `warn!`-only
-        // and returns nothing observable; the assertion is just that it
-        // doesn't panic.
+        // The poll loop's Err arm logs the flattened error with `warn!`
+        // and never bubbles, and the mock factory never fails a poll, so
+        // no test reaches that arm. This emits the same message directly;
+        // the assertion is only that flattening and formatting a
+        // `SessionError` does not panic.
         use rusty_photon_shared_transport::SessionError;
         let wrapped = SessionError::<DsdFp2Error>::Codec(DsdFp2Error::MalformedResponse(
             "synthetic".to_string(),
@@ -468,8 +469,8 @@ mod mock_tests {
             .parse_ok()
             .unwrap();
         // The mock reports the motor running for exactly one `[GMOV]`
-        // read after `[SMOV]` (matches real hardware's async settle;
-        // see mock.rs), same as `poll_once` consuming it each cycle.
+        // read after `[SMOV]`, its model of a move settling (see mock.rs);
+        // a poll's `[GMOV]` read would consume it the same way.
         let m = session.request(Command::GetMotorState).await.unwrap();
         assert!(m.parse_bool().unwrap());
         // Confirm the cover state observable through GOPS once settled.

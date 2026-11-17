@@ -565,7 +565,6 @@ mod tests {
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
 
-    // PpbaError → ASCOMError mapping tests moved to error.rs once the
-    // canonical mapping landed there (centralised so both devices share
-    // the same classification).
+    // PpbaError → ASCOMError mapping tests live in error.rs, beside the
+    // classification both devices share.
 }

@@ -1,7 +1,7 @@
-//! Phase 0a: `SharedTransport::start` / `shutdown` and the
+//! `SharedTransport::start` / `shutdown` and the
 //! `LazyAcquire`-vs-`ServiceLifetime` mode split.
 //!
-//! These tests verify the two new lifecycle modes coexist correctly:
+//! These tests verify the two lifecycles:
 //!
 //! - In `LazyAcquire` (default, no `start()` called), the port opens on
 //!   the 0→1 `acquire()` and closes on the 1→0 `Session::close()`.
@@ -9,10 +9,11 @@
 //!   never invoked.
 //! - In `ServiceLifetime` (after `start()`), the port opens at `start()`
 //!   and stays open until `shutdown()`. `Hooks::on_last_disconnect` runs
-//!   on every 1→0 and the port stays open. `Hooks::shutdown` runs once
-//!   from `shutdown()`.
+//!   once on the cold start and on every 1→0, and the port stays open.
+//!   `Hooks::shutdown` runs once from `shutdown()`.
 //!
-//! Reconnect-supervisor tests land in Phase 0b alongside that machinery.
+//! The reconnect supervisor and `reconnect_now` have their own file,
+//! `reconnect.rs`.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -82,7 +83,7 @@ async fn a_cold_start_asserts_the_no_client_state_on_the_wire() {
     // opened may be acting on instructions from a lifecycle this
     // process knows nothing about — the one before a reload, or before
     // a restart. A start that assumes it is idle is a start that can
-    // hand a client a moving mount. See #1251.
+    // hand a client a moving mount.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -108,11 +109,11 @@ async fn a_cold_start_asserts_the_no_client_state_on_the_wire() {
 
 #[tokio::test]
 async fn a_stop_lost_at_shutdown_is_asserted_by_the_next_lifecycle() {
-    // The case the issue names. `Hooks::shutdown` runs its safety stop
-    // against a link that is already dead, so nothing lands; the reload
-    // then builds a *new* `SharedTransport`, which cannot inherit a
-    // flag from the instance that just went away. What answers for the
-    // lost stop is the fresh start asserting the state itself.
+    // `Hooks::shutdown` runs its safety stop against a link that is
+    // already dead, so nothing lands; the reload then builds a *new*
+    // `SharedTransport`, which cannot inherit a flag from the instance
+    // that just went away. What answers for the lost stop is the fresh
+    // start asserting the state itself.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -129,7 +130,7 @@ async fn a_stop_lost_at_shutdown_is_asserted_by_the_next_lifecycle() {
     assert_eq!(
         shutdown_stops_landed.load(Ordering::SeqCst),
         0,
-        "the shutdown's own stop must have missed the wire for this to be the #1251 path"
+        "the shutdown's own stop must have missed the wire for this to be the lost-shutdown-stop path"
     );
 
     // A new instance over the same port, with no memory of any of it.
@@ -178,7 +179,7 @@ async fn a_cold_start_whose_safety_stop_misses_the_wire_does_not_serve() {
     // the publish — so a caller that handles the error and opens
     // anyway takes the lazy 0→1 path. Nothing outstanding there would
     // mean a session on a conduit whose safety state was never
-    // asserted, which is the whole hole this change exists to close.
+    // asserted.
     let client = st.acquire().await.unwrap();
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
@@ -195,7 +196,7 @@ async fn a_cold_start_whose_safety_stop_misses_the_wire_does_not_serve() {
 
 #[tokio::test]
 async fn a_cold_start_the_device_refuses_does_not_serve() {
-    // #1250's case, on the startup gate. The hook's commands all
+    // A refused stop, at the startup gate. The hook's commands all
     // *complete* — the device answers, and says no — so the wire
     // counter the runtime watches reads perfectly clean. Only the
     // hook's verdict carries the refusal out. A mount that has just
@@ -597,13 +598,13 @@ async fn a_second_shutdown_finds_nothing_to_close_and_leaves_the_transport_resta
 }
 
 // ---------------------------------------------------------------------------
-// LazyAcquire mode preservation
+// LazyAcquire mode
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn lazy_acquire_close_still_closes_port_and_does_not_call_shutdown() {
-    // No start() / shutdown() calls at all — verifies the pre-Phase-0a
-    // behavior is preserved for unmigrated services.
+    // No start() / shutdown() calls at all — the `LazyAcquire`
+    // lifecycle a driver's unit tests run.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -678,8 +679,7 @@ async fn lazy_close_with_panicking_while_open_completes_cleanly() {
     // A while_open task that panics surfaces as `Ok(Err(join_err))`
     // when run_cleanup_locked awaits its JoinHandle. The teardown
     // path must log and continue rather than propagate or wedge.
-    // Covers the LazyAcquire variant of that arm
-    // (`run_cleanup_locked`, lines 745-749).
+    // Covers the LazyAcquire variant of that arm.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -710,9 +710,9 @@ async fn lazy_close_with_panicking_while_open_completes_cleanly() {
 
 #[tokio::test]
 async fn shutdown_with_panicking_while_open_completes_cleanly() {
-    // ServiceLifetime variant of the panic-handling arm in shutdown()
-    // (lines 506-510). shutdown() awaits the while_open JoinHandle,
-    // observes the panic, logs, and proceeds with hook + drop.
+    // ServiceLifetime variant of the same arm: shutdown() awaits the
+    // while_open JoinHandle, observes the panic, logs, and proceeds
+    // with hook + drop.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -740,10 +740,10 @@ async fn shutdown_with_panicking_while_open_completes_cleanly() {
 
 #[tokio::test(start_paused = true)]
 async fn shutdown_with_stubborn_while_open_aborts_after_timeout() {
-    // Cover the timeout/abort arm of shutdown()'s while_open join
-    // (lines 511-518). A stubborn task ignores cancellation; shutdown
-    // waits WHILE_OPEN_TEARDOWN_TIMEOUT (5s, virtualised) then
-    // abort()s it. The hook + drop path still runs.
+    // Cover the timeout/abort arm of shutdown()'s while_open join.
+    // A stubborn task ignores cancellation; shutdown waits
+    // WHILE_OPEN_TEARDOWN_TIMEOUT (5s, virtualised) then abort()s it.
+    // The hook + drop path still runs.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -809,10 +809,11 @@ async fn shutdown_is_not_undone_by_the_attempt_it_interrupts() {
     // `shutdown()` clears `available` and then *joins* the supervisor,
     // so an attempt already in flight runs to completion inside that
     // join — and a successful one ends by setting `available = true`,
-    // after the store. A later `start()` then sees an available
-    // transport and promotes in place instead of cold-starting, leaving
-    // the slot this shutdown emptied, and every `acquire()` failing on
-    // an empty slot for the rest of the process.
+    // after the store. Unless the shutdown clears `available` again
+    // after the join, a later `start()` sees an available transport and
+    // promotes in place instead of cold-starting, leaving the slot this
+    // shutdown emptied, and every `acquire()` failing on an empty slot
+    // for the rest of the process.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -918,10 +919,10 @@ async fn a_panicking_poll_constructor_does_not_strand_the_replacement_port() {
 async fn a_shutdown_hook_failing_on_the_wire_does_not_disturb_the_next_start() {
     // `Hooks::shutdown` runs after the supervisor has been joined, so
     // a wire error in it fires the reconnect signal with nobody
-    // waiting and the permit outlives the lifecycle. The next
-    // `start()` installs a supervisor that consumes it immediately,
-    // marks the transport it has just opened as reconnecting, and
-    // tears that conduit down to open another.
+    // waiting and the permit outlives the lifecycle. Left pending, it
+    // would reach the supervisor the next `start()` installs, which
+    // consumes it at once, marks the transport it has just opened as
+    // reconnecting, and tears that conduit down to open another.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -1072,10 +1073,10 @@ async fn a_cleanup_hook_that_panics_takes_the_transport_out_of_service() {
 async fn a_second_client_after_shutdown_is_told_the_service_is_going_down() {
     // `shutdown()` does not force-close live sessions, so a client
     // arriving after it finds a refcount above zero and an empty slot.
-    // The terminal check used to be gated on that refcount being zero,
-    // which sent this caller to the reuse path and the defensive
-    // "refcount > 0 but slot empty" error — a message about a bug in
-    // this crate, for a service that is simply going down.
+    // A terminal check gated on that refcount being zero would send
+    // this caller to the reuse path and the defensive "refcount > 0 but
+    // slot empty" error — a message about a bug in this crate, for a
+    // service that is simply going down.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -1178,8 +1179,8 @@ async fn a_start_that_fails_after_taking_the_supervisor_leaves_no_false_promise(
 async fn a_tolerated_probe_at_start_does_not_wake_the_supervisor_it_spawns() {
     // The reconnect drains the permit a tolerated probe leaves, but the
     // cold start handshakes too — and spawns the supervisor moments
-    // later, which spends that permit on the conduit the handshake has
-    // just accepted.
+    // later, which would spend an undrained permit on the conduit the
+    // handshake has just accepted.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -1207,9 +1208,10 @@ async fn a_tolerated_probe_at_start_does_not_wake_the_supervisor_it_spawns() {
 
 #[tokio::test]
 async fn a_tolerated_probe_on_a_lazy_open_does_not_outlive_it() {
-    // `LazyAcquire` has no supervisor to spend the permit, so it simply
-    // waits — until a `start()` promotes this live slot and spawns one,
-    // which then tears down a conduit that has been healthy all along.
+    // `LazyAcquire` has no supervisor to spend the permit, so an
+    // undrained one waits — until a `start()` promotes this live slot
+    // and spawns one, which would then tear down a conduit that has
+    // been healthy all along.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -1273,12 +1275,13 @@ async fn a_panicking_shutdown_hook_does_not_keep_the_port_from_the_next_start() 
 #[tokio::test]
 async fn a_reconnect_after_shutdown_does_not_wedge_the_transport() {
     // `shutdown()` leaves `service_lifetime` true on purpose, so a
-    // `reconnect_now()` afterwards used to read as "a ServiceLifetime
-    // transport whose supervisor will retry" — when the supervisor is
-    // exactly what the shutdown took away. The flag stayed set with
-    // nobody to clear it: live sessions short-circuit forever, and the
-    // next acquire skips the terminal check and reports the defensive
-    // empty-slot error instead of saying the service is going down.
+    // `reconnect_now()` afterwards that asked the mode would read "a
+    // ServiceLifetime transport whose supervisor will retry" — when the
+    // supervisor is exactly what the shutdown took away. The flag would
+    // stay set with nobody to clear it: live sessions short-circuit
+    // forever, and the next acquire skips the terminal check and
+    // reports the defensive empty-slot error instead of saying the
+    // service is going down.
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));

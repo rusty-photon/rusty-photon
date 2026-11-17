@@ -183,10 +183,11 @@ impl MockFrameTransport {
             "GMOV" => {
                 // One-shot: running for exactly the first `[GMOV]` read
                 // after `[SMOV]`, then clears — mirrors pa-falcon-rotator's
-                // mock (`is_moving` cleared on next `FA`). An instant
-                // arrival raced the driver's optimistic `Moving` write
-                // (device.rs `execute_move`) against the next poll tick;
-                // see issue #423.
+                // mock (`is_moving` cleared on next `FA`). A move that
+                // settled at once would let the next poll tick overwrite
+                // the driver's optimistic `Moving` write (device.rs
+                // `execute_move`) within milliseconds:
+                // docs/services/dsd-fp2.md § Mock move-settling model.
                 let resp = format!("({})", i32::from(inner.motor_running));
                 inner.motor_running = false;
                 resp
@@ -371,11 +372,10 @@ mod tests {
 
     // ============================================================================
     // Malformed-arg defensive branches. `Command::encode()` only ever emits
-    // well-formed bytes, so these arms can't fire from production today —
-    // they exist as a guard against a future encoding bug. Test them
-    // directly so a regression in `encode()` (or a hand-crafted bad command
-    // from a test) gets a clear diagnostic instead of silently being
-    // mis-interpreted by the mock.
+    // well-formed bytes, so production never reaches these arms; they guard
+    // against an encoding bug. Test them directly so a regression in
+    // `encode()` (or a hand-crafted bad command from a test) gets a clear
+    // diagnostic instead of silently being mis-interpreted by the mock.
     // ============================================================================
 
     #[tokio::test]

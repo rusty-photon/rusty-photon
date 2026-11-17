@@ -6,7 +6,8 @@
 //! [`rusty_photon_shared_transport::SharedTransport`]. What stays here:
 //!
 //! * The PPBA handshake (ping → PA → PS, seed the cache).
-//! * The 5s poll loop body that refreshes PA + PS into the cache.
+//! * The poll loop body that refreshes PA + PS into the cache every
+//!   `polling_interval` (5 s by default).
 //! * The cached state both devices share (status, power stats, USB hub
 //!   tracking, sensor sliding-window means).
 //!
@@ -100,8 +101,8 @@ impl PpbaManager {
         &self.transport
     }
 
-    /// Cheap, non-blocking snapshot — true between handshake completion
-    /// and the start of teardown.
+    /// Cheap, non-blocking snapshot — true from a successful open to the
+    /// start of a teardown or a reconnect.
     #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()
@@ -175,12 +176,11 @@ impl PpbaManager {
     ///
     /// Devices use this on-demand (e.g. before validating an auto-dew
     /// write, or after a successful set command). The poll loop does the
-    /// same thing internally while a session is alive.
+    /// same on its own cadence, whether or not a client is connected.
     ///
     /// No analogous `refresh_power_stats` exists: the power-stats cache
     /// is seeded by the handshake and kept fresh by the poll loop, and
-    /// no caller needs an on-demand PS refresh today. Add one back if a
-    /// future caller materialises.
+    /// no caller needs an on-demand PS refresh.
     ///
     /// # Errors
     ///
@@ -217,8 +217,8 @@ fn build_hooks(
             Box::pin(handshake(conn, cs))
         }),
         on_last_disconnect: Box::new(|_| {
-            // Nothing to assert: this service holds no state that must
-            // survive a no-client gap, so the answer is trivially yes.
+            // Nothing to assert: no device state has to hold while no
+            // client is attached, so the answer is trivially yes.
             Box::pin(async { StateAssertion::Asserted })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -336,8 +336,8 @@ fn apply_power_stats(state: &mut CachedState, power_stats: PpbaPowerStats, read_
 mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
     //! transport factory. Race / refcount / rollback invariants are
-    //! tested once for everyone in `rusty-photon-shared-transport` —
-    //! they don't get re-tested here per the migration plan.
+    //! tested once for everyone in `rusty-photon-shared-transport` and
+    //! are not re-tested here.
 
     use super::*;
     use crate::mock::MockPpbaTransportFactory;
@@ -540,7 +540,8 @@ mod tests {
             .send_command(&session, PpbaCommand::SetQuad12V(false))
             .await
             .expect_err("send_command should propagate the transport failure");
-        // TransportError::Eof routes through transport_to_ppba to
+        // TransportError::Eof routes through the macro-generated
+        // `From<TransportError>` to
         // PpbaError::Communication("Connection closed").
         assert!(
             matches!(err, PpbaError::Communication(_)),

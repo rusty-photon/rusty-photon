@@ -277,7 +277,7 @@ mod tests {
 
         assert_eq!(config.name, "Pegasus Scops OAG");
         // `unique_id` defaults to empty so it is minted on first run rather than
-        // reusing a hardcoded literal (see `materialize_identity` in main.rs).
+        // reusing a hardcoded literal (see `resolve_and_init` in main.rs).
         assert_eq!(config.unique_id, "");
         assert_ne!(config.description, "");
         assert!(config.enabled);

@@ -3,7 +3,7 @@
 //!
 //! `main.rs`'s reload loop awaits `start()` to completion so the old
 //! server drains HTTP and the transport shuts down, and only then
-//! rebuilds. Nothing tested that claim: the BDD mock hands out as many
+//! rebuilds. The BDD mock cannot test that claim: it hands out as many
 //! concurrent transports as it is asked for, so a reload that leaked
 //! the port would pass there and fail only on a rig, where a COM port
 //! is exclusive per handle and the second open returns `Access is

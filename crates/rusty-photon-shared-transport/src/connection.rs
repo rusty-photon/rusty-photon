@@ -5,10 +5,11 @@
 //! lock that serialises request/response pairs across all callers of
 //! the same open transport.
 //!
-//! It's exposed publicly because [`crate::Hooks::handshake`] receives
-//! `&Connection<C>` so handshake commands run through the same request
-//! arbitration as steady-state commands — `Session` and `WhileOpen` are
-//! views of the same underlying `Arc<Connection<C>>`.
+//! It's exposed publicly because [`crate::Hooks::handshake`],
+//! [`crate::Hooks::on_last_disconnect`] and [`crate::Hooks::shutdown`]
+//! receive `&Connection<C>`, so hook commands run through the same
+//! request arbitration as steady-state commands — `Session` and
+//! `WhileOpen` are views of the same underlying `Arc<Connection<C>>`.
 //!
 //! Each connection optionally carries an `Arc<Notify>` (set by
 //! [`crate::SharedTransport`] when it constructs the connection) that
@@ -62,10 +63,9 @@ use crate::transport::FrameTransport;
 
 /// Maximum number of bytes rendered inside one wire-trace event. Bytes
 /// past this point are summarised as `…[N more bytes]` so a misbehaving
-/// codec or peer can't push multi-megabyte log lines. 256 bytes
-/// comfortably covers every single-command frame in the five Alpaca
-/// codecs that ship today (longest known: qhy-focuser's status JSON,
-/// which lands well under).
+/// codec or peer can't push multi-megabyte log lines. Every driver
+/// builds its transport with a `max_frame_size` of 256 bytes or less,
+/// so a frame it reads is traced whole.
 const MAX_WIRE_TRACE_BYTES: usize = 256;
 
 /// `Display` wrapper that renders a wire-byte slice safely for trace
@@ -220,22 +220,22 @@ struct WireFailures {
     /// running the handshake. The supervisor task itself is what
     /// listens for the notifications. `None` only for ad-hoc
     /// connections built via `Connection::new()` directly — in
-    /// practice that's just in-crate unit tests; the wiring at
-    /// every `SharedTransport` callsite always attaches the signal,
-    /// so the `LazyAcquire` branch's lack of an active listener (the
-    /// supervisor doesn't run until `start()` is called) means
-    /// transport-error notifications in `LazyAcquire` mode no-op
-    /// rather than waking anything — harmless, since `LazyAcquire`'s
-    /// recovery model is "next acquire reopens".
+    /// practice that's just in-crate unit tests. In `LazyAcquire`
+    /// mode no supervisor runs, so a notification wakes nothing (its
+    /// permit stays in the `Notify` until an open drops it or a
+    /// supervisor takes it), and recovery is the next 0→1 `acquire()`
+    /// reopening the conduit.
     reconnect_signal: Option<Arc<Notify>>,
     /// Count of requests that failed on the wire, i.e. every one that
     /// fired [`WireFailures::signal_reconnect`]. Lets a caller that ran
     /// commands on this connection ask afterwards whether they landed
     /// — which the hooks cannot say, because they stay best-effort
-    /// about their own errors and log rather than propagate. The
-    /// reconnect's safety replay is the one caller that needs to know,
-    /// since a stop that did not land must not be reported as a
-    /// recovered transport.
+    /// about their own errors and log rather than propagate. The 1→0
+    /// cleanup and the assertion on a fresh conduit read it across the
+    /// last-disconnect hook, since a stop that did not land is owed to
+    /// the next conduit; a reconnect reads it across everything after
+    /// its handshake, replay included, since an attempt that dropped a
+    /// request must not be reported as a recovered transport.
     ///
     /// This counter answers only half the question. It sees a request
     /// that never reached the device; it cannot see one the device
@@ -419,7 +419,7 @@ impl<C: Codec> Connection<C> {
         match outcome {
             Ok(result) => result,
             // A panic in the exchange (in the codec, say) reaches the
-            // caller, as it did when the exchange ran inline. Nothing
+            // caller, as it would were the exchange run inline. Nothing
             // else ends the task while a caller still waits on it: only
             // a runtime shutdown cancels it, and that drops the caller
             // too.
@@ -737,8 +737,10 @@ mod tests {
     // request_timed(): when the exchange crossed the wire
     // -----------------------------------------------------------------
 
-    /// How long a reply takes in the timing tests — the 41 ms a stalled
-    /// host took to notice a reply on the rig in issue #1371.
+    /// How long a reply takes in the timing tests: a Raspberry Pi running
+    /// `ConformU` beside `star-adventurer-gti` notices replies 40–61 ms
+    /// late (docs/services/star-adventurer-gti.md § Encoder samples and
+    /// the read instant).
     const REPLY_DELAY: Duration = Duration::from_millis(41);
 
     /// How long the write takes in the test that holds one up.
@@ -1272,10 +1274,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_caller_that_stops_waiting_for_its_reply_leaves_the_next_request_its_own() {
-        // The rig's failure: an HTTP client hung up while its frame was
-        // on the wire, the server dropped the handler, and the reply
-        // went to the next request instead — then every reply after it
-        // was one exchange late.
+        // The failure this pins: an HTTP client hangs up while its
+        // frame is on the wire, the server drops the handler, and the
+        // reply goes to the next request instead — then every reply
+        // after it is one exchange late.
         let line = Line::new();
         let conn = line_connection(&line);
         abandon_at(conn.request(b"one".to_vec()), &line.reading).await;

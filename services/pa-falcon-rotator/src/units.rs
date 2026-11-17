@@ -108,7 +108,7 @@ impl SkyDegrees {
 
 impl SyncOffset {
     /// A zero offset — the unsynced state, and what `clear_session_state`
-    /// resets to on disconnect.
+    /// resets to.
     pub const ZERO: Self = Self(0.0);
 
     /// Construct from a degree value, normalising into `[0, 360)`. See

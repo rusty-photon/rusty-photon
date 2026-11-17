@@ -8,8 +8,9 @@
 //! [`SwitchId`] carries the connector with the variant, which keeps `match`
 //! exhaustive at every use site: a new family member is a compile error
 //! rather than a silently missing row. Ids are written as literals in both
-//! [`SwitchId::from_id`] and [`SwitchId::info`]; `every_id_in_range_resolves`
-//! round-trips every id through both, so a drifted row fails the build.
+//! [`SwitchId::from_id`] and [`SwitchId::info`];
+//! `every_id_in_range_resolves_and_round_trips` round-trips every id
+//! through both, so a drifted row fails the build.
 
 use rusty_photon_server_config::switch_labels::{SwitchLabels, SwitchTable};
 

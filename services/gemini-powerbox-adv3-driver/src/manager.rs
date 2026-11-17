@@ -27,8 +27,8 @@
 //!
 //! The hub streams a frame every 3 s once asked. The poll does not consume
 //! that stream; it discards it and asks for a fresh frame
-//! ([`GeminiCodec::discard_before_send`]), so a frame that sat in the buffer
-//! never answers a later request.
+//! ([`GeminiCodec::discard_before_send`](crate::codec::GeminiCodec#method.discard_before_send)),
+//! so a frame that sat in the buffer never answers a later request.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -140,8 +140,8 @@ impl GeminiManager {
         &self.transport
     }
 
-    /// Cheap, non-blocking snapshot — true between handshake completion
-    /// and the start of teardown.
+    /// Cheap, non-blocking snapshot — true from a successful handshake
+    /// until a teardown or a reconnect takes the transport out of service.
     #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()
@@ -259,8 +259,8 @@ fn build_hooks(
             Box::pin(handshake(conn, cs, port))
         }),
         on_last_disconnect: Box::new(|_| {
-            // Nothing to assert: this service holds no state that must
-            // survive a no-client gap, so the answer is trivially yes.
+            // Nothing to assert: no device state has to hold while no
+            // client is attached, so the answer is trivially yes.
             Box::pin(async { StateAssertion::Asserted })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -324,8 +324,9 @@ async fn request_identity(
 /// Read-only connect sequence: identify the box, gate the firmware, and
 /// seed the cache from one frame.
 ///
-/// Runs on every transition into `Open`, reconnects included. Nothing here
-/// may write device state.
+/// Runs on every open — the cold start, every reconnect attempt, and the
+/// first connect where nothing started the transport. Nothing here may
+/// write device state.
 async fn handshake(
     conn: &Connection<GeminiCodec>,
     cached_state: Arc<RwLock<CachedState>>,
@@ -660,9 +661,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_hub_still_streaming_from_an_earlier_session_connects_past_the_frame_it_cuts_short() {
-        // The dev box's unit at the first connect of the implementation: left
-        // armed by the design session, it cut its periodic frame short to
-        // answer `>H#`, and the reply arrived glued to the cut frame.
+        // A hub left armed by an earlier session cuts its periodic frame
+        // short to answer `>H#`, and the reply arrives glued to the cut
+        // frame, as the dev box's unit does.
         let factory = Arc::new(
             MockGeminiTransportFactory::default()
                 .with_stream_running_at_start()

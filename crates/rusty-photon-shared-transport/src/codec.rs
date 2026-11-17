@@ -28,9 +28,10 @@
 /// Translation between typed commands/responses and on-wire frames.
 ///
 /// `Clone` is required because [`crate::SharedTransport`] stamps a fresh
-/// codec copy onto every new [`crate::Connection`] (one per 0→1
-/// connect transition). Codecs are typically zero-sized types or hold
-/// only small `Copy`-able config, so the bound is cheap to satisfy.
+/// codec copy onto every new [`crate::Connection`] (one per open: a
+/// lazy 0→1 `acquire`, a cold `start`, each reconnect attempt). Codecs
+/// are typically zero-sized types or hold only small `Copy`-able config,
+/// so the bound is cheap to satisfy.
 pub trait Codec: Send + Sync + Clone + 'static {
     /// The typed command the service-level API speaks in
     /// (e.g. `QhyCommand::GetPosition`, `PpbaCommand::SetPower { .. }`).

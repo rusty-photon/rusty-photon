@@ -117,16 +117,15 @@ impl Codec for PpbaCodec {
 
     fn matches(&self, cmd: &Self::Command, resp: &Self::Response) -> bool {
         match (cmd, resp) {
-            // The firmware-version alternative accepts any echo body: the
-            // wire protocol gives `n.n.n` and the existing driver never
-            // validated it — keep that here.
+            // The firmware-version alternative accepts any echo body; the
+            // `n.n.n` the box sends is not validated.
             (PpbaCommand::Ping, PpbaResponse::PingOk)
             | (PpbaCommand::Status, PpbaResponse::Status(_))
             | (PpbaCommand::PowerStats, PpbaResponse::PowerStats(_))
             | (PpbaCommand::FirmwareVersion, PpbaResponse::Echo(_)) => true,
             // Set commands echo their command string. PPBA Gen2 hardware
-            // appends nothing extra, but the legacy code accepted
-            // `starts_with` so we match that lenience exactly.
+            // appends nothing; the match is a prefix match, so trailing
+            // text after the echo is tolerated.
             (
                 PpbaCommand::SetQuad12V(_)
                 | PpbaCommand::SetAdjustable(_)
@@ -413,13 +412,11 @@ mod tests {
 
     #[test]
     fn session_error_codec_transport_timeout_routes_to_timeout() {
-        // A transport timeout surfaced *through* the handshake hook
-        // arrives at the device layer as
-        // SessionError::Codec(PpbaCodecError::Transport(Timeout(...))).
+        // A transport timeout surfaced *through* the handshake hook arrives
+        // as SessionError::Codec(PpbaCodecError::Transport(Timeout(...))).
         // It must map to PpbaError::Timeout — same classification a
         // steady-state timeout (SessionError::Transport(Timeout(...)))
-        // would receive — so the ASCOM client doesn't see a generic
-        // Communication error for connect-time timeouts.
+        // receives — not to a generic Communication error.
         let err: SessionError<PpbaCodecError> = SessionError::Codec(PpbaCodecError::Transport(
             TransportError::Timeout(std::time::Duration::from_secs(2)),
         ));

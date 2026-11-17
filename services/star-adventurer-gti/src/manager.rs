@@ -1401,7 +1401,7 @@ async fn poll_loop(
 /// `From<SessionError<SkywatcherCodecError>> for StarAdvError` then
 /// routes the inner [`TransportError`] through the canonical
 /// `From<TransportError> for StarAdvError` impl a top-level
-/// `SessionError::Transport(_)` uses, so a connect-time timeout gets
+/// `SessionError::Transport(_)` uses, so a handshake timeout gets
 /// classified as `StarAdvError::Timeout` instead of collapsing to
 /// `Protocol(FrameError("transport timeout after 5s"))` and surfacing
 /// as the generic `INVALID_OPERATION`.
@@ -2156,7 +2156,7 @@ mod tests {
     // Handshake transport-error classification: a TransportError surfaced
     // through the handshake hook (which returns Result<_, SkywatcherCodecError>)
     // must reach the device layer with its variant preserved, so a
-    // connect-time timeout / EOF / open failure maps to the structured
+    // handshake timeout / EOF / open failure maps to the structured
     // StarAdvError::Timeout / ConnectionFailed instead of collapsing to
     // Protocol(FrameError("transport timeout after …")) and being routed
     // through the generic INVALID_OPERATION arm.

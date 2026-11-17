@@ -164,9 +164,9 @@ impl MockState {
             "F#" => "FR_OK".to_string(),
             "FA" => {
                 let resp = self.device_state.full_status_response();
-                // Plan §3b: is_moving "best-effort — flipped by MD:, cleared
-                // on next FA after each move". Clearing here makes the
-                // sequence MD → FA(moving=1) → FA(moving=0) the BDD path.
+                // is_moving is best-effort: MD: sets it and the next FA
+                // after each move clears it, which makes the sequence
+                // MD → FA(moving=1) → FA(moving=0) the BDD path.
                 self.device_state.motion.is_moving = false;
                 resp
             }
@@ -533,8 +533,8 @@ mod tests {
         // Real hardware (firmware 1.5): a target beyond the 220° CW soft limit
         // is reached the long way round (CCW past the 0° home), so the signed
         // step counter goes negative even though position_deg wraps into
-        // [0, 360). This is the case the u32→i32 parse fix must survive — and
-        // exactly what the real-hardware ConformU run tripped on.
+        // [0, 360). A u32 parse of the step field fails every status read
+        // there, and ConformU's move tests reach the region on real hardware.
         let factory = MockFalconTransportFactory::default();
         let mut t = open(&factory).await;
         let _ = round_trip(&mut t, b"MD:300.00\n").await;

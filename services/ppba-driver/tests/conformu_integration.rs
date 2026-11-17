@@ -69,8 +69,9 @@ async fn engage_auto_dew(base_url: &str) -> TestResult {
             return Err(format!("dew heater {heater} is still writable with auto-dew on").into());
         }
     }
-    // ConformU connects for itself; the mock keeps auto-dew across the
-    // disconnect, and the next connect's handshake reads it back.
+    // ConformU connects for itself. The port stays open across this
+    // disconnect, and the cache the write refreshed still reads auto-dew
+    // on when ConformU connects.
     switch.set_connected(false).await?;
     Ok(())
 }

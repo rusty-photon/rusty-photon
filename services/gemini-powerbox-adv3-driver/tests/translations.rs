@@ -13,8 +13,8 @@
 //! mistakes (parse errors, dropped keys, renamed placeholders) in the
 //! source tree *before* anything embeds them, so reading the actual files
 //! on disk is the point — not an inconvenience to work around. Going
-//! through the filesystem also sidesteps the spike's `debug-embed` trap
-//! from the binary side: in dev / fastbuild builds `RustEmbed` defers to
+//! through the filesystem also sidesteps `RustEmbed`'s `debug-embed`
+//! trap: in dev / fastbuild builds `RustEmbed` defers to
 //! a *runtime* walker rooted at the `CARGO_MANIFEST_DIR` value baked in
 //! at compile time, and under `rules_rust` that path is a sandbox that
 //! no longer exists when the test action runs.

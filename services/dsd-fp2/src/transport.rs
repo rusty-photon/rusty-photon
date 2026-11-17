@@ -3,8 +3,8 @@
 //! Wraps a fresh `tokio_serial::SerialStream` in a
 //! [`SerialFrameTransport`] configured to read until the FP2's `)`
 //! response terminator. The factory captures port path / baud rate /
-//! timeout at startup; each `open()` call corresponds to one
-//! `SharedTransport` 0→1 connect transition.
+//! timeout at startup; `SharedTransport` calls `open()` for every conduit
+//! it opens — the cold `start()` and each reconnect attempt.
 
 use std::time::Duration;
 

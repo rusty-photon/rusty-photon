@@ -5,9 +5,6 @@
 //!
 //! Requires the `mock` feature. All tests are skipped under Miri since
 //! it cannot call socket syscalls.
-//!
-//! Tests run sequentially because the ASCOM Alpaca discovery service
-//! binds to a fixed address, so only one server can run at a time.
 #![allow(clippy::await_holding_lock)]
 #![cfg(feature = "mock")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -58,10 +55,8 @@ fn test_config(focuser_enabled: bool) -> Config {
 }
 
 async fn spawn_server(config: Config) -> (u16, tokio::task::JoinHandle<()>) {
-    // Use the real mock factory now that `ServerBuilder::build()`
-    // unconditionally runs the eager startup handshake — the prior
-    // `StubTransportFactory` panicked on `open()` because LazyAcquire
-    // mode never opened during these bind-only tests.
+    // `ServerBuilder::build()` opens the transport and runs the handshake
+    // before it binds, so even these bind-only tests need the mock device.
     let factory: Arc<dyn TransportFactory> = Arc::new(MockQhyTransportFactory::default());
 
     let bound = qhy_focuser::ServerBuilder::new()

@@ -211,13 +211,11 @@ impl CoverCalibrator for DsdFp2Device {
     /// <https://ascom-standards.org/newdocs/covercalibrator.html>. We
     /// honour that here.
     ///
-    /// **Known `ConformU` divergence.** `ConformU` 4.3 flags this as an
-    /// "issue" anyway because `CoverCalibratorTester.TestHaltCover` does
-    /// not distinguish `MethodNotImplementedException` from other
-    /// exceptions in its async-cover branch (it treats every exception
-    /// as `Required.MustBeImplemented`). See
-    /// `docs/services/dsd-fp2.md` "Known limitations" for the upstream
-    /// bug report; the driver is intentionally spec-compliant.
+    /// `ConformU` 4.3 reports this answer as an issue, because
+    /// `CoverCalibratorTester.TestHaltCover` treats every exception in its
+    /// async-cover branch as `Required.MustBeImplemented`; from 4.4.0 it
+    /// logs `HaltCover` as OK (`docs/services/dsd-fp2.md` § Known
+    /// Limitations).
     async fn halt_cover(&self) -> ASCOMResult<()> {
         Err(ASCOMError::new(
             ASCOMErrorCode::NOT_IMPLEMENTED,
@@ -424,7 +422,7 @@ mod mock_tests {
         }
     }
 
-    /// `CoverCalibratorConfig::default()` now has an empty `unique_id` (minted on
+    /// `CoverCalibratorConfig::default()` has an empty `unique_id` (minted on
     /// first run by `materialize_identity`), which `setup::validate`
     /// rejects. Tests model a post-materialization config with a populated id.
     fn test_cover_calibrator() -> CoverCalibratorConfig {
@@ -551,8 +549,8 @@ mod mock_tests {
         // Some(true). The mock reports the motor running for exactly one
         // `[GMOV]` poll after `[SMOV]` before settling (mock.rs), so the
         // cache stays consistent with the optimistic write across the
-        // next poll cycle. For now we just verify the call succeeded and
-        // exercise the open path too.
+        // next poll cycle. The test asserts only that both calls succeed
+        // on the wire; `cover_control.feature` pins the states they reach.
         device.open_cover().await.unwrap();
         device.set_connected(false).await.unwrap();
     }

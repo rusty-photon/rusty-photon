@@ -188,8 +188,7 @@ impl Upbv2Manager {
     ///
     /// Devices use this on demand — after a successful set command, so the
     /// very next read reflects the write instead of waiting out a poll
-    /// interval. The poll loop does the same thing internally while a
-    /// session is alive.
+    /// interval. The poll loop refreshes it too, on its own cadence.
     ///
     /// # Errors
     ///
@@ -255,8 +254,8 @@ fn build_hooks(
             Box::pin(handshake(conn, cs))
         }),
         on_last_disconnect: Box::new(|_| {
-            // Nothing to assert: this service holds no state that must
-            // survive a no-client gap, so the answer is trivially yes.
+            // Nothing to assert: no device state has to hold while no
+            // client is attached, so the answer is trivially yes.
             Box::pin(async { StateAssertion::Asserted })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -270,8 +269,8 @@ fn build_hooks(
 /// Read-only connect sequence: identify the box, log its firmware, and seed
 /// the cache from the three query frames.
 ///
-/// Runs on every transition into `Open`, reconnects included. Nothing here
-/// may write device state.
+/// Runs on every open of the port, each reconnect attempt included. Nothing
+/// here may write device state.
 async fn handshake(
     conn: &Connection<Upbv2Codec>,
     cached_state: Arc<RwLock<CachedState>>,
@@ -437,9 +436,8 @@ fn apply_boot_state(state: &mut CachedState, boot_state: Upbv2BootState, read_at
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
-    //! transport factory. Race / refcount / rollback invariants are
-    //! tested once for everyone in `rusty-photon-shared-transport` —
-    //! they don't get re-tested here per the migration plan.
+    //! transport factory. Race, refcount and rollback invariants are tested
+    //! once, in `rusty-photon-shared-transport`, and not again here.
 
     use super::*;
     use crate::mock::MockUpbv2TransportFactory;
@@ -752,9 +750,7 @@ mod tests {
 
     // ========================================================================
     // Test transports: a PPBA impostor for the model guard, and a
-    // `FailingFactory` for the error branches. The shared transport's race /
-    // refcount / rollback invariants are tested once, in
-    // rusty-photon-shared-transport.
+    // `FailingFactory` for the error branches.
     // ========================================================================
 
     use async_trait::async_trait;

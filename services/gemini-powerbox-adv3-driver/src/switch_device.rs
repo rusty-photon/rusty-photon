@@ -1,9 +1,7 @@
 //! The Advanced 3's Switch device.
 //!
 //! Implements the ASCOM Alpaca `Device` + `Switch` traits over the 26-switch
-//! table in `docs/services/gemini-powerbox-adv3-driver.md`. Connection state
-//! is the device's `Session<GeminiCodec>` slot — when it's `Some`, we hold a
-//! live handle to the shared transport; when it's `None`, we don't.
+//! table in `docs/services/gemini-powerbox-adv3-driver.md`.
 //!
 //! * **Reads never touch the wire.** Every value comes from the frame the
 //!   read-only handshake seeds and the poll loop refreshes; a cache miss is
@@ -11,10 +9,9 @@
 //! * **Every write is confirmed against a fresh frame.** A set draws no
 //!   reply, so the codec sends it with a `>G#` and the field the write
 //!   addressed is compared with what was asked. A mismatch is asked once
-//!   more before it is believed — a frame the hub started during the few
-//!   milliseconds the two commands take to arrive predates the set — and a
-//!   mismatch that survives is `INVALID_OPERATION`, naming the switch and
-//!   both values.
+//!   more before it is believed — a periodic frame the hub started before
+//!   acting on the set predates it — and a mismatch that survives is
+//!   `INVALID_OPERATION`, naming the switch and both values.
 //! * **The dew rows move their writability with the mode.** A channel's
 //!   duty is writable in Manual only, its enabled flag in Auto and Switch
 //!   only; the mode row is what changes that, and it refuses Auto while a
@@ -84,8 +81,8 @@ const fn missing_sensor(frame: &StatusFrame) -> Option<&'static str> {
 #[derive(derive_more::Debug)]
 pub struct GeminiSwitchDevice {
     config: SwitchConfig,
-    /// `Some` between successful connect and explicit disconnect. The
-    /// session existing is the truth — no second-source bool to desync.
+    /// The connected state: `Some` from a successful connect to a
+    /// disconnect, with no flag beside it that could disagree.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<GeminiCodec>>>>,
     #[debug(skip)]
@@ -332,8 +329,9 @@ impl Device for GeminiSwitchDevice {
         reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Connecting actuates nothing: the handshake behind `acquire()` is
-        // `>H#` / `>V#` / `>G#`, every one of them a read (tenet 3).
+        // Connecting actuates nothing (tenet 3): `acquire()` joins the
+        // conduit `start()` opened and handshook, or, on a transport nothing
+        // started, runs that read-only handshake (`>H#` / `>V#` / `>G#`).
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {

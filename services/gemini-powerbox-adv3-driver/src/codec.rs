@@ -379,7 +379,7 @@ mod tests {
         }
     }
 
-    // ---- the two shared-crate knobs --------------------------------------
+    // ---- the three shared-crate knobs ------------------------------------
 
     #[test]
     fn the_skip_budget_is_two() {

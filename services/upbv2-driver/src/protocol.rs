@@ -571,10 +571,11 @@ impl<'a> Fields<'a> {
 /// The two prefixes a `PA` reply is accepted under.
 ///
 /// The vendor command table contradicts itself: its worked example shows
-/// `UPB:` while the field legend for the same frame says `UPB2:`. Both are
-/// accepted rather than guessing which firmware writes which — the frame is
-/// identified by its field count and shape either way. See open item 1 in
-/// `docs/services/upbv2-driver.md`.
+/// `UPB:` while the field legend for the same frame says `UPB2:`. rig2's box,
+/// on firmware 2.4, emits `UPB2:`
+/// ([§ What the wire actually does](../../../docs/services/upbv2-driver.md#what-the-wire-actually-does)).
+/// Both are accepted rather than guessing what other firmware writes — the
+/// frame is identified by its field count and shape either way.
 pub const STATUS_PREFIXES: [&str; 2] = ["UPB2:", "UPB:"];
 
 /// The ping reply a UPBv2 gives.
@@ -652,9 +653,11 @@ impl std::str::FromStr for Upbv2PowerConsumption {
     ///
     /// The vendor table documents the payload as a bare
     /// `avgAmps:ampHours:wattHours:uptime` tuple with no command echo, unlike
-    /// the PPBA's `PS:`-prefixed statistics. An optional `PC:` prefix is
-    /// tolerated so a firmware that does echo still parses. See open item 2 in
-    /// `docs/services/upbv2-driver.md`.
+    /// the PPBA's `PS:`-prefixed statistics, and rig2's box answers with
+    /// the bare tuple
+    /// ([§ What the wire actually does](../../../docs/services/upbv2-driver.md#what-the-wire-actually-does)).
+    /// An optional `PC:` prefix is tolerated so a firmware that does echo
+    /// still parses.
     fn from_str(response: &str) -> Result<Self> {
         let response = response.trim();
         let body = response.strip_prefix("PC:").unwrap_or(response);
