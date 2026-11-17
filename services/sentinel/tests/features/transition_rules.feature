@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Transition rules
   A transition rule names a monitor and a direction, and sends a
   notification when the monitor's state changes that way. A reading is

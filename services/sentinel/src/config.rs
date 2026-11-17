@@ -276,13 +276,19 @@ pub struct TransitionConfig {
     pub sound: Option<String>,
 }
 
-/// Direction of a state transition
+/// The state change a transition rule fires on (`docs/services/sentinel.md`
+/// § Transition Rules)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitionDirection {
+    /// An `Unsafe` reading whose last known reading is `Safe`.
     SafeToUnsafe,
+    /// A `Safe` reading whose last known reading is `Unsafe`.
     UnsafeToSafe,
+    /// Either of the two above.
     Both,
+    /// The monitor becoming unreadable, and its first reading afterwards.
+    Unreadable,
 }
 
 /// Operation watchdog configuration — the push-based event monitor that
@@ -647,6 +653,23 @@ mod tests {
 
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.transitions[0].direction, TransitionDirection::Both);
+    }
+
+    #[test]
+    fn parse_transition_direction_unreadable() {
+        let json = r#"{
+            "transitions": [{
+                "monitor_name": "Test",
+                "direction": "unreadable",
+                "notifiers": ["pushover"]
+            }]
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.transitions[0].direction,
+            TransitionDirection::Unreadable
+        );
     }
 
     #[test]

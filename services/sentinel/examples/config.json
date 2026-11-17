@@ -34,6 +34,12 @@
       "notifiers": ["pushover"],
       "message_template": "OK: %monitor_name% is now %new_state%",
       "priority": -1
+    },
+    {
+      "monitor_name": "Roof Safety Monitor",
+      "direction": "unreadable",
+      "notifiers": ["pushover"],
+      "message_template": "%monitor_name% is now %new_state%"
     }
   ],
   "dashboard": {

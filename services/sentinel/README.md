@@ -99,7 +99,7 @@ Notifiers deliver alerts when transitions occur.
 
 ### Transitions
 
-Transitions define *when* to send notifications. Each rule watches a monitor and fires when the state changes in the specified direction.
+Transitions define *when* to send notifications. Each rule watches a monitor and fires when the state changes in the specified direction. A reading is compared with the monitor's last known `Safe` or `Unsafe` reading, so a poll that fails in between does not hide a change. A monitor that fails five polls in a row is unreadable; an `unreadable` rule fires then (`%new_state%` is `Unknown`) and again at its first reading afterwards. See [the design doc](../../docs/services/sentinel.md#transition-rules).
 
 ```json
 {
@@ -119,7 +119,7 @@ Transitions define *when* to send notifications. Each rule watches a monitor and
 | Field | Default | Description |
 |-------|---------|-------------|
 | `monitor_name` | *(required)* | Name of the monitor to watch (must match a monitor's `name`). |
-| `direction` | *(required)* | `safe_to_unsafe`, `unsafe_to_safe`, or `both`. |
+| `direction` | *(required)* | `safe_to_unsafe`, `unsafe_to_safe`, `both` (either of those two), or `unreadable`. |
 | `notifiers` | *(required)* | List of notifier type names to dispatch to. |
 | `message_template` | `%monitor_name% changed to %new_state%` | Template with `%monitor_name%` and `%new_state%` placeholders. |
 | `priority` | *(none)* | Override the notifier's default priority for this rule. |
