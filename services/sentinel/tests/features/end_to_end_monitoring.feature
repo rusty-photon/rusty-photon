@@ -45,3 +45,9 @@ Feature: End-to-end safety monitoring
     And sentinel is running
     When I wait for sentinel to poll
     Then the dashboard status should show "Unknown" for "Unreachable Monitor"
+
+  Scenario: Sentinel shows unknown when the device never answers
+    Given sentinel is configured to monitor a device that never answers
+    And sentinel is running
+    When I wait for sentinel to poll
+    Then the dashboard status should show "Unknown" for "Silent Monitor"

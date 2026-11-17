@@ -69,6 +69,8 @@ Monitors poll ASCOM Alpaca devices at a configured interval.
 | `device_number` | `0` | ASCOM device number. |
 | `polling_interval` | `"30s"` | How often to poll the device (humantime: `"30s"`, `"500ms"`, `"1m"`, …). |
 
+Each request to the device is bounded at 5 s: a poll the device has not answered by then reads `Unknown`, as an unreachable device does.
+
 ### Notifiers
 
 Notifiers deliver alerts when transitions occur.

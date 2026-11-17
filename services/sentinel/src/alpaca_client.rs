@@ -10,6 +10,12 @@ use crate::config::MonitorConfig;
 use crate::io::HttpClient;
 use crate::monitor::{Monitor, MonitorState};
 
+/// The longest sentinel waits for one request to a monitor's device. A LAN
+/// Alpaca server answers in milliseconds; the bound keeps a host that drops
+/// the request, or a server that accepts the connection and never answers,
+/// from holding the poll loop, or start-up, which awaits each connect.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// ASCOM Alpaca API response for boolean values
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -18,6 +24,14 @@ struct AlpacaBoolResponse {
     #[allow(dead_code)]
     error_number: i32,
     #[allow(dead_code)]
+    error_message: String,
+}
+
+/// The error fields every Alpaca answer carries
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct AlpacaErrorFields {
+    error_number: i32,
     error_message: String,
 }
 
@@ -55,6 +69,38 @@ impl AlpacaSafetyMonitor {
             http,
         }
     }
+
+    /// PUT the device's `Connected` property, bounded by [`REQUEST_TIMEOUT`].
+    /// A non-200 status or an ASCOM error in the answer is a failure: the
+    /// device refused.
+    async fn put_connected(&self, connected: &str) -> crate::Result<()> {
+        let url = format!("{}/connected", self.base_url);
+        let response = tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            self.http
+                .put_form(&url, &[("Connected", connected), ("ClientID", "1")]),
+        )
+        .await
+        .map_err(|_| {
+            crate::SentinelError::Http(format!("PUT {url} timed out after {REQUEST_TIMEOUT:?}"))
+        })??;
+        if response.status != 200 {
+            return Err(crate::SentinelError::Monitor(format!(
+                "PUT {url} answered status {}",
+                response.status
+            )));
+        }
+        let answer: AlpacaErrorFields = serde_json::from_str(&response.body).map_err(|e| {
+            crate::SentinelError::Monitor(format!("PUT {url} answered an unreadable body: {e}"))
+        })?;
+        if answer.error_number != 0 {
+            return Err(crate::SentinelError::Monitor(format!(
+                "PUT {url} refused: ASCOM error {} - {}",
+                answer.error_number, answer.error_message
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -67,7 +113,15 @@ impl Monitor for AlpacaSafetyMonitor {
         let url = format!("{}/issafe", self.base_url);
         tracing::debug!("Polling {} at {}", self.name, url);
 
-        match self.http.get(&url).await {
+        let Ok(response) = tokio::time::timeout(REQUEST_TIMEOUT, self.http.get(&url)).await else {
+            tracing::debug!(
+                "Polling {} timed out after {:?}",
+                self.name,
+                REQUEST_TIMEOUT
+            );
+            return MonitorState::Unknown;
+        };
+        match response {
             Ok(response) => {
                 if response.status != 200 {
                     tracing::debug!(
@@ -109,21 +163,15 @@ impl Monitor for AlpacaSafetyMonitor {
     }
 
     async fn connect(&self) -> crate::Result<()> {
-        let url = format!("{}/connected", self.base_url);
         tracing::debug!("Connecting {}", self.name);
-        self.http
-            .put_form(&url, &[("Connected", "true"), ("ClientID", "1")])
-            .await?;
+        self.put_connected("true").await?;
         tracing::debug!("Connected {}", self.name);
         Ok(())
     }
 
     async fn disconnect(&self) -> crate::Result<()> {
-        let url = format!("{}/connected", self.base_url);
         tracing::debug!("Disconnecting {}", self.name);
-        self.http
-            .put_form(&url, &[("Connected", "false"), ("ClientID", "1")])
-            .await?;
+        self.put_connected("false").await?;
         tracing::debug!("Disconnected {}", self.name);
         Ok(())
     }
@@ -300,5 +348,105 @@ mod tests {
         let mock = MockHttpClient::new();
         let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
         assert_eq!(monitor.name(), "Test Monitor");
+    }
+
+    fn put_answering(status: u16, body: &'static str) -> MockHttpClient {
+        let mut mock = MockHttpClient::new();
+        mock.expect_put_form().returning(move |_, _| {
+            Box::pin(async move {
+                Ok(HttpResponse {
+                    status,
+                    body: body.to_string(),
+                })
+            })
+        });
+        mock
+    }
+
+    #[tokio::test]
+    async fn a_connect_answered_with_an_error_status_fails() {
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(put_answering(500, "")));
+
+        let err = monitor.connect().await.unwrap_err();
+
+        assert!(err.to_string().contains("answered status 500"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_connect_answered_with_an_ascom_error_fails() {
+        let mock = put_answering(
+            200,
+            r#"{"ClientTransactionID":1,"ServerTransactionID":2,"ErrorNumber":1280,"ErrorMessage":"Cannot read the monitored file"}"#,
+        );
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+
+        let err = monitor.connect().await.unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("refused: ASCOM error 1280 - Cannot read the monitored file"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_answered_with_an_unreadable_body_fails() {
+        let monitor =
+            AlpacaSafetyMonitor::new(&test_config(), Arc::new(put_answering(200, "not json")));
+
+        let err = monitor.disconnect().await.unwrap_err();
+
+        assert!(err.to_string().contains("unreadable body"), "{err}");
+    }
+
+    /// A device that never answers: every request stays pending.
+    fn silent_device() -> MockHttpClient {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get()
+            .returning(|_| Box::pin(std::future::pending()));
+        mock.expect_put_form()
+            .returning(|_, _| Box::pin(std::future::pending()));
+        mock
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_the_device_does_not_answer_reads_unknown_at_the_bound() {
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(silent_device()));
+        let start = tokio::time::Instant::now();
+
+        let state = tokio::time::timeout(2 * REQUEST_TIMEOUT, monitor.poll())
+            .await
+            .expect("the poll outwaited its bound");
+
+        assert_eq!(state, MonitorState::Unknown);
+        assert_eq!(start.elapsed(), REQUEST_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connect_the_device_does_not_answer_fails_at_the_bound() {
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(silent_device()));
+        let start = tokio::time::Instant::now();
+
+        let err = tokio::time::timeout(2 * REQUEST_TIMEOUT, monitor.connect())
+            .await
+            .expect("the connect outwaited its bound")
+            .unwrap_err();
+
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert_eq!(start.elapsed(), REQUEST_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_disconnect_the_device_does_not_answer_fails_at_the_bound() {
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(silent_device()));
+        let start = tokio::time::Instant::now();
+
+        let err = tokio::time::timeout(2 * REQUEST_TIMEOUT, monitor.disconnect())
+            .await
+            .expect("the disconnect outwaited its bound")
+            .unwrap_err();
+
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert_eq!(start.elapsed(), REQUEST_TIMEOUT);
     }
 }

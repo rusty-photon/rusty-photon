@@ -52,7 +52,7 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 2. Engine spawns a tokio polling task per monitor at configured interval
 3. Each poll: GET `issafe`. A reading that differs from the monitor's last known reading is a state change, and so are the monitor becoming unreadable and its first reading afterwards ([What counts as a change](#what-counts-as-a-change)); a change that matches a configured rule is dispatched to the rule's notifiers
 4. SharedState updated on every poll, dashboard reads from it
-5. On shutdown: disconnect monitors (PUT `connected=false`)
+5. On shutdown: abandon any poll in flight, then disconnect monitors (PUT `connected=false`)
 
 ## Configuration
 
@@ -294,7 +294,7 @@ no privilege boundary is crossed.
 
 ### Monitor Types
 
-- `alpaca_safety_monitor` — Polls an ASCOM Alpaca SafetyMonitor device. Supports optional `auth` section with `username` and `password` (plaintext) for connecting to auth-enabled services. See [ADR-003](../decisions/003-authentication-for-device-access.md).
+- `alpaca_safety_monitor` — Polls an ASCOM Alpaca SafetyMonitor device. Supports optional `auth` section with `username` and `password` (plaintext) for connecting to auth-enabled services. See [ADR-003](../decisions/003-authentication-for-device-access.md). Every request to the device (the `issafe` poll and the `connected` PUTs at start-up and shutdown) is bounded at 5 s. A poll the device has not answered by then reads `Unknown`, as an unreachable device does, so a host that drops the request, or a server that accepts the connection and never answers, costs a poll 5 s instead of holding the poll loop, and start-up, for as long as the operating system keeps the connection open. A LAN Alpaca server answers in milliseconds.
 
 In addition to the polled monitors above, the optional `operation_watchdog` block configures the push-based [Operation Watchdog](#operation-watchdog), which subscribes to an rp event stream rather than polling a device.
 
@@ -363,7 +363,9 @@ failure is a change to `Unknown`, once per outage however long it lasts,
 and the first `Safe` or `Unsafe` reading after it is a change too: the
 monitor is readable again. Sentinel waits one `polling_interval` after
 each poll returns, so the fifth failure comes five intervals after the
-monitor's last reading, plus the time the five failed polls took to fail.
+monitor's last reading, plus the time the five failed polls took to fail:
+none for a refused connection, at most 5 s each for a device that does not
+answer ([Monitor Types](#monitor-types)).
 An outage of fewer than five polls is not one. The fifth failure is also
 where sentinel logs its consecutive-errors warning.
 
@@ -933,6 +935,8 @@ services/sentinel/src/
 | Unknown between two readings | Ignored: the reading after it is compared with the one before it. |
 | Pushover failure | Log warn, record failure in history. No retry. |
 | ASCOM error response | Treated as Unknown (same as unreachable). |
+| Device does not answer | The request is abandoned after 5 s and the poll reads Unknown (same as unreachable). A connect that times out at start-up is logged, as a refused one is, and start-up goes on. |
+| Device rejects the connect (a non-200 status, or an ASCOM error in the answer) | Logged as a failed connect, as a refused one is; start-up goes on. |
 | Rapid flapping | Every real transition triggers notification. |
 | Empty transitions | Valid config. Monitors run, dashboard works, no notifications. |
 | Dashboard port conflict | Log error, continue without dashboard. |
