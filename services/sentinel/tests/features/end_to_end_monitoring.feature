@@ -46,7 +46,6 @@ Feature: End-to-end safety monitoring
     When I wait for sentinel to poll
     Then the dashboard status should show "Unknown" for "Unreachable Monitor"
 
-  @wip
   Scenario: Sentinel reads a monitor again after its service restarts
     Given a monitoring file containing "OPEN"
     And filemonitor is running with a contains rule "OPEN" as safe and 1 second polling
@@ -58,7 +57,6 @@ Feature: End-to-end safety monitoring
     When filemonitor starts again
     Then the dashboard status should show "Safe" for "Roof Monitor"
 
-  @wip
   Scenario: Sentinel connects a monitor again after another client disconnects it
     Given a monitoring file containing "OPEN"
     And filemonitor is running with a contains rule "OPEN" as safe and 1 second polling
