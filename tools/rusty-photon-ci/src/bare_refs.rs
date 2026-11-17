@@ -165,7 +165,6 @@ const PENDING: &[(&str, &str, usize)] = &[
     ("crates/rusty-photon-tls/src/test_cert.rs", "#621", 1),
     ("crates/rusty-photon-tls/tests/tls_roundtrip.rs", "#610", 1),
     ("services/dsd-fp2/src/mock.rs", "#423", 1),
-    ("services/pa-falcon-rotator/src/manager.rs", "#280", 1),
     ("services/pa-falcon-rotator/src/manager.rs", "#949", 1),
     (
         "services/pa-falcon-rotator/src/rotator_device.rs",

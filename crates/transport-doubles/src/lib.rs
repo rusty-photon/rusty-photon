@@ -10,6 +10,10 @@
 //! next request the test names, says when it holds it, and lets it go when
 //! the test says so. `docs/skills/testing.md` has the walk-through.
 //!
+//! [`FailingFactory`] wraps the driver's factory the same way and fails the
+//! next frame sent, so a unit test reaches what the driver does when the
+//! wire fails during the handshake or after it.
+//!
 //! The crate depends only on the public transport traits, so any driver's
 //! mock factory is the inner factory, and is a dev-dependency only.
 
@@ -153,6 +157,67 @@ impl FrameTransport for HoldingTransport {
     }
 }
 
+/// Wraps the transports `inner` opens and fails one send each time a test
+/// arms it.
+///
+/// The armed send returns [`TransportError::Eof`], what a serial link that
+/// drops mid-session gives, and its frame never reaches the inner transport.
+pub struct FailingFactory<F> {
+    inner: F,
+    fail_next_send: Arc<AtomicBool>,
+}
+
+impl<F: TransportFactory> FailingFactory<F> {
+    /// Wrap `inner`, failing nothing until armed.
+    #[must_use]
+    pub fn new(inner: F) -> Self {
+        Self {
+            inner,
+            fail_next_send: Arc::default(),
+        }
+    }
+
+    /// Fail the next frame sent, on any transport the factory has opened or
+    /// opens later.
+    pub fn fail_next_send(&self) {
+        self.fail_next_send.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl<F: TransportFactory> TransportFactory for FailingFactory<F> {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        let inner = self.inner.open().await?;
+        Ok(Box::new(FailingTransport {
+            inner,
+            fail_next_send: Arc::clone(&self.fail_next_send),
+        }))
+    }
+}
+
+struct FailingTransport {
+    inner: Box<dyn FrameTransport>,
+    fail_next_send: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl FrameTransport for FailingTransport {
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        if self.fail_next_send.swap(false, Ordering::SeqCst) {
+            return Err(TransportError::Eof);
+        }
+        self.inner.send_frame(bytes).await
+    }
+
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+        self.inner.recv_frame(buf).await
+    }
+
+    async fn discard_input(&mut self) -> Result<(), TransportError> {
+        self.inner.discard_input().await
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -160,9 +225,10 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     /// A wire that answers every frame with the frame itself, and counts the
-    /// replies read and the input discards.
+    /// frames sent, the replies read and the input discards.
     #[derive(Default)]
     struct Wire {
+        frames_sent: AtomicUsize,
         replies_read: AtomicUsize,
         discards: AtomicUsize,
     }
@@ -200,6 +266,7 @@ mod tests {
             if self.fail_send {
                 return Err(TransportError::Eof);
             }
+            self.wire.frames_sent.fetch_add(1, Ordering::SeqCst);
             self.last_sent = bytes.to_vec();
             Ok(())
         }
@@ -402,5 +469,69 @@ mod tests {
 
         factory.hold_next_reply_to(b"PA");
         factory.reply_held().await;
+    }
+
+    fn failing_echo() -> (FailingFactory<EchoFactory>, Arc<Wire>) {
+        let inner = EchoFactory::default();
+        let wire = Arc::clone(&inner.wire);
+        (FailingFactory::new(inner), wire)
+    }
+
+    #[tokio::test]
+    async fn an_armed_send_fails_and_its_frame_never_reaches_the_wire() {
+        let (factory, wire) = failing_echo();
+        let mut transport = factory.open().await.unwrap();
+
+        factory.fail_next_send();
+        let err = transport.send_frame(b"PA").await.unwrap_err();
+
+        assert!(matches!(err, TransportError::Eof), "{err:?}");
+        assert_eq!(wire.frames_sent.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn one_failed_send_spends_the_arm() {
+        let (factory, wire) = failing_echo();
+        let mut transport = factory.open().await.unwrap();
+
+        factory.fail_next_send();
+        transport.send_frame(b"PA").await.unwrap_err();
+
+        assert_eq!(exchange_unheld(transport.as_mut(), b"PS").await, b"PS");
+        assert_eq!(wire.frames_sent.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_arm_set_before_open_fails_the_first_send() {
+        let (factory, _) = failing_echo();
+
+        factory.fail_next_send();
+        let mut transport = factory.open().await.unwrap();
+
+        let err = transport.send_frame(b"PA").await.unwrap_err();
+        assert!(matches!(err, TransportError::Eof), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failing_factory_passes_discard_input_on() {
+        let (factory, wire) = failing_echo();
+        let mut transport = factory.open().await.unwrap();
+
+        transport.discard_input().await.unwrap();
+
+        assert_eq!(wire.discards.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failing_factory_fails_to_open_as_the_inner_factory_does() {
+        let inner = EchoFactory {
+            fail_open: true,
+            ..EchoFactory::default()
+        };
+        let factory = FailingFactory::new(inner);
+
+        let err = factory.open().await.err().unwrap();
+
+        assert!(matches!(err, TransportError::Eof), "{err:?}");
     }
 }

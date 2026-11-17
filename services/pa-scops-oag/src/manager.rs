@@ -518,58 +518,14 @@ mod tests {
         );
     }
 
-    // ---- transport-failure rollback via an injectable factory --------------
+    // ---- transport-failure rollback via a failing factory ------------------
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::{Codec as _, FrameTransport, TransportError};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use rusty_photon_shared_transport::Codec as _;
+    use transport_doubles::FailingFactory;
 
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockScopsTransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    impl InjectableFactory {
-        fn fail_next_send(&self) -> Arc<AtomicBool> {
-            Arc::clone(&self.fail_next_send)
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-    }
-
-    fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<FocuserManager> {
+    fn make_manager_with_factory(
+        factory: Arc<FailingFactory<MockScopsTransportFactory>>,
+    ) -> Arc<FocuserManager> {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
         FocuserManager::new(&config, factory)
@@ -577,12 +533,11 @@ mod tests {
 
     #[tokio::test]
     async fn move_absolute_rolls_cache_back_on_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockScopsTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .move_absolute(&session, 5000)
             .await
@@ -601,11 +556,10 @@ mod tests {
 
     #[tokio::test]
     async fn acquire_returns_err_and_keeps_cache_empty_when_handshake_fails() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockScopsTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .transport()
             .acquire()

@@ -414,8 +414,11 @@ server-rendered fragments — no hand-written JavaScript.
   render). Slots are updated
   from **each event's own payload alone** — the proxy is stateless, so a slot
   a given event doesn't describe simply keeps its previous content.
-- **The fold panel**: the equipment LED list, fetched from `/stream/equipment`
-  at render and re-fetched on an htmx timer (`hx-trigger="every 10s"`). rp's
+- **The fold panel**: the equipment LED list, one LED per device in rp's
+  roster, of every kind `GET /api/equipment` reports (the nine roster kinds
+  and the singular mount), each labelled with rp's noun for its kind. It is
+  fetched from `/stream/equipment` at render and re-fetched on an htmx timer
+  (`hx-trigger="every 10s"`). rp's
   `equipment_changed` events do not drive it: they reach the feed as generic
   cards. The mock's guider graph and trend-chart cards need telemetry history
   rp does not expose ([Deferred](#deferred)).

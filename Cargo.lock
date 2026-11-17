@@ -3282,6 +3282,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "transport-doubles",
 ]
 
 [[package]]
