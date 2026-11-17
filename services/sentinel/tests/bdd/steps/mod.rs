@@ -8,4 +8,5 @@ pub mod lifecycle_steps;
 pub mod monitoring_steps;
 pub mod restart_steps;
 pub mod tls_steps;
+pub mod transition_steps;
 pub mod watchdog_steps;

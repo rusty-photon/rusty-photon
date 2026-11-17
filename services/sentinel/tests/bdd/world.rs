@@ -255,6 +255,31 @@ impl SentinelWorld {
         }));
     }
 
+    /// Connect or disconnect the running filemonitor's device through its
+    /// Alpaca API, as any client may. Disconnected, its `IsSafe` answers
+    /// `NotConnected`, an ASCOM error sentinel reads as `Unknown`; connected
+    /// again, it re-reads its file.
+    pub async fn set_filemonitor_connected(&self, connected: bool) {
+        let fm = self.filemonitor.as_ref().expect("filemonitor not started");
+        let url = format!(
+            "http://127.0.0.1:{}/api/v1/safetymonitor/0/connected",
+            fm.port()
+        );
+        let value = if connected { "true" } else { "false" };
+        let resp = reqwest::Client::new()
+            .put(&url)
+            .form(&[("Connected", value), ("ClientID", "2")])
+            .send()
+            .await
+            .expect("failed to PUT filemonitor connected");
+        let body: serde_json::Value = resp.json().await.expect("connected answer is not JSON");
+        assert_eq!(
+            body["ErrorNumber"].as_i64(),
+            Some(0),
+            "filemonitor refused Connected={value}: {body}"
+        );
+    }
+
     /// The stub service-manager directory (created on first use, with fast
     /// policy timings and an empty unit listing). Handed to the spawned
     /// sentinel via `SENTINEL_SERVICE_MANAGER_DIR`, so no scenario ever
