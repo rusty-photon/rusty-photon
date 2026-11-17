@@ -1,4 +1,4 @@
-@serial
+@serial @wip
 Feature: Transition rules
   A transition rule names a monitor and a direction, and sends a
   notification when the monitor's state changes that way. A reading is
@@ -14,10 +14,10 @@ Feature: Transition rules
     And a safe-to-unsafe transition rule for "Roof Monitor"
     And sentinel is running
     Then the dashboard status should show "Safe" for "Roof Monitor"
-    When the filemonitor device is disconnected
+    When filemonitor stops
     Then the dashboard status should show "Unknown" for "Roof Monitor"
     When the monitoring file changes to "CLOSED"
-    And the filemonitor device is reconnected
+    And filemonitor starts again
     Then the notification history should hold the message "Roof Monitor changed to Unsafe"
     And the notification history should hold 1 message
 
@@ -35,8 +35,8 @@ Feature: Transition rules
     And an unreadable transition rule for "Roof Monitor"
     And sentinel is running
     Then the dashboard status should show "Safe" for "Roof Monitor"
-    When the filemonitor device is disconnected
+    When filemonitor stops
     Then the notification history should hold the message "Roof Monitor is now Unknown"
-    When the filemonitor device is reconnected
+    When filemonitor starts again
     Then the notification history should hold the message "Roof Monitor is now Safe"
     And the notification history should hold 2 messages
