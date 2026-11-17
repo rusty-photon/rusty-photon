@@ -344,7 +344,7 @@ Transitions define when notifications should be sent. Each rule specifies:
 - Which monitor to watch (`monitor_name`)
 - Which change it fires on (`direction`: `safe_to_unsafe`, `unsafe_to_safe`, `both` or `unreadable`, [below](#directions))
 - Which notifiers to use
-- A message template with `%monitor_name%` and `%new_state%` placeholders
+- A message template with `%monitor_name%` and `%new_state%` placeholders. Without one, a rule uses `%monitor_name% changed to %new_state%`, and an `unreadable` rule `%monitor_name% is now %new_state%`: its first reading after an outage can be the reading the monitor had before, which is no change
 - Optional priority and sound overrides
 
 Empty transitions config means no notifications are sent.
@@ -366,9 +366,11 @@ starts has no last known reading to differ from and is no change.
 A monitor that has failed five polls in a row is **unreadable**. The fifth
 failure is a change to `Unknown`, once per outage however long it lasts,
 and the first `Safe` or `Unsafe` reading after it is a change too: the
-monitor is readable again. Five polls take five of the monitor's
-`polling_interval`s. An outage of fewer than five polls is not one. The
-fifth failure is also where sentinel logs its consecutive-errors warning.
+monitor is readable again. Sentinel waits one `polling_interval` after
+each poll returns, so the fifth failure comes five intervals after the
+monitor's last reading, plus the time the five failed polls took to fail.
+An outage of fewer than five polls is not one. The fifth failure is also
+where sentinel logs its consecutive-errors warning.
 
 #### Directions
 

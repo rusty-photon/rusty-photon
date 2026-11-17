@@ -121,7 +121,7 @@ Transitions define *when* to send notifications. Each rule watches a monitor and
 | `monitor_name` | *(required)* | Name of the monitor to watch (must match a monitor's `name`). |
 | `direction` | *(required)* | `safe_to_unsafe`, `unsafe_to_safe`, `both` (either of those two), or `unreadable`. |
 | `notifiers` | *(required)* | List of notifier type names to dispatch to. |
-| `message_template` | `%monitor_name% changed to %new_state%` | Template with `%monitor_name%` and `%new_state%` placeholders. |
+| `message_template` | `%monitor_name% changed to %new_state%`; for `unreadable`, `%monitor_name% is now %new_state%` | Template with `%monitor_name%` and `%new_state%` placeholders. |
 | `priority` | *(none)* | Override the notifier's default priority for this rule. |
 | `sound` | *(none)* | Override the notifier's default sound for this rule. |
 

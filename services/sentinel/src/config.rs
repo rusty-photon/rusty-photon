@@ -268,12 +268,32 @@ pub struct TransitionConfig {
     pub monitor_name: String,
     pub direction: TransitionDirection,
     pub notifiers: Vec<String>,
-    #[serde(default = "default_message_template")]
-    pub message_template: String,
+    /// Absent, the rule uses its direction's default
+    /// ([`TransitionConfig::message_template`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_template: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<String>,
+}
+
+impl TransitionConfig {
+    /// The rule's message template, or its direction's default. An
+    /// `unreadable` rule's default says what the monitor reads rather than
+    /// that it changed: its first reading after an outage can be the
+    /// reading it had before.
+    #[must_use]
+    pub fn message_template(&self) -> &str {
+        self.message_template
+            .as_deref()
+            .unwrap_or(match self.direction {
+                TransitionDirection::Unreadable => "%monitor_name% is now %new_state%",
+                TransitionDirection::SafeToUnsafe
+                | TransitionDirection::UnsafeToSafe
+                | TransitionDirection::Both => "%monitor_name% changed to %new_state%",
+            })
+    }
 }
 
 /// The state change a transition rule fires on (`docs/services/sentinel.md`
@@ -409,10 +429,6 @@ fn default_pushover_title() -> String {
 
 fn default_pushover_sound() -> String {
     "pushover".to_string()
-}
-
-fn default_message_template() -> String {
-    "%monitor_name% changed to %new_state%".to_string()
 }
 
 const fn default_true() -> bool {
@@ -669,6 +685,54 @@ mod tests {
         assert_eq!(
             config.transitions[0].direction,
             TransitionDirection::Unreadable
+        );
+    }
+
+    #[test]
+    fn a_rule_without_a_template_uses_its_direction_s_default() {
+        let json = r#"{
+            "transitions": [
+                { "monitor_name": "Test", "direction": "unreadable", "notifiers": [] },
+                { "monitor_name": "Test", "direction": "safe_to_unsafe", "notifiers": [] },
+                { "monitor_name": "Test", "direction": "unsafe_to_safe", "notifiers": [] },
+                { "monitor_name": "Test", "direction": "both", "notifiers": [] }
+            ]
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+
+        let templates: Vec<&str> = config
+            .transitions
+            .iter()
+            .map(TransitionConfig::message_template)
+            .collect();
+        assert_eq!(
+            templates,
+            vec![
+                "%monitor_name% is now %new_state%",
+                "%monitor_name% changed to %new_state%",
+                "%monitor_name% changed to %new_state%",
+                "%monitor_name% changed to %new_state%",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_rule_s_own_template_overrides_the_default() {
+        let json = r#"{
+            "transitions": [{
+                "monitor_name": "Test",
+                "direction": "unreadable",
+                "notifiers": [],
+                "message_template": "%monitor_name%: %new_state%"
+            }]
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            config.transitions[0].message_template(),
+            "%monitor_name%: %new_state%"
         );
     }
 

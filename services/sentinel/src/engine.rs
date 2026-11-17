@@ -218,7 +218,7 @@ pub async fn dispatch_notifications(
         }
 
         let message = transition
-            .message_template
+            .message_template()
             .replace("%monitor_name%", monitor_name)
             .replace("%new_state%", &change.current.to_string());
 
@@ -538,7 +538,7 @@ mod tests {
             monitor_name: monitor_name.to_string(),
             direction,
             notifiers: vec!["recorder".to_string()],
-            message_template: "%monitor_name% is now %new_state%".to_string(),
+            message_template: Some("%monitor_name% is now %new_state%".to_string()),
             priority: None,
             sound: None,
         }
