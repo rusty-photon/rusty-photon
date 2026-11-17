@@ -696,6 +696,10 @@ fn led_list(status: &EquipmentStatus) -> Markup {
         ("cover calibrator", &status.cover_calibrators),
         ("focuser", &status.focusers),
         ("safety monitor", &status.safety_monitors),
+        ("switch", &status.switches),
+        ("rotator", &status.rotators),
+        ("observing conditions device", &status.observing_conditions),
+        ("dome", &status.domes),
     ] {
         for device in list {
             items.push((kind, Some(device.id.as_str()), device.connected));
@@ -1410,6 +1414,46 @@ mod tests {
             html.contains(r#"<span class="led ok"></span><span class="kind">mount</span>"#),
             "{html}"
         );
+    }
+
+    /// Every roster kind rp reports gets its LEDs, labelled with rp's noun
+    /// for the kind.
+    #[test]
+    fn led_list_lights_every_kind_rp_reports() {
+        let device = |id: &str| {
+            vec![DeviceStatus {
+                id: id.to_string(),
+                connected: true,
+            }]
+        };
+        let status = EquipmentStatus {
+            cameras: device("cam"),
+            filter_wheels: device("wheel"),
+            cover_calibrators: device("flat"),
+            focusers: device("eaf"),
+            safety_monitors: device("cloud"),
+            switches: device("power"),
+            rotators: device("rot"),
+            observing_conditions: device("wx"),
+            domes: device("roof"),
+            mount: None,
+        };
+        let html = led_list(&status).into_string();
+        for (kind, id) in [
+            ("camera", "cam"),
+            ("filter wheel", "wheel"),
+            ("cover calibrator", "flat"),
+            ("focuser", "eaf"),
+            ("safety monitor", "cloud"),
+            ("switch", "power"),
+            ("rotator", "rot"),
+            ("observing conditions device", "wx"),
+            ("dome", "roof"),
+        ] {
+            let led =
+                format!(r#"<span class="kind">{kind}</span><span class="dev-id">{id}</span>"#);
+            assert!(html.contains(&led), "no {kind} LED for {id}: {html}");
+        }
     }
 
     #[tokio::test]

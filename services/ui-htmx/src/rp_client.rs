@@ -145,16 +145,27 @@ mod tests {
             "/api/equipment",
             json!({
                 "cameras": [ { "id": "main-cam", "connected": true } ],
-                "filter_wheels": [],
+                "filter_wheels": [ { "id": "wheel", "connected": true } ],
                 "cover_calibrators": [ { "id": "flat", "connected": false } ],
-                "focusers": [],
-                "safety_monitors": [],
+                "focusers": [ { "id": "eaf", "connected": true } ],
+                "safety_monitors": [ { "id": "cloud", "connected": true } ],
+                "switches": [ { "id": "power", "connected": false } ],
+                "rotators": [ { "id": "rot", "connected": true } ],
+                "observing_conditions": [ { "id": "wx", "connected": true } ],
+                "domes": [ { "id": "roof", "connected": false } ],
                 "mount": null
             }),
         );
         let status = api.equipment_status().await.unwrap();
         assert_eq!(flags(&status.cameras), [("main-cam", true)]);
+        assert_eq!(flags(&status.filter_wheels), [("wheel", true)]);
         assert_eq!(flags(&status.cover_calibrators), [("flat", false)]);
+        assert_eq!(flags(&status.focusers), [("eaf", true)]);
+        assert_eq!(flags(&status.safety_monitors), [("cloud", true)]);
+        assert_eq!(flags(&status.switches), [("power", false)]);
+        assert_eq!(flags(&status.rotators), [("rot", true)]);
+        assert_eq!(flags(&status.observing_conditions), [("wx", true)]);
+        assert_eq!(flags(&status.domes), [("roof", false)]);
         assert!(status.mount.is_none(), "{:?}", status.mount);
     }
 
