@@ -982,7 +982,7 @@ mod tests {
         let f = Fixture::spawn(
             ProbeAnswer::StatusWithBody(
                 503,
-                r#"{"status":"unavailable","message":"no connection to PHD2 on localhost:4400"}"#,
+                r#"{"status":"binary_unavailable","message":"ASTAP binary missing or not executable: /usr/bin/astap"}"#,
             ),
             discovered(RunState::Running, true),
             false,
@@ -992,7 +992,7 @@ mod tests {
         assert_eq!(status.health, ServiceHealth::Degraded);
         assert_eq!(
             status.health_message.as_deref(),
-            Some("no connection to PHD2 on localhost:4400")
+            Some("ASTAP binary missing or not executable: /usr/bin/astap")
         );
         f.stop().await;
     }
@@ -1026,8 +1026,9 @@ mod tests {
     #[test]
     fn degraded_message_extraction_is_strictly_bounded() {
         assert_eq!(
-            degraded_message(r#"{"status":"unavailable","message":"PHD2 is off"}"#).as_deref(),
-            Some("PHD2 is off")
+            degraded_message(r#"{"status":"db_unavailable","message":"ASTAP database missing"}"#)
+                .as_deref(),
+            Some("ASTAP database missing")
         );
         assert_eq!(degraded_message(""), None, "empty body");
         assert_eq!(degraded_message("not json"), None, "non-JSON body");

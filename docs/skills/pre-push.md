@@ -616,7 +616,6 @@ cargo metadata --format-version 1 --no-deps | \
 Current services and their commands:
 - **filemonitor**: `cargo miri test -p filemonitor`
 - **pa-scops-oag**: `cargo miri test -p pa-scops-oag`
-- **phd2-guider**: `cargo miri test -p phd2-guider`
 - **qhy-focuser**: `cargo miri test -p qhy-focuser`
 - **rp-auth**: `cargo miri test -p rp-auth`
 
@@ -981,7 +980,7 @@ OmniSim installed and `OMNISIM_PATH`/`OMNISIM_DIR` set, the same as a plain
 binaries' coverage is collected is validated in CI.
 
 Known limitations:
-- A few tests in `bdd-infra`, `phd2-guider`, and `filemonitor:test_cli`
+- A few tests in `bdd-infra` and `filemonitor:test_cli`
   shell out to `cargo` or assume `target/debug` paths; they are tagged
   `requires-cargo` and skipped under Bazel.
 - Miri runs only under Cargo. The conformu integration tests run under

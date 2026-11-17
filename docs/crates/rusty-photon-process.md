@@ -9,8 +9,8 @@ This is a workspace library, not a service. It depends on `libc` (Unix),
 `thiserror` and `tracing`, and on no async runtime: it serves synchronous
 callers (`rusty-photon-doctor-checks`, which every service links, and the
 central doctor's platform inspectors) and asynchronous ones (`plate-solver`,
-`sentinel`, `phd2-guider`'s reading of PHD2's unit, doctor's aggregation and
-the `bdd-infra` ConformU runner) through one implementation.
+`sentinel`, doctor's aggregation and the `bdd-infra` ConformU runner) through
+one implementation.
 
 ## Scope
 
@@ -26,12 +26,11 @@ the `bdd-infra` ConformU runner) through one implementation.
   callers that run an operator's line — renewal hooks, restart commands — do
   not each carry their own copy of `cmd`'s quoting rules.
 
-Out of scope: long-lived supervised children — `phd2-guider` holding the PHD2
-process, `bdd-infra`'s `ServiceHandle`, OmniSim. Those need lifecycle state,
-health and restart, which is a different problem; folding them in would give
-the crate two unrelated jobs. Commands whose answer is immediate and whose
-failure is harmless (`id -G` in `rusty-photon-config`, `which phd2`) do not
-need it either.
+Out of scope: long-lived supervised children — `bdd-infra`'s `ServiceHandle`,
+OmniSim. Those need lifecycle state, health and restart, which is a different
+problem; folding them in would give the crate two unrelated jobs. Commands
+whose answer is immediate and whose failure is harmless (`id -G` in
+`rusty-photon-config`) do not need it either.
 
 ## The contract
 

@@ -20,7 +20,7 @@ lease are superseded by
 ## Context
 
 rusty-photon guides through PHD2, wrapped by
-[`phd2-guider`](../services/phd2-guider.md). The options study sets out
+[`phd2-guider`](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md). The options study sets out
 what that costs and why (§ Background). In brief, four properties of
 PHD2 drive the cost, and none of them is a defect in PHD2:
 
@@ -287,7 +287,7 @@ client of one Camera and one Telescope and serves `rp` over HTTP (L1).
   staging, the risks and what the study could not verify.
 - [`docs/services/guider.md`](../services/guider.md) — the service's
   design.
-- [`docs/services/phd2-guider.md`](../services/phd2-guider.md) — the
+- [`docs/services/phd2-guider.md`](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md) — the
   service this one replaces, and the HTTP contract it serves today.
 - [rp.md § Component Categories](../services/rp.md#component-categories),
   [§ Guider Service](../services/rp.md#guider-service),

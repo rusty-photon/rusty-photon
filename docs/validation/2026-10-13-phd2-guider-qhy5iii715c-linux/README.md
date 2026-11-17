@@ -1,7 +1,7 @@
 # phd2-guider camera facade — QHY5III715C behind PHD2 2.6.14, Linux (device claims C6)
 
 `phd2-guider`'s opt-in camera facade
-([phd2-guider.md § Camera facade](../../services/phd2-guider.md#camera-facade-camera))
+([phd2-guider.md § Camera facade](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md#camera-facade-camera))
 with a real guide camera behind PHD2: the field rig's QHY5III715C. ConformU
 4.5.0 ran its `alpacaprotocol` and `conformance` suites, and both were
 **clean**: `conformance-results.json`'s `ErrorCount`, `IssueCount`,
@@ -152,7 +152,7 @@ nothing for a QHY camera:
   read `Exposing` until the frame's natural end, then `Idle`, and the
   next start succeeded.
 
-This is the behaviour [phd2-guider.md](../../services/phd2-guider.md#aborting)
+This is the behaviour [phd2-guider.md](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md#aborting)
 documents for a camera driver that ignores the interrupt. A QHY guide
 camera behind PHD2 cannot end an exposure early. A client that aborts
 gets its answer after 2 s, and the camera stays busy until the frame's
@@ -166,7 +166,7 @@ node was `crw-rw---- root:rusty-photon`. The packaged
 `90-rusty-photon-qhy.rules` gives every device with QHY's vendor id to the
 `rusty-photon` group with mode 0660, overriding QHY's own
 `85-qhyccd.rules` (mode 0666). The operator's account, which PHD2 runs as,
-is not in that group. [packaging.md](../../packaging.md#phd2-guider-the-camera-facade)'s
+is not in that group. [packaging.md](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/packaging.md#phd2-guider-the-camera-facade)'s
 facade recipe does not mention this. The same holds for any guide camera
 whose vendor has a packaged driver on the host, since every camera
 package's rule covers its whole vendor id.
@@ -180,7 +180,7 @@ only a PHD2 restart made it find the camera.
 
 **The fix, run the same day.** A udev rule keyed on the camera's port gives
 that one port to the operator's group, and is now step 1 of
-[packaging.md](../../packaging.md#phd2-guider-the-camera-facade)'s facade
+[packaging.md](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/packaging.md#phd2-guider-the-camera-facade)'s facade
 recipe:
 
 ```

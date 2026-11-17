@@ -1478,7 +1478,7 @@ pub fn render_listing(listing: &Listing) -> String {
         let _ = write!(
             out,
             "\nTo pin the cameras this driver serves, paste this into {}.json.\n\
-             Leave out any camera another application owns (PHD2's guide camera), and\n\
+             Leave out any camera another application owns, and\n\
              keep the numbers running 0..N-1",
             listing.service
         );

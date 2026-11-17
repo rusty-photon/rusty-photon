@@ -8,9 +8,9 @@ Feature: Service health supervision
   403 — an auth-enabled service that challenges an unauthenticated probe
   has proven it is up. A 503 counts as alive but degraded: the service's
   HTTP loop answered, deliberately reporting an external dependency (a
-  stopped PHD2, a missing ASTAP install) that no service restart can
-  cure — so a 503 never triggers a restart or a notification, resets any
-  outage in progress, and shows the service as degraded on the dashboard.
+  missing ASTAP install) that no service restart can cure — so a 503
+  never triggers a restart or a notification, resets any outage in
+  progress, and shows the service as degraded on the dashboard.
   When the 503 body is JSON with a top-level "message" string, sentinel
   passes that string through to the dashboard verbatim as opaque display
   text (truncated to 200 characters, never interpreted, never acted on);
@@ -84,37 +84,37 @@ Feature: Service health supervision
     Then the dashboard reports service "plate-solver" health "down"
 
   Scenario: A degraded service is alive and never restarted
-    Given a stub service whose health endpoint answers 503 with body '{"status":"unavailable","message":"no connection to PHD2 on localhost:4400"}'
-    And the stub service is discovered as "phd2-guider" in state "running"
+    Given a stub service whose health endpoint answers 503 with body '{"status":"binary_unavailable","message":"ASTAP binary missing or not executable: /usr/bin/astap"}'
+    And the stub service is discovered as "plate-solver" in state "running"
     And sentinel is running with no monitors
-    When the dashboard reports service "phd2-guider" health "degraded"
+    When the dashboard reports service "plate-solver" health "degraded"
     Then the service manager records no restarts after a settle period
 
   Scenario: A degraded service's own message reaches the dashboard verbatim
-    Given a stub service whose health endpoint answers 503 with body '{"status":"unavailable","message":"no connection to PHD2 on localhost:4400"}'
-    And the stub service is discovered as "phd2-guider" in state "running"
+    Given a stub service whose health endpoint answers 503 with body '{"status":"binary_unavailable","message":"ASTAP binary missing or not executable: /usr/bin/astap"}'
+    And the stub service is discovered as "plate-solver" in state "running"
     And sentinel is running with no monitors
-    When the dashboard reports service "phd2-guider" health "degraded"
+    When the dashboard reports service "plate-solver" health "degraded"
     And the services endpoint is requested
-    Then the services response lists "phd2-guider" with health message "no connection to PHD2 on localhost:4400"
+    Then the services response lists "plate-solver" with health message "ASTAP binary missing or not executable: /usr/bin/astap"
 
   # The stub's default 503 body is JSON without a "message" field.
   Scenario: A degraded answer without a message shows no message
     Given a stub service whose health endpoint answers 503
-    And the stub service is discovered as "phd2-guider" in state "running"
+    And the stub service is discovered as "plate-solver" in state "running"
     And sentinel is running with no monitors
-    When the dashboard reports service "phd2-guider" health "degraded"
+    When the dashboard reports service "plate-solver" health "degraded"
     And the services endpoint is requested
-    Then the services response lists "phd2-guider" with no health message
+    Then the services response lists "plate-solver" with no health message
 
   Scenario: A degraded answer ends an outage like a recovery
     Given a stub service whose health endpoint answers 500
-    And the stub service is discovered as "phd2-guider" in state "running"
+    And the stub service is discovered as "plate-solver" in state "running"
     And sentinel is running with no monitors
-    When the service manager records at least 1 restart of "rusty-photon-phd2-guider" within 10 seconds
+    When the service manager records at least 1 restart of "rusty-photon-plate-solver" within 10 seconds
     And the stub service starts answering 503
-    Then the dashboard reports service "phd2-guider" health "degraded"
-    And the dashboard reports zero restarts in the current outage for "phd2-guider"
+    Then the dashboard reports service "plate-solver" health "degraded"
+    And the dashboard reports zero restarts in the current outage for "plate-solver"
 
   Scenario: A failed unit is restarted without an HTTP probe
     Given a discovered unit "rusty-photon-qhy-focuser" in state "failed"

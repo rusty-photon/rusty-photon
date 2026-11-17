@@ -49,9 +49,9 @@ works at any mount.
 
 1. every top-level section of the config that no device page edits
    (`serial`, `server`, a service-wide `usb_devices` list, …), each a
-   `<fieldset>` with the section's fields, a `unique_id` among them under
-   a collapsed **Identity** disclosure as on a device page (`phd2-guider`'s
-   `camera` block, whose device has no page of its own);
+   `<fieldset>` with the section's fields. A `unique_id` among them, in
+   the section of a device that has no page of its own, sits under a
+   collapsed **Identity** disclosure as on a device page;
 2. **Security**: the server's username, a password and its repeat. See
    [Credentials](#credentials);
 3. **Devices**: one row per device section the config has, naming the

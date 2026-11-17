@@ -488,4 +488,4 @@ a doctor cross-check as backlog).
 - [PHD2 event server API (get_current_equipment, GuideStep, set_paused)](https://github.com/OpenPHDGuiding/phd2/wiki/EventMonitoring)
 - [INDI Alpaca client driver (stalled WIP)](https://indilib.org/forum/development/12750-indi-alpaca-driver-wip.html)
 - [ADR-016 — config ownership: usage stays in rp](../decisions/016-service-config-ownership-and-doctor.md)
-- [rp design doc](../services/rp.md), [phd2-guider design doc](../services/phd2-guider.md), [ui-htmx design doc](../services/ui-htmx.md)
+- [rp design doc](../services/rp.md), [phd2-guider design doc](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md), [ui-htmx design doc](../services/ui-htmx.md)

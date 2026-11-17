@@ -611,8 +611,8 @@ means plain, unauthenticated HTTP.
 - **usb_devices** — Optional. Each entry pins the camera on one USB port to
   one Alpaca device number, so a camera plugged into that socket is the same
   ASCOM device every time, and a camera on any other port is never served
-  (U1-U5). That is how a camera another application owns — PHD2's guide
-  camera — is kept out of this driver: it is left off the list. The `usb_port`
+  (U1-U5). That is how a camera another application owns is kept out of
+  this driver: it is left off the list. The `usb_port`
   is the platform's native spelling (udev's `ID_PATH_WITH_USB_REVISION` on
   Linux, the `PCIROOT(…)` location path on Windows, the location id on macOS —
   [doctor.md](doctor.md), "USB inventory"), pasted from `svbony-camera doctor
@@ -1385,7 +1385,7 @@ and what `doctor --devices` can say about a camera without opening it — is
     platform-xhci-hcd.1-usbv3-0:1  SVBONY SV605CC  0123481353808C03EE2512150035  —           0
 
   To pin the cameras this driver serves, paste this into svbony-camera.json.
-  Leave out any camera another application owns (PHD2's guide camera), and
+  Leave out any camera another application owns, and
   keep the numbers running 0..N-1:
 
       "usb_devices": [
