@@ -40,7 +40,6 @@ Feature: End-to-end safety monitoring
     Then the dashboard history should contain a record for "Roof Monitor"
     And the history record message should contain "Unsafe"
 
-  @wip
   Scenario: A Pushover API that never answers costs a failed notification, not the monitoring
     Given a monitoring file containing "OPEN"
     And filemonitor is running with a contains rule "OPEN" as safe and 1 second polling

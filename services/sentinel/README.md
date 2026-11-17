@@ -73,7 +73,7 @@ Each request to the device is bounded at 5 s: a poll the device has not answered
 
 ### Notifiers
 
-Notifiers deliver alerts when transitions occur.
+Notifiers deliver alerts when transitions occur. A Pushover POST the endpoint has not answered within 10 s fails and is recorded in the notification history as failed.
 
 ```json
 {
