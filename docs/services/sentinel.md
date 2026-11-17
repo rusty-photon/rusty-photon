@@ -311,6 +311,11 @@ In addition to the polled monitors above, the optional `operation_watchdog` bloc
   optional `api_url` field that overrides the endpoint
   (`https://api.pushover.net/1/messages.json` by default); set it to point at a
   self-hosted Pushover-compatible relay, or at a local stub in tests.
+  Each POST is bounded at 10 s. One the endpoint has not answered by then
+  fails and is recorded in the notification history as failed, as an error
+  status is. A monitor's notifications are sent from its poll loop, so the
+  bound is what keeps a Pushover endpoint that accepts the connection and
+  stalls from stopping that monitor's polling.
 
 ### Environment Variable Overrides
 
@@ -940,7 +945,7 @@ services/sentinel/src/
 | Device unreachable | The poll reads `Unknown` and the error counter goes up. No change until the fifth failure in a row, which makes the monitor unreadable (`unreadable` rules fire). |
 | Device recovers | The error counter resets. A reading that differs from the last known one fires `safe_to_unsafe` / `unsafe_to_safe` / `both` rules; after an unreadable outage the first reading also fires `unreadable` rules. |
 | Unknown between two readings | Ignored: the reading after it is compared with the one before it. |
-| Pushover failure | Log warn, record failure in history. No retry. |
+| Pushover failure | Log warn, record failure in history. No retry. A POST unanswered after 10 s is a failure. |
 | ASCOM error response | Treated as Unknown (same as unreachable). |
 | Device does not answer | The request is abandoned after 5 s and the poll reads Unknown (same as unreachable). A connect that times out at start-up is logged, as a refused one is, and start-up goes on. |
 | Device rejects the connect (a non-200 status, or an ASCOM error in the answer) | Logged as a failed connect, as a refused one is; start-up goes on. |
