@@ -193,8 +193,12 @@ the device while nothing is attached: for the GTi both axes halted and
 tracking stopped; every other adopter's hook issues nothing. It runs on
 every 1→0 (in `LazyAcquire` after the poll task is cancelled; in
 `ServiceLifetime` with the poll running and the port staying open), on
-every cold `start()`, on a reconnect's replacement conduit, and on a
-lazy 0→1 that pays a debt ([The no-client state](#the-no-client-state)).
+every cold `start()`, on a reconnect's replacement conduit when a debt
+is outstanding or, in `ServiceLifetime`, when no client was attached as
+the attempt began ([An attempt](#an-attempt), step 7), and on a lazy
+0→1 that pays a debt ([The no-client state](#the-no-client-state)). A
+reconnect under a live client with nothing owed runs no hook: a halt is
+not what a device mid-session should get.
 
 - **Stop-class only**: halt an axis, stop tracking, abort an exposure;
   never a park, a slew, a cover or lamp, a power or dew toggle. It runs
