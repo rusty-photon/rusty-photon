@@ -510,68 +510,20 @@ mod tests {
 
     // ========================================================================
     // Transport-failure error branches: send_command, refresh_status, and
-    // the acquire/handshake rollback path. Mirrors the InjectableFactory
-    // pattern used in qhy-focuser; the canonical race / refcount / rollback
-    // invariants remain tested once in rusty-photon-shared-transport.
+    // the acquire/handshake rollback path, reached through a
+    // `FailingFactory`. The shared transport's race / refcount / rollback
+    // invariants are tested once, in rusty-photon-shared-transport.
     // ========================================================================
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use rusty_photon_shared_transport::TransportFactory;
+    use transport_doubles::FailingFactory;
 
-    /// Wraps the canonical mock factory but gates `send_frame` behind a
-    /// shared atomic — flipping it makes the very next send return EOF.
-    /// Used to inject a wire-level failure after handshake has succeeded
-    /// (or, by arming the flag *before* acquire, during handshake).
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockPpbaTransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    impl InjectableFactory {
-        fn fail_next_send(&self) -> Arc<AtomicBool> {
-            Arc::clone(&self.fail_next_send)
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-    }
-
-    /// Manager built with the `InjectableFactory` and a long poll interval
+    /// Manager built with a `FailingFactory` and a long poll interval
     /// (300s) so the poll loop can't consume the armed failure before the
     /// test's foreground request does.
-    fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<PpbaManager> {
+    fn make_manager_with_factory(
+        factory: Arc<FailingFactory<MockPpbaTransportFactory>>,
+    ) -> Arc<PpbaManager> {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
         PpbaManager::new(&config, factory)
@@ -579,12 +531,11 @@ mod tests {
 
     #[tokio::test]
     async fn send_command_propagates_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockPpbaTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .send_command(&session, PpbaCommand::SetQuad12V(false))
             .await
@@ -601,12 +552,11 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_status_propagates_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockPpbaTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .refresh_status(&session)
             .await
@@ -752,11 +702,10 @@ mod tests {
         // - leave is_available() == false (the RollbackGuard fired),
         // - leave the cache untouched (no PA / PS seeded from a partial
         //   handshake).
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockPpbaTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .transport()
             .acquire()

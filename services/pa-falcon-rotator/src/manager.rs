@@ -781,77 +781,28 @@ mod mock_tests {
     // The happy-path tests above leave the wire-error arms of the protocol
     // methods (read_status / read_voltage_raw / move_mechanical / halt /
     // set_reverse / sync) and the handshake's rollback path uncovered.
-    // The `InjectableFactory` wraps the canonical mock and gates
-    // `send_frame` behind an atomic — flipping it makes the very next
-    // send return EOF, which arrives at the device layer as
-    // `FalconRotatorError::Communication("Connection closed")`. Same
-    // shape as the qhy-focuser + ppba-driver tests added in PR #280.
+    // A `FailingFactory` around the mock fails the next send with EOF,
+    // which arrives at the device layer as
+    // `FalconRotatorError::Communication("Connection closed")`.
     // ========================================================================
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use transport_doubles::FailingFactory;
 
-    /// Wraps the canonical mock factory but gates `send_frame` behind a
-    /// shared atomic — flipping it makes the very next send return EOF.
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockFalconTransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    impl InjectableFactory {
-        fn fail_next_send(&self) -> Arc<AtomicBool> {
-            Arc::clone(&self.fail_next_send)
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-    }
-
-    fn make_injectable_manager() -> (Arc<FalconManager>, Arc<InjectableFactory>) {
-        let factory = Arc::new(InjectableFactory::default());
-        let manager = FalconManager::new(Arc::<InjectableFactory>::clone(&factory));
+    fn make_failing_manager() -> (
+        Arc<FalconManager>,
+        Arc<FailingFactory<MockFalconTransportFactory>>,
+    ) {
+        let factory = Arc::new(FailingFactory::new(MockFalconTransportFactory::default()));
+        let manager = FalconManager::new(Arc::<FailingFactory<_>>::clone(&factory));
         (manager, factory)
     }
 
     #[tokio::test]
     async fn read_status_propagates_transport_failure() {
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .read_status(&session)
             .await
@@ -864,11 +815,10 @@ mod mock_tests {
 
     #[tokio::test]
     async fn read_voltage_raw_propagates_transport_failure() {
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .read_voltage_raw(&session)
             .await
@@ -881,11 +831,10 @@ mod mock_tests {
 
     #[tokio::test]
     async fn move_mechanical_propagates_transport_failure() {
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .move_mechanical(&session, MechanicalDegrees::new(180.0))
             .await
@@ -902,12 +851,11 @@ mod mock_tests {
         // transport failure, propagate the error and leave the cache
         // untouched (the device may still be moving — better to reflect
         // that uncertainty than lie about completion).
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
         manager.set_target_position(SkyDegrees::new(180.0)).await;
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .halt(&session)
             .await
@@ -927,12 +875,11 @@ mod mock_tests {
     async fn sync_propagates_transport_failure_and_leaves_offset_unchanged() {
         // sync's read-FA-first arm: if the FA read fails, the driver-side
         // sync_offset must not be touched.
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
         let starting_offset = manager.sync_offset().await.value();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .sync(&session, 90.0)
             .await
@@ -950,10 +897,9 @@ mod mock_tests {
         // - propagate Err from acquire(),
         // - leave is_available() == false (the RollbackGuard fired),
         // - leave driver-side state at its defaults (no partial handshake).
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .transport()
             .acquire()
