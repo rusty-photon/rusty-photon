@@ -50,7 +50,7 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 
 1. Engine starts, connects each monitor (PUT `connected=true`)
 2. Engine spawns a tokio polling task per monitor at configured interval
-3. Each poll: GET `issafe`, compare with stored state, if transition matches a configured rule, dispatch to notifiers
+3. Each poll: GET `issafe`. A reading that differs from the monitor's last known reading is a state change, and so are the monitor becoming unreadable and its first reading afterwards ([What counts as a change](#what-counts-as-a-change)); a change that matches a configured rule is dispatched to the rule's notifiers
 4. SharedState updated on every poll, dashboard reads from it
 5. On shutdown: disconnect monitors (PUT `connected=false`)
 
@@ -337,12 +337,61 @@ op run --env-file .env -- cargo run -p sentinel -- -c services/sentinel/examples
 
 Transitions define when notifications should be sent. Each rule specifies:
 - Which monitor to watch (`monitor_name`)
-- Which direction of change (`safe_to_unsafe`, `unsafe_to_safe`, or `both`)
+- Which change it fires on (`direction`: `safe_to_unsafe`, `unsafe_to_safe`, `both` or `unreadable`, [below](#directions))
 - Which notifiers to use
-- A message template with `%monitor_name%` and `%new_state%` placeholders
+- A message template with `%monitor_name%` and `%new_state%` placeholders. Without one, a rule uses `%monitor_name% changed to %new_state%`, and an `unreadable` rule `%monitor_name% is now %new_state%`: its first reading after an outage can be the reading the monitor had before, which is no change
 - Optional priority and sound overrides
 
 Empty transitions config means no notifications are sent.
+
+#### What counts as a change
+
+A poll reads the monitor as `Safe`, `Unsafe` or `Unknown`. `Unknown` means
+sentinel could not read it: the device is unreachable, or it answered with a
+non-200 status, an ASCOM error or a body sentinel cannot parse.
+
+Sentinel compares a `Safe` or `Unsafe` reading with the monitor's **last
+known reading**, the last `Safe` or `Unsafe` it gave, not with the poll
+before. Polls that read `Unknown` in between change nothing: `Safe`,
+`Unknown`, `Unsafe` is a change from `Safe` to `Unsafe`, and `Safe`,
+`Unknown`, `Safe` is no change. A notifier therefore hears of a roof that
+closed while its monitor dropped one poll. The first reading after sentinel
+starts has no last known reading to differ from and is no change.
+
+A monitor that has failed five polls in a row is **unreadable**. The fifth
+failure is a change to `Unknown`, once per outage however long it lasts,
+and the first `Safe` or `Unsafe` reading after it is a change too: the
+monitor is readable again. Sentinel waits one `polling_interval` after
+each poll returns, so the fifth failure comes five intervals after the
+monitor's last reading, plus the time the five failed polls took to fail.
+An outage of fewer than five polls is not one. The fifth failure is also
+where sentinel logs its consecutive-errors warning.
+
+#### Directions
+
+| `direction` | Fires on |
+|-------------|----------|
+| `safe_to_unsafe` | An `Unsafe` reading whose last known reading is `Safe` |
+| `unsafe_to_safe` | A `Safe` reading whose last known reading is `Unsafe` |
+| `both` | Either of the two above |
+| `unreadable` | The monitor becoming unreadable (`%new_state%` is `Unknown`), and its first reading afterwards (`%new_state%` is `Safe` or `Unsafe`) |
+
+Each rule matches on its own, so one change can fire several rules. A
+monitor last read `Safe` that comes back from an outage reading `Unsafe`
+fires a `safe_to_unsafe` rule and an `unreadable` rule.
+
+```json
+{
+  "transitions": [
+    {
+      "monitor_name": "Roof Monitor",
+      "direction": "unreadable",
+      "notifiers": ["pushover"],
+      "message_template": "%monitor_name% is now %new_state%"
+    }
+  ]
+}
+```
 
 ### Authentication
 
@@ -878,9 +927,10 @@ services/sentinel/src/
 
 | Scenario | Behavior |
 |----------|----------|
-| Initial state (first poll) | Unknown to Safe/Unsafe. No notification by default. |
-| Device unreachable | Returns MonitorState::Unknown. No notification. Increments error counter. |
-| Device recovers | Unknown to Safe/Unsafe can trigger notification if configured. Error counter resets. |
+| Initial state (first poll) | No last known reading to differ from: no change, no notification. |
+| Device unreachable | The poll reads `Unknown` and the error counter goes up. No change until the fifth failure in a row, which makes the monitor unreadable (`unreadable` rules fire). |
+| Device recovers | The error counter resets. A reading that differs from the last known one fires `safe_to_unsafe` / `unsafe_to_safe` / `both` rules; after an unreadable outage the first reading also fires `unreadable` rules. |
+| Unknown between two readings | Ignored: the reading after it is compared with the one before it. |
 | Pushover failure | Log warn, record failure in history. No retry. |
 | ASCOM error response | Treated as Unknown (same as unreachable). |
 | Rapid flapping | Every real transition triggers notification. |

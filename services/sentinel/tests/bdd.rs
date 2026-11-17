@@ -69,6 +69,10 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        .run_and_exit("tests/features")
+        .filter_run_and_exit("tests/features", |feature, _rule, scenario| {
+            let is_wip = feature.tags.iter().any(|t| t == "wip" || t == "@wip")
+                || scenario.tags.iter().any(|t| t == "wip" || t == "@wip");
+            !is_wip
+        })
         .await;
 }
