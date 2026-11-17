@@ -3,10 +3,10 @@
 //!
 //! Each packaged service's `pkg/doctor.toml` is embedded at build time and
 //! parsed once on first access. The embed list below is the one hand-typed
-//! encoding of the service set inside doctor; it is kept honest by the
-//! `catalog_matches_the_packaging_tree` test (Cargo runs, walks
-//! `services/*/pkg`) and by each service's own parity test against its
-//! config defaults.
+//! encoding of the service set inside doctor; it is kept honest by
+//! `tests/tree_parity.rs`'s `test_catalog_matches_the_packaging_tree`
+//! (Cargo runs it; it walks `services/*/pkg`) and by each service's own
+//! parity test against its config defaults.
 
 use std::sync::LazyLock;
 
@@ -35,7 +35,7 @@ pub struct CatalogEntry {
     /// rather than configuration: `inventory.unknown-config` counts it as
     /// the service's own (docs/services/doctor.md §The derived catalog).
     pub state_file: Option<String>,
-    /// Where the config keeps its serial device path, for the six serial
+    /// Where the config keeps its serial device path, for the serial
     /// drivers (docs/services/doctor.md §Hardware).
     pub serial: Option<SerialMeta>,
     /// The USB identity the device reports on the bus.

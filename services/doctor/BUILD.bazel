@@ -16,9 +16,10 @@ _INTRA_WORKSPACE_DEPS = [
 ]
 
 # The derived catalog: every packaged service's pkg/doctor.toml, embedded
-# via include_str! (src/catalog.rs). Cross-package file labels — each
-# service's BUILD exports the file. tests/tree_parity.rs asserts this list
-# matches services/*/pkg under Cargo.
+# via include_str! (src/catalog.rs), whose embed list this one follows.
+# Cross-package file labels — each service's BUILD exports the file.
+# tests/tree_parity.rs holds catalog.rs's list to services/*/pkg under
+# Cargo.
 _CATALOG_METADATA = [
     "//services/calibrator-flats:pkg/doctor.toml",
     "//services/dsd-fp2:pkg/doctor.toml",
@@ -46,8 +47,9 @@ _CATALOG_METADATA = [
 ]
 
 # The shipped udev rules, embedded for the installed-content comparison
-# (src/catalog.rs UDEV_RULES; tests/tree_parity.rs asserts this list
-# matches services/*/pkg/*.rules under Cargo).
+# (src/catalog.rs UDEV_RULES, whose list this one follows;
+# tests/tree_parity.rs holds UDEV_RULES to services/*/pkg/*.rules under
+# Cargo).
 _UDEV_RULES = [
     "//services/qhy-camera:pkg/90-rusty-photon-qhy.rules",
     "//services/svbony-camera:pkg/90-rusty-photon-svbony.rules",

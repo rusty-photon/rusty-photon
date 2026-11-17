@@ -91,7 +91,8 @@ it then runs as root, so the config lives under root's home; see
 Configuration below).
 
 **Config-gated services** (`sky-survey-camera`, `plate-solver`,
-`calibrator-flats`, `focus-model`) have no sensible default config.
+`calibrator-flats`, `session-runner`, `polar-align`, `focus-model`) have
+no sensible default config.
 There is no launchd condition mechanism and none is needed: simply write
 the config first, then `brew services start` it. Started without a
 config they exit immediately and launchd respawn-loops them — harmless,
@@ -148,7 +149,7 @@ there is no `~/.config` here and no `/etc/rusty-photon` symlink. Under
 `sudo brew services` (LaunchDaemon, runs as root) the same path is under
 root's home: `/var/root/Library/Application Support/rusty-photon/`.
 
-The same class exceptions as Linux apply: the config-gated three never
+The same class exceptions as Linux apply: the config-gated six never
 write one, and the two cameras and `zwo-focuser` run on built-in
 defaults without writing a file until settings are saved on the
 service's setup page (`/setup`) or one is created by hand.

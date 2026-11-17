@@ -235,7 +235,7 @@ mod tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // Recording stub server (ADR-004 Tier 2: in-test axum stub)
+    // Recording stub server (an in-test axum stub)
     // -----------------------------------------------------------------------
 
     #[derive(Debug)]

@@ -127,9 +127,10 @@ fn main() -> ServiceResult {
         .scm_mode(args.service)
         .run(move |shutdown| async move {
             // Open SSE proxy streams do not end on axum's graceful-shutdown signal
-            // alone (axum #2673): give the state a cancellation token and fire it
-            // the moment shutdown starts, so `/stream/events` streams close and
-            // axum's connection drain can complete promptly.
+            // alone (docs/services/ui-htmx.md § The SSE proxy): give the state a
+            // cancellation token and fire it the moment shutdown starts, so
+            // `/stream/events` streams close and axum's connection drain can
+            // complete promptly.
             let sse_token = tokio_util::sync::CancellationToken::new();
             let state = AppState::from_config(&config)?
                 .with_sse_shutdown(sse_token.clone())

@@ -1,5 +1,5 @@
-//! Thin DOM helpers over [`scraper`] for the `ui-htmx` BDD suite — Layer A of the
-//! UI-testing plan ([`docs/plans/archive/ui-testing.md`] §4).
+//! Thin DOM helpers over [`scraper`] for the `ui-htmx` BDD suite — Layer A
+//! (`docs/services/ui-htmx.md` § Three obligations, three layers).
 //!
 //! Every function parses a borrowed HTML string, selects, extracts **owned**
 //! data, and drops the parsed tree before returning. `scraper::Html` is `!Send`
@@ -9,11 +9,8 @@
 //! value out of the DOM without the parsed tree ever living across a suspension
 //! point, so the caller's future stays `Send`.
 //!
-//! These retire the previous hand-rolled `world.input_tag()` slicer and the
-//! `String::contains` substring assertions, which mishandled attribute order,
-//! boolean attributes, and HTML entity decoding.
-//!
-//! [`docs/plans/archive/ui-testing.md`]: ../../../../docs/plans/archive/ui-testing.md
+//! Parsing, rather than `String::contains` substring checks, gets attribute
+//! order, boolean attributes, and HTML entity decoding right.
 
 use scraper::{Html, Selector};
 
@@ -34,7 +31,7 @@ pub struct InputState {
 
 /// The `<input>` whose `name` attribute equals `name`, or `None` if there is no
 /// such input. Matching the `name` by comparison (rather than building a dynamic
-/// `input[name="…"]` selector) keeps dotted field paths like `serial.port` from
+/// `input[name="…"]` selector) keeps dotted field paths like `rp.base_url` from
 /// having to be escaped into a selector.
 pub fn input(html: &str, name: &str) -> Option<InputState> {
     let doc = Html::parse_document(html);
@@ -48,13 +45,13 @@ pub fn input(html: &str, name: &str) -> Option<InputState> {
         })
 }
 
-/// Whether any element matches `css`.
 /// How many elements match `css` — e.g. the inbox's pending-target rows.
 pub fn count(html: &str, css: &str) -> usize {
     let doc = Html::parse_document(html);
     doc.select(&selector(css)).count()
 }
 
+/// Whether any element matches `css`.
 pub fn matches(html: &str, css: &str) -> bool {
     let doc = Html::parse_document(html);
     doc.select(&selector(css)).next().is_some()
@@ -108,8 +105,7 @@ pub fn form_post_url(html: &str) -> Option<String> {
 /// non-`disabled` `input` with a `name`. Text/number/hidden inputs contribute
 /// their decoded `value`; a checkbox contributes only when `checked` (its
 /// `value`, or `"on"` by default). Disabled controls are omitted, exactly as a
-/// browser omits them — which is how a read-only/locked field round-trips from
-/// the hidden blob instead of being re-sent.
+/// browser omits them.
 pub fn successful_controls(html: &str) -> Vec<(String, String)> {
     let doc = Html::parse_document(html);
     let mut out = Vec::new();

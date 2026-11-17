@@ -123,8 +123,9 @@ pub fn run(
 /// Assemble `checks` into a `mode: service` report and render it.
 ///
 /// The composition point for services whose subcommand carries extra
-/// checks beyond the standard pair (qhy-camera's Windows DLL diagnostics).
-/// Most services go through [`run`] instead.
+/// checks beyond the standard pair: the camera drivers' `usb-devices.*`
+/// checks, and qhy-camera's Windows DLL diagnostics. Most services go
+/// through [`run`] instead.
 #[must_use]
 pub fn emit(
     service: &str,

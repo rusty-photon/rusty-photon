@@ -1,10 +1,10 @@
 //! rusty-photon-doctor CLI (docs/services/doctor.md §CLI contract).
 //!
 //! One-shot: diagnose (and repair, with --fix), print, exit — plus the
-//! provisioning subcommands (`tls issue`, `auth rotate`,
-//! `auth hash-password`). Exit 0 = no failing check (warnings allowed;
-//! post-fix state on a --fix run) / the subcommand succeeded, 1 = at least
-//! one failure, 2 = doctor itself could not run.
+//! provisioning subcommands (`tls issue`, `tls flip-to-acme`, `tls renew`,
+//! `auth rotate`, `auth hash-password`). Exit 0 = no failing check
+//! (warnings allowed; post-fix state on a --fix run) / the subcommand
+//! succeeded, 1 = at least one failure, 2 = doctor itself could not run.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -451,8 +451,8 @@ fn run_tls_flip(cli: &Cli, flip: &FlipArgs) -> ExitCode {
         Err(code) => return code,
     };
 
-    // D4's staging guard runs before anything else — never order a
-    // staging certificate, never plan against one, without the override.
+    // The staging guard runs before anything else — never order a staging
+    // certificate, never plan against one, without the override.
     let acme_cfg = doctor::provision::active_acme_config(&config_dir);
     let staging = flip.staging || acme_cfg.as_ref().is_some_and(|c| c.staging);
     if staging && !flip.allow_staging {
@@ -598,8 +598,8 @@ fn run_tls_flip(cli: &Cli, flip: &FlipArgs) -> ExitCode {
         }
     }
 
-    // The whole op plan, staged in memory (D6): a planning failure costs
-    // zero writes.
+    // The whole op plan, staged in memory: a planning failure costs zero
+    // config writes.
     let plan = match doctor::flip::plan(&config_dir, &facts, flip.allow_staging) {
         Ok(plan) => plan,
         Err(e) => {
@@ -659,10 +659,10 @@ fn run_tls_flip(cli: &Cli, flip: &FlipArgs) -> ExitCode {
     }
 }
 
-/// `doctor tls renew`: the one-shot both platform timers run. Exit 0 means
-/// nothing was due or everything due was renewed; warnings (a CA inside
-/// its window) go to stderr either way; exit 2 means a renewal or a
-/// post-renewal hook failed.
+/// `doctor tls renew`: the one-shot each platform's scheduler runs. Exit 0
+/// means nothing was due or everything due was renewed; warnings (a CA
+/// inside its window) go to stderr either way; exit 2 means a renewal, a
+/// post-renewal hook, or the pki ownership alignment failed.
 fn run_tls_renew(cli: &Cli, force: bool) -> ExitCode {
     let (config_dir, facts) = match resolve_inputs(cli) {
         Ok(inputs) => inputs,

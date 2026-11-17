@@ -237,7 +237,7 @@ Doctor diagnoses one config directory per run, resolved in order:
    invoking user is a hard error** (exit 2, "run with sudo"), never a
    fall-through: the tree is 0750-owned by `rusty-photon`, and silently
    diagnosing the operator's own empty config directory instead would report
-   seventeen missing configs on a healthy rig — and scan polkit rule
+   every config missing on a healthy rig — and scan polkit rule
    directories it cannot read. A dangling symlink (packages removed) falls
    through to step 3.
 3. The platform default the services themselves use —
@@ -708,7 +708,7 @@ service-scoped where applicable so the report groups naturally.
 | `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca, `AdvertisingServerConfig` for advertising): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a non-Alpaca service, `advertised_url` on a service that advertises nothing, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
 | `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch`, every client-target join resolving to this service, and — on an ACME install — `tls.stale-selfsigned-pointer` and `rp.advertised-url` all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
 | `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` and `sentinel` keys and the `rp` target). |
-| `config.retired-keys` | fail / warn | A config still carries a key, or a value, its service retired. It fails where the service refuses to start over the key (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured), ui-htmx's whole `drivers` override map (rp's equipment roster is the only device source — [ui-htmx.md § Configuration](ui-htmx.md#configuration)), or star-adventurer-gti's `mount.flip_policy.flip_range_hours` (pier side is derived from the CW exclusion zone alone; the service's self-created config wrote the key, so an upgraded install carries it until this fix deletes it), or zwo-camera's `max_adu_reporting` under a former name (`saturation_threshold`, now `sensor_ceiling`; `container_full_scale`, now `zwo_driver`: the service's self-created config wrote the field, and its load refuses a former name as an unknown value). It warns for ui-htmx's `sentinel` block (the web UI restarts nothing; Sentinel's dashboard does), which ui-htmx ignores with a warning: installs an earlier doctor fixed carry the block, and an upgrade runs no doctor. The remedy is deletion — no replacement config exists — except for zwo-camera's `container_full_scale`, which is given its new name. `saturation_threshold`, the default, is deleted rather than renamed: doctor ships with sentinel, so it can meet a zwo-camera from before the rename, which refuses the new names, and both versions read an absent field as the default. |
+| `config.retired-keys` | fail / warn | A config still carries a key, or a value, its service retired. It fails where the service refuses to start over the key (`deny_unknown_fields`): sentinel's `services` map (supervision is discovered, not configured), ui-htmx's whole `drivers` override map (rp's equipment roster is the only device source — [ui-htmx.md § Configuration](ui-htmx.md#configuration)), or star-adventurer-gti's `mount.flip_policy.flip_range_hours` (pier side is derived from the CW exclusion zone alone; the service's self-created config wrote the key, so an upgraded install carries it until this fix deletes it), or zwo-camera's `max_adu_reporting` under a former name (`saturation_threshold`, now `sensor_ceiling`; `container_full_scale`, now `zwo_driver`: the service's self-created config wrote the field, and its load refuses a former name as an unknown value). It warns for ui-htmx's `sentinel` block (the web UI restarts nothing; Sentinel's dashboard does), which ui-htmx ignores with a warning: installs an earlier doctor fixed carry the block, and an upgrade runs no doctor. The remedy is deletion — no replacement config exists — except for zwo-camera's `container_full_scale`, which is given its new name. `saturation_threshold`, the default, is deleted rather than renamed: doctor ships with sentinel, so it can meet a zwo-camera from before the rename, which refuses the new names, and both versions read an absent field as the default. |
 | `rp.orchestrator-registration-removed` | fail | rp's config still carries a `plugins[]` entry with `"type": "orchestrator"` or a `session.session_state_file` key — both retired, since orchestrators start their own runs; rp refuses to start over either, naming the same migration. The detail names each offending entry and where runs start (`session-runner`'s `POST /runs`). Like `config.retired-keys`, the remedy is deletion: the fix removes the entry or key. |
 
 Full-config typo detection (a misspelled key in, say, qhy-camera's
@@ -736,7 +736,7 @@ The catalog gives each service one port, its top-level `server.port`.
 
 ### Name joins
 
-Sentinel discovers its services from the platform service manager (D3s),
+Sentinel discovers its services from the platform service manager,
 so the one service-name join doctor checks resolves against the **installed
 `rusty-photon-*` units** (packaged mode only — the join has nothing to
 resolve against on a dev checkout): the watchdog's
@@ -752,7 +752,7 @@ names none in its config, so it has no name join to check.)
 
 | Check | Status | Trigger |
 |---|---|---|
-| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` ends in `/api/v1`. The client appends it itself; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) Sentinel derives all its URLs (D3s), and ui-htmx carries no device URL (rp's roster is its only device source), so doctor checks no other config for the suffix. |
+| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` ends in `/api/v1`. The client appends it itself; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) Sentinel derives all its URLs, and ui-htmx carries no device URL (rp's roster is its only device source), so doctor checks no other config for the suffix. |
 
 ### TLS and auth
 
@@ -812,8 +812,8 @@ reaches the join exactly as the config spells it.
 fix-eligible there: the scheme is rewritten in place (preserving the
 URL's path/query byte-for-byte — round-tripping through a URL parser's
 `to_string()` would silently append a trailing `/` to an origin-only URL,
-which some client call sites concatenate a `/`-prefixed path onto without
-trimming), the CA path is written from the resolved pki tree, and the
+which a client that concatenates a `/`-prefixed path onto its base URL
+without trimming would turn into a double-slashed request), the CA path is written from the resolved pki tree, and the
 credential is written from `pki/credential` — the same material
 `plan_client_wiring` already distributes, following the same "absent gets
 it, present is operator intent, never overwritten" contract as every
@@ -1812,7 +1812,7 @@ unattended — not configuration of doctor's own behavior.)
   helper tested against deterministic names only.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
-  collision, dangling watchdog service, retired D3s keys, unparseable JSON,
+  collision, dangling watchdog service, sentinel's retired `services` map, unparseable JSON,
   missing `ConditionPathExists` target, absent polkit rule, a client target
   stale against a TLS/auth-provisioned peer), run the real binary, assert
   the diagnosis, the exit code, and the `--json` schema. For `--fix`:

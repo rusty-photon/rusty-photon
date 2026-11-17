@@ -398,7 +398,7 @@ server-rendered fragments — no hand-written JavaScript.
 - **The feed** (`sse-swap="feed"` with `hx-swap="afterbegin"`): every rp event
   envelope renders as one card — severity dot (`*_failed` and
   `safety_changed:unsafe` are bad; `*_complete`/`*_settled` ok; `*_started`
-  live; `stream_gap`, `guide_stopped` and `guide_star_lost` warn), event
+  live; `stream_error`, `guide_stopped` and `guide_star_lost` warn), event
   title, payload-specific detail line (target coordinates, exposure
   duration, HFR, RMS error, error messages, a `guide_stopped`'s `reason`
   and the guider's `stop_reason` beside it, how long a guide star has
@@ -735,7 +735,7 @@ coverage numbers. These fixtures exercise htmx behaviors the server-bytes layers
 negative — htmx silently drops an OOB element whose target is absent), an
 `HX-Retarget` header moving a **byte-identical** body to a different target (the
 body is a plain fragment; the divergence lives entirely in the response header — a
-§A tripwire asserts the header, the browser asserts the landing), and an
+Layer A tripwire asserts the header, the browser asserts the landing), and an
 `HX-Push-Url` header changing the browser location. The BDD suite spawns a binary
 built with the feature: cargo `--all-features` provides it; under Bazel the
 `:ui-htmx_fixtures` binary (the drivers' `_mock` pattern) does, so
@@ -799,7 +799,7 @@ link to rp's setup page carrying the host the browser used, and the proxy:
   "rp unreachable" status frame and stream end. The BDD client drops its SSE
   connection before stopping the BFF (testing.md §5.4). Browser-level SSE
   swap behaviour is proven by the `@browser` layer: `browser.feature`'s stream
-  scenario and the `sse.feature` spike.
+  scenario and `sse.feature`.
 
 ### Targets-inbox BDD (`targets_page.feature`)
 
