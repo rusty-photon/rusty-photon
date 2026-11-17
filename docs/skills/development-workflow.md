@@ -126,7 +126,7 @@ docs/skills/testing.md Section 5.2.
 For services that depend on external systems, build test infrastructure early:
 
 - **Simulators** for hardware or external services (e.g., OmniSim for Alpaca
-  devices, mock PHD2 server)
+  devices, plate-solver's `mock_astap` binary)
 - **Stub servers** for webhook receivers, plugin endpoints
 - **Process management** helpers to start/stop subprocesses in tests
 

@@ -1499,8 +1499,6 @@ clients as they cover `rp`'s.
   — the decision this service implements.
 - [`docs/plans/native-guider.md`](../plans/native-guider.md) — the
   options study and the staging.
-- [`phd2-guider.md`](phd2-guider.md) — the service that wraps PHD2,
-  which this one replaces.
 - [rp.md § Component Categories](rp.md#component-categories),
   [§ Guider Service](rp.md#guider-service),
   [§ The guide camera guard](rp.md#the-guide-camera-guard),

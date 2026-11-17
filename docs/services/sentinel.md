@@ -246,11 +246,6 @@ The probe path follows the service's **probe class**:
 **Designed and not yet built.** `guider` joins the non-Alpaca set with
 its package
 ([guider.md § Supervision and recovery](guider.md#supervision-and-recovery)).
-As built, the set holds `phd2-guider`, and discovery also leaves out
-`rusty-photon-phd2` and `rusty-photon-phd2-display`, the units that
-service's package ships for PHD2 and its display. Stage G6 of
-[the native guider plan](../plans/native-guider.md#staging) removes
-that service and its units.
 
 A missing or unreadable `<svc>.json` means no probe URL can be derived: the
 service's health reports `unknown`, nothing is restarted because of it, and

@@ -28,8 +28,6 @@
 //! single-flight BDD scenario uses it to fix the order of two solves: the
 //! first is held open while the second queues, and the second, started only
 //! after the release, ends at its own deadline.
-//!
-//! Pattern mirrors `services/phd2-guider/src/bin/mock_phd2.rs`.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(

@@ -28,7 +28,6 @@ _CATALOG_METADATA = [
     "//services/gemini-powerbox-adv3-driver:pkg/doctor.toml",
     "//services/pa-falcon-rotator:pkg/doctor.toml",
     "//services/pa-scops-oag:pkg/doctor.toml",
-    "//services/phd2-guider:pkg/doctor.toml",
     "//services/planetarium-bridge:pkg/doctor.toml",
     "//services/plate-solver:pkg/doctor.toml",
     "//services/polar-align:pkg/doctor.toml",
