@@ -19,6 +19,12 @@ fn unreadable_transition(world: &mut SentinelWorld, monitor_name: String) {
     }));
 }
 
+#[given("the Pushover API never answers")]
+async fn pushover_never_answers(world: &mut SentinelWorld) {
+    let port = world.start_silent_device().await;
+    world.pushover_stub_url = Some(format!("http://127.0.0.1:{port}/1/messages.json"));
+}
+
 // --- When steps ---
 
 #[when("the filemonitor device is disconnected")]
@@ -60,6 +66,24 @@ async fn history_holds_message(world: &mut SentinelWorld, expected: String) {
             .any(|h| h["message"].as_str() == Some(expected.as_str())),
         "Expected a history record with message '{expected}'. History: {history:?}"
     );
+}
+
+#[then(expr = "the notification history should hold a failed notification for {string}")]
+async fn history_holds_failed(world: &mut SentinelWorld, monitor_name: String) {
+    let failed = |h: &serde_json::Value| {
+        h["monitor_name"].as_str() == Some(monitor_name.as_str())
+            && h["success"].as_bool() == Some(false)
+    };
+    // The notifier gives up on its POST after 10 s.
+    let mut history = world.get_history().await;
+    for _ in 0..120 {
+        if history.iter().any(failed) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        history = world.get_history().await;
+    }
+    panic!("Expected a failed notification for '{monitor_name}'. History: {history:?}");
 }
 
 #[then(expr = "the notification history should hold {int} message(s)")]
