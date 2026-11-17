@@ -1034,76 +1034,31 @@ mod tests {
 
     // ---- wire failures ---------------------------------------------------
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::FrameTransport;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use transport_doubles::FailingFactory;
 
-    /// Wraps the canonical mock factory but gates `send_frame` behind a
-    /// shared atomic — flipping it makes the very next send return EOF.
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockGeminiTransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-
-        async fn discard_input(&mut self) -> std::result::Result<(), TransportError> {
-            self.inner.discard_input().await
-        }
-    }
-
-    /// Manager built with the `InjectableFactory` and a long poll interval
-    /// so the poll loop can't consume the armed failure before the test's
+    /// Manager built with a `FailingFactory` and a long poll interval so the
+    /// poll loop can't consume the armed failure before the test's
     /// foreground request does.
-    fn make_manager_with_injectable(factory: Arc<InjectableFactory>) -> Arc<GeminiManager> {
+    fn make_manager_with_failing(
+        factory: Arc<FailingFactory<MockGeminiTransportFactory>>,
+    ) -> Arc<GeminiManager> {
         make_manager_polling_every(Duration::from_mins(5), factory)
     }
 
     #[tokio::test]
     async fn send_set_and_refresh_propagate_a_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let manager = make_manager_with_injectable(Arc::clone(&factory));
+        let factory = Arc::new(FailingFactory::new(MockGeminiTransportFactory::default()));
+        let manager = make_manager_with_failing(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        factory.fail_next_send.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .send_set(&session, SetCommand::Dc(DcOutput::Dc2, false))
             .await
             .unwrap_err();
         assert!(matches!(err, GeminiError::Communication(_)), "{err:?}");
 
-        factory.fail_next_send.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager.refresh_status(&session).await.unwrap_err();
         assert!(matches!(err, GeminiError::Communication(_)), "{err:?}");
 
@@ -1157,10 +1112,10 @@ mod tests {
 
     #[tokio::test]
     async fn acquire_returns_err_and_keeps_cache_empty_when_the_handshake_send_fails() {
-        let factory = Arc::new(InjectableFactory::default());
-        let manager = make_manager_with_injectable(Arc::clone(&factory));
+        let factory = Arc::new(FailingFactory::new(MockGeminiTransportFactory::default()));
+        let manager = make_manager_with_failing(Arc::clone(&factory));
 
-        factory.fail_next_send.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = GeminiError::from(manager.transport().acquire().await.unwrap_err());
         assert!(matches!(err, GeminiError::Communication(_)), "{err:?}");
         assert!(!manager.is_available());

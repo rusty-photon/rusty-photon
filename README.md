@@ -252,7 +252,7 @@ rusty-photon/
     rusty-photon-service-lifecycle/  Unified lifecycle: runtime + signals + optional Windows SCM
     rusty-photon-shared-transport/   Refcounted multi-client transport scaffolding (serial + UDP)
     skywatcher-motor-protocol/       Sky-Watcher motor-controller wire protocol codec (USB + UDP)
-    transport-doubles/               Test doubles for shared-transport: the reply-holding factory behind store-order tests
+    transport-doubles/               Test doubles for shared-transport: the reply-holding and send-failing factories
     qhyccd-rs/                       Vendored QHYCCD SDK bindings + nested libqhyccd-sys FFI (ADR-009)
     zwo-rs/                          Vendored ZWO ASI/EFW/EAF SDK bindings + nested libzwo-sys FFI (ADR-008/010/014)
     svbony-rs/                       Vendored SVBony camera SDK bindings (hand-written FFI, no bindgen) + nested libsvbony-sys; consumed by services/svbony-camera
