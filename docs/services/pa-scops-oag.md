@@ -14,9 +14,11 @@ properties are reported as unsupported.
 
 ## Architecture
 
-The service is built on `rusty-photon-shared-transport`. The shared crate owns
-the refcount, slot, command-lock arbitration, poll-task lifetime, and the
-reconnect supervisor; this service contributes the protocol-specific pieces:
+The service is built on
+[`rusty-photon-shared-transport`](../crates/rusty-photon-shared-transport.md).
+The shared crate owns the refcount, slot, command-lock arbitration, poll-task
+lifetime, and the reconnect supervisor; this service contributes the
+protocol-specific pieces:
 
 - **Codec**: `ScopsCodec` translates `Command` ↔ LF-terminated ASCII frames and
   decodes incoming frames into a typed `ScopsResponse` by prefix. Every command
@@ -24,9 +26,9 @@ reconnect supervisor; this service contributes the protocol-specific pieces:
   `Codec::matches` only enforces command→response-shape pairing and
   `Codec::max_skip` keeps its default of 0. See `src/codec.rs`.
 - **Transport factory**: `ScopsTransportFactory` opens the port at 19200 8N1
-  through the shared crate's `open_serial_port` (one opener for every serial
-  driver: builder settings, error mapping, and the bounded retry that rides
-  out a Windows handle still closing) and wraps the stream in a
+  through the shared crate's
+  [`open_serial_port`](../crates/rusty-photon-shared-transport.md#opening-a-serial-port)
+  and wraps the stream in a
   `SerialFrameTransport` with `b'\n'` as the frame terminator. See
   `src/serial.rs`.
 - **Manager**: `FocuserManager` wraps `Arc<SharedTransport<ScopsCodec>>` plus the
@@ -36,7 +38,9 @@ reconnect supervisor; this service contributes the protocol-specific pieces:
   cache from one `A` status report; the `while_open` poll loop refreshes
   position + moving state from `A` on the configured interval. Each report
   is stored with the instant it was read off the wire, and one read before
-  the cached state is dropped. While a move command is unanswered, a report
+  the cached state is dropped
+  ([stamped values](../crates/rusty-photon-shared-transport.md#stamped-values)).
+  While a move command is unanswered, a report
   updates the position only: read before the move reached the device, its
   idle flag would clear the move, and `IsMoving`, which re-reads the device
   only while the cache says moving, would answer false for a focuser that
@@ -61,9 +65,9 @@ reconnect supervisor; this service contributes the protocol-specific pieces:
 - **Connection**: USB FTDI FT-X virtual serial port (`/dev/ttyUSB*` on Linux, a
   COM port on Windows). USB id `0403:6015`, product string `Scops OAG`.
 - **Serial settings**: **19200 baud, 8N1, no flow control.** This is the
-  documented Pegasus DMFC rate and is required by this unit — empirically the
-  device does **not** respond at 9600 (the only reply came at 19200). Baud is
-  a config field defaulting to 19200.
+  documented Pegasus DMFC rate and is required by this unit — the reference
+  unit (firmware 1.2) answers at 19200 and does **not** respond at 9600. Baud
+  is a config field defaulting to 19200.
 - **Line terminator**: commands are terminated with LF (`\n`) only — **never**
   append `\r`. Responses are terminated with `\r\n`; the codec trims the
   trailing `\r`.
@@ -172,7 +176,7 @@ UUIDv4 on first run and persists it (see [Device identity](#device-identity-uniq
 software enforces for the Scops OAG (positions 0–22000).
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -224,8 +228,7 @@ combined with the subcommand (the mixed form would silently ignore them).
 ### Setup pages
 
 The driver configures itself through the HTML pages the Alpaca Management
-API defines, served by the driver itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
+API defines, served by the driver itself behind its own TLS and Basic Auth:
 
 | Path | Holds |
 |------|-------|
@@ -283,7 +286,9 @@ freshly-persisted file, rebinding the same port.
 
 ## Connection Lifecycle
 
-The service runs in `ServiceLifetime` mode: `ServerBuilder::build()` calls
+The service runs in the shared crate's `ServiceLifetime`
+[lifecycle](../crates/rusty-photon-shared-transport.md#lifecycles):
+`ServerBuilder::build()` calls
 `transport().start()` so the port is opened, the handshake runs, and the poll
 task spawns **before** the HTTP listener binds (eager hardware validation — a
 handshake failure exits the process non-zero rather than advertising a broken
@@ -307,8 +312,9 @@ device).
    `transport().shutdown()` cancels the poll task and closes the port.
 
 **Failure recovery.** Mid-stream transport errors flip the shared transport into
-the `Reconnecting` state and the supervisor re-opens + re-handshakes; live
-sessions resume on the new connection on their next request.
+the `Reconnecting` state and the
+[supervisor](../crates/rusty-photon-shared-transport.md#reconnect) re-opens +
+re-handshakes; live sessions resume on the new connection on their next request.
 
 **Restart on request.** The service serves `POST /service/v1/restart`
 and `GET /service/v1/instance` beside the Alpaca API, behind the same
@@ -346,7 +352,7 @@ cargo run  -p pa-scops-oag --features mock
 setup pages, auth, and TLS — the full ASCOM `IFocuserV4` surface the Scops
 OAG can back.
 
-**Deferred / out of scope:** reverse and backlash control (rejected by the
+**Out of scope:** reverse and backlash control (rejected by the
 firmware and absent from `IFocuserV4`); temperature and temperature compensation
 (no sensor); LED, encoder, and motor-speed controls (not part of the Focuser
 contract). The `A` report's status-only fields for these are read but not

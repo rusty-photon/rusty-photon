@@ -4,7 +4,7 @@ This is the driver's first recorded ConformU run against real hardware: the dev
 box's Gemini Astro Power & Data Hubs Advanced 3 on firmware 3.0.8, the unit the
 [design doc](../../services/gemini-powerbox-adv3-driver.md) was measured against.
 It covers items 1, 2, 4 and 6 of the design doc's
-[hardware validation list](../../services/gemini-powerbox-adv3-driver.md#hardware-validation):
+[hardware validation list](../../plans/archive/gemini-powerbox-adv3-driver-validation-record-2026-10.md#hardware-validation):
 a write probe over the serial port for the three protocol questions, and ConformU
 through the driver for both devices, the Switch suites twice — once with both dew
 channels in Manual, the state the unit was found in, and once with both in Auto, so each

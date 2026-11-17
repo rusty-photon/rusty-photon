@@ -8,21 +8,20 @@ combines an electroluminescent light source with a servo-driven cover. The
 device speaks a bracketed ASCII protocol over a USB-CDC serial port
 (`/dev/ttyACM*` on Linux, vendor/product `2e8a:000a`).
 
-The driver exposes the FP2 as a single ASCOM Alpaca CoverCalibrator device so
-that the existing `calibrator-flats` tool provider (which already consumes
-`open_cover` / `close_cover` / `calibrator_on` / `calibrator_off` via `rp`'s
-MCP tools) can drive it without any changes on its side.
+The driver exposes the FP2 as a single ASCOM Alpaca CoverCalibrator device,
+which the `calibrator-flats` tool provider drives through `rp`'s
+`open_cover` / `close_cover` / `calibrator_on` / `calibrator_off` MCP tools.
 
 ## Architecture
 
 The service is built on the workspace's `rusty-photon-shared-transport`
-crate (PR #269), which factors out the refcounted-lifecycle scaffolding
-that previously lived per-service. The crate provides:
-`SharedTransport<C>` (the lifecycle/refcount core), `Codec` (typed
-command/response translation), `FrameTransport` (one open conduit),
-`TransportFactory` (open-me-a-transport), `Session<C>` (per-device
-handle), and `Hooks` (per-service handshake / teardown / while-open
-plug).
+crate, which owns the refcounted lifecycle the workspace's serial drivers
+share ([Adopting the crate](../crates/rusty-photon-shared-transport.md#adopting-the-crate)).
+The crate provides: `SharedTransport<C>` (the lifecycle/refcount core),
+`Codec` (typed command/response translation), `FrameTransport` (one open
+conduit), `TransportFactory` (open-me-a-transport), `Session<C>`
+(per-device handle), and `Hooks` (the per-service handshake,
+last-disconnect, shutdown and while-open plug).
 
 ```
 +----------------------------------------------------------------+
@@ -40,7 +39,7 @@ plug).
 |             └─ transport: Arc<SharedTransport<Fp2Codec>>       |
 |                  │  Hooks: handshake = [GFRM] verify + seed    |
 |                  │         while_open = 500 ms poll loop       |
-|                  │         teardown = noop                     |
+|                  │         on_last_disconnect, shutdown = noop |
 |                  ▼                                             |
 |        Fp2Codec (codec.rs)  ◀── encodes Command → bytes        |
 |                                  decodes (VALUE) → RawResponse |
@@ -93,12 +92,17 @@ Module responsibilities:
 
 What is **not** in this crate (because the shared-transport crate owns it):
 
-- Refcounting of clients (`SharedTransport.count`).
-- Request arbitration (`Connection.transport` Mutex).
-- Spawning and cancelling the while-open task.
-- Rollback on handshake failure (Phase A's `RollbackGuard`).
+- Refcounting of clients (`SharedTransport.count`;
+  [Lifecycles](../crates/rusty-photon-shared-transport.md#lifecycles)).
+- Request arbitration (`Connection.transport` Mutex;
+  [The command lock](../crates/rusty-photon-shared-transport.md#the-command-lock)).
+- Spawning and cancelling the while-open task
+  ([Hooks](../crates/rusty-photon-shared-transport.md#hooks)).
+- Rollback on a failed handshake, which publishes nothing
+  ([Hooks](../crates/rusty-photon-shared-transport.md#hooks)).
 - `Session::close()`'s synchronous teardown contract and the
-  `Session::drop` detached-cleanup fallback.
+  `Session::drop` detached-cleanup fallback
+  ([Lifecycles](../crates/rusty-photon-shared-transport.md#lifecycles)).
 
 ## Hardware Constraints
 
@@ -151,12 +155,12 @@ What is **not** in this crate (because the shared-transport crate owns it):
   [cc-spec]: https://ascom-standards.org/newdocs/covercalibrator.html
 - **Heater**: optional dew-heater channel with a thermistor. Present if
   `[GHTT]` returns a value greater than `-40` °C. The driver reads this
-  for diagnostics but does not expose it as an ASCOM Switch in the MVP
+  for diagnostics but does not expose it as an ASCOM Switch
   (see [Future Work](#future-work)).
 - **Control modes**: the device has a local-button mode that auto-returns
   to "remote control" on the first received serial command or after a 10-minute
   idle. No driver state is needed to handle this — the panel restores
-  remote mode the moment we ping it on connect.
+  remote mode on the first command the driver sends it.
 
 ## Protocol Reference
 
@@ -166,15 +170,14 @@ The FP2 uses **bracketed ASCII** at **115200 8N1**.
   No terminator is added.
 - **Response framing**: `(VALUE)` — opening `(`, ASCII payload, closing `)`.
   Read until `)`. Timeout: 3 s per request.
-- **Frame ordering**: every `Session::request` and every poll-task
-  request goes through the per-`Connection<Fp2Codec>` request lock in
-  `rusty-photon-shared-transport` (the `Connection.transport` Mutex).
-  Encode → `send_frame` → `recv_frame` → decode runs end-to-end while the
-  lock is held, so foreground writes and the while-open poll cannot
-  interleave bytes on the wire. The driver does not pre-drain the read
-  buffer — `SerialFrameTransport` consumes one terminator-delimited
-  frame per `recv_frame` call, and any leading bytes before the next
-  `(` are tolerated by `RawResponse::from_frame`.
+- **Frame ordering**: every request, foreground or poll, holds the
+  shared crate's command lock from encode to decode, so foreground writes
+  and the while-open poll cannot interleave bytes on the wire
+  ([The command lock](../crates/rusty-photon-shared-transport.md#the-command-lock)).
+  The driver does not pre-drain the read buffer — `SerialFrameTransport`
+  consumes one terminator-delimited frame per `recv_frame` call, and any
+  leading bytes before the next `(` are tolerated by
+  `RawResponse::from_frame`.
 
 ### Command Set
 
@@ -194,15 +197,17 @@ The FP2 uses **bracketed ASCII** at **115200 8N1**.
 | `[GHTM]`      | Get       | Heater mode                                  | `(0)` off, `(1)` on, `(2)` on-when-active |
 | `[SHTM<N>]`   | Set       | Heater mode (0\|1\|2)                        | `(OK)`                                    |
 
-Commands not in the above table are unused by this driver. The FP1
-variant of the protocol uses some additional commands (e.g. `[GPOS]`-only
-state) that are exercised here only as a fallback / liveness ping.
+The driver issues every command in the table except `[GPOS]`, `[GHTM]` and
+`[SHTM]`, which are listed for reference: `[GPOS]` is the FP1-style angle
+read the FP2 also answers, and the heater-mode pair belongs to the heater
+Switch of [Future Work](#future-work). Commands not in the table are unused.
 
 ### Ping / Liveness
 
-The handshake on connect issues `[GFRM]`. A non-empty response identifying
-"DeepSkyDad.FP2" succeeds; anything else fails the connection with a
-clear error. The board / version strings are stashed in `CachedState`
+The handshake, which runs at startup and on every reconnect, issues
+`[GFRM]`. A non-empty response identifying "DeepSkyDad.FP2" succeeds;
+anything else fails the connection with a clear error. The board /
+version strings are stashed in `CachedState`
 (`firmware_board` / `firmware_version`) for diagnostics and future
 heater-Switch use; ASCOM `driver_info()` returns a static driver
 identity string and does not include them, per the convention that
@@ -297,9 +302,9 @@ without any driver-specific code.
 
 ## Connection Lifecycle
 
-The lifecycle is the standard shared-transport flow; this section is
-calibration for what specifically happens at each phase, not a
-re-description of the shared-transport contract.
+The lifecycle is the shared crate's `ServiceLifetime` flow
+([Lifecycles](../crates/rusty-photon-shared-transport.md#lifecycles));
+this section says what the FP2 does at each step.
 
 1. **`Connected = true`** on the ASCOM device calls
    `manager.transport().acquire().await`, which through
@@ -316,7 +321,9 @@ re-description of the shared-transport contract.
    not come up, rather than binding with a transport no client could
    use. Nothing is published, so there is no half-connected state to
    escape. On a later reconnect the same failure is reported as a
-   failed attempt and retried at the configured cadence.
+   failed attempt and retried at the supervisor's cadence, the shared
+   crate's default of 5 s
+   ([Reconnect](../crates/rusty-photon-shared-transport.md#reconnect)).
 3. The while-open task ticks every `polling_interval` (default 500 ms),
    refreshing `[GMOV]`, `[GOPS]`, `[GLON]`, `[GLBR]`, `[GHTT]` into the
    cached state. The task uses `tokio::select!` against
@@ -327,11 +334,18 @@ re-description of the shared-transport contract.
    a cover move's `[SMOV]`) — and a value older than the cached one is
    dropped. The poll's five reads are five turns on the wire and a
    command can go between them, so without this a light turned on after
-   the poll read it off would read off again until the next poll.
-4. **`Connected = false`** calls `session.close().await`, which on the
-   1→0 transition cancels the while-open task, awaits it (5 s timeout
-   then abort), runs the teardown hook, and drops the slot's
-   `Arc<Connection<C>>` (which closes the OS-level serial port).
+   the poll read it off would read off again until the next poll
+   ([Stamped values](../crates/rusty-photon-shared-transport.md#stamped-values)).
+4. **`Connected = false`** calls `session.close().await`. On the 1→0
+   transition that runs the last-disconnect hook, which for the FP2 sends
+   nothing and reports its state asserted: no panel state has to hold
+   while no client is connected. The port, the poll task and the
+   reconnect supervisor stay up for the next client. They stop with the
+   server, on a shutdown or a reload: `BoundServer::start()`'s teardown calls
+   `manager.transport().shutdown()`, which stops the supervisor, cancels
+   and joins the poll task (5 s, then abort), runs the shutdown hook (a
+   no-op here) and closes the serial port
+   ([In-process reload](#in-process-reload)).
 
 The CoverCalibrator is the only device this server registers, so the
 refcount tops out at `1` in normal use. The pattern is preserved so the
@@ -370,7 +384,7 @@ request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 ```
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -397,8 +411,8 @@ change fails loudly at load instead of being silently ignored.
 
 ASCOM requires each device's `UniqueID` to be **globally unique** and to
 **never change**, but the Alpaca protocol enforces neither — uniqueness has
-to come from how the id is generated. The driver no longer ships a hardcoded
-literal (`"dsd-fp2-001"`). Instead, on **first run** it mints a spec-compliant
+to come from how the id is generated. The driver therefore ships no
+hardcoded id: on **first run** it mints a spec-compliant
 **UUIDv4** for `cover_calibrator.unique_id` and persists it to the resolved
 config path (see [Config-path resolution](#config-path-resolution)).
 
@@ -451,8 +465,7 @@ combined with the subcommand (the mixed form would silently ignore them).
 
 The driver configures itself through the two HTML pages the Alpaca
 Management API defines, served by the driver itself behind its own TLS and
-Basic Auth, with no other process in between
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
+Basic Auth, with no other process in between:
 
 | Path | Holds |
 |------|-------|
@@ -484,7 +497,7 @@ A persist target is **always** resolvable, in priority order:
    `~/Library/Application Support/rusty-photon/...` on macOS — and the
    machine-wide `%PROGRAMDATA%\rusty-photon\dsd-fp2.json` on Windows
    (`ProgramData` env var, `C:\ProgramData` fallback; a Windows service
-   account's per-user profile is hidden, see ADR-015).
+   account's per-user profile is hidden).
 
 Startup bootstraps this path via `rusty_photon_config::resolve_and_init`: on
 first start the **platform default** path receives the serialized
@@ -569,22 +582,21 @@ server down and rebuild from the new file.
   `start()` to completion** rather than dropping it. So `start()`'s teardown
   always runs — gracefully draining HTTP connections and calling
   `manager.transport().shutdown()` to stop the reconnect supervisor and release
-  the serial port — before the loop rebuilds. (An earlier design dropped the
-  server future on reload, which skipped that teardown and could leak the port +
-  supervisor across reloads under the service-lifetime transport model.)
+  the serial port — before the loop rebuilds. Dropping the server future
+  instead would skip that teardown and carry the open port and the
+  supervisor into the rebuilt server.
 - **Release the port, don't wait for a refcount.** `shutdown()` closes the
-  transport explicitly rather than letting the last `Arc<Connection>` drop do
-  it: a device that never called `Session::close` still holds a reference, and
-  waiting for it would carry the open port into the rebuild. The shared crate
-  does the same before every reconnect attempt, for the same reason.
-- **The rebuild's open tolerates a handle still going away.** On Windows a COM
-  port is exclusive per handle and `CloseHandle` lands after the stream drops —
-  the pending overlapped read's cancellation has to reach the reactor first — so
-  a re-open issued in the same breath can find the port still taken. Every
-  serial driver opens through
-  `rusty_photon_shared_transport::open_serial_port`, which retries on a short
-  bounded ladder for exactly that window. A port genuinely held by another
-  process still fails, with the OS's own error, about half a second later.
+  port itself rather than waiting for the last reference to drop, so a
+  device that never called `Session::close` cannot carry the open port into
+  the rebuild
+  ([Lifecycles](../crates/rusty-photon-shared-transport.md#lifecycles));
+  a reconnect attempt closes the old port the same way
+  ([Reconnect](../crates/rusty-photon-shared-transport.md#reconnect)).
+- **The rebuild's open tolerates a handle still going away.** The port
+  opens through the shared crate's `open_serial_port`, whose bounded retry
+  rides out a Windows COM handle that has not finished closing; a port
+  another process holds still fails, with the OS's own error
+  ([Opening a serial port](../crates/rusty-photon-shared-transport.md#opening-a-serial-port)).
 - **Clean HTTP rebind.** The rebuilt server binds the same `server.port` while a
   client's keep-alive connections may still linger on it. The listener is created
   with `SO_REUSEADDR` (`rusty_photon_tls::server::bind_dual_stack`), so the rebind succeeds
@@ -625,7 +637,7 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 | `protocol.rs`         | `Command` enum + `RawResponse` body parsers                                                  |
 | `codec.rs`            | `Fp2Codec` — `rusty_photon_shared_transport::Codec` impl                                    |
 | `transport.rs`        | `Fp2SerialTransportFactory` — opens via the shared `open_serial_port`, asserts DTR, wraps in `SerialFrameTransport` |
-| `manager.rs`          | `FlatPanelManager` over `SharedTransport<Fp2Codec>` + `CachedState` + Hooks (handshake / while_open / teardown) |
+| `manager.rs`          | `FlatPanelManager` over `SharedTransport<Fp2Codec>` + `CachedState` + Hooks (handshake / while_open; nothing on last disconnect or shutdown) |
 | `device.rs`           | `DsdFp2Device` implementing ASCOM `Device + CoverCalibrator`; holds a per-device `Session<Fp2Codec>`; its `setup_request` answers the device setup page through the shared handler |
 | `mock.rs`             | `MockTransportFactory` + `MockFrameTransport` (feature `mock`); shared `MockState` simulator |
 | `lib.rs`              | Public exports, `ServerBuilder` (wires the setup-page handler into the device and the server), `BoundServer` |
@@ -638,13 +650,13 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
 - Connect / disconnect over USB-CDC serial
 - Cover open / close + state polling (`CoverState` ∈ {`Open`, `Closed`, `Moving`, `Unknown`, `Error`})
 - Calibrator on / off + brightness set (`CalibratorState` ∈ {`Off`, `Ready`, `Unknown`, `Error`})
-- Brightness read (cached) and `max_brightness = 4096`
+- Brightness read (cached) and `max_brightness` (the configured cap, at most 4096)
 - **Setup pages** (`/setup` and the device page) with platform-default config
   path, layer-aware persist, validation, no secret on any page, and in-process reload
 - Mock factory for ConformU and BDD (consumed by both the spawned
   binary and the in-process `manager.rs` mock tests)
-- Four BDD feature files: connection_lifecycle, cover_control, calibrator_control,
-  setup_pages
+- Seven BDD feature files: connection_lifecycle, cover_control, calibrator_control,
+  setup_pages, auth, restart, doctor
 - Unit tests for protocol parsing, state derivation, and the setup-page validation
 
 ### Deferred
@@ -654,15 +666,16 @@ once-per-lifecycle messages (server bound, port opened, port closed) use
   (`Off`, `On`, `OnWhenFlapOpenOrLed`) could be added in a follow-up.
 - **Halt cover.** The FP2 firmware exposes no abort; users wanting this
   should bring it up with Deep Sky Dad.
-- **Brightness ramp profiles.** A 2026-07-12 photometric sweep (issue
-  #284) found the linear mapping is *not* good enough below raw
-  brightness ~250 (see [Brightness linearity](#hardware-constraints)) —
-  the driver now floors that range via `cover_calibrator.min_brightness`
-  rather than mapping it through a LUT, on the reasoning that no current
-  consumer (`calibrator-flats` defaults to `max_brightness` and adjusts
-  exposure time, not brightness) has a reason to run the panel that low.
-  A full calibration LUT across `0..MaxBrightness` remains future work if
-  a use case for low-brightness flats emerges.
+- **Brightness ramp profiles.** The panel's output is not linear below
+  raw brightness ~250 (see [Brightness linearity](#hardware-constraints)),
+  and the driver refuses that range through
+  `cover_calibrator.min_brightness` rather than mapping it through a LUT.
+  A calibration LUT across `0..MaxBrightness` would open that range to a
+  consumer that needs dimmer flats. `calibrator-flats` is one: its
+  brightness ladder halves the panel when a pass ends over-bright
+  ([calibrator-flats § Exposure search](calibrator-flats.md#exposure-search)),
+  and a halving that lands below the floor is refused with
+  `INVALID_VALUE`.
 - **i18n.** The driver uses plain English log messages; the workspace
   i18n facility (`rusty-photon-i18n`) is only used by services that need
   localised CLI help (e.g. `ppba-driver`).
@@ -673,7 +686,7 @@ Follows `docs/skills/testing.md`.
 
 ### BDD Tests (Cucumber)
 
-Four feature files cover the MVP behaviour:
+Seven feature files:
 
 - `connection_lifecycle.feature` — connect, disconnect, status after
   disconnect.
@@ -696,6 +709,13 @@ Four feature files cover the MVP behaviour:
   new URL; `SupportedActions` is empty. The steps are the shared
   `setup_pages_steps!` in `bdd-infra`, so the feature reads the same on
   every driver.
+- `auth.feature` — with `server.tls` and `server.auth` set, the service
+  serves HTTPS and answers `401` without valid credentials, the restart
+  routes included; the deep TLS and auth suites are `ppba-driver`'s.
+- `restart.feature` — a restart request ends the service with the restart
+  code ([Restart on request](#connection-lifecycle)).
+- `doctor.feature` — the `doctor` subcommand reports a valid config clean
+  and names an unknown key.
 
 Scenarios spawn the dsd-fp2 binary (built with `--features mock` so
 `MockTransportFactory` is wired in place of the real serial transport)
@@ -708,10 +728,9 @@ bdd_main!` macro handles the entry-point + Bazel-runfiles chdir.
 Scenarios that need the simulator in a non-default state (e.g. cover
 open before exercising `close_cover`) prime it through the client
 itself rather than poking `MockState` directly — the spawned binary
-gives tests no in-process handle. Scenarios that previously required
-bespoke simulator state (e.g. the non-FP2 firmware handshake
-rejection) are covered by the in-process unit test
-`manager::mock_tests::handshake_rejects_non_fp2_firmware`.
+gives tests no in-process handle. A case that needs bespoke simulator
+state — the handshake rejecting non-FP2 firmware — is the in-process
+unit test `manager::mock_tests::handshake_rejects_non_fp2_firmware`.
 
 ### Unit Tests
 
@@ -748,38 +767,34 @@ approach `qhy-focuser` uses.
 `mock.rs`'s `[SMOV]` applies the target `cover_angle` immediately but
 reports the motor running (`[GMOV]` → `(1)`) for exactly one read, then
 clears it — mirroring `pa-falcon-rotator`'s `is_moving` (cleared on the
-next `FA`). An earlier version resolved `[SMOV]` instantly (position
-*and* motor-stopped in the same round trip), which raced the driver's
-own optimistic `CoverState = Moving` write (`device.rs::execute_move`):
-the very next `while_open` poll tick could observe the mock already
-stopped and correct the cache within a few milliseconds of the
-optimistic write, and if that landed between ConformU's back-to-back
-`CoverState`/`CoverMoving` reads it saw two different snapshots
-([#423](https://github.com/rusty-photon/rusty-photon/issues/423)). The
-one-shot clear guarantees at least one full `polling_interval` of
-stable `Moving` state before the cache can flip, which comfortably
-exceeds any HTTP round trip.
+next `FA`). A mock that resolved `[SMOV]` instantly (position *and*
+motor-stopped in the same round trip) would race the driver's own
+optimistic `CoverState = Moving` write (`device.rs::execute_move`): the
+very next `while_open` poll tick could observe the mock already stopped
+and correct the cache within a few milliseconds of the optimistic write,
+and if that landed between ConformU's back-to-back
+`CoverState`/`CoverMoving` reads, ConformU would see two different
+snapshots. The one-shot clear guarantees at least one full
+`polling_interval` of stable `Moving` state before the cache can flip,
+which comfortably exceeds any HTTP round trip.
 
 ## Known Limitations
 
 The driver returns `MethodNotImplementedException` from `HaltCover`
 (the FP2 firmware exposes no halt-motion opcode), exactly as the
 [ASCOM ICoverCalibratorV2 spec][cc-spec] mandates "if cover movement
-cannot be interrupted". ConformU 4.3 incorrectly flagged this
-spec-compliant response as an issue
-([ASCOMInitiative/ConformU#30](https://github.com/ASCOMInitiative/ConformU/issues/30));
-the fix shipped in **ConformU 4.4.0**, which now logs `HaltCover` as OK.
-The service therefore declares a `[package.metadata.conformu]` entry and
-is included in the rolling ConformU workflow.
+cannot be interrupted". ConformU 4.3 flags this spec-compliant response
+as an issue
+([ConformU issue 30](https://github.com/ASCOMInitiative/ConformU/issues/30));
+from **ConformU 4.4.0** it logs `HaltCover` as OK. The service declares a
+`[package.metadata.conformu]` entry and runs in the nightly ConformU
+workflow, which installs ConformU's latest release.
 
 [cc-spec]: https://ascom-standards.org/newdocs/covercalibrator.html
 
 ## Future Work
 
 - Switch device for heater control (`[SHTM]`).
-- Per-filter brightness profiles surfaced to `calibrator-flats` (the
-  orchestrator already supports a single `brightness` knob; per-filter
-  needs orchestrator changes, not driver changes).
 - Optional integration with `sentinel` to surface the heater temperature
   in the dashboard.
 
@@ -787,8 +802,8 @@ is included in the rolling ConformU workflow.
 
 - Vendor manual: [DSD-FP2-MANUAL-V3](https://shop.deepskydad.com/software-and-documentation/)
 - INDI reference driver: `indilib/indi/drivers/auxiliary/deepskydad_fp.cpp`
-- ASCOM CoverCalibrator interface: `ascom-alpaca` crate (pinned commit
-  `638429b` on branch `integration` in workspace `Cargo.toml`)
+- ASCOM CoverCalibrator interface: the `ascom-alpaca` crate, from the
+  fork and branch the workspace `Cargo.toml` pins
 - Sibling services with the same architecture:
   [`qhy-focuser`](qhy-focuser.md), [`ppba-driver`](ppba-driver.md)
 - Consumer of this driver:

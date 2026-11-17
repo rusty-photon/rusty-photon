@@ -27,12 +27,12 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [ui-htmx](services/ui-htmx) | Web UI (BFF) | 11120 | Server-rendered web UI (axum + Maud + HTMX): rp's activity stream and the targets inbox, with links to rp's setup page and its own |
 | [plate-solver](services/plate-solver) | rp-managed HTTP service | 11131 | Wraps the ASTAP CLI for plate solving in a supervised, crash-isolated process |
 | [qhy-camera](services/qhy-camera) | ASCOM Camera (+ FilterWheel) | 11121 | Driver for QHYCCD cameras + filter wheels (vendored `qhyccd-rs` bindings; links the proprietary SDK unless `QHYCCD_SKIP_NATIVE_LINK=1`) |
-| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links only the camera SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`); the EFW filter wheel is a future separate service |
-| [zwo-focuser](services/zwo-focuser) | ASCOM Focuser | 11124 | Driver for the ZWO EAF (vendored `zwo-rs` bindings, MIT SDK; links only the focuser SDK — ADR-014 — unless `ZWO_SKIP_NATIVE_LINK=1`) |
+| [zwo-camera](services/zwo-camera) | ASCOM Camera | 11122 | Driver for ZWO ASI cameras (vendored `zwo-rs` bindings, MIT SDK; links only the camera SDK unless `ZWO_SKIP_NATIVE_LINK=1`); the EFW filter wheel is a future separate service |
+| [zwo-focuser](services/zwo-focuser) | ASCOM Focuser | 11124 | Driver for the ZWO EAF (vendored `zwo-rs` bindings, MIT SDK; links only the focuser SDK unless `ZWO_SKIP_NATIVE_LINK=1`) |
 | [planetarium-bridge](services/planetarium-bridge) | ASCOM Telescope (virtual) | 11126 | Virtual target-entry telescope for planetarium apps (SkySafari etc.): Align imports the selection as a paused rp target; never touches hardware |
 | [upbv2-driver](services/upbv2-driver) | ASCOM Switch + ObservingConditions | 11127 | Driver for Pegasus Astro Ultimate Powerbox v2: four 12V outputs, three dew channels, six USB ports, a 3-12V variable output, and per-channel current and overcurrent telemetry |
 | [gemini-powerbox-adv3-driver](services/gemini-powerbox-adv3-driver) | ASCOM Switch + ObservingConditions | 11132 | Driver for the Gemini Astro Power & Data Hubs Advanced 3: four switched 12V outputs plus the always-on rail, six USB ports, two dew channels (duty, enabled, mode), voltage / current / power telemetry, and the AHT20 and DS18B20 sensors |
-| [doctor](services/doctor) | Install diagnosis CLI | — | Read-only diagnosis of a multi-service install: config parsing, port collisions, cross-service wiring, unit and privilege gaps (ADR-016) |
+| [doctor](services/doctor) | Install diagnosis CLI | — | Diagnosis and repair of a multi-service install: config parsing, port collisions, cross-service wiring, unit and privilege gaps |
 
 ### RP (Main Application)
 
@@ -96,7 +96,7 @@ See [docs/services/sky-survey-camera.md](docs/services/sky-survey-camera.md) for
 
 ### Star Adventurer GTi
 
-ASCOM Alpaca Telescope driver for the Sky-Watcher Star Adventurer GTi, an entry-level GoTo equatorial mount. Speaks the Sky-Watcher motor-controller protocol over USB-CDC serial (115200 baud) and UDP (192.168.4.1:11880 in mount-AP mode). Implements connect/disconnect, RA/Dec reads, sync, async slew, sidereal tracking, software park, abort, and pulse guiding — leaving custom tracking rates and Alt/Az slew for follow-up. The shared codec lives in the `skywatcher-motor-protocol` workspace crate so other Sky-Watcher mounts can reuse it.
+ASCOM Alpaca Telescope driver for the Sky-Watcher Star Adventurer GTi, an entry-level GoTo equatorial mount. Speaks the Sky-Watcher motor-controller protocol over USB-CDC serial (115200 baud) and UDP (192.168.4.1:11880 in mount-AP mode). Implements connect/disconnect, RA/Dec reads, sync, async slew, sidereal tracking, software park, abort, pulse guiding and meridian flips; it tracks at the sidereal rate only and has no Alt/Az slew. The shared codec lives in the `skywatcher-motor-protocol` workspace crate so other Sky-Watcher mounts can reuse it.
 
 See [docs/services/star-adventurer-gti.md](docs/services/star-adventurer-gti.md) for design documentation.
 
@@ -108,7 +108,7 @@ See [docs/services/falcon-rotator.md](docs/services/falcon-rotator.md) for desig
 
 ### DSD FP2
 
-ASCOM Alpaca CoverCalibrator driver for the Deep Sky Dad Flat Panel 2 (FP2), a motorised flat-field panel combining a 4096-step EL light source with a servo-driven cover. Built on the workspace's `rusty-photon-shared-transport` crate (PR #269): the FP2's bracketed-ASCII protocol (`[GFRM]`, `[STRG270]`, `[SLBR1234]`, …) is plugged in as an `Fp2Codec`, `Fp2SerialTransportFactory` opens the USB-CDC port (115200 baud, `/dev/ttyACM*`), and a thin `FlatPanelManager` over `SharedTransport<Fp2Codec>` handles refcounting, request arbitration, and the polling task via `Hooks`. Pairs with `calibrator-flats` for automated flat-field calibration without any orchestrator changes.
+ASCOM Alpaca CoverCalibrator driver for the Deep Sky Dad Flat Panel 2 (FP2), a motorised flat-field panel combining a 4096-step EL light source with a servo-driven cover. Built on the workspace's [`rusty-photon-shared-transport`](docs/crates/rusty-photon-shared-transport.md) crate: the FP2's bracketed-ASCII protocol (`[GFRM]`, `[STRG270]`, `[SLBR1234]`, …) is plugged in as an `Fp2Codec`, `Fp2SerialTransportFactory` opens the USB-CDC port (115200 baud, `/dev/ttyACM*`), and a thin `FlatPanelManager` over `SharedTransport<Fp2Codec>` handles refcounting, request arbitration, and the polling task via `Hooks`. `calibrator-flats` drives it as it drives any CoverCalibrator, for automated flat-field calibration.
 
 See [docs/services/dsd-fp2.md](docs/services/dsd-fp2.md) for design documentation.
 
@@ -126,15 +126,15 @@ See [docs/services/plate-solver.md](docs/services/plate-solver.md) for design do
 
 ### QHY Camera
 
-ASCOM Alpaca **Camera (+ FilterWheel)** driver for real QHYCCD hardware, built natively on the vendored first-party `qhyccd-rs` bindings crate (ADR-009). It enumerates every connected QHY camera and CFW and exposes each as an ASCOM device on one port. Implemented (v0). By default the build links the proprietary QHYCCD SDK; for an SDK-free build set `QHYCCD_SKIP_NATIVE_LINK=1` together with `--features simulation` (which `cfg`s out the native FFI) — the path CI and the sanitizer jobs use. See [docs/services/qhy-camera.md](docs/services/qhy-camera.md) for design documentation.
+ASCOM Alpaca **Camera (+ FilterWheel)** driver for real QHYCCD hardware, built natively on the vendored first-party `qhyccd-rs` bindings crate. It enumerates every connected QHY camera and CFW and exposes each as an ASCOM device on one port. By default the build links the proprietary QHYCCD SDK; for an SDK-free build set `QHYCCD_SKIP_NATIVE_LINK=1` together with `--features simulation` (which `cfg`s out the native FFI) — the path CI and the sanitizer jobs use. See [docs/services/qhy-camera.md](docs/services/qhy-camera.md) for design documentation.
 
 ### ZWO Camera
 
-ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendored first-party `zwo-rs` bindings crate (ADR-008 / ADR-010). The MIT ZWO SDK itself is not vendored — it is provisioned at build time; per ADR-014 this binary links only the camera SDK (`libASICamera2`), unless `ZWO_SKIP_NATIVE_LINK=1` is set (the simulation-only path CI uses). Exposes the full `Device + Camera` surface — exposure state machine, ROI/binning, gain/offset, cooling, readout modes, and ST4 pulse guiding — and passes ConformU. Per ADR-014, each independently usable ZWO device gets its own service: the EAF focuser is `zwo-focuser` below, and EFW filter-wheel support will be a separate `zwo-filterwheel` service. See [docs/services/zwo-camera.md](docs/services/zwo-camera.md) for design documentation.
+ASCOM Alpaca **Camera** driver for ZWO ASI hardware, built natively on the vendored first-party `zwo-rs` bindings crate. The MIT ZWO SDK itself is not vendored — it is provisioned at build time; this binary links only the camera SDK (`libASICamera2`), unless `ZWO_SKIP_NATIVE_LINK=1` is set (the simulation-only path CI uses). Exposes the full `Device + Camera` surface — exposure state machine, ROI/binning, gain/offset, cooling, readout modes, and ST4 pulse guiding — and passes ConformU. Each independently usable ZWO device gets its own service: the EAF focuser is `zwo-focuser` below, and EFW filter-wheel support will be a separate `zwo-filterwheel` service. See [docs/services/zwo-camera.md](docs/services/zwo-camera.md) for design documentation.
 
 ### ZWO Focuser
 
-ASCOM Alpaca **Focuser** driver for the ZWO EAF, built on the same vendored `zwo-rs` crate (its `focuser` feature — the binary links only the focuser SDK, `libEAFFocuser`; ADR-014) rather than the serial transport pattern the other focusers use. Exposes the full `Device + Focuser` surface (absolute move, halt, live temperature) and passes ConformU against the simulation backend and against a physical EAF. See [docs/services/zwo-focuser.md](docs/services/zwo-focuser.md) for design documentation.
+ASCOM Alpaca **Focuser** driver for the ZWO EAF, built on the same vendored `zwo-rs` crate (its `focuser` feature — the binary links only the focuser SDK, `libEAFFocuser`) rather than the serial transport pattern the other focusers use. Exposes the full `Device + Focuser` surface (absolute move, halt, live temperature) and passes ConformU against the simulation backend and against a physical EAF. See [docs/services/zwo-focuser.md](docs/services/zwo-focuser.md) for design documentation.
 
 ### Planetarium Bridge
 
@@ -142,7 +142,7 @@ Virtual ASCOM Alpaca **Telescope** that planetarium apps (SkySafari 7+, Stellari
 
 ### Doctor
 
-One-shot CLI that diagnoses a multi-service install and repairs it: packages put bytes on disk, services self-create their configs, and `rusty-photon-doctor` reports what does not line up — unparseable configs, port collisions, dangling cross-service name references, units that will never start, and sentinel's restart-privilege gap — then wires it with `--fix`. It also owns the hardware checks that need no vendor SDK (device nodes, group access, udev rules, USB presence, firmware helper), aggregates each service's own `doctor` subcommand for the SDK-gated ones, and owns the TLS and credential lifecycle (cert issuance, ACME, `tls renew`, credential mint and rotation). Its service catalog is derived from each service's `pkg/doctor.toml`, never hand-maintained. Ships in sentinel's packages alongside the daily renewal timer (ADR-016). See [docs/services/doctor.md](docs/services/doctor.md) for design documentation.
+One-shot CLI that diagnoses a multi-service install and repairs it: packages put bytes on disk, services self-create their configs, and `rusty-photon-doctor` reports what does not line up — unparseable configs, port collisions, dangling cross-service name references, units that will never start, and sentinel's restart-privilege gap — then wires it with `--fix`. It also owns the hardware checks that need no vendor SDK (device nodes, group access, udev rules, USB presence, firmware helper), aggregates each service's own `doctor` subcommand for the SDK-gated ones, and owns the TLS and credential lifecycle (cert issuance, ACME, `tls renew`, credential mint and rotation). Its service catalog is derived from each service's `pkg/doctor.toml`, never hand-maintained. Ships in sentinel's packages alongside the daily renewal timer. See [docs/services/doctor.md](docs/services/doctor.md) for design documentation.
 
 ## Getting Started
 
@@ -151,11 +151,11 @@ One-shot CLI that diagnoses a multi-service install and repairs it: packages put
 - **Rust** (edition 2021, MSRV 1.99.0, which tracks current stable — inherited by every workspace member, the six dual-homed FFI crates that publish to crates.io included)
 - **[Bazel](https://bazel.build/)** via bazelisk (version pinned by `.bazelversion`) — the local build/test loop and the per-PR CI gate
 - **[cargo-nextest](https://nexte.st/)** (`cargo install cargo-nextest --locked`) — optional; used by the nightly Cargo safety net (`act` / raw-cargo fallback)
-- **Vendor camera SDKs** (ZWO ASI/EFW/EAF + QHYCCD) — **required**: `bazel build //...` includes the `zwo-camera` / `zwo-focuser` / `qhy-camera` packages, which link the native SDKs (the shared Bazel `zwo-rs` targets build the union of device features, so all three ZWO blobs are needed there; per-service cargo builds link only their own — ADR-014). Install them per [`services/zwo-camera/README.md`](services/zwo-camera/README.md) and [`services/qhy-camera`](services/qhy-camera/) (the same SDKs CI provisions).
+- **Vendor camera SDKs** (ZWO ASI/EFW/EAF + QHYCCD) — **required**: `bazel build //...` includes the `zwo-camera` / `zwo-focuser` / `qhy-camera` packages, which link the native SDKs (the shared Bazel `zwo-rs` targets build the union of device features, so all three ZWO blobs are needed there; per-service cargo builds link only their own). Install them per [`services/zwo-camera/README.md`](services/zwo-camera/README.md) and [`services/qhy-camera`](services/qhy-camera/) (the same SDKs CI provisions).
 
 ### Building
 
-Bazel builds and fast-tests the workspace and is the per-PR CI gate; the Cargo build is the nightly safety net and still drives dependency versions.
+Bazel builds and fast-tests the workspace and is the per-PR CI gate; the Cargo build is the nightly safety net, and `Cargo.toml` and `Cargo.lock` set the dependency versions both builds use.
 
 ```bash
 # Build + fast-test everything (the local loop and the per-PR gate)
@@ -238,23 +238,23 @@ rusty-photon/
   CLAUDE.md / AGENTS.md   Operating rules for AI agents and human contributors
   crates/
     bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)
-    rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum + memoised verifier, ADR-003)
+    rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum + memoised verifier)
     rp-catalog/                      Embedded Messier/NGC/IC catalog with name resolution
     rp-ephemeris/                    Astronomical math (Ephemeris + ERFA wrapper + Site)
-    rp-fits/                         FITS reader/writer wrapper (ADR-001)
+    rp-fits/                         FITS reader/writer wrapper
     rp-plate-solver/                 HTTP client for the plate-solver service
-    rusty-photon-tls/                TLS serving for inter-service comms (ADR-002; issuance lives in doctor)
+    rusty-photon-tls/                TLS serving for inter-service comms (issuance lives in doctor)
     rusty-photon-config/             Config-path + first-run UniqueID + the ConfigurableDriver trait the setup pages use
     rusty-photon-setup/              The setup pages a service serves for its own configuration
-    rusty-photon-driver/             Shared ASCOM-driver runtime: DriverError + setup-page glue (ADR-007)
+    rusty-photon-driver/             Shared ASCOM-driver runtime: DriverError + setup-page glue
     rusty-photon-i18n/               Workspace Fluent i18n loader + locale resolver
     rusty-photon-i18n-derive/        Proc-macro deriving LocalizedParser for clap structs
     rusty-photon-service-lifecycle/  Unified lifecycle: runtime + signals + optional Windows SCM
     rusty-photon-shared-transport/   Refcounted multi-client transport scaffolding (serial + UDP)
     skywatcher-motor-protocol/       Sky-Watcher motor-controller wire protocol codec (USB + UDP)
     transport-doubles/               Test doubles for shared-transport: the reply-holding and send-failing factories
-    qhyccd-rs/                       Vendored QHYCCD SDK bindings + nested libqhyccd-sys FFI (ADR-009)
-    zwo-rs/                          Vendored ZWO ASI/EFW/EAF SDK bindings + nested libzwo-sys FFI (ADR-008/010/014)
+    qhyccd-rs/                       Vendored QHYCCD SDK bindings + nested libqhyccd-sys FFI
+    zwo-rs/                          Vendored ZWO ASI/EFW/EAF SDK bindings + nested libzwo-sys FFI
     svbony-rs/                       Vendored SVBony camera SDK bindings (hand-written FFI, no bindgen) + nested libsvbony-sys; consumed by services/svbony-camera
   services/
     rp/                    Main application: equipment gateway, event bus, safety enforcer
@@ -268,9 +268,9 @@ rusty-photon/
     pa-scops-oag/          ASCOM Focuser — Pegasus Scops OAG (serial)
     star-adventurer-gti/   ASCOM Telescope — Sky-Watcher GTi (USB + WiFi/UDP)
     sky-survey-camera/     ASCOM Camera simulator backed by NASA SkyView
-    qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (implemented v0; vendored qhyccd-rs bindings)
-    zwo-camera/            ASCOM Camera — ZWO ASI hardware (implemented; vendored zwo-rs bindings, MIT SDK)
-    zwo-focuser/           ASCOM Focuser — ZWO EAF (implemented; vendored zwo-rs bindings, MIT SDK)
+    qhy-camera/            ASCOM Camera + FilterWheel — QHYCCD hardware (vendored qhyccd-rs bindings)
+    zwo-camera/            ASCOM Camera — ZWO ASI hardware (vendored zwo-rs bindings, MIT SDK)
+    zwo-focuser/           ASCOM Focuser — ZWO EAF (vendored zwo-rs bindings, MIT SDK)
     planetarium-bridge/    ASCOM Telescope (virtual) — planetarium Align gestures become paused rp targets
     phd2-guider/           PHD2 client library (TCP/JSON RPC)
     sentinel/              Monitoring service (HTTP consumer)
@@ -279,7 +279,7 @@ rusty-photon/
     polar-align/           Plate-solving polar alignment orchestrator
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
     ui-htmx/               Server-rendered web UI (BFF): activity stream, targets inbox
-    doctor/                Install diagnosis CLI (read-only in D2; ADR-016)
+    doctor/                Install diagnosis and repair CLI
   docs/
     services/              Per-service design documentation
     crates/                Per-crate design documentation
