@@ -1,0 +1,36 @@
+{
+ "label": "A",
+ "started_utc": "2026-11-18T03:56:02.721Z",
+ "exposure_s": 2.0,
+ "poll_interval_s": 0.025,
+ "endpoint": "https://<rig-host>:11121 (loopback)",
+ "sensorname": "QHY5III715C",
+ "sensortype": 2,
+ "cameraxsize": 3864,
+ "cameraysize": 2192,
+ "maxbinx": 4,
+ "maxbiny": 4,
+ "pixelsizex": 1.45,
+ "pixelsizey": 1.45,
+ "gain": 30,
+ "offset": 30,
+ "readoutmode": 0,
+ "readoutmodes": [
+  "STANDARD MODE"
+ ],
+ "bayeroffsetx": 0,
+ "bayeroffsety": 1,
+ "driverversion": "0.1.0",
+ "interfaceversion": 4,
+ "maxadu": 65535,
+ "frame_set": {
+  "binx": 2,
+  "biny": 2,
+  "startx": 0,
+  "starty": 0,
+  "numx": 1932,
+  "numy": 1096
+ },
+ "ended_utc": "2026-11-18T04:56:04.418Z",
+ "frames": 1435
+}

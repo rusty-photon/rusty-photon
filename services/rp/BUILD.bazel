@@ -103,6 +103,18 @@ rust_binary(
     ] + all_crate_deps(normal = True),
 )
 
+# The operator-run kernel timing in examples/, built by `cargo build
+# --all-targets` and never executed in CI. Mirrored here for `bazel build
+# //...` parity; it needs only the lib and ndarray, a normal dep.
+rust_binary(
+    name = "kernel_timing",
+    srcs = ["examples/kernel_timing.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [":rp_lib"] + all_crate_deps(normal = True),
+)
+
 rust_test(
     name = "rp_unit_test",
     size = "medium",
