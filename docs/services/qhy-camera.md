@@ -2283,7 +2283,9 @@ replaces with the declaration.
   507 ms median and 546 ms at most over an hour of 1435 binned frames, 464 ms
   of it before `ImageReady`, about 440 ms unbinned and 264 ms for a 512 × 512
   subframe; its download takes 67 ms binned and 184 ms for the 17 MB full
-  frame. On both cameras the span before `ImageReady` follows the frame's size
+  frame. An hour of its full frames unbinned, the frame a guider reads from
+  a colour sensor, held at 623 ms median and 664 ms at most over 1370
+  frames, with no failure. On both cameras the span before `ImageReady` follows the frame's size
   on the sensor, not its binning.
 - **E6.** `CameraState` is `Exposing` during capture; `PercentCompleted` is
   derived from remaining-exposure µs (clamped to ≤ 100) while a capture is in

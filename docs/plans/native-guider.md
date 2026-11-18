@@ -485,16 +485,16 @@ These are not exclusive.
 | **M3** | Full-frame correlation (Donuts) | McCormac et al. 2013 (<https://arxiv.org/abs/1304.2405>): residual below 0.2 px from under-sampled to badly defocused stars, 1–15 ms per frame, on-sky 0.04 px RMS on NGTS. INDIGO and lin_guider implement it | Needs no star selection; works defocused and in crowded fields. Needs only an FFT crate (`rustfft`, MIT OR Apache-2.0) |
 | **M4** | A plate solution per frame | Professional telescopes only (SDSS-V); no amateur guider closes its loop on one | A solve gives the camera's angle, scale and parity, not the mount's response. Useful for calibration (§ 5), not for the loop |
 
-`rp` already has the single-frame kernels: `detect_stars`,
-`fit_2d_gaussian`, `measure_listed`, `estimate_background` and the HFR
-and SNR measures, generic over the pixel type, in
-`crates/rp-image-analysis`. What does not exist anywhere in
-the workspace: any frame-to-frame shift measurement, multi-star
+The workspace already has the single-frame kernels, which `rp` uses:
+`detect_stars`, `fit_2d_gaussian`, `measure_listed`,
+`estimate_background` and the HFR and SNR measures, generic over the
+pixel type, in `crates/rp-image-analysis`. What does not exist anywhere
+in the workspace: any frame-to-frame shift measurement, multi-star
 matching, dark subtraction or a persistent defect map. Detection copies
-the frame to `f64` and filters it, and no timing exists for a
-guide-sized frame or for the Pi 5; the per-frame path should detect
+the frame to `f64` and filters it, so the per-frame path should detect
 once at star selection and afterwards measure only at the listed
-positions.
+positions. What the kernels cost on guide-sized frames on the Pi 5 is
+in § Staging, under "What G1 found".
 
 pier1's guide camera is a colour sensor with 1.45 µm pixels. Summing
 each 2 × 2 Bayer cell gives a luminance frame and a sensible sampling;
@@ -966,9 +966,13 @@ nothing guiding.
    record lists the steps that put it there. The hour ran on frames the
    SDK binned; the guider reads pier1's colour sensor unbinned and sums
    its 2 × 2 cells itself
-   ([guider.md § Sensor handling](../services/guider.md#sensor-handling)),
-   the path of the 715C's unbinned run: 623 ms median and 664 ms at most
-   over its ten minutes, 184 ms of it the 17 MB download.
+   ([guider.md § Sensor handling](../services/guider.md#sensor-handling)).
+   That path holds for an hour too: on 2026-11-18 the same script, on
+   the same endpoint, looped the 715C's full frame unbinned for an hour,
+   1370 frames with no failure, and had the pixels 623 ms after the
+   exposure ended (median; 664 ms at most), 184 ms of it the 17 MB
+   download, with the host 3 % busy
+   ([the run's summary](https://github.com/rusty-photon/rusty-photon/pull/1824)).
 2. **The kernels keep up on a Pi 5.** On synthetic guide frames
    (`cargo run --release -p rp-image-analysis --example kernel_timing`, a static
    build, on the project's Pi 5 runner), the per-frame path, the
