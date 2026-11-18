@@ -518,6 +518,14 @@ impl<R: Runner> Run<'_, R> {
         let port = packaging::port(service).unwrap_or_default();
         let url = format!("http://127.0.0.1:{port}{}", probe_path(service));
         if service == "zwo-focuser" {
+            // It writes its config before it reaches the HID APIs, which
+            // under launchd block it short of serving.
+            let created = self.wait_until(15, has_config);
+            self.require(
+                created,
+                service,
+                &format!("config not self-created at {}", config.display()),
+            )?;
             return self.hid_gated(service, &url, port);
         }
         let served = self.wait_until(30, |run| run.answers(&url));
@@ -1240,6 +1248,31 @@ mod tests {
         let error = mac.verify(&mut runner, &request).unwrap_err();
         assert!(
             error.to_string().contains("launchd process not running"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn zwo_focuser_is_held_to_its_config_before_the_hid_gate() {
+        let mac = Mac::new(&["zwo-focuser"]);
+        let keg = mac.path("prefix/opt/rusty-photon-zwo-focuser-nightly/lib");
+        fs::create_dir_all(&keg).unwrap();
+        fs::write(keg.join("libEAFFocuser.dylib"), "").unwrap();
+        mac.install("rusty-photon-zwo-focuser");
+        // Its start writes no config.
+        let mut runner = mac
+            .brew()
+            .on("otool -L", || Ok("@rpath/libEAFFocuser.dylib\n".to_owned()))
+            .on("brew services info", || {
+                Ok(r#"[{"running": true,"pid": 7}]"#.to_owned())
+            });
+        let error = mac
+            .verify(&mut runner, &Mac::request(Some(&["zwo-focuser"])))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("FAIL [zwo-focuser]: config not self-created at "),
             "{error}"
         );
     }

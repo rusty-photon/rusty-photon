@@ -17,7 +17,7 @@
 //!   and the first of them a second attempt, which only a restart makes;
 //! - qhy-camera either starts or logs that `qhyccd.dll`, the operator's, is
 //!   missing: anything else is the loader crash its delay-load link
-//!   prevents;
+//!   prevents. It writes its config either way, before the DLL preflight;
 //! - the rest run, write their config and answer their port, and
 //!   ui-htmx's config names rp and no drivers;
 //! - sentinel, killed, is restarted; filemonitor takes a `ParamChange`, its
@@ -820,7 +820,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         } else {
             println!("== qhy-camera: OK (delay-load resolved; service started)");
         }
-        Ok(())
+        self.created("qhy-camera")
     }
 
     fn has_log(&self, service: &str) -> bool {
@@ -1257,8 +1257,8 @@ mod tests {
         GatedFailed,
         /// The install writes sky-survey-camera's config.
         GatedConfig,
-        /// filemonitor writes no config.
-        NoConfig,
+        /// This service writes no config.
+        NoConfig(&'static str),
         /// zwo-focuser writes no log.
         NoLog,
         /// Removing the `ZwoCamera` feature leaves this file installed.
@@ -1345,7 +1345,7 @@ mod tests {
                 } else {
                     "{}"
                 };
-                let silent = service == "filemonitor" && self.broken == Some(Broken::NoConfig);
+                let silent = matches!(self.broken, Some(Broken::NoConfig(s)) if s == service);
                 if !silent && !config.exists() {
                     write(&config, text);
                 }
@@ -1366,6 +1366,9 @@ mod tests {
                 &self.places.data.join("logs/qhy-camera.2026-10-22"),
                 self.qhy_log,
             );
+            if self.broken != Some(Broken::NoConfig("qhy-camera")) {
+                write(&self.places.data.join("qhy-camera.json"), "{}");
+            }
             for service in &gated {
                 write(
                     &self.places.data.join(format!("logs/{service}.2026-10-22")),
@@ -1725,7 +1728,8 @@ mod tests {
             (Box::new(|_| ()), Script::default().on("schtasks", || Ok(String::new())), "FAIL [doctor]: scheduled task rusty-photon-renew survived uninstall"),
             (Box::new(|sim| sim.broken = Some(Broken::UninstallTakes("sentinel.json"))), Script::default(), "FAIL [sentinel]: self-created config did not survive uninstall"),
             (Box::new(|sim| sim.broken = Some(Broken::GatedConfig)), Script::default(), "FAIL [focus-model]: config exists on a fresh install of a gated service"),
-            (Box::new(|sim| sim.broken = Some(Broken::NoConfig)), Script::default(), "FAIL [filemonitor]: timed out after 30s waiting for config self-created at "),
+            (Box::new(|sim| sim.broken = Some(Broken::NoConfig("filemonitor"))), Script::default(), "FAIL [filemonitor]: timed out after 30s waiting for config self-created at "),
+            (Box::new(|sim| sim.broken = Some(Broken::NoConfig("qhy-camera"))), Script::default(), "FAIL [qhy-camera]: timed out after 30s waiting for config self-created at "),
             (Box::new(|sim| sim.broken = Some(Broken::NoLog)), Script::default(), "FAIL [zwo-focuser]: no rolling log file under "),
             (Box::new(|sim| sim.broken = Some(Broken::FeatureRemoveKeeps("rusty-photon-zwo-camera.exe"))), Script::default(), "FAIL [zwo-camera]: exe still present after feature remove"),
             (Box::new(|sim| sim.broken = Some(Broken::FeatureRemoveTakes("EAF_focuser.dll"))), Script::default(), "FAIL [zwo-focuser]: EAF_focuser.dll disappeared with the zwo-camera feature"),
