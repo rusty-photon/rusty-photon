@@ -1,0 +1,24 @@
+[package]
+name = "rp-image-analysis"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The image kernels rp and the guider share: background, star detection, centroid and Gaussian fit, half-flux radius, signal-to-noise ratio and frame statistics"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ndarray = { workspace = true }
+ndarray-ndimage = { workspace = true }
+rmpfit = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+rp-fits = { workspace = true }
+serde_json = { workspace = true }

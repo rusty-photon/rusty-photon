@@ -1237,15 +1237,16 @@ mod tests {
         (448, 214),
     ];
 
-    /// A 512×512 crop of a real QHY600M frame at best focus, provenance
-    /// in the fixture directory's README. `measure_basic.feature` pins
-    /// what `measure_basic` reports on it; this pins that suppression,
-    /// not the HFR floor, is what removes its hot pixels at those
-    /// settings.
+    /// A 512×512 crop of a real QHY600M frame at best focus, one of
+    /// `rp`'s star-detection fixtures, provenance in their README.
+    /// `rp`'s `measure_basic.feature` pins what `measure_basic` reports
+    /// on it; this pins that suppression, not the HFR floor, is what
+    /// removes its hot pixels at those settings.
     #[test]
     fn real_frame_hot_pixels_are_replaced_before_smoothing() {
-        let bytes: &[u8] =
-            include_bytes!("../../../tests/fixtures/star_detection/qhy600m_best_focus_crop.fits");
+        let bytes: &[u8] = include_bytes!(
+            "../../../services/rp/tests/fixtures/star_detection/qhy600m_best_focus_crop.fits"
+        );
         let (pixels, width, height) =
             rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(bytes)).unwrap();
         let arr = Array2::from_shape_vec((height, width), pixels).unwrap();
@@ -1272,7 +1273,7 @@ mod tests {
         arr[(10, 50)] = 9000;
         arr[(50, 12)] = 9000;
         let view = arr.view();
-        let background = crate::imaging::analysis::background::estimate_background(&view).unwrap();
+        let background = crate::background::estimate_background(&view).unwrap();
         let params = DetectionParams {
             threshold_sigma: 5.0,
             smoothing_sigma: 1.0,

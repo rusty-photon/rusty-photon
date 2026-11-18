@@ -30,7 +30,14 @@ use super::background::estimate_background;
 use super::pixel::Pixel;
 use super::saturation::saturation_level;
 use super::stars::{detect_stars, DetectionParams, Star};
-use crate::error::{Result, RpError};
+
+/// What stops [`compute_snr`] from measuring a frame.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SnrError {
+    /// The frame's background could not be estimated.
+    #[error("background estimation failed")]
+    Background,
+}
 
 /// Aggregate result of the `compute_snr` pipeline.
 #[derive(Debug, Clone, Serialize)]
@@ -73,7 +80,7 @@ pub fn per_star_snr(star: &Star, background_stddev: f64) -> Option<(f64, f64, f6
 ///
 /// # Errors
 ///
-/// Returns [`RpError::Imaging`] if background estimation fails; a frame
+/// Returns [`SnrError::Background`] if background estimation fails; a frame
 /// with no usable stars is not an error — the medians come back `None`.
 pub fn compute_snr<T: Pixel>(
     view: &ArrayView2<T>,
@@ -81,9 +88,8 @@ pub fn compute_snr<T: Pixel>(
     min_area: usize,
     max_area: usize,
     max_adu: Option<u32>,
-) -> Result<SnrResult> {
-    let background = estimate_background(view)
-        .ok_or_else(|| RpError::Imaging("background estimation failed".to_string()))?;
+) -> Result<SnrResult, SnrError> {
+    let background = estimate_background(view).ok_or(SnrError::Background)?;
 
     let detection = DetectionParams {
         threshold_sigma,

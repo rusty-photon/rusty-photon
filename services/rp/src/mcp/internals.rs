@@ -1491,7 +1491,8 @@ impl McpHandler {
                 params.min_area,
                 params.max_area,
                 max_adu,
-            ));
+            )
+            .map_err(|e| crate::error::RpError::Imaging(e.to_string())));
         }
 
         debug!(document_id = %doc_id, "image cache miss, falling back to FITS");
@@ -1518,6 +1519,7 @@ impl McpHandler {
         tokio::task::spawn_blocking(move || {
             let arr = persistence::read_fits_array(&path_owned)?;
             imaging::compute_snr(&arr.view(), threshold, min_a, max_a, None)
+                .map_err(|e| crate::error::RpError::Imaging(e.to_string()))
         })
         .await
         .map_err(|e| crate::error::RpError::Imaging(format!("task join error: {e}")))?

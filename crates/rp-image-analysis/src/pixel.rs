@@ -1,11 +1,11 @@
 //! `Pixel` trait — the abstraction analysis algorithms are generic over.
 //!
 //! Cameras emit either `u16` (every consumer/prosumer astro camera) or `i32`
-//! (future scientific sCMOS HDR modes — see [`super::cache::CachedPixels`]).
+//! (future scientific sCMOS HDR modes; `rp`'s image cache holds both).
 //! Each analysis algorithm is written once over `T: Pixel` and monomorphized
 //! for both types.
 
-/// Pixel value held in [`super::cache::CachedPixels`]. Implementations exist
+/// Pixel value of a frame, as `rp`'s image cache holds it. Implementations exist
 /// for `u16` (the primary path) and `i32` (the scientific-camera hatch).
 ///
 /// `to_f64` covers the bulk of analysis arithmetic (means, sigma-clipping,

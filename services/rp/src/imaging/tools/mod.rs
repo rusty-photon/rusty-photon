@@ -1,7 +1,7 @@
 //! Compositional tools, one MCP tool per file. Two flavors:
 //!
 //! - **Pure compositional analyzers** (`measure_basic`,
-//!   `measure_stars`): bind multiple [`crate::imaging::analysis`]
+//!   `measure_stars`): bind multiple [`rp_image_analysis`]
 //!   kernels into one MCP-tool-shaped result. Pure functions over
 //!   `ArrayView2`, no I/O, no async — unit-testable without a runtime.
 //!
