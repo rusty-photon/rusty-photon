@@ -7971,11 +7971,13 @@ is independent of cancellation.
 
 ### Sentinel Watchdog Integration
 
-Sentinel is extended beyond safety monitoring to serve as an operation watchdog
-and supervisor for the entire system. It connects to `rp`'s real-time event
+Besides safety monitoring, Sentinel is the operation watchdog and the
+supervisor of the whole system. It connects to `rp`'s real-time event
 stream (`/api/events/subscribe`) and monitors operation deadlines. The stream
-connection also serves as a health signal — if `rp` itself crashes or hangs,
-the disconnection is an immediate trigger for Sentinel to attempt recovery.
+connection also serves as a health signal: if `rp` itself crashes or hangs,
+the disconnection makes Sentinel reconnect, and a reconnect that keeps
+failing is escalated as "rp unresponsive"
+([sentinel.md § Liveness pulse](sentinel.md#liveness-pulse-stream-disconnect)).
 
 #### Monitored Operations
 
@@ -7991,21 +7993,28 @@ the disconnection is an immediate trigger for Sentinel to attempt recovery.
 
 #### Corrective Actions
 
-When a deadline expires without the expected completion event:
+When a deadline expires without the expected completion event, Sentinel
+acts on the operation family's `on_expiry` policy
+([sentinel.md § Escalation](sentinel.md#escalation-corrective-action-ladder)).
+`notify_only`, the default, sends a push notification. `abort_then_restart`
+runs a ladder against the service that owns the family, then notifies:
 
-1. **Health check** — Sentinel pings the relevant Alpaca service endpoint
-   to determine if it is responsive.
+1. **Health check** — Sentinel asks the service's Alpaca endpoint whether it
+   is responsive.
 2. **Responsive but stuck** — Sentinel commands an abort via the device's
-   Alpaca API (e.g., `PUT camera/0/abortexposure`). Notifies `rp` to re-plan.
-3. **Unresponsive** — Sentinel executes the configured restart command for
-   that service (e.g., `systemctl restart qhyccd-alpaca`). After restart,
-   notifies `rp` to reconnect and resume.
+   Alpaca API (e.g., `PUT camera/0/abortexposure`). The aborted operation
+   ends with a `*_failed` or `*_complete` event, as any operation does.
+3. **Unresponsive, or no abort verb** — Sentinel restarts the service with
+   the restart command it derives from the platform service manager
+   (e.g., `systemctl restart rusty-photon-qhy-camera`) and waits for it to
+   answer again.
 4. **Notification** — Sentinel sends a push notification (Pushover or other
-   configured notifier) describing the failure and corrective action taken.
+   configured notifier) describing the failure and the rungs that ran.
 
-The restart commands are configured per service, not hardcoded. Sentinel does
-not know how to restart any specific service — it just executes the configured
-command.
+Sentinel makes no call to `rp`. `rp` sees the aborted operation end on its
+own, and its [reconnect supervisor](#device-session-recovery) re-establishes
+the session with a restarted driver on its own cadence, whoever restarted
+the service.
 
 #### Recovery Flow
 
@@ -8014,12 +8023,11 @@ Sentinel detects: exposure_started 300s ago, no exposure_complete
   │
   ├─► Health check camera driver endpoint
   │     │
-  │     ├─► Responsive → PUT abortexposure → notify `rp`
+  │     ├─► Responsive → PUT abortexposure → the exposure ends `*_failed`
   │     │
-  │     └─► Unresponsive → run restart command → wait for service
-  │           │
-  │           └─► Service back → notify `rp` → `rp` reconnects;
-  │                                                 the orchestrator resumes
+  │     └─► Unresponsive → run the derived restart command → wait for the
+  │           service; `rp`'s reconnect supervisor reconnects on its own
+  │
   └─► Send push notification describing what happened
 ```
 

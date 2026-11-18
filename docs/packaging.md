@@ -9,7 +9,7 @@ payloads); the maintainer-script invariants in
 [packaging/README.md](../packaging/README.md).
 
 Deployment is native packages: the drivers' USB / udev / firmware needs
-and ASCOM Alpaca's UDP discovery defeat containers.
+defeat containers.
 
 Windows ships as one suite MSI instead of per-service packages — see
 [docs/packaging-windows.md](packaging-windows.md). macOS ships
