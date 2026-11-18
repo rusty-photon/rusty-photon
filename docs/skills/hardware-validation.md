@@ -185,6 +185,17 @@ the mount.
 Working against the field rig rather than a local device:
 [rig-development.md](rig-development.md).
 
+**ConformU 4.5.3 and a certificate issued for a name.** 4.5.3 opens TLS
+to the address the device's host name resolves to and sends no server
+name, so the certificate's name check fails with
+`RemoteCertificateNameMismatch`; 4.5.0 sends the name and passes (both
+seen on the field rig, in the
+[QHY5III715C's record](../validation/2026-11-17-qhy-camera-qhy5iii715c-linux/README.md)).
+A run against a production HTTPS endpoint under 4.5.3 therefore sets
+`TrustUserGeneratedSslCertificates` in its settings file and says so in
+its README, or runs the service on plain HTTP on loopback, as the
+Windows records do.
+
 ## Record the run
 
 One directory per run, `<YYYY-MM-DD>-<service>-<device>-<platform>/`,

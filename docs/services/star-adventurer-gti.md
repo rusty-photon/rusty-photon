@@ -1709,6 +1709,66 @@ and +1.21 in the second, West +2.37 and +2.75.
 
 `ra_pulse_edge_steps` defaults to the midpoint, 1.5 ticks each way.
 
+An operator-run session on 2026-11-17 timed **short pulses** through
+the running service's Alpaca `PulseGuide`, from a client on the rig's
+loopback, at the default guide rate (0.5 × sidereal) and with the
+default trim. The mount sat at the Park 3 pose (mech HA −6 h, the Dec
+axis on the pole) with RA tracking at sidereal. Each of 20, 50, 100,
+200, 500 and 1000 ms went five times each way, North, South, East and
+West in turn, each 1.5 s after `IsPulseGuiding` last read false. RA
+travel is the fixed-slope fit above at the sidereal step rate; between
+pulses the axis ran at 42.113 ticks/s against 42.115 expected. Dec
+travel is the change in the whole-count `:j2` reading from just before
+a pulse to just before the next Dec pulse. Each value is the mean of
+five pulses, in ticks (0.357″ of RA axis, 0.446″ of Dec axis). "Rising"
+and "falling" are the direction of the Dec count:
+
+| Requested (ms) | RA expected | East | West | Dec expected | Dec rising | Dec falling | `IsPulseGuiding` true (ms): East / West / Dec |
+|---|---|---|---|---|---|---|---|
+| 20 | 0.42 | −1.39 | +3.45 | 0.34 | 0 | 0.8 | 104 / 14 / 38 |
+| 50 | 1.05 | −1.40 | +3.23 | 0.84 | −0.2 | 1 | 135 / 14 / 58–70 |
+| 100 | 2.11 | −2.37 | +3.19 | 1.68 | 1 | 2 | 175–185 / 34–44 / 118–120 |
+| 200 | 4.21 | −4.88 | +5.93 | 3.37 | 3.2 | 4.2 | 275–286 / 134 / 209–221 |
+| 500 | 10.53 | −11.00 | +12.37 | 8.42 | 8 | 9 | 577 / 437 / 510–514 |
+| 1000 | 21.06 | −20.72 | +22.25 | 16.85 | 16 | 17 | 1080 / 940 / 1013–1017 |
+
+- **East delivers its expected travel from 100 ms**, within 0.7 tick.
+  A shorter East pulse delivers about 1.4 ticks whatever its length:
+  the trim runs it 71 ms long, and the board adds its edge steps.
+- **West does not deliver its expected travel at this pose.** The
+  board's edge steps here are 3.06 ± 0.09 ticks West and 1.13 ± 0.14
+  East (mean ± SE of 30 pulses each). West sits above the 1.5-tick
+  trim and above both 2026-10-05 sessions' means at −6 h (+2.37 and
+  +2.75), where the probe's +3.23 at this pose also sat. A West pulse
+  of 50 ms or less, shorter than its trim, is a shift and a restore
+  2 ms apart and delivers the edge steps alone. So a West pulse up to
+  100 ms moves 3.2–3.5 ticks on average, and from 200 ms West delivers
+  1.2–1.8 ticks more than expected.
+- **Dec moves in whole counts**, one every 59 ms at the guide rate.
+  No 20 or 50 ms pulse shows a count within 0.2 s of its stop frame.
+  The last count of a short pulse often arrives later, 0.1–1.9 s after
+  the stop frame: for nine of the ten falling pulses of 20 and 50 ms,
+  and for nine of the ten 100 ms pulses. A count at rest sometimes
+  flips to a neighbouring value and back. From 100 ms the settled count
+  is within one of expected, and at every length from 100 ms the
+  falling direction runs exactly one count further than the rising
+  one. The count is the motor's, not the sky's: Dec backlash does not
+  show in it.
+- **Timing.** `PulseGuide` returns in 3–5 ms on RA (the live rate
+  change) and 7–11 ms on Dec (the start from rest). The start frame
+  leaves 1 ms (RA) or 5–6 ms (Dec) after the request. The restore frame
+  follows it after the requested length plus 1 ms on Dec, plus 72 ms
+  East, and less 70 ms West (2 ms at the least): the trim, plus about
+  1 ms. `IsPulseGuiding`, polled every 10 ms, reads false 2–14 ms after
+  the restore frame. It reads true for 8–22 ms longer than the request
+  on Dec and 75–86 ms longer East. West it reads true for 56–67 ms less
+  than the request, and never under 13.5 ms.
+- **On the pole a Dec pulse's sense follows the count.** The park pose
+  holds the Dec axis at 90°, the boundary of the counterweight-up
+  classification, and the pulses walk the count across it. A pulse
+  that starts with the count above it therefore runs the other way
+  (the convention below), and two of the 60 did.
+
 **Dec sign convention.** `PulseGuide(guideNorth)` moves the OTA toward
 `+Dec` on both sides of the pier. The Dec encoder is not a proxy for
 declination: the mapping is `Dec = θ` while the encoder is within ±90°

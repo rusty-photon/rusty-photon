@@ -3,9 +3,9 @@
 **Date:** 2026-11-12
 **Parent design docs:** [`docs/workspace.md`](../workspace.md#project-tenets) (project tenets), [`docs/services/guider.md`](../services/guider.md), [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md), [`docs/services/rp.md`](../services/rp.md), [`docs/services/phd2-guider.md`](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md), [`docs/plans/optical-trains.md`](optical-trains.md), [`docs/plans/daily-power-cycle.md`](daily-power-cycle.md)
 
-> **Status:** decided on 2026-11-12. Stage G0 is merged, stage G6 is
-> in progress (its design, its BDD scenarios and its code are merged,
-> and its removal is the pull request that follows them), and no other
+> **Status:** decided on 2026-11-12. Stages G0 and G6 are merged,
+> stage G1 is in progress (both rigs were measured on 2026-11-17, and
+> its records are the pull request that follows G6), and no other
 > stage has started. The owner read this study and settled its
 > main questions: rusty-photon builds a native guider as a standalone
 > service that is an Alpaca client, and drops PHD2
@@ -889,10 +889,11 @@ is pier1 until G5 and rig2 until G7.
 
 ## Staging
 
-G0 is merged: its record is § Where the rigs stand, and what it
-changes for the later stages follows the table. G6 is in progress:
-its design, its BDD scenarios and its code are merged, and its removal
-is the pull request that follows them. No other stage has started. No stage measures the guider
+G0 and G6 are merged: G0's record is § Where the rigs stand, and what
+it changes for the later stages follows the table; G6 took PHD2's
+pieces out of the tree and moved `rp` to the native contract. G1 is in
+progress: both rigs were measured on 2026-11-17, and what G1 found
+follows what G0 changes. No other stage has started. No stage measures the guider
 against PHD2, and no new work is started for PHD2 (decisions 6 and 12).
 
 The stages run in the order of the table. G6 comes right after G0, as
@@ -903,8 +904,8 @@ G7a is the stage decision 13 adds.
 | Gate | Work | Passes when | Status |
 |---|---|---|---|
 | **G0** | Record how each rig guides today, while PHD2 is still installed: its profile, how it reaches the mount, guide logs from each rig. The logs become the fixtures the guide-log writer is tested against | The "not recorded" items in § Where the rigs stand are closed: how PHD2 drives each mount, which the section records for both rigs | Merged 2026-11-14: [stage G0](https://github.com/rusty-photon/rusty-photon/pull/1780) |
-| **G6** | PHD2's pieces leave the tree, and `rp` speaks the native contract. `phd2-guider`, its facade, its mock, its packaging, `restart_guider` and the old contract types go. The types and the client of the contract [`guider.md`](../services/guider.md) designs take their place in `crates/rp-guider`, and `rp`'s guiding tools move to them, tested against a test double of that contract. No compatibility is kept with the old contract or its configuration. Four pull requests, in this order. **The design:** `rp.md`, `focus-model.md`, `session-runner.md`, `sentinel.md`, `guider.md` and [`daily-power-cycle.md`](daily-power-cycle.md) say what `rp` and its plugins do against the native guider, and mark it designed and not yet built where the code still speaks PHD2's contract. In `rp.md` that is § Guider Service with the check that the guider's devices are `rp`'s and the watch over a run, the train lease's camera-lease step, the capture through the guide camera, the motion gate's text about pulses, the rotate-while-guiding ladder and the end of `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `session-runner.md`, the night document's two rules for a lost star and for a run the guider stopped; in `sentinel.md`, the units the `phd2-guider` package ships for PHD2 and its display; in `guider.md`, the `UniqueID` the guider reports for each device; in `daily-power-cycle.md`, decision 10 and PHD2's restart in stages P2 and P4. **The BDD scenarios** of that design, against the double. **The code:** the contract's types and client in `crates/rp-guider`, the double in `bdd-infra`, and what the design changes in `rp`, in `focus-model`, in the night document and in the cards `ui-htmx`'s stream draws for `guide_stopped` and `guide_star_lost`. **The removal:** `services/phd2-guider` with its packaging and its entries in CI, in doctor's catalog and in sentinel, and with it `phd2-guider.md` and what the other living documents say of the removed pieces, the packaging guides, `doctor.md`, `README.md` and `workspace.md` among them | `rp`'s BDD green against the double, and nothing of PHD2 left in the tree to build or to package | In progress. The design merged 2026-11-14: [stage G6, the design](https://github.com/rusty-photon/rusty-photon/pull/1785). The BDD scenarios merged 2026-11-15: [stage G6, the scenarios](https://github.com/rusty-photon/rusty-photon/pull/1789). The code merged 2026-11-16: [stage G6, the code](https://github.com/rusty-photon/rusty-photon/pull/1795). The removal: `chore/native-guider-g6-removal` |
-| **G1** | Cadence spike, no guider: loop 2 s exposures through `qhy-camera` on each guide camera, full frame binned and subframe; time short pulses through the GTi driver; time the kernels on the Pi 5. Both guide cameras get a validation record under `qhy-camera` | Exposure end to pixels in the client well under the exposure length, sustained for an hour. If not, the driver overhead is fixed first | Not started |
+| **G6** | PHD2's pieces leave the tree, and `rp` speaks the native contract. `phd2-guider`, its facade, its mock, its packaging, `restart_guider` and the old contract types go. The types and the client of the contract [`guider.md`](../services/guider.md) designs take their place in `crates/rp-guider`, and `rp`'s guiding tools move to them, tested against a test double of that contract. No compatibility is kept with the old contract or its configuration. Four pull requests, in this order. **The design:** `rp.md`, `focus-model.md`, `session-runner.md`, `sentinel.md`, `guider.md` and [`daily-power-cycle.md`](daily-power-cycle.md) say what `rp` and its plugins do against the native guider, and mark it designed and not yet built where the code still speaks PHD2's contract. In `rp.md` that is § Guider Service with the check that the guider's devices are `rp`'s and the watch over a run, the train lease's camera-lease step, the capture through the guide camera, the motion gate's text about pulses, the rotate-while-guiding ladder and the end of `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `session-runner.md`, the night document's two rules for a lost star and for a run the guider stopped; in `sentinel.md`, the units the `phd2-guider` package ships for PHD2 and its display; in `guider.md`, the `UniqueID` the guider reports for each device; in `daily-power-cycle.md`, decision 10 and PHD2's restart in stages P2 and P4. **The BDD scenarios** of that design, against the double. **The code:** the contract's types and client in `crates/rp-guider`, the double in `bdd-infra`, and what the design changes in `rp`, in `focus-model`, in the night document and in the cards `ui-htmx`'s stream draws for `guide_stopped` and `guide_star_lost`. **The removal:** `services/phd2-guider` with its packaging and its entries in CI, in doctor's catalog and in sentinel, and with it `phd2-guider.md` and what the other living documents say of the removed pieces, the packaging guides, `doctor.md`, `README.md` and `workspace.md` among them | `rp`'s BDD green against the double, and nothing of PHD2 left in the tree to build or to package | Merged 2026-11-17. The design merged 2026-11-14: [stage G6, the design](https://github.com/rusty-photon/rusty-photon/pull/1785). The BDD scenarios merged 2026-11-15: [stage G6, the scenarios](https://github.com/rusty-photon/rusty-photon/pull/1789). The code merged 2026-11-16: [stage G6, the code](https://github.com/rusty-photon/rusty-photon/pull/1795). The removal merged 2026-11-17: [stage G6, the removal](https://github.com/rusty-photon/rusty-photon/pull/1807) |
+| **G1** | Cadence spike, no guider: loop 2 s exposures through `qhy-camera` on each guide camera, full frame binned and subframe; time short pulses through the GTi driver; time the kernels on the Pi 5. Both guide cameras get a validation record under `qhy-camera` | Exposure end to pixels in the client well under the exposure length, sustained for an hour. If not, the driver overhead is fixed first | In progress. Both guide cameras pass, measured on 2026-11-17 (below, "What G1 found"). The records: `feature/native-guider-g1-cadence` |
 | **G2** | The kernels move to `rp-image-analysis`. `rp-guiding` and `guide-simulator`: multi-star measurement, step calibration, the two controllers, dither and settle | The loop converges and recovers across the simulator's mount and sky conditions in CI | Not started |
 | **G3** | Replay: record guide-camera frames on sky on pier1 through `qhy-camera`, the mount tracking and nothing guiding, and run the measurement over them | The measurement holds its guide stars through the recording, and the stars' offsets agree with one another frame by frame within a stated tolerance | Not started |
 | **G4** | The `guider` service as [`guider.md`](../services/guider.md) specifies it: Alpaca clients, the HTTP API, the guide log, the setup page, packaging. It serves the contract `crates/rp-guider` holds since G6, and where building it changes that contract, `rp` changes with it | BDD green against `guide-simulator`'s devices, and `rp`'s guiding scenarios green against the service in place of the double; ConformU is not applicable | Not started |
@@ -941,6 +942,45 @@ the owner has settled what each of them asked.
    on record for pier1. pier1's `rp` configuration points guiding at
    `phd2-guider`, so the first build deployed there after G6 comes
    with a change to that configuration.
+
+**What G1 found.** Both rigs were measured on 2026-11-17, with
+nothing guiding.
+
+1. **The frame path passes on both guide cameras through the standard
+   one-shot exposure (F1), so no driver fix comes first.** Over an hour
+   of 2 s exposures, full frame binned 2 × 2, back to back through
+   `qhy-camera`'s production endpoint on each rig's loopback, a client
+   had the pixels 507 ms after the exposure ended on pier1's
+   QHY5III715C (median; 546 ms at most over 1435 frames) and 489 ms on
+   rig2's QHY5III678M (568 ms at most over 1446), with no failure and
+   no drift. About 460 ms of it passes before `ImageReady`: the SDK's
+   readout, the same unbinned and 264–305 ms for a 512 × 512 subframe.
+   The download takes 30–70 ms binned and 184 ms for the 715C's 17 MB
+   full frame. The 4 s single shots of the earlier conformance runs did
+   not recur: ConformU saw `ImageReady` 2.51 and 2.53 s after
+   `StartExposure`. The records:
+   [QHY5III715C](../validation/2026-11-17-qhy-camera-qhy5iii715c-linux/README.md),
+   [QHY5III678M](../validation/2026-11-17-qhy-camera-qhy5iii678m-windows/README.md).
+   rig2's guide camera is under `qhy-camera` since, at device 1, and its
+   record lists the steps that put it there.
+2. **The kernels keep up on a Pi 5.** On synthetic guide frames
+   (`cargo run --release -p rp --example kernel_timing`, a static
+   build, on the project's Pi 5 runner), the per-frame path, the
+   background and `measure_listed` at 30 listed stars, takes 62–67 ms
+   on a binned frame (3 % of a 2 s cadence) and 266–272 ms on a full
+   frame (14 %). Star selection, once, takes 0.16 s binned and 0.67 s
+   full. The whole-frame `estimate_background` is 99 % of the per-frame
+   path, and `measure_listed` under 1 ms; the per-frame path needs only
+   the frame-wide σ from it, which is G2's to make cheap.
+3. **The GTi's short pulses are steps, not proportions, below 100 ms**
+   ([star-adventurer-gti.md § PulseGuide lifecycle](../services/star-adventurer-gti.md#pulseguide-lifecycle),
+   at the park pose). East delivers its expected travel from 100 ms; a
+   shorter East pulse moves about 1.4 ticks (0.5″) whatever its length.
+   The board's West edge steps at that pose, 3.1 ticks, exceed the
+   trim, so a West pulse up to 100 ms moves about 3.3 ticks (1.2″).
+   Dec moves in whole counts of 0.45″, one per 59 ms at the guide
+   rate, and a 20 or 50 ms pulse's count may arrive up to 1.9 s late.
+   `PulseGuide` returns in 3–11 ms.
 
 Later, each behind a measurement: subframes, full-frame correlation,
 predicted calibration, a tuning assistant, predictive PEC.

@@ -558,7 +558,11 @@ a camera on a port the list leaves out is never opened.
       "name": "Main Imaging",
       "description": "QHY600M @ 1000mm",
       "filter_wheel_number": 0,
-      "filter_names": ["L", "R", "G", "B", "Ha", "OIII", "SII"] }
+      "filter_names": ["L", "R", "G", "B", "Ha", "OIII", "SII"] },
+    { "device_number": 1,
+      "usb_port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(3)",
+      "name": "Guide",
+      "description": "QHY5III678M guide camera" }
   ],
   "server": {
     "port": 11121,
@@ -567,8 +571,8 @@ a camera on a port the list leaves out is never opened.
 }
 ```
 
-That is `rig2`'s list: its QHY5III678M, on `…#USB(14)#USB(3)`, is PHD2's guide
-camera, so it is left off.
+That is the shape of `rig2`'s list: the QHY600M and its wheel at 0, and the
+QHY5III678M guide camera, on `…#USB(14)#USB(3)`, at 1 with no wheel.
 
 The `server` block is the shared `AlpacaServerConfig` from
 `crates/rusty-photon-server-config`: `port`, `bind_address`
@@ -2260,6 +2264,27 @@ replaces with the declaration.
   single-frame capture on the blocking bridge, and on completion produces an
   `ImageArray` of the binned sub-frame, `ImageReady = true`,
   `LastExposureStartTime`/`LastExposureDuration` set, `CameraState = Idle`.
+
+  Measured on hardware, most of what a frame costs beyond its exposure passes
+  before the frame comes back from the SDK. On `rig2`'s QHY5III678M (Windows,
+  `qhyccd.dll` 24.1.9.12), 2 s exposures ran back to back through the
+  production endpoint for an hour, full frame binned 2 × 2
+  ([record](../validation/2026-11-17-qhy-camera-qhy5iii678m-windows/README.md)).
+  A client had the pixels 489 ms after the exposure ended (median; 568 ms at
+  most over 1446 frames), and 460 ms of that passed before `ImageReady` read
+  true. The driver's `debug` log has the frame back from
+  `GetQHYCCDSingleFrame` 431–459 ms after the exposure's end, so that span is
+  the exposure-remaining poll and the readout, not the driver's publication of
+  the frame. The span is the same unbinned, and about 305 ms for a 512 × 512
+  subframe. `StartExposure` answers in 36 ms, and the ImageBytes download over
+  loopback takes 29 ms at bin 2 and 79 ms at bin 1. The field rig's
+  QHY5III715C (Linux on a Raspberry Pi 5, SDK 26.06.04) gives the same picture
+  ([record](../validation/2026-11-17-qhy-camera-qhy5iii715c-linux/README.md)):
+  507 ms median and 546 ms at most over an hour of 1435 binned frames, 464 ms
+  of it before `ImageReady`, about 440 ms unbinned and 264 ms for a 512 × 512
+  subframe; its download takes 67 ms binned and 184 ms for the 17 MB full
+  frame. On both cameras the span before `ImageReady` follows the frame's size
+  on the sensor, not its binning.
 - **E6.** `CameraState` is `Exposing` during capture; `PercentCompleted` is
   derived from remaining-exposure µs (clamped to ≤ 100) while a capture is in
   flight, and is `100` when none is, `0` in the `Error` state.
