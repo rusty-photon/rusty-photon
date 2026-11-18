@@ -71,7 +71,8 @@ The recommendation in brief, and what the owner decided on 2026-11-12:
 What this study could not establish is in § Not verified. The two gaps
 that matter most: no sustained guide-cadence measurement exists through
 any camera driver, and no on-sky guiding under `rp` is on record with
-any guider.
+any guider. Stage G1 measured the first on 2026-11-17 (§ Staging, "What
+G1 found").
 
 ## Background: what guiding through PHD2 costs
 
@@ -913,11 +914,12 @@ G7a is the stage decision 13 adds.
 | **G7a** | rig2's mount over Alpaca: an Alpaca bridge in front of the vendor's ASCOM driver, and a mount entry for it in `rp` on rig2. Which bridge is not verified, nor whether the COM driver runs with nobody logged on | The mount answers over Alpaca with nobody logged on. If it does not, the question returns to the owner (decision 13) | Not started |
 | **G7** | rig2 on sky under `rp`, the guider running as a Windows service with nobody logged on | The acceptance list in § 9 | Not started |
 
-**The guide camera changes hands on rig2.** PHD2 opens the guide camera
-through the vendor SDK built into it, and on rig2 the camera is kept
-out of `qhy-camera` by being left off that driver's `usb_devices` list.
-G1 puts it under `qhy-camera` and records the steps. On pier1 the
-camera is under `qhy-camera` already.
+**The guide camera changes hands on rig2.** PHD2 opened the guide
+camera through the vendor SDK built into it, and on rig2 the camera was
+kept out of `qhy-camera` by being left off that driver's `usb_devices`
+list. G1 put it under `qhy-camera` on 2026-11-17, at device 1, and its
+record lists the steps. On pier1 the camera is under `qhy-camera`
+already.
 
 **What G0 changes.** Three of G0's findings reach later stages, and
 the owner has settled what each of them asked.
@@ -1159,9 +1161,11 @@ the owner settled it on 2026-11-15.
   PHD2 ran on pier1 before the three sessions its logs hold.
 - Sustained guide cadence through any camera service; the cause of the
   extra 2 s on QHY exposures; kernel timing on guide-sized frames and
-  on the Pi 5.
+  on the Pi 5. G1 measured the cadence and the kernels on 2026-11-17,
+  and the extra 2 s did not recur (§ Staging, "What G1 found").
 - The GTi's Dec backlash and its accuracy on pulses shorter than a
-  second.
+  second. G1 measured the accuracy at the park pose on 2026-11-17; the
+  backlash does not show in the motor's counts.
 - Centroid noise on real guide frames, with either rig's camera.
 - Whether PHD2's Alpaca client supports HTTPS and Basic Auth (E1).
 - INDIGO as a Windows service with nobody logged on, and any guiding of
