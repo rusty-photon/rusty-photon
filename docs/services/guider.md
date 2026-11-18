@@ -368,10 +368,10 @@ has passed and `IsPulseGuiding` reads false. A pulse still in progress
   step rather than its length's travel (about 0.5″ East, and 1.2″ West,
   where a pulse shorter than its trim delivers the edge steps alone),
   and Dec moves in whole counts of 0.45″, one per 59 ms at the guide
-  rate, whose last count can arrive up to 1.9 s after a 20 or 50 ms
-  pulse. From 100 ms East and Dec deliver their travel within a count,
-  and West about 1.5 ticks (0.5″) more, its edge steps there being
-  above the trim. The plan's stage G5 settles `mount.min_pulse` on sky.
+  rate, the last count of a pulse of 100 ms or less often arriving up
+  to 1.9 s after the pulse. From 100 ms East and Dec deliver their
+  travel within a count, once that last count is in, and West about
+  1.5 ticks (0.5″) more, its edge steps there being above the trim. The plan's stage G5 settles `mount.min_pulse` on sky.
 - No pulse is sent in `looping`, `paused` or `star_lost`, or after a
   frame that failed.
 

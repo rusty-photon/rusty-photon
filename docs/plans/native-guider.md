@@ -964,7 +964,12 @@ nothing guiding.
    [QHY5III715C](../validation/2026-11-17-qhy-camera-qhy5iii715c-linux/README.md),
    [QHY5III678M](../validation/2026-11-17-qhy-camera-qhy5iii678m-windows/README.md).
    rig2's guide camera is under `qhy-camera` since, at device 1, and its
-   record lists the steps that put it there.
+   record lists the steps that put it there. The hour ran on frames the
+   SDK binned; the guider reads pier1's colour sensor unbinned and sums
+   its 2 × 2 cells itself
+   ([guider.md § Sensor handling](../services/guider.md#sensor-handling)),
+   the path of the 715C's unbinned run: 623 ms median and 664 ms at most
+   over its ten minutes, 184 ms of it the 17 MB download.
 2. **The kernels keep up on a Pi 5.** On synthetic guide frames
    (`cargo run --release -p rp --example kernel_timing`, a static
    build, on the project's Pi 5 runner), the per-frame path, the
@@ -981,7 +986,8 @@ nothing guiding.
    The board's West edge steps at that pose, 3.1 ticks, exceed the
    trim, so a West pulse up to 100 ms moves about 3.3 ticks (1.2″).
    Dec moves in whole counts of 0.45″, one per 59 ms at the guide
-   rate, and a 20 or 50 ms pulse's count may arrive up to 1.9 s late.
+   rate, and the last count of a pulse of 100 ms or less may arrive up
+   to 1.9 s late.
    `PulseGuide` returns in 3–11 ms.
 
 Later, each behind a measurement: subframes, full-frame correlation,
