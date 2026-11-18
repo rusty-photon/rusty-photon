@@ -18,8 +18,8 @@
 //! - qhy-camera either starts or logs that `qhyccd.dll`, the operator's, is
 //!   missing: anything else is the loader crash its delay-load link
 //!   prevents;
-//! - the rest run and answer their port; the ones that write a config write
-//!   it, and ui-htmx's names rp and no drivers;
+//! - the rest run, write their config and answer their port, and
+//!   ui-htmx's config names rp and no drivers;
 //! - sentinel, killed, is restarted; filemonitor takes a `ParamChange`, its
 //!   reload; doctor runs, and its renewal task is registered;
 //! - removing the `ZwoCamera` feature takes zwo-camera, its exe and its DLL,
@@ -47,7 +47,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::packaging::{self, io, GATED, HEALTH_PROBED, NO_CONFIG_FILE, SERIAL};
+use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL};
 use crate::process::{self, Clock, Cmd, Runner};
 
 /// The MSI a run verifies, and how.
@@ -717,8 +717,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         Ok((set("/server/tls"), set("/server/auth")))
     }
 
-    /// Running, its config written where it writes one, and answering its
-    /// port.
+    /// Running, its config written, and answering its port.
     fn serves(&mut self, service: &str) -> Result<(), Error> {
         let running = self.wait_until(60, |run| run.state_is(service, RUNNING));
         self.require(
@@ -726,9 +725,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             service,
             "timed out after 60s waiting for: service RUNNING",
         )?;
-        if !NO_CONFIG_FILE.contains(&service) {
-            self.created(service)?;
-        }
+        self.created(service)?;
         if service == "ui-htmx" {
             self.ui_config()?;
         }
@@ -1348,8 +1345,7 @@ mod tests {
                 } else {
                     "{}"
                 };
-                let silent = NO_CONFIG_FILE.contains(&service.as_str())
-                    || (service == "filemonitor" && self.broken == Some(Broken::NoConfig));
+                let silent = service == "filemonitor" && self.broken == Some(Broken::NoConfig);
                 if !silent && !config.exists() {
                     write(&config, text);
                 }

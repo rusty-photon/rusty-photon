@@ -194,10 +194,7 @@ match it, the build refuses a mismatch.)
 The MSI ships no config files. Daemons self-create their config on first
 start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
 the Linux `/etc/rusty-photon` path). Exceptions: the config-gated six
-(above) never write one; the two cameras and `zwo-focuser` run on
-built-in defaults without writing a file until
-settings are saved on the service's setup page (`/setup`) or one is
-created by hand. To change settings:
+(above) never write one. To change settings:
 
 ```powershell
 notepad $env:ProgramData\rusty-photon\<svc>.json

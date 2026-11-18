@@ -16,7 +16,6 @@
 //!   launchd would restart it, again and again;
 //! - a [`SERIAL`] driver exits on its absent device, so it is checked for
 //!   its config and its handshake attempt in the log, not a probe;
-//! - the cameras and zwo-focuser create no config ([`NO_CONFIG_FILE`]);
 //! - zwo-focuser finds its focuser through the HID APIs, which under launchd
 //!   block until the user grants a privacy permission, which a CI runner
 //!   cannot: it is held to staying alive under launchd, then probed in the
@@ -33,7 +32,7 @@ use std::time::Duration;
 
 use crate::brew_formulas::{self, Channel};
 use crate::build_tarballs::tarball;
-use crate::packaging::{self, io, GATED, HEALTH_PROBED, NO_CONFIG_FILE, SERIAL};
+use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL};
 use crate::process::{self, Cmd, Runner};
 
 /// The scratch tap the formulas are rendered into.
@@ -134,7 +133,7 @@ fn running(info: &str) -> bool {
 }
 
 fn self_creates_config(service: &str) -> bool {
-    !GATED.contains(&service) && !NO_CONFIG_FILE.contains(&service)
+    !GATED.contains(&service)
 }
 
 fn probe_path(service: &str) -> &'static str {
@@ -802,7 +801,7 @@ mod tests {
         assert_eq!(probe_path("filemonitor"), "/management/apiversions");
         assert!(self_creates_config("filemonitor"));
         assert!(!self_creates_config("plate-solver"));
-        assert!(!self_creates_config("zwo-camera"));
+        assert!(self_creates_config("zwo-camera"));
     }
 
     #[test]
@@ -1104,18 +1103,27 @@ mod tests {
         assert_eq!(probes, 30);
     }
 
-    /// A service that installs, answers its probe and needs no config:
-    /// zwo-camera and zwo-focuser are such.
+    /// A service that installs, writes its config when it starts and
+    /// answers its probe, as zwo-camera and zwo-focuser do.
     fn quiet_service(mac: &Mac, service: &'static str) -> Script {
         mac.install(&format!("rusty-photon-{service}"));
+        let config = mac.path(&format!(
+            "home/Library/Application Support/rusty-photon/{service}.json"
+        ));
         let bin = mac.path(&format!("prefix/bin/rusty-photon-{service}"));
-        mac.brew().on(
-            &format!("brew uninstall rusty-photon-{service}"),
-            move || {
-                let _ = fs::remove_file(&bin);
+        mac.brew()
+            .on("brew services start", move || {
+                fs::create_dir_all(config.parent().unwrap()).unwrap();
+                fs::write(&config, "{}").unwrap();
                 Ok(String::new())
-            },
-        )
+            })
+            .on(
+                &format!("brew uninstall rusty-photon-{service}"),
+                move || {
+                    let _ = fs::remove_file(&bin);
+                    Ok(String::new())
+                },
+            )
     }
 
     #[test]

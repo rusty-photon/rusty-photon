@@ -149,10 +149,8 @@ there is no `~/.config` here and no `/etc/rusty-photon` symlink. Under
 `sudo brew services` (LaunchDaemon, runs as root) the same path is under
 root's home: `/var/root/Library/Application Support/rusty-photon/`.
 
-The same class exceptions as Linux apply: the config-gated six never
-write one, and the two cameras and `zwo-focuser` run on built-in
-defaults without writing a file until settings are saved on the
-service's setup page (`/setup`) or one is created by hand.
+The config-gated six are the exception, as on Linux: they never write
+one.
 
 To change settings, edit the file and restart (there is no `systemctl
 reload` equivalent under `brew services`; a restart is always safe):

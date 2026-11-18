@@ -16,7 +16,6 @@
 //! - a [`SERIAL`] driver exits on its absent device and systemd restarts
 //!   it: it is checked for its handshake attempt in the journal and its
 //!   config, and held to serving only if it settles active;
-//! - the cameras and zwo-focuser create no config ([`NO_CONFIG_FILE`]);
 //! - svbony-camera's package does not ship the SDK it links (ADR-018): the
 //!   run checks it is absent and installs it with the helper the package
 //!   carries, as an operator would, before the ordinary checks;
@@ -45,7 +44,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::build_packages::RUNPATH;
-use crate::packaging::{self, io, GATED, HEALTH_PROBED, NO_CONFIG_FILE, SERIAL};
+use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL};
 use crate::process::{self, Clock, Cmd, Runner};
 
 /// The packages a run verifies, and how.
@@ -192,7 +191,7 @@ fn config(service: &str) -> String {
 }
 
 fn self_creates_config(service: &str) -> bool {
-    !GATED.contains(&service) && !NO_CONFIG_FILE.contains(&service)
+    !GATED.contains(&service)
 }
 
 fn probe_path(service: &str) -> &'static str {
@@ -1382,19 +1381,22 @@ mod tests {
     }
 
     #[test]
-    fn qhy_camera_writes_no_config() {
+    fn qhy_camera_is_held_to_the_config_it_creates() {
         let linux = Linux::new(&["qhy-camera"]);
         let mut runner = container_script();
         linux.verify(&mut runner, &request(None, false)).unwrap();
-        // Nor waits for one; its purge still checks none is left.
-        assert!(
-            !runner
-                .lines
-                .iter()
-                .any(|line| line.contains("test -s") || line.contains("test -f")),
-            "{:?}",
-            runner.lines
-        );
+        let config = "/var/lib/rusty-photon/.config/rusty-photon/qhy-camera.json";
+        for check in [
+            format!("test -s {config}"),
+            format!("test -f {config}"),
+            format!("test ! -e {config}"),
+        ] {
+            assert!(
+                runner.lines.iter().any(|line| line.ends_with(&check)),
+                "no `{check}` in {:?}",
+                runner.lines
+            );
+        }
     }
 
     #[test]
