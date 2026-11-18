@@ -972,7 +972,7 @@ nothing guiding.
    1370 frames with no failure, and had the pixels 623 ms after the
    exposure ended (median; 664 ms at most), 184 ms of it the 17 MB
    download, with the host 3 % busy
-   ([the run's summary](https://github.com/rusty-photon/rusty-photon/pull/1824)).
+   ([record](../validation/2026-11-18-qhy-camera-qhy5iii715c-linux/README.md)).
 2. **The kernels keep up on a Pi 5.** On synthetic guide frames
    (`cargo run --release -p rp-image-analysis --example kernel_timing`, a static
    build, on the project's Pi 5 runner), the per-frame path, the
