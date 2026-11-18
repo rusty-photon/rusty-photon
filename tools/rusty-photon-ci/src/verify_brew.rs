@@ -71,11 +71,17 @@ fn refused(reason: impl Into<String>) -> Error {
     Error::Refused(reason.into())
 }
 
-/// A `brew` command, run without its auto-update, cleanup and hints.
+/// A `brew` command, run without its auto-update, cleanup and hints, and
+/// without the autoremove that follows `brew uninstall`. Autoremove would
+/// take every service along with the meta-formula, before each service's
+/// own uninstall is checked, and any formula already on the machine that
+/// was installed as a dependency nothing needs any more: a run removes only
+/// what it installed.
 fn brew(args: &[&str]) -> Cmd {
     Cmd::new("brew", args)
         .env("HOMEBREW_NO_AUTO_UPDATE", "1")
         .env("HOMEBREW_NO_INSTALL_CLEANUP", "1")
+        .env("HOMEBREW_NO_AUTOREMOVE", "1")
         .env("HOMEBREW_NO_ENV_HINTS", "1")
 }
 
@@ -939,6 +945,35 @@ mod tests {
             .join("rusty-photon-filemonitor-nightly.rb")
             .is_file());
         assert!(formulas.join("rusty-photon-nightly.rb").is_file());
+    }
+
+    /// Homebrew's uninstall autoremoves every formula installed as a
+    /// dependency that nothing needs any more, unless
+    /// `HOMEBREW_NO_AUTOREMOVE` is set; a service's uninstall then finds no
+    /// keg.
+    #[test]
+    fn the_meta_formula_uninstall_leaves_each_service_to_its_own() {
+        let mac = Mac::new(&["plate-solver"]);
+        mac.install("rusty-photon-plate-solver");
+        let keg = mac.path("prefix/bin/rusty-photon-plate-solver");
+        let bin = keg.clone();
+        let mut runner = mac
+            .brew()
+            .on_cmd("brew uninstall rusty-photon-nightly", move |cmd| {
+                let autoremove = !cmd
+                    .env
+                    .contains(&("HOMEBREW_NO_AUTOREMOVE".to_owned(), "1".to_owned()));
+                if autoremove {
+                    fs::remove_file(&keg).unwrap();
+                }
+                Ok(String::new())
+            })
+            .on("brew uninstall rusty-photon-plate-solver", move || {
+                fs::remove_file(&bin)
+                    .map(|()| String::new())
+                    .map_err(|_| ())
+            });
+        mac.verify(&mut runner, &Mac::request(None)).unwrap();
     }
 
     #[test]
