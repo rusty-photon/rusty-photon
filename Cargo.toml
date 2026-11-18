@@ -32,7 +32,6 @@ members = [
   "services/gemini-powerbox-adv3-driver",
   "services/pa-falcon-rotator",
   "services/pa-scops-oag",
-  "services/phd2-guider",
   "services/planetarium-bridge",
   "services/polar-align",
   "services/ppba-driver",

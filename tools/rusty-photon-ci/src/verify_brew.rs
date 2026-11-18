@@ -16,9 +16,7 @@
 //!   launchd would restart it, again and again;
 //! - a [`SERIAL`] driver exits on its absent device, so it is checked for
 //!   its config and its handshake attempt in the log, not a probe;
-//! - the cameras, zwo-focuser and phd2-guider create no config
-//!   ([`NO_CONFIG_FILE`]), and phd2-guider's `/health` answers 503 with no
-//!   PHD2 to talk to;
+//! - the cameras and zwo-focuser create no config ([`NO_CONFIG_FILE`]);
 //! - zwo-focuser finds its focuser through the HID APIs, which under launchd
 //!   block until the user grants a privacy permission, which a CI runner
 //!   cannot: it is held to staying alive under launchd, then probed in the
@@ -443,20 +441,6 @@ impl<R: Runner> Run<'_, R> {
         Ok(())
     }
 
-    /// phd2-guider answers 503 without PHD2, which still shows it serves.
-    fn phd2_answers(&mut self, url: &str) -> Option<String> {
-        let mut last = String::new();
-        let answered = self.wait_until(30, |run| {
-            let curl = Cmd::new(
-                "curl",
-                &["-s", "-o", "/dev/null", "-w", "%{http_code}", url],
-            );
-            last = run.runner.read(&curl).unwrap_or_else(|_| "000".to_owned());
-            last == "200" || last == "503"
-        });
-        (!answered).then_some(last)
-    }
-
     fn check(&mut self, service: &str) -> Result<(), Error> {
         let bin = self.bin(service);
         self.require(
@@ -531,24 +515,12 @@ impl<R: Runner> Run<'_, R> {
         if service == "zwo-focuser" {
             return self.hid_gated(service, &url, port);
         }
-        if service == "phd2-guider" {
-            if let Some(last) = self.phd2_answers(&url) {
-                return Err(self.fail(
-                    service,
-                    &format!(
-                        "no HTTP response on port {port} ({}; last code {last})",
-                        probe_path(service)
-                    ),
-                ));
-            }
-        } else {
-            let served = self.wait_until(30, |run| run.answers(&url));
-            self.require(
-                served,
-                service,
-                &format!("no HTTP response on port {port} ({})", probe_path(service)),
-            )?;
-        }
+        let served = self.wait_until(30, |run| run.answers(&url));
+        self.require(
+            served,
+            service,
+            &format!("no HTTP response on port {port} ({})", probe_path(service)),
+        )?;
         if self_creates_config(service) {
             let created = self.wait_until(15, has_config);
             self.require(
@@ -1098,7 +1070,7 @@ mod tests {
     }
 
     /// A service that installs, answers its probe and needs no config:
-    /// zwo-camera, phd2-guider and zwo-focuser are such.
+    /// zwo-camera and zwo-focuser are such.
     fn quiet_service(mac: &Mac, service: &'static str) -> Script {
         mac.install(&format!("rusty-photon-{service}"));
         let bin = mac.path(&format!("prefix/bin/rusty-photon-{service}"));
@@ -1187,23 +1159,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "FAIL [sentinel]: rusty-photon-doctor tls renew (nothing due) did not exit 0"
-        );
-    }
-
-    #[test]
-    fn phd2_guider_answering_503_serves() {
-        let mac = Mac::new(&["phd2-guider"]);
-        let request = Mac::request(Some(&["phd2-guider"]));
-        let mut runner = quiet_service(&mac, "phd2-guider")
-            .on("curl -s -o /dev/null -w", || Ok("503".to_owned()));
-        mac.verify(&mut runner, &request).unwrap();
-
-        let mut runner = quiet_service(&mac, "phd2-guider")
-            .on("curl -s -o /dev/null -w", || Ok("404".to_owned()));
-        let error = mac.verify(&mut runner, &request).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "FAIL [phd2-guider]: no HTTP response on port 11130 (/health; last code 404)"
         );
     }
 

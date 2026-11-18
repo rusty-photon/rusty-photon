@@ -180,7 +180,7 @@ number, so its `by-id` name is shared with every other such CH340 and the
 driver's own `>H#` handshake is what tells the hub from them
 ([gemini-powerbox-adv3-driver.md](gemini-powerbox-adv3-driver.md#device-identity)).
 
-The catalog (24 packaged services):
+The catalog (23 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -201,7 +201,6 @@ The catalog (24 packaged services):
 | svbony-camera | alpaca | 11125 |
 | planetarium-bridge | alpaca | 11126 |
 | upbv2-driver | alpaca | 11127 |
-| phd2-guider | core | 11130 |
 | plate-solver | core | 11131 |
 | gemini-powerbox-adv3-driver | alpaca | 11132 |
 | calibrator-flats | core | 11170 |
@@ -726,15 +725,6 @@ doctor aggregates.
 | `ports.discovery-collision` | fail | Two or more Alpaca configs set the same `discovery_port`. The responder is a per-host opt-in for single-driver deployments precisely because N responders collide; two enabled is always a mistake. |
 
 The catalog gives each service one port, its top-level `server.port`.
-`phd2-guider`'s opt-in camera facade
-([phd2-guider.md § Camera facade](phd2-guider.md#camera-facade-camera)) is
-a second listener, configured at `camera.server.port` (default 11128) and
-present only when `camera.enabled` is true. Doctor does not read it:
-`ports.collision` cannot report a clash on it, and a client URL at the
-facade's port joins no service, so it gets no client-target verdict. The
-facade binds only to loopback for that reason. Describing an optional
-second listener in the catalog is follow-up work, and so is the wider
-bind that waits on it.
 
 ### Units and privileges (systemd facts; run where the platform has them)
 

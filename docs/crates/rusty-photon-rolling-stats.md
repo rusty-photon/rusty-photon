@@ -189,10 +189,11 @@ three (temperature, humidity, dewpoint), size them through
 status frame that carried it and asks at `tokio::time::Instant::now()`, both
 through `into_std`.
 
-`phd2-guider` keeps a `SquareSums` per axis of PHD2's guide distances as its
-running totals, and `rp` subtracts two readings of them into the guiding over
-an exposure. See [`docs/services/phd2-guider.md` § Running
-totals](../services/phd2-guider.md#running-totals) and [`docs/services/rp.md`
+`rp` rebuilds two readings of the guider's running totals with `from_parts`
+and subtracts them into the guiding over an exposure. The `guider` service,
+designed and not yet built, keeps the totals as a `SquareSums` per axis of its
+guide error. See [`docs/services/guider.md` §
+Statistics](../services/guider.md#statistics) and [`docs/services/rp.md`
 § Rig state](../services/rp.md#rig-state). See
 [`docs/services/ppba-driver.md`](../services/ppba-driver.md),
 [`docs/services/upbv2-driver.md`](../services/upbv2-driver.md) and

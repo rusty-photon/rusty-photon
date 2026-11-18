@@ -25,7 +25,7 @@ the GitHub Releases page. The installer presents a feature tree:
 - **Drivers** (optional, off by default): one sub-feature per device
   driver.
 - **Automation** (optional): `rp`, `session-runner`, `plate-solver`,
-  `phd2-guider`, `calibrator-flats`, `polar-align`, `focus-model`.
+  `calibrator-flats`, `polar-align`, `focus-model`.
 
 Every selected service installs
 `%ProgramFiles%\rusty-photon\rusty-photon-<svc>.exe` and registers a
@@ -55,7 +55,6 @@ its port:
 | planetarium-bridge | 11126 | `PlanetariumBridge` | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | `Upbv2Driver` | serial (COM port) |
 | gemini-powerbox-adv3-driver | 11132 | `GeminiPowerboxAdv3Driver` | serial (COM port; Windows needs the vendor's CH341SER driver for the CH340 bridge) |
-| phd2-guider | 11130 | `Phd2Guider` | wraps PHD2 (installed separately); its opt-in camera facade adds 11128 on loopback only, which needs no firewall rule ([packaging.md](packaging.md#phd2-guider-the-camera-facade)) |
 | plate-solver | 11131 | `PlateSolver` | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | `CalibratorFlats` | config-gated |
 | session-runner | 11171 | `SessionRunner` | config-gated |
@@ -195,8 +194,8 @@ match it, the build refuses a mismatch.)
 The MSI ships no config files. Daemons self-create their config on first
 start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
 the Linux `/etc/rusty-photon` path). Exceptions: the config-gated six
-(above) never write one; the two cameras, `zwo-focuser`, and
-`phd2-guider` run on built-in defaults without writing a file until
+(above) never write one; the two cameras and `zwo-focuser` run on
+built-in defaults without writing a file until
 settings are saved on the service's setup page (`/setup`) or one is
 created by hand. To change settings:
 
@@ -268,12 +267,12 @@ cameras additionally need [ZWO's signed camera driver
 installer](https://www.zwoastro.com/downloads/); the EAF speaks inbox HID
 and needs no vendor driver.
 
-## plate-solver: ASTAP · phd2-guider: PHD2
+## plate-solver: ASTAP
 
-Both wrap external programs that are deliberately not bundled: install
-[ASTAP](https://www.hnsky.org/astap.htm) (plus a star database) and point
-`astap_binary_path` / `astap_db_directory` in `plate-solver.json` at it;
-install [PHD2](https://openphdguiding.org/) for phd2-guider.
+plate-solver wraps an external program that is deliberately not bundled:
+install [ASTAP](https://www.hnsky.org/astap.htm) (plus a star database)
+and point `astap_binary_path` / `astap_db_directory` in
+`plate-solver.json` at it.
 
 ## Removing
 

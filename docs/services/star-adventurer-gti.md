@@ -107,7 +107,8 @@ protocol could reuse the crate verbatim.
 
 The connection lifecycle — refcounted multi-client open/close, handshake,
 background poll task, request arbitration lock — lives in the workspace
-crate `rusty-photon-shared-transport` (`crates/rusty-photon-shared-transport/`).
+crate `rusty-photon-shared-transport`
+([its design doc](../crates/rusty-photon-shared-transport.md)).
 The service plugs into it via:
 
 * **`SkywatcherCodec`** (`src/codec.rs`) — implements
@@ -226,10 +227,11 @@ cannot be stopped is broken or is not the device the driver thinks it
 is, and neither is something to serve clients against.
 
 The two are distinguished in the error — "did not land on" versus "was
-not asserted … though the device answered" — because they mean different
-things to whoever reads the log at 3am: one says the link is gone, the
-other says the device is there and answering. That second message says
-no more than that. It does not name a cause, because the verdict does
+not asserted … and no request failed on the wire" — because they mean
+different things to whoever reads the log at 3am: one says the link is
+gone, the other, since this hook always sends its three commands, that
+the mount is there and answering. That second message says no more than
+that. It does not name a cause, because the verdict does
 not carry one: `safety_stop` logs the specific error per command as it
 sees it (`warn!` with the command and the error), and the summary line
 would only be guessing which of them it was. Advertising a mount whose
@@ -293,8 +295,10 @@ retries while the flags say to. The signal a failed command raises is
 what brings it back: a stop that failed on the wire fires it, the
 permit outlives the advertisement, and the supervisor's next turn round
 its loop attempts again and replays. A halt that never reached the wire
-at all — a hook that panicked — raises nothing, so that one waits for
-the next link failure or the next service start. Throughout, no client
+at all — a hook that panicked — raises no signal, but the guard that
+records its stop as owed also takes the transport out of service, and
+the supervisor, which wakes at every reconnect interval as well as on
+the signal, replays it at its next tick. Throughout, no client
 can command the mount, because the debt still stands. The mount is not
 left moving for that long either way: the hook runs on every last-client
 disconnect, whatever the bookkeeping still says is owed.

@@ -151,8 +151,14 @@ async fn poll_loop(
     let monitor_name = monitor.name().to_string();
     let mut detector = ChangeDetector::default();
     loop {
-        // Poll the monitor
-        let reading = monitor.poll().await;
+        // Poll the monitor; shutdown abandons a poll in flight
+        let reading = tokio::select! {
+            reading = monitor.poll() => reading,
+            () = cancel.cancelled() => {
+                tracing::debug!("Polling loop for '{}' cancelled mid-poll", monitor_name);
+                break;
+            }
+        };
         let now_ms = current_epoch_ms();
 
         let previous_poll = {
@@ -633,6 +639,55 @@ mod tests {
 
         assert_eq!(recorder.sent(), vec!["Roof Monitor is now Unsafe"]);
         assert_eq!(state.read().await.monitors[0].state, Unsafe);
+    }
+
+    /// A monitor whose poll never returns.
+    #[derive(Debug)]
+    struct SilentMonitor;
+
+    #[async_trait]
+    impl Monitor for SilentMonitor {
+        fn name(&self) -> &'static str {
+            NAME
+        }
+
+        async fn poll(&self) -> MonitorState {
+            std::future::pending().await
+        }
+
+        async fn connect(&self) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> crate::Result<()> {
+            Ok(())
+        }
+
+        fn polling_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_abandons_a_poll_in_flight() {
+        let state = new_state_handle(vec![(NAME.to_string(), Duration::from_secs(1))], 10);
+        let cancel = CancellationToken::new();
+        let polling = tokio::spawn(poll_loop(
+            Arc::new(SilentMonitor),
+            state,
+            vec![],
+            vec![],
+            Duration::from_secs(1),
+            cancel.clone(),
+        ));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        cancel.cancel();
+
+        tokio::time::timeout(Duration::from_secs(1), polling)
+            .await
+            .expect("the poll loop waited out its poll")
+            .unwrap();
     }
 
     #[tokio::test(start_paused = true)]

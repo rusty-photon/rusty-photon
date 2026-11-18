@@ -1,10 +1,12 @@
 # Native guider — options for guiding without PHD2
 
 **Date:** 2026-11-12
-**Parent design docs:** [`docs/workspace.md`](../workspace.md#project-tenets) (project tenets), [`docs/services/guider.md`](../services/guider.md), [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md), [`docs/services/rp.md`](../services/rp.md), [`docs/services/phd2-guider.md`](../services/phd2-guider.md), [`docs/plans/optical-trains.md`](optical-trains.md), [`docs/plans/daily-power-cycle.md`](daily-power-cycle.md)
+**Parent design docs:** [`docs/workspace.md`](../workspace.md#project-tenets) (project tenets), [`docs/services/guider.md`](../services/guider.md), [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md), [`docs/services/rp.md`](../services/rp.md), [`docs/services/phd2-guider.md`](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md), [`docs/plans/optical-trains.md`](optical-trains.md), [`docs/plans/daily-power-cycle.md`](daily-power-cycle.md)
 
 > **Status:** decided on 2026-11-12. Stage G0 is merged, stage G6 is
-> in progress, and no other stage has started. The owner read this study and settled its
+> in progress (its design, its BDD scenarios and its code are merged,
+> and its removal is the pull request that follows them), and no other
+> stage has started. The owner read this study and settled its
 > main questions: rusty-photon builds a native guider as a standalone
 > service that is an Alpaca client, and drops PHD2
 > ([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)).
@@ -16,13 +18,13 @@
 > 2026-11-13 in § Where the rigs stand, and with what the owner settled
 > on 2026-11-14: the acceptance in § 9, and that PHD2 leaves the tree
 > before the guider is built (§ Staging). What the study quotes from
-> `rp.md` is that document as it stood on 2026-11-12; stage G6 rewrites
-> its passages about the guider.
+> `rp.md` is that document as it stood on 2026-11-12; stage G6 has
+> rewritten its passages about the guider.
 
 ## Goal
 
 rusty-photon guides through PHD2, wrapped by
-[`phd2-guider`](../services/phd2-guider.md). PHD2 is a desktop
+[`phd2-guider`](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md). PHD2 is a desktop
 application, and most of what the wrapper, the packaging and the
 [daily power cycle plan](daily-power-cycle.md) carry for guiding exists
 to make a desktop application behave like an unattended service. This
@@ -114,7 +116,7 @@ screen.
    only while guiding; its rotator slot is read-only; and a full pause
    sent during a frame leaves PHD2 refusing every later capture until
    it is restarted
-   ([phd2-guider.md § Camera facade](../services/phd2-guider.md#camera-facade-camera)).
+   ([phd2-guider.md § Camera facade](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md#camera-facade-camera)).
 
 ### What rusty-photon carries because of them
 
@@ -124,7 +126,7 @@ in-file test modules excluded.
 | What the stack carries | The PHD2 fact behind it | State |
 |---|---|---|
 | The PHD2 client in `phd2-guider`: JSON-RPC, event parsing, process start and stop, reconnect. 3,128 lines in files that hold nothing else | PHD2 speaks its own protocol and is a separate program | Built |
-| The [Camera facade](../services/phd2-guider.md#camera-facade-camera): an Alpaca Camera that takes single frames through PHD2, with a capture slot and a sweep lease. 2,486 lines in its three files, 46 of the service's 85 BDD scenarios, a second port bound to loopback only | PHD2 holds the guide camera, so a focus sweep cannot use the vendor driver | Built. No gain, offset, binning or pulse guiding through it; it works only while PHD2 is stopped |
+| The [Camera facade](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md#camera-facade-camera): an Alpaca Camera that takes single frames through PHD2, with a capture slot and a sweep lease. 2,486 lines in its three files, 46 of the service's 85 BDD scenarios, a second port bound to loopback only | PHD2 holds the guide camera, so a focus sweep cannot use the vendor driver | Built. No gain, offset, binning or pulse guiding through it; it works only while PHD2 is stopped |
 | A mock PHD2 (939 lines) and 4,670 lines of integration tests against it | CI cannot run a desktop application | Built. The mock is the only PHD2 the tests see; its `save_image` reply once had a shape real PHD2 never sends, and the client that matched it passed CI |
 | Two ways to focus the guide camera: `rp`'s guide-train `auto_focus`, which reads HFD from PHD2's guide-step events and so needs an active guide loop, and focus-model's `focus_train` through the facade, which needs PHD2 stopped | HFD only while guiding; the camera is PHD2's | Built. Neither is validated on sky |
 | A desktop session with nobody logged on: on Linux a virtual display unit; on Windows a dedicated account whose session `phd2-guider` keeps alive through an RDP connection to the host itself; on macOS no unattended path ([decision 10](daily-power-cycle.md#decisions)) | No headless mode | Linux half in review at this study's date; Windows half designed, not built |
@@ -806,7 +808,7 @@ where this section and the design differ, the design holds.
 **Changes to the contract.** The contract in `crates/rp-guider` becomes
 the one [guider.md § HTTP API](../services/guider.md#http-api)
 specifies. Against the contract `phd2-guider` serves
-([phd2-guider.md § HTTP API](../services/phd2-guider.md#http-api)):
+([phd2-guider.md § HTTP API](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md#http-api)):
 
 | `phd2-guider`'s contract | The design's contract |
 |---|---|
@@ -889,8 +891,8 @@ is pier1 until G5 and rig2 until G7.
 
 G0 is merged: its record is § Where the rigs stand, and what it
 changes for the later stages follows the table. G6 is in progress:
-its design and its BDD scenarios are merged, and its code is the pull
-request that follows them. No other stage has started. No stage measures the guider
+its design, its BDD scenarios and its code are merged, and its removal
+is the pull request that follows them. No other stage has started. No stage measures the guider
 against PHD2, and no new work is started for PHD2 (decisions 6 and 12).
 
 The stages run in the order of the table. G6 comes right after G0, as
@@ -901,7 +903,7 @@ G7a is the stage decision 13 adds.
 | Gate | Work | Passes when | Status |
 |---|---|---|---|
 | **G0** | Record how each rig guides today, while PHD2 is still installed: its profile, how it reaches the mount, guide logs from each rig. The logs become the fixtures the guide-log writer is tested against | The "not recorded" items in § Where the rigs stand are closed: how PHD2 drives each mount, which the section records for both rigs | Merged 2026-11-14: [stage G0](https://github.com/rusty-photon/rusty-photon/pull/1780) |
-| **G6** | PHD2's pieces leave the tree, and `rp` speaks the native contract. `phd2-guider`, its facade, its mock, its packaging, `restart_guider` and the old contract types go. The types and the client of the contract [`guider.md`](../services/guider.md) designs take their place in `crates/rp-guider`, and `rp`'s guiding tools move to them, tested against a test double of that contract. No compatibility is kept with the old contract or its configuration. Four pull requests, in this order. **The design:** `rp.md`, `focus-model.md`, `session-runner.md`, `sentinel.md`, `guider.md` and [`daily-power-cycle.md`](daily-power-cycle.md) say what `rp` and its plugins do against the native guider, and mark it designed and not yet built where the code still speaks PHD2's contract. In `rp.md` that is § Guider Service with the check that the guider's devices are `rp`'s and the watch over a run, the train lease's camera-lease step, the capture through the guide camera, the motion gate's text about pulses, the rotate-while-guiding ladder and the end of `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `session-runner.md`, the night document's two rules for a lost star and for a run the guider stopped; in `sentinel.md`, the units the `phd2-guider` package ships for PHD2 and its display; in `guider.md`, the `UniqueID` the guider reports for each device; in `daily-power-cycle.md`, decision 10 and PHD2's restart in stages P2 and P4. **The BDD scenarios** of that design, against the double. **The code:** the contract's types and client in `crates/rp-guider`, the double in `bdd-infra`, and what the design changes in `rp`, in `focus-model`, in the night document and in the cards `ui-htmx`'s stream draws for `guide_stopped` and `guide_star_lost`. **The removal:** `services/phd2-guider` with its packaging and its entries in CI, in doctor's catalog and in sentinel, and with it `phd2-guider.md` and what the other living documents say of the removed pieces, the packaging guides, `doctor.md`, `README.md` and `workspace.md` among them | `rp`'s BDD green against the double, and nothing of PHD2 left in the tree to build or to package | In progress. The design merged 2026-11-14: [stage G6, the design](https://github.com/rusty-photon/rusty-photon/pull/1785). The BDD scenarios merged 2026-11-15: [stage G6, the scenarios](https://github.com/rusty-photon/rusty-photon/pull/1789). The code: `feature/native-guider-g6-code` |
+| **G6** | PHD2's pieces leave the tree, and `rp` speaks the native contract. `phd2-guider`, its facade, its mock, its packaging, `restart_guider` and the old contract types go. The types and the client of the contract [`guider.md`](../services/guider.md) designs take their place in `crates/rp-guider`, and `rp`'s guiding tools move to them, tested against a test double of that contract. No compatibility is kept with the old contract or its configuration. Four pull requests, in this order. **The design:** `rp.md`, `focus-model.md`, `session-runner.md`, `sentinel.md`, `guider.md` and [`daily-power-cycle.md`](daily-power-cycle.md) say what `rp` and its plugins do against the native guider, and mark it designed and not yet built where the code still speaks PHD2's contract. In `rp.md` that is § Guider Service with the check that the guider's devices are `rp`'s and the watch over a run, the train lease's camera-lease step, the capture through the guide camera, the motion gate's text about pulses, the rotate-while-guiding ladder and the end of `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `session-runner.md`, the night document's two rules for a lost star and for a run the guider stopped; in `sentinel.md`, the units the `phd2-guider` package ships for PHD2 and its display; in `guider.md`, the `UniqueID` the guider reports for each device; in `daily-power-cycle.md`, decision 10 and PHD2's restart in stages P2 and P4. **The BDD scenarios** of that design, against the double. **The code:** the contract's types and client in `crates/rp-guider`, the double in `bdd-infra`, and what the design changes in `rp`, in `focus-model`, in the night document and in the cards `ui-htmx`'s stream draws for `guide_stopped` and `guide_star_lost`. **The removal:** `services/phd2-guider` with its packaging and its entries in CI, in doctor's catalog and in sentinel, and with it `phd2-guider.md` and what the other living documents say of the removed pieces, the packaging guides, `doctor.md`, `README.md` and `workspace.md` among them | `rp`'s BDD green against the double, and nothing of PHD2 left in the tree to build or to package | In progress. The design merged 2026-11-14: [stage G6, the design](https://github.com/rusty-photon/rusty-photon/pull/1785). The BDD scenarios merged 2026-11-15: [stage G6, the scenarios](https://github.com/rusty-photon/rusty-photon/pull/1789). The code merged 2026-11-16: [stage G6, the code](https://github.com/rusty-photon/rusty-photon/pull/1795). The removal: `chore/native-guider-g6-removal` |
 | **G1** | Cadence spike, no guider: loop 2 s exposures through `qhy-camera` on each guide camera, full frame binned and subframe; time short pulses through the GTi driver; time the kernels on the Pi 5. Both guide cameras get a validation record under `qhy-camera` | Exposure end to pixels in the client well under the exposure length, sustained for an hour. If not, the driver overhead is fixed first | Not started |
 | **G2** | The kernels move to `rp-image-analysis`. `rp-guiding` and `guide-simulator`: multi-star measurement, step calibration, the two controllers, dither and settle | The loop converges and recovers across the simulator's mount and sky conditions in CI | Not started |
 | **G3** | Replay: record guide-camera frames on sky on pier1 through `qhy-camera`, the mount tracking and nothing guiding, and run the measurement over them | The measurement holds its guide stars through the recording, and the stars' offsets agree with one another frame by frame within a stated tolerance | Not started |
@@ -1179,7 +1181,7 @@ design);
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
 (the decision); [rp.md](../services/rp.md) § Tenets,
 § Component Categories, § Mount Motion Gate, § Guider Service, § Guide
-Focus Watch; [phd2-guider.md](../services/phd2-guider.md) § HTTP Service
+Focus Watch; [phd2-guider.md](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md) § HTTP Service
 Mode, § PHD2 under the service manager, § Camera facade;
 [star-adventurer-gti.md](../services/star-adventurer-gti.md)
 § PulseGuide lifecycle; [zwo-camera.md](../services/zwo-camera.md)

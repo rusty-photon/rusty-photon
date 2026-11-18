@@ -96,7 +96,7 @@ pub trait ConfigurableDriver {
     /// How this service's saved changes take effect. The default —
     /// [`SaveDisposition::Reload`] — matches the Alpaca drivers, which run
     /// under `ServiceRunner::run_with_reload`; services with no in-process
-    /// reload (rp, phd2-guider, ui-htmx) override to [`SaveDisposition::Restart`].
+    /// reload (rp, ui-htmx) override to [`SaveDisposition::Restart`].
     #[must_use]
     fn save_disposition() -> SaveDisposition {
         SaveDisposition::Reload

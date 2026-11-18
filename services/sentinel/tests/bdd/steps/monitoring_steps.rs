@@ -67,6 +67,19 @@ fn sentinel_configured_unreachable(world: &mut SentinelWorld) {
     }));
 }
 
+#[given("sentinel is configured to monitor a device that never answers")]
+async fn sentinel_configured_silent(world: &mut SentinelWorld) {
+    let port = world.start_silent_device().await;
+    world.sentinel_monitors.push(serde_json::json!({
+        "type": "alpaca_safety_monitor",
+        "name": "Silent Monitor",
+        "host": "127.0.0.1",
+        "port": port,
+        "device_number": 0,
+        "polling_interval": "1s"
+    }));
+}
+
 // --- When steps ---
 
 #[when("I wait for sentinel to poll")]
