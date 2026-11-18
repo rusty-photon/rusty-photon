@@ -1,12 +1,13 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Refcounted multi-client lifecycle scaffolding for duplex transports.
 //!
-//! This crate factors out the connect-handshake-share-teardown pattern that
-//! every ASCOM service in this workspace had grown independently
-//! (`qhy-focuser`, `ppba-driver`, `pa-falcon-rotator`,
-//! `star-adventurer-gti`). It dissolves three bug classes structurally:
-//! the `set_connected` lock-holding race, the refcount leak on
-//! partial-connect failure, and the polling-task teardown leak.
+//! Every serial and UDP Alpaca driver in this workspace talks to its
+//! device through this crate. It opens the conduit, shares it between the
+//! driver's ASCOM devices and its poll task, puts one exchange on the wire
+//! at a time, keeps the device stopped while no client is attached, and
+//! recovers a link that drops. What a driver supplies, and why each part
+//! is as it is, is in
+//! [the crate's design doc](../../../docs/crates/rusty-photon-shared-transport.md).
 //!
 //! # The shape
 //!

@@ -1,9 +1,6 @@
 //! Pegasus Scops OAG focuser device implementation.
 //!
-//! Implements the ASCOM Alpaca `Device` + `Focuser` traits. Connection state is
-//! the device's `Session<ScopsCodec>` slot — when it's `Some`, we hold a live
-//! handle to the shared transport; when it's `None`, we don't. The session
-//! existing **is** the "Connected" state.
+//! Implements the ASCOM Alpaca `Device` + `Focuser` traits.
 
 use std::sync::Arc;
 
@@ -35,8 +32,8 @@ macro_rules! ensure_connected {
 #[derive(derive_more::Debug)]
 pub struct ScopsFocuserDevice {
     config: FocuserConfig,
-    /// `Some` between successful connect and explicit disconnect. The session
-    /// existing is the truth — no second-source bool to desync.
+    /// `Some` from a successful connect to a disconnect: the slot is the
+    /// connected state, and no flag beside it can disagree.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<ScopsCodec>>>>,
     #[debug(skip)]
@@ -107,9 +104,6 @@ impl Device for ScopsFocuserDevice {
         reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // The write lock spans the whole check-and-modify so two concurrent
-        // `Connected=true` requests can't both observe `None` and both call
-        // `acquire()` (issue #250).
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {

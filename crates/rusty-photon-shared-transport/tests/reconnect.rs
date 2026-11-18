@@ -1,4 +1,4 @@
-//! Phase 0b: reconnect supervisor and connection-cell swap.
+//! The reconnect supervisor and the connection-cell swap.
 //!
 //! These tests verify the supervisor's transport-recovery contract:
 //!
@@ -6,21 +6,17 @@
 //!   against it, then atomically swaps it into the cell.
 //! - Live `Session<C>` references handed out by `acquire()` automatically
 //!   route through the new transport on their next `request()` call —
-//!   no client-visible Session recreation is needed (the
-//!   live-session-survival contract from the transport-lifecycle plan).
+//!   no client-visible Session recreation is needed.
 //! - `is_reconnecting()` flips false again once recovery succeeds; the
 //!   supervisor task is wired so external observers can poll the state.
 //! - `shutdown()` cancels the supervisor cleanly.
+//! - The no-client replay and the safety debt across reconnects
+//!   ([§ An attempt](../../../docs/crates/rusty-photon-shared-transport.md#an-attempt)).
 //!
-//! Notify-driven reconnect (`Connection::request` firing the signal on a
-//! real transport error) lands the moment a real service's mock factory
-//! exercises a mid-stream drop in Phases 1-5; this file pins the
-//! supervisor / cell / `reconnect_now` mechanics in isolation.
-//!
-//! What deliberately is **not** here yet (Phase 0b follow-up):
-//!
-//! - On-acquire eager reconnect (an `acquire()` mid-reconnect that
-//!   triggers a synchronous attempt with `reconnect_acquire_timeout`).
+//! The supervisor is woken as a driver's is: the echo transport's
+//! one-shot recv failure (`FactoryConfig::fail_recvs`) makes
+//! `Connection::request` raise the reconnect signal. `reconnect_now`
+//! runs an attempt at a moment the test chooses.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -111,10 +107,10 @@ async fn reconnect_now_opens_fresh_transport_and_runs_handshake() {
 
 #[tokio::test]
 async fn live_session_survives_reconnect_via_cell_swap() {
-    // The headline Phase 0b contract: a Session acquired before a
-    // reconnect transparently picks up the new transport on its next
-    // request, because the supervisor swaps the inner Arc<Connection>
-    // inside the cell that both SharedTransport and Sessions share.
+    // A Session acquired before a reconnect transparently picks up the
+    // new transport on its next request, because the supervisor swaps
+    // the inner Arc<Connection> inside the cell that both
+    // SharedTransport and Sessions share.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     let counting = CountingHooks::default();
@@ -395,8 +391,8 @@ async fn supervisor_periodic_ticker_recovers_after_failed_reconnect() {
 
     // Drive supervisor into Reconnecting via a failing reconnect_now.
     // attempt_reconnect runs again on each periodic tick; while
-    // `fail` is still set, those retries log the warn at line 347-352
-    // — let one tick land before recovery.
+    // `fail` is still set, those retries take the failure log path —
+    // let one tick land before recovery.
     cfg.set_fail(true);
     let _ = st.reconnect_now().await;
     assert!(st.is_reconnecting());
@@ -432,8 +428,8 @@ async fn transport_error_fires_notify_and_supervisor_recovers() {
     // calls signal_reconnect, the supervisor wakes from notified(),
     // flips the flags (signaled=true → reconnecting=true, available=false),
     // and runs a fresh attempt_reconnect that succeeds. Covers
-    // supervisor_loop's notify arm (lines 323-325) and the
-    // signaled-true flag-flip block (333-335).
+    // supervisor_loop's notify arm and the signaled-true flag-flip
+    // block.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     let counting = CountingHooks::default();
@@ -480,9 +476,9 @@ async fn transport_error_fires_notify_and_supervisor_recovers() {
 #[tokio::test]
 async fn reconnect_cancels_old_while_open_and_respawns_against_new_connection() {
     // attempt_reconnect's while_open lifecycle: an existing task is
-    // cancelled before the cell swap (lines 391-411) and a new task
-    // is spawned against the fresh connection afterwards (lines
-    // 430-436). Counted-spawn hooks make both halves observable.
+    // cancelled before the cell swap and a new task is spawned against
+    // the fresh connection afterwards. Counted-spawn hooks make both
+    // halves observable.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     let wo = CountingWhileOpenHooks::default();
@@ -543,7 +539,7 @@ async fn reconnect_now_before_start_returns_slot_empty_error() {
 
 #[tokio::test(start_paused = true)]
 async fn stubborn_while_open_is_aborted_during_reconnect() {
-    // attempt_reconnect's stubborn-task abort path (lines 404-409):
+    // attempt_reconnect's stubborn-task abort path:
     // a while_open task that ignores its cancellation token gets the
     // bounded 5s join timeout treatment and is abort()-ed so the new
     // connection isn't shadowed by a zombie task hammering the dead
@@ -791,13 +787,15 @@ async fn a_reconnect_with_no_client_re_asserts_the_last_disconnect_state() {
 
 #[tokio::test]
 async fn a_reconnect_whose_safety_stop_did_not_land_is_not_a_recovery() {
-    // The hook returns `()`, so a stop that failed on the wire is
-    // invisible in its result. Reporting the attempt as a success
-    // anyway clears `reconnecting` and sets `available`, and the very
-    // next client can then acquire and drive a mount that is still
-    // moving — the halt that was meant to stop it never reached the
-    // device. The attempt has to fail instead, leaving clients
-    // short-circuited until one whose stop lands.
+    // A best-effort hook swallows its request's error and still
+    // answers `Asserted`, so a stop that failed on the wire is
+    // invisible in its verdict; the connection's wire-failure count is
+    // what shows it. Reporting the attempt as a success anyway would
+    // clear `reconnecting` and set `available`, and the very next
+    // client could then acquire and drive a mount that is still moving
+    // — the halt that was meant to stop it never reached the device.
+    // The attempt has to fail instead, leaving clients short-circuited
+    // until one whose stop lands.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     // Invocation 1 is the cold start's; the reconnect's replay is 2,
@@ -905,10 +903,11 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
     // The refcount is a snapshot, so it cannot record that a halt was
     // missed. A 1→0 during a reconnect runs against a conduit that is
     // dead or closed and every command fails; if a client then acquires
-    // before the attempt reads the count, the replay is skipped, the
-    // attempt looks clean — the failures were on the *old* connection —
-    // and that client's first command reaches a mount that is still
-    // moving. The obligation has to outlive the refcount.
+    // before the attempt reads the count, a replay keyed on the count
+    // alone is skipped, the attempt looks clean — the failures were on
+    // the *old* connection — and that client's first command reaches a
+    // mount that is still moving. The obligation has to outlive the
+    // refcount.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     // Invocation 1 is the cold start's; the 1→0 below is 2, and that
@@ -1226,10 +1225,10 @@ async fn a_start_after_a_failed_lazy_cleanup_pays_the_debt_before_serving() {
 #[tokio::test]
 async fn a_hook_that_panics_mid_attempt_does_not_take_the_supervisor_with_it() {
     // The attempt awaits the service's own hooks. A panic inside one
-    // of their futures — not just in a closure that builds one — used
-    // to unwind the supervisor, which is the only task that retries:
-    // the transport was left saying a retry was coming with nothing
-    // left to make one.
+    // of their futures — not just in a closure that builds one — would
+    // unwind a supervisor that ran the attempt inline, and it is the
+    // only task that retries: the transport would be left saying a
+    // retry was coming with nothing left to make one.
     const INTERVAL: Duration = Duration::from_millis(50);
 
     let cfg = FactoryConfig::default();
@@ -1261,8 +1260,8 @@ async fn a_manual_reconnect_that_panics_does_not_strand_a_lazy_session() {
     // answers for it afterwards. A panic in a service's hook skips
     // that answer, and in `LazyAcquire` — no supervisor to clear the
     // flag, a live session holding the refcount off zero so no 0→1
-    // ever runs — every later request short-circuits on a retry nobody
-    // is going to make.
+    // ever runs — a flag the unwind left set would short-circuit every
+    // later request on a retry nobody is going to make.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
     // Call 1 is the lazy open below; call 2 is the reconnect's.
@@ -1295,11 +1294,11 @@ async fn a_manual_reconnect_that_panics_does_not_strand_a_lazy_session() {
 #[tokio::test]
 async fn a_handshake_that_tolerates_a_failed_probe_does_not_re_trigger_recovery() {
     // A handshake may treat a probe as optional and ignore its error.
-    // The request still fires the reconnect signal, and that permit
-    // outlives the handshake — so the supervisor spends it the moment
-    // the attempt reports success, putting the conduit it just
-    // recovered straight back into recovery, and again every cadence
-    // for as long as the probe keeps failing.
+    // The request still fires the reconnect signal, and left undrained
+    // that permit outlives the handshake — the supervisor would spend
+    // it the moment the attempt reports success, putting the conduit
+    // it just recovered straight back into recovery, and again every
+    // cadence for as long as the probe keeps failing.
     const INTERVAL: Duration = Duration::from_millis(20);
 
     let cfg = FactoryConfig::default();
@@ -1415,7 +1414,7 @@ async fn a_client_arriving_mid_attempt_does_not_cancel_the_no_client_replay() {
 async fn a_lazy_reconnect_pays_an_owed_stop_before_publishing() {
     // The no-client re-assert is a `ServiceLifetime` idea, but a debt
     // is not: it is recorded in both modes. Gating the whole replay on
-    // the mode meant a `LazyAcquire` reconnect published a fresh
+    // the mode would let a `LazyAcquire` reconnect publish a fresh
     // conduit with the stop still outstanding.
     //
     // A panicking cleanup is how that state is reached: the unwind
@@ -1458,8 +1457,9 @@ async fn a_lazy_reconnect_pays_an_owed_stop_before_publishing() {
 #[tokio::test]
 async fn a_refused_disconnect_stop_is_recovered_by_the_supervisor() {
     // The refusal must take the transport out of service *and* let it
-    // back in once a replay lands — otherwise this change trades a
-    // mount that might still be moving for a driver that is wedged.
+    // back in once a replay lands — otherwise honouring the refusal
+    // trades a mount that might still be moving for a driver that is
+    // wedged.
     //
     // It is also what makes the out-of-service state self-healing
     // rather than sticky: a refusal completes on the wire, so unlike a
@@ -1682,11 +1682,11 @@ async fn an_abandoned_teardown_does_not_leave_the_poll_task_running() {
 #[tokio::test]
 async fn a_manual_reconnect_that_unwinds_with_no_supervisor_clears_the_retry() {
     // `reconnecting` means "something is going to retry this", and a
-    // supervisor is that something. The returning path asks exactly
-    // that; the unwind path used to ask the mode instead, and the two
-    // disagree in one state — `ServiceLifetime` with no supervisor,
-    // where nothing would ever clear the flag and every later request
-    // short-circuits on a retry nobody is going to make.
+    // supervisor is that something. The returning path and the unwind
+    // path both ask exactly that; asking the mode instead disagrees in
+    // one state — `ServiceLifetime` with no supervisor, where nothing
+    // would ever clear the flag and every later request would
+    // short-circuit on a retry nobody is going to make.
     //
     // A `shutdown()` dropped inside its own hook is how that state is
     // reached with a conduit still in the slot: the supervisor is

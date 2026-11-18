@@ -1,8 +1,5 @@
 //! The Advanced 3's `ObservingConditions` device.
 //!
-//! Like the Switch device, this holds an `Option<Session<GeminiCodec>>` —
-//! the session existing is the canonical "Connected" state.
-//!
 //! `Temperature`, `Humidity` and `DewPoint` are the AHT20's three values
 //! from the frame the manager polls, each through the shared sliding-window
 //! mean in [`rusty_photon_rolling_stats`]. The manager feeds a window only
@@ -42,6 +39,8 @@ macro_rules! ensure_connected {
 #[derive(derive_more::Debug)]
 pub struct GeminiObservingConditionsDevice {
     config: ObservingConditionsConfig,
+    /// The connected state: `Some` from a successful connect to a
+    /// disconnect, with no flag beside it that could disagree.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<GeminiCodec>>>>,
     #[debug(skip)]

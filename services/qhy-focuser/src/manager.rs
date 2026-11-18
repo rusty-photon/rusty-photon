@@ -242,8 +242,8 @@ fn build_hooks(
             Box::pin(handshake(conn, cs, speed))
         }),
         on_last_disconnect: Box::new(|_| {
-            // Nothing to assert: this service holds no state that must
-            // survive a no-client gap, so the answer is trivially yes.
+            // Nothing to assert: no device state has to hold while no
+            // client is attached, so the answer is trivially yes.
             Box::pin(async { StateAssertion::Asserted })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -307,8 +307,8 @@ async fn handshake(
     state.firmware_version = Some(version.firmware_version);
     state.board_version = Some(version.board_version);
     apply_temperature(&mut state, temp, temp_read_at);
-    // Reset move state on every new session: a previous session may
-    // have disconnected mid-move, leaving the cache claiming
+    // Reset move state on every open: the cache outlives the conduit, so
+    // a reconnect after a link lost mid-move finds it claiming
     // `is_moving = true, target = Some(X)`. Without this reset, the
     // poll loop's apply_position would never clear the stale flag (the
     // device is likely no longer moving toward X, so position will
@@ -442,8 +442,7 @@ fn apply_temperature(state: &mut CachedState, temp: TemperatureResponse, read_at
 mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
     //! transport factory. Race / refcount / rollback invariants are
-    //! tested once for everyone in `rusty-photon-shared-transport` —
-    //! they don't get re-tested here per the migration plan.
+    //! tested once for everyone in `rusty-photon-shared-transport`.
 
     use super::*;
     use crate::mock::MockQhyTransportFactory;
@@ -1054,8 +1053,8 @@ mod tests {
             .expect_err("handshake failure should propagate out of acquire");
         // The send returned TransportError::Eof; that arrives at the
         // device layer as SessionError::Codec(QhyCodecError::Transport(
-        // TransportError::Eof)), which transport_to_focuser maps to
-        // QhyFocuserError::Communication("Connection closed").
+        // TransportError::Eof)), which `From<SessionError<QhyCodecError>>`
+        // maps to QhyFocuserError::Communication("Connection closed").
         let mapped = QhyFocuserError::from(err);
         assert!(
             matches!(mapped, QhyFocuserError::Communication(_)),

@@ -116,12 +116,11 @@ impl GeminiWorld {
     /// Start the gemini-powerbox-adv3-driver binary with extra environment variables on the
     /// child process.
     ///
-    /// Two facts about the simulated device cannot be reached through the
-    /// driver's own command set: the auto-dew mask (the driver never sends
-    /// `PD:`) and the overcurrent flags (nothing asks a healthy box to trip a
-    /// rail). The mock reads both from its environment, and scenarios run
-    /// concurrently in one test process, so the preset has to travel on the
-    /// spawned child rather than through `std::env::set_var`.
+    /// The state the driver cannot set — the firmware and identity replies,
+    /// the sensors, the dew modes at start, the faults — reaches the mock
+    /// through its environment, and scenarios run concurrently in one test
+    /// process, so the preset has to travel on the spawned child rather than
+    /// through `std::env::set_var`.
     pub async fn start_gemini_with_env(&mut self, envs: &[(&str, &str)]) {
         self.start_gemini_with(&[], envs).await;
     }

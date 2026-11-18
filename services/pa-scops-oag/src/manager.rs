@@ -246,8 +246,8 @@ fn build_hooks(
             Box::pin(handshake(conn, cs))
         }),
         on_last_disconnect: Box::new(|_| {
-            // Nothing to assert: this service holds no state that must
-            // survive a no-client gap, so the answer is trivially yes.
+            // Nothing to assert: no device state has to hold while no
+            // client is attached, so the answer is trivially yes.
             Box::pin(async { StateAssertion::Asserted })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -286,9 +286,9 @@ async fn handshake(
     );
 
     let mut state = cached_state.write().await;
-    // A previous session may have disconnected mid-move; the device's `A`
-    // report is authoritative for `is_moving`, so re-seed from it and drop any
-    // stale target.
+    // The cache outlives the conduit, so a reconnect after a link lost
+    // mid-move finds a stale target; the device's `A` report is
+    // authoritative for `is_moving`, so re-seed from it and drop the target.
     state.target_position = None;
     apply_status(&mut state, &status, read_at);
     state.firmware_version = Some(status.firmware_version);

@@ -32,18 +32,19 @@ use crate::BoxFuture;
 /// `write` lock to swap the inner `Arc<Connection<C>>` atomically;
 /// live `Session`s observe the new connection on their next
 /// `request()` call (which takes a cheap `read` lock to clone the
-/// current `Arc<Connection<C>>`). This is the indirection that makes
-/// the live-session-survival contract from the
-/// [transport-lifecycle plan][lifecycle-plan] possible.
-///
-/// [lifecycle-plan]: ../../../../docs/plans/archive/eager-hardware-validation.md
+/// current `Arc<Connection<C>>`). This indirection is what keeps a
+/// live session working across a reconnect
+/// ([§ Lifecycles](../../../docs/crates/rusty-photon-shared-transport.md#lifecycles)).
 pub(crate) type ConnectionCell<C> = Arc<RwLock<Arc<Connection<C>>>>;
 
 /// A live, refcounted handle to the shared transport.
 ///
-/// While at least one `Session` is alive the transport stays open and
-/// any [`Hooks::while_open`] task keeps running. Acquired exclusively
-/// through [`crate::SharedTransport::acquire`].
+/// In `LazyAcquire` the transport stays open, and any
+/// [`Hooks::while_open`] task keeps running, while at least one
+/// `Session` is alive; in `ServiceLifetime` it stays open from
+/// [`start`](crate::SharedTransport::start) to
+/// [`shutdown`](crate::SharedTransport::shutdown), whatever the sessions
+/// do. Acquired exclusively through [`crate::SharedTransport::acquire`].
 #[derive(Debug)]
 #[debug("Session {{ closed: {}, .. }}", transport.is_none())]
 pub struct Session<C: Codec> {
@@ -75,7 +76,11 @@ impl<C: Codec> Session<C> {
     ///
     /// Returns the [`Connection::request`] failures unchanged: a
     /// wire-level transport error, a codec decode failure, or an
-    /// exhausted skip budget.
+    /// exhausted skip budget. Before any I/O it refuses with
+    /// [`TransportError::Reconnecting`] while the transport is
+    /// reconnecting or a stop is owed to the device, and with an I/O
+    /// error once the transport is shut down or closed
+    /// ([§ The request gate](../../../docs/crates/rusty-photon-shared-transport.md#the-request-gate)).
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
         self.request_timed(cmd).await.map(|(resp, _)| resp)
     }
@@ -110,20 +115,20 @@ impl<C: Codec> Session<C> {
             }
             // And the fact the flag above only *publishes*. A 1→0
             // cleanup whose stop did not land records the debt and
-            // then clears the flags, while a reconnect publishing a
-            // success writes them the other way with no lock between
-            // them — `shutdown` waits on the supervisor holding
-            // `acquire_lock`, so the publish cannot take it. The two
-            // converge, but a request arriving mid-race would read
-            // flags that say healthy while a stop is still owed, and
-            // command a device that may never have halted.
+            // then takes the transport out of service, while a
+            // reconnect publishing a success writes the flags the other
+            // way with no lock between them — `shutdown` waits on the
+            // supervisor holding `acquire_lock`, so the publish cannot
+            // take it. The two converge, but a request arriving
+            // mid-race would read flags that say healthy while a stop
+            // is still owed, and command a device that may never have
+            // halted.
             //
             // Reading the debt here needs no such ordering to be
             // correct: it is the condition itself, not a publication
-            // of it. Two relaxed-cost atomic loads per request buys an
-            // invariant that does not depend on who wrote last.
-            // `Reconnecting` is the honest answer — the replay that
-            // discharges it is exactly what the caller is waiting for.
+            // of it. `Reconnecting` is the honest answer — the replay
+            // that discharges it is exactly what the caller is waiting
+            // for.
             if transport.safety_debt_outstanding() {
                 return Err(SessionError::Transport(TransportError::Reconnecting));
             }
@@ -155,28 +160,17 @@ impl<C: Codec> Session<C> {
         }
         let connection = cell.read().await.clone();
 
-        // Re-read after taking the conduit, which closes one specific
-        // hole rather than making this a barrier — worth being exact
-        // about, because the safety replay's argument leans on it.
-        //
-        // What it stops: the checks above ran before this `await`, so a
-        // reconnect could have started and published in between, and
-        // the clone would then be the *replacement* — a request let
-        // through before the transition reaching the conduit that
-        // transition created. That is the case the replay has to
-        // exclude, since it asserts the mount's state on that very
-        // conduit.
-        //
-        // What it does not stop: a transition beginning after this
-        // line. Then the clone is the conduit that was current, and a
-        // request that wins its command lock ahead of the close does
-        // go out on it. That is a command on the way *into* a teardown
-        // or a reconnect, not one after the safety state was asserted:
-        // the conduit it used is closed immediately after, and a
-        // reconnect's replay then re-asserts the stop on the
-        // replacement. Making even that impossible would mean holding
-        // a gate across every request, which is the lock
-        // `attempt_reconnect` deliberately cannot take.
+        // Re-read after taking the conduit. The checks above ran
+        // before this `await`, so a reconnect could have published in
+        // between, and the clone would then be the *replacement*: a
+        // request let through before the transition reaching the
+        // conduit the replay asserts the stop on. A transition that
+        // begins after this line can still let the request out on the
+        // conduit it is closing — a command on the way *into* the
+        // teardown, followed by the replay on the replacement. Closing
+        // that too would need a gate held across every request, the
+        // lock `attempt_reconnect` cannot take
+        // (docs/crates/rusty-photon-shared-transport.md § The request gate).
         if let Some(transport) = self.transport.as_ref() {
             if transport.is_reconnecting() {
                 return Err(SessionError::Transport(TransportError::Reconnecting));
@@ -195,10 +189,11 @@ impl<C: Codec> Session<C> {
 
     /// Primary teardown path.
     ///
-    /// On the last live session, awaits while-open cancellation, runs
-    /// [`Hooks::teardown`], closes the transport — all inline. Callers
-    /// see today's observable behaviour: rollback is complete before
-    /// this future resolves.
+    /// On the last live session, runs the 1→0 cleanup inline, complete
+    /// before this future resolves: in `ServiceLifetime`
+    /// [`Hooks::on_last_disconnect`] alone, the port staying open; in
+    /// `LazyAcquire` the while-open cancellation, the hook and the close
+    /// of the transport.
     ///
     /// On a non-last session, decrements the refcount and returns
     /// `Ok(())` immediately.
@@ -222,8 +217,8 @@ impl<C: Codec> Session<C> {
             )));
         };
         // Drop our cell clone before the cleanup runs so the slot is
-        // the only remaining cell-holder when run_cleanup runs (in
-        // LazyAcquire mode).
+        // the only remaining cell-holder when it does (in LazyAcquire
+        // mode).
         self.cell.take();
         transport.release_inline().await
     }
@@ -233,11 +228,13 @@ impl<C: Codec> Drop for Session<C> {
     /// Detached cleanup safety net.
     ///
     /// If [`Session::close`] hasn't already consumed `transport`, this
-    /// decrements the refcount and — if we're the last out — spawns
-    /// the cleanup body on the current tokio runtime. The spawn is
-    /// fire-and-forget; if no runtime is available or the runtime is
-    /// shutting down, teardown commands may not run. See the design
-    /// plan for the explicit-close-is-primary rationale.
+    /// spawns the release on the current tokio runtime: the refcount
+    /// decrement and, if we're the last out, the cleanup body. The spawn
+    /// is fire-and-forget, so neither need have happened when the drop
+    /// returns; with no runtime neither happens at all, with a warning,
+    /// and a runtime shutting down may never run it. Hence a disconnect
+    /// closes its session rather than dropping it
+    /// ([§ The device side](../../../docs/crates/rusty-photon-shared-transport.md#the-device-side)).
     fn drop(&mut self) {
         if let Some(transport) = self.transport.take() {
             self.cell.take();
@@ -374,46 +371,36 @@ pub type ShutdownFn<C> = Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, 
 /// Closure type for the [`Hooks::while_open`] hook.
 pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + Send + Sync>;
 
-/// Service-specific plug for the four lifecycle phases.
+/// Service-specific plug for the four lifecycle phases, whose design is
+/// in [§ Hooks](../../../docs/crates/rusty-photon-shared-transport.md#hooks).
 ///
-/// * `handshake` runs on every transition into the `Open` state — the
-///   `LazyAcquire`-mode 0→1 `acquire()` call, the `ServiceLifetime`-mode
-///   [`crate::SharedTransport::start`] call, and (in Phase 0b) every
-///   successful reconnect. Runs **before** any [`Session`] escapes. On
-///   error: rollback (count→0, available→false, transport dropped),
-///   error propagated to the caller.
-/// * `on_last_disconnect` runs on every refcount 1→0 transition, and
-///   on every cold [`crate::SharedTransport::start`] before the
-///   conduit it opened is published — a start is a no-client state
-///   too, and the only one in which the device may be acting on
-///   instructions from a lifecycle this process has no memory of.
+/// * `handshake` runs on every open, **before** any [`Session`] can
+///   reach the conduit: the `LazyAcquire`-mode 0→1 `acquire()` call, a
+///   cold [`crate::SharedTransport::start`], and every reconnect
+///   attempt — not on a `ServiceLifetime`-mode `acquire()`, which is a
+///   refcount bump. On error the open fails with nothing published:
+///   `acquire()` and `start()` return the error, and a reconnect
+///   attempt fails.
+/// * `on_last_disconnect` asserts the no-client state. It runs on every
+///   refcount 1→0 transition; on every cold
+///   [`crate::SharedTransport::start`] before the conduit it opened is
+///   published, since a start is a no-client state too, and the only
+///   one in which the device may be acting on instructions from a
+///   lifecycle this process has no memory of; on a fresh conduit while
+///   an earlier invocation's stop is owed, **even with a client
+///   attached**, since the debt outlives the refcount that incurred it;
+///   and, in `ServiceLifetime` mode, on a reconnect's replacement when
+///   the attempt began with no client attached
+///   ([§ The no-client state](../../../docs/crates/rusty-photon-shared-transport.md#the-no-client-state)).
+///   On a 1→0 in `LazyAcquire` mode it fires after `while_open` is
+///   cancelled and before transport teardown; in `ServiceLifetime`
+///   mode with `while_open` running and the port staying open.
+///
 ///   Per-service **stop-class** commands only: halt an axis, stop
 ///   tracking, abort an exposure. Not a park slew, not a cover or
 ///   lamp, not a power or dew toggle — tenet 3 names those as
-///   actuation, and this hook reaches the wire on a reconnect path
-///   where only stopping is permitted.
-///   In `LazyAcquire` mode, fires once after `while_open`
-///   is cancelled and before transport teardown. In `ServiceLifetime`
-///   mode, fires on the cold `start()` and then on every 1→0 with the
-///   port staying open — may run many
-///   times during a service's lifetime, and once more at the end of a
-///   successful reconnect — whenever the refcount is still zero, and
-///   also whenever an earlier invocation's commands did not reach the
-///   device, in which case the replay runs **even with a client
-///   attached**, since the debt outlives the refcount that incurred
-///   it. That replay is the one invocation whose outcome is not
-///   ignored: a command that fails on the wire there fails the
-///   reconnect, so a stop that did not land is never reported as a
-///   recovered transport — and a `NotAsserted` verdict fails it the
-///   same way, which is what covers the refusal the wire counter
-///   cannot see. That last one
-///   is why the hook must stay **stop-class**: a 1→0 landing during a
-///   reconnect runs against a connection that is dead or already
-///   closed, so every command fails and nothing else replays it, and
-///   re-asserting it on the replacement is what keeps a mount that was
-///   moving when its link dropped from staying that way. Tenet 3
-///   permits halting on a reconnect path and nothing else, so a hook
-///   that actuates does not belong here.
+///   actuation, and this hook reaches the wire on start and reconnect
+///   paths, where only stopping is permitted.
 ///
 ///   **The hook returns a verdict.** [`StateAssertion`] answers one
 ///   question — does the state this hook asserts now hold on the
@@ -431,8 +418,9 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   `tracing::warn!` on the request `Result`), never propagated. It
 ///   does not fail [`Session::close`], and it does not stop the rest
 ///   of the cleanup. What changes with the verdict is only what the
-///   *runtime* concludes afterwards — see the per-mode paragraph
-///   below.
+///   *runtime* concludes afterwards: a stop that did not land is owed
+///   to the next conduit
+///   ([§ The safety debt](../../../docs/crates/rusty-photon-shared-transport.md#the-safety-debt)).
 ///
 ///   A **panic** is not covered by that, and the difference matters to
 ///   whoever writes the hook. The cleanup awaits it inline, so an
@@ -457,16 +445,18 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   to refresh the cache via its own handshake call on the new
 ///   connection).
 /// * `shutdown` runs exactly once per `start()`/`shutdown()` cycle, from
-///   [`crate::SharedTransport::shutdown`] in the service's SIGTERM handler.
-///   Final cleanup before the port closes. Only meaningful in
-///   `ServiceLifetime` mode; never fires in `LazyAcquire` mode.
-/// * `while_open` (optional) spawns after `handshake` succeeds and runs
-///   for as long as the transport is `Open`. Cancelled (with a bounded
-///   5-second join, then abort — and aborted outright if the teardown
-///   doing that is itself abandoned) before `on_last_disconnect` runs
-///   in `LazyAcquire` mode, and before `shutdown` runs in
-///   `ServiceLifetime` mode. In Phase 0b, also cancelled and respawned
-///   across reconnects.
+///   [`crate::SharedTransport::shutdown`], with the supervisor joined
+///   and `while_open` cancelled. Final cleanup before the port closes.
+///   Only meaningful in `ServiceLifetime` mode; never fires in
+///   `LazyAcquire` mode.
+/// * `while_open` (optional) spawns once the conduit it polls is
+///   published and runs for as long as the transport is open.
+///   Cancelled (with a bounded 5-second join, then abort — and aborted
+///   outright if the teardown doing that is itself abandoned) before
+///   that conduit closes: before `on_last_disconnect` runs in
+///   `LazyAcquire` mode, before `shutdown` runs in `ServiceLifetime`
+///   mode, and at each reconnect attempt, which spawns it again on the
+///   replacement.
 ///
 ///   **Liveness is the hook's own, not the transport's.** The task is
 ///   spawned and its handle parked in lifecycle state until a teardown
@@ -484,9 +474,9 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   would close and re-open the port — which does not fix a hook that
 ///   panics, since the respawned task panics the same way, and turns a
 ///   deterministic hook bug into an endless cycle of port teardowns.
-///   On Windows that cycle is the `Access is denied` this crate exists
-///   to avoid. A stale cache is the lesser failure, and it is one the
-///   service can see and the transport cannot.
+///   On Windows that cycle meets the `Access is denied` of a port
+///   re-opened too soon. A stale cache is the lesser failure, and it
+///   is one the service can see and the transport cannot.
 pub struct Hooks<C: Codec> {
     pub handshake: HandshakeFn<C>,
     pub on_last_disconnect: OnLastDisconnectFn<C>,

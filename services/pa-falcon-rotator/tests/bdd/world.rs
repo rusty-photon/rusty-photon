@@ -36,9 +36,9 @@ use rusty_photon_shared_transport::TransportFactory;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
-// Several `*_result` fields below are still wired up by Phase 3e step bodies
-// (status switch) — they live here so the struct's shape is stable across the
-// remaining sub-phases.
+// No step uses `step_size_result`, `can_reverse_result`, `name_result`,
+// `unique_id_result` or `interface_version_result`: the metadata steps
+// assert on the value they read.
 #[allow(dead_code)]
 #[derive(Debug, Default, World)]
 pub struct FalconRotatorWorld {
@@ -209,18 +209,17 @@ impl FalconRotatorWorld {
         let local_addr = bound.listen_addr();
 
         let server_handle = tokio::spawn(async move {
-            // BoundServer::start returns `Result<(), Box<dyn Error>>`; the
-            // error type is `!Send` so we collapse it to `()` here before
-            // letting the spawn machinery see the output. The shutdown
-            // future never resolves; the test tears the task down by
-            // aborting the JoinHandle in `World::shutdown`.
+            // The world holds a `JoinHandle<()>`, so the serve result is
+            // collapsed to `()` here. The shutdown future never resolves;
+            // the test tears the task down by aborting the JoinHandle in
+            // `World::shutdown`.
             if bound.start(std::future::pending::<()>()).await.is_err() {
                 // tear-down on shutdown is normal; nothing to log.
             }
         });
 
         // Park the spawned task on `self` immediately so a panic inside
-        // `acquire_devices` (it currently `panic!`s after a 5s timeout) does
+        // `acquire_devices` (it `panic!`s after a 5 s timeout) does
         // not drop the `JoinHandle` and detach the in-process server. The
         // cucumber `after` hook calls `World::shutdown`, which aborts the
         // handle — but only if it's visible on the world.

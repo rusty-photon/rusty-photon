@@ -3,8 +3,7 @@
 //! Implements the ASCOM Alpaca `Device` + `Switch` traits. Connection
 //! state is the device's `Session<PpbaCodec>` slot — when it's `Some`,
 //! we hold a live handle to the shared transport; when it's `None`,
-//! we don't. The "requested" bool that previously diverged from the
-//! transport's refcount is gone by construction.
+//! we don't. No flag beside the slot can disagree with it.
 
 use std::sync::Arc;
 
@@ -38,8 +37,7 @@ macro_rules! ensure_connected {
 #[derive(derive_more::Debug)]
 pub struct PpbaSwitchDevice {
     config: SwitchConfig,
-    /// `Some` between successful connect and explicit disconnect. The
-    /// session existing is the truth — no second-source bool to desync.
+    /// `Some` between a successful connect and a disconnect.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<PpbaCodec>>>>,
     #[debug(skip)]
@@ -197,8 +195,7 @@ impl PpbaSwitchDevice {
         };
 
         self.manager.send_command(session, command).await?;
-        // Refresh status so the cached view reflects the new device state
-        // (matches the legacy driver's post-set refresh).
+        // Refresh status so the cached view reflects the new device state.
         self.manager.refresh_status(session).await?;
         drop(guard);
         Ok(())
@@ -228,11 +225,6 @@ impl Device for PpbaSwitchDevice {
         reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // The write lock spans the whole check-and-modify so two concurrent
-        // `Connected=true` requests can't both observe `None` and both
-        // call `acquire()` (issue #251). With the session slot replacing
-        // the old `requested` bool, the flag and the resource are the same
-        // value — there is no second source to desync.
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {

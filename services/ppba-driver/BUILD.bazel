@@ -201,9 +201,9 @@ rust_binary(
     crate_features = ["mock"],
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    # See note on the non-mock `ppba-driver` target above; the mock binary is
-    # the one that triggered the original i18n lookup mismatch in CI because
-    # rules_rust used `ppba-driver_mock` as CARGO_PKG_NAME.
+    # See the note on the non-mock `ppba-driver` target above; without the
+    # pin rules_rust names this binary's package `ppba-driver_mock`, and the
+    # `.ftl` lookup misses `i18n/{lang}/ppba-driver.ftl`.
     rustc_env = {"CARGO_PKG_NAME": "ppba-driver"},
     deps = [":ppba-driver_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )

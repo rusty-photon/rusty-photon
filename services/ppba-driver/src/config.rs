@@ -226,7 +226,8 @@ impl Default for ObservingConditionsConfig {
     }
 }
 
-/// Legacy `DeviceConfig` for backward compatibility during migration
+/// A device's name, `UniqueID` and description. No section of [`Config`]
+/// has this shape, and nothing in the workspace reads or writes it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceConfig {

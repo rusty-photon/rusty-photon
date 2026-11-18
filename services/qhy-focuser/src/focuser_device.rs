@@ -1,12 +1,6 @@
 //! QHY Q-Focuser device implementation.
 //!
-//! Implements the ASCOM Alpaca `Device` + `Focuser` traits. Connection
-//! state is the device's `Session<QhyCodec>` slot — when it's `Some`,
-//! we hold a live handle to the shared transport; when it's `None`,
-//! we don't. The "requested" bool that previously diverged from the
-//! transport's refcount is gone by construction (closes #250 for
-//! qhy-focuser structurally and removes the rollback bookkeeping from
-//! #258 since the shared-transport core owns it).
+//! Implements the ASCOM Alpaca `Device` + `Focuser` traits.
 
 use std::sync::Arc;
 
@@ -38,8 +32,8 @@ macro_rules! ensure_connected {
 #[derive(derive_more::Debug)]
 pub struct QhyFocuserDevice {
     config: FocuserConfig,
-    /// `Some` between successful connect and explicit disconnect. The
-    /// session existing is the truth — no second-source bool to desync.
+    /// `Some` from a successful connect to a disconnect: the slot is the
+    /// connected state, and no flag beside it can disagree.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<QhyCodec>>>>,
     #[debug(skip)]
@@ -110,11 +104,6 @@ impl Device for QhyFocuserDevice {
         reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // The write lock spans the whole check-and-modify so two concurrent
-        // `Connected=true` requests can't both observe `None` and both call
-        // `acquire()` (issue #250). With the session slot replacing the old
-        // `requested_connection` bool, the flag and the resource are the
-        // same value — there is no second source to desync.
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
@@ -196,8 +185,7 @@ impl Focuser for QhyFocuserDevice {
         ensure_connected!(self);
 
         // Actively refresh position so move-completion is observable
-        // without waiting up to one polling interval. Mirrors the legacy
-        // is_moving path.
+        // without waiting up to one polling interval.
         let cached = self.manager.get_cached_state().await;
         if cached.is_moving {
             self.with_session(async |session| self.manager.refresh_position(session).await)

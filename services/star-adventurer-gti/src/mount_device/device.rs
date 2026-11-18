@@ -42,12 +42,6 @@ impl Device for MountDevice {
         reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Holding the session write lock for the entire check-and-modify
-        // ensures two concurrent `Connected=true` requests can't both
-        // observe `None` and both call `acquire()`. The session slot is
-        // both the connected flag and the resource — there is no second
-        // source to desync from the shared transport's refcount.
-        //
         // A disconnect first takes both axes from any guide pulse, under
         // `axis_ownership` and before the session slot — the lock order
         // every axis user follows — so a pulse's restore either lands

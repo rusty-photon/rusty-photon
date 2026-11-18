@@ -1,7 +1,8 @@
 //! UPBv2 `ObservingConditions` device implementation.
 //!
-//! Like the Switch device, this holds an `Option<Session<Upbv2Codec>>` —
-//! the session existing is the canonical "Connected" state.
+//! Like the Switch device, it keeps its connection state in one
+//! `Option<Session<Upbv2Codec>>` slot, with no flag beside it that could
+//! disagree.
 //!
 //! The three sensors (temperature, humidity, dewpoint) all come from the one
 //! `PA` frame the manager polls, and are served through the shared
@@ -113,7 +114,7 @@ impl Device for Upbv2ObservingConditionsDevice {
                 if let Some(session) = slot.take() {
                     // `Session::close` returns Result<_, TransportError>;
                     // `From<TransportError> for Upbv2Error` handles the
-                    // conversion, and the existing `From<Upbv2Error> for
+                    // conversion, and the `From<Upbv2Error> for
                     // ASCOMError` does the second hop on `?`.
                     session.close().await.map_err(Upbv2Error::from)?;
                 }
@@ -442,10 +443,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_real_ten_second_average_does_not_read_back_as_zero() {
-        // Ten seconds was once the window that stood in for "no averaging",
-        // and the read-back inferred the period from the window — so asking
-        // for a genuine ten-second average got 0 hours back, which means the
-        // opposite. The period is now recorded as set.
+        // Ten seconds is shorter than the instantaneous window (15 s at the
+        // default 5 s poll interval), so it is served with that window. A
+        // read-back inferred from the window could not tell it from "not
+        // averaging" and would answer 0 hours, the opposite of what was
+        // asked; the period is read back as set.
         let device = connected_device().await;
         let ten_seconds_in_hours = 10.0 / 3600.0;
         device
@@ -581,8 +583,4 @@ mod tests {
         let response = device.setup_request(get_request()).await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
-
-    // Upbv2Error → ASCOMError mapping tests moved to error.rs once the
-    // canonical mapping landed there (centralised so both devices share
-    // the same classification).
 }

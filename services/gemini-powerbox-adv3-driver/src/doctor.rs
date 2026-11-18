@@ -1,7 +1,7 @@
 //! The `doctor` subcommand: read-only diagnosis of this service's own config
 //! through the same typed load path a start would use.
 //!
-//! The contract is docs/services/doctor.md §Per-service doctors': no server
+//! The contract is docs/services/doctor.md §Per-service doctors: no server
 //! starts, nothing is written, and the exit code is the shared one (0 = no
 //! failures, 1 = at least one, 2 = the run itself broke).
 

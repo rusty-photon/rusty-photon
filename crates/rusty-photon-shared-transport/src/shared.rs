@@ -1,36 +1,38 @@
 //! Core lifecycle: refcounted multi-client sharing of one duplex transport.
 //!
 //! [`SharedTransport`] owns the open-state lock, the refcount, the slot
-//! holding the current [`Connection`], and the optional while-open
-//! task's join handle + cancellation token. All transitions go through
-//! [`SharedTransport::acquire`] (0→1+ and reuse) and the internal
+//! holding the current [`Connection`], the while-open task, the
+//! reconnect supervisor and the safety debt. Clients come in through
+//! [`SharedTransport::acquire`] and leave through the internal
 //! `release_inline` / `release_detached` paths called by
-//! [`Session::close`] and `Session::drop`.
+//! [`Session::close`] and `Session::drop`; [`SharedTransport::start`]
+//! and [`SharedTransport::shutdown`] bound a service's lifetime.
 //!
-//! Two lifecycle modes coexist (see the
-//! [`eager-hardware-validation`][lifecycle-plan] plan for the rationale):
+//! Two lifecycle modes coexist
+//! ([§ Lifecycles](../../../docs/crates/rusty-photon-shared-transport.md#lifecycles)):
 //!
-//! - **`LazyAcquire`** (default, unchanged from pre-Phase-0a): the port
-//!   opens on the 0→1 `acquire()` and closes on the 1→0 `Session::close()`.
-//!   `Hooks::on_last_disconnect` runs on 1→0; `Hooks::shutdown` is never
-//!   invoked. Services that don't call [`SharedTransport::start`] get
-//!   this behaviour.
-//! - **`ServiceLifetime`** (opt-in via [`SharedTransport::start`]): the
-//!   port opens at `start()` and stays open until [`SharedTransport::shutdown`]
-//!   is called. `acquire()` becomes a fast refcount-bump.
-//!   `Hooks::on_last_disconnect` runs on every 1→0 and the port stays
-//!   open, and once more on the cold `start()` itself — nothing is
-//!   attached there either, and the device on the other end remembers
-//!   a previous lifecycle this one cannot. `Hooks::shutdown` runs once
-//!   on `shutdown()` before the port actually closes.
+//! - **`LazyAcquire`** (the default, what a transport gets when nothing
+//!   calls [`SharedTransport::start`], as in a driver's unit tests): the
+//!   port opens on the 0→1 `acquire()` and closes on the 1→0 release.
+//!   `Hooks::on_last_disconnect` runs on 1→0; `Hooks::shutdown` never
+//!   runs.
+//! - **`ServiceLifetime`** (opt-in via [`SharedTransport::start`], and
+//!   what every driver runs): the port opens at `start()` and stays open
+//!   until [`SharedTransport::shutdown`] is called. `acquire()` is a
+//!   refcount bump. `Hooks::on_last_disconnect` runs on every 1→0 and
+//!   the port stays open, and once more on the cold `start()` itself —
+//!   nothing is attached there either, and the device on the other end
+//!   remembers a previous lifecycle this one cannot. `Hooks::shutdown`
+//!   runs once on `shutdown()` before the port closes.
 //!
-//! The mode is a single [`AtomicBool`] flipped exclusively by `start()`
-//! and `shutdown()`; all branches that need to discriminate read it
-//! once under the [`acquire_lock`](SharedTransport::acquire_lock) so the
-//! observation is consistent for the duration of one lifecycle
-//! transition.
+//! The mode is a single [`AtomicBool`], set only by `start()` and never
+//! cleared. `start`, `shutdown`, `acquire` and the last release read it
+//! under [`acquire_lock`](SharedTransport::acquire_lock), which spans
+//! the whole 0→1 and the whole 1→0, so one transition sees one mode.
+//! The reconnect attempt cannot take that lock — `shutdown()` holds it
+//! while joining the supervisor that runs the attempt — and reads the
+//! mode once, at its replay decision.
 //!
-//! [lifecycle-plan]: ../../../../docs/plans/archive/eager-hardware-validation.md
 //! [`Session::close`]: crate::Session::close
 
 use std::io;
@@ -40,9 +42,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify, RwLock};
-// `tokio`'s Instant, not `std`'s, so the floor below honours paused time
-// in tests the same way the sleeps around it do.
 use tokio::task::JoinHandle;
+// `tokio`'s Instant, not `std`'s, so the cadence floor honours paused
+// time in tests the same way the sleeps around it do.
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -53,11 +55,13 @@ use crate::error::{SessionError, TransportError};
 use crate::session::{ConnectionCell, Hooks, Session, StateAssertion, WhileOpen};
 use crate::transport::TransportFactory;
 
-/// Bounded join timeout for the while-open task at teardown.
+/// Bounded join timeout for the while-open task, and for the reconnect
+/// supervisor, at teardown.
 ///
 /// If the task ignores cancellation it gets `abort()`-ed and teardown
-/// proceeds. The request-arbitration lock the task may have been holding
-/// is released by the abort (its connection clone drops).
+/// proceeds. The abort does not cut short an exchange the task started:
+/// that runs on a task of its own and holds the command lock until its
+/// reply or its I/O timeout.
 const WHILE_OPEN_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Smallest cadence the reconnect supervisor will honour.
@@ -273,9 +277,14 @@ impl Drop for ManualReconnectGuard<'_> {
 ///
 /// Constructed once at service startup and shared across all device
 /// types that need the same wire. Every device calls
-/// [`SharedTransport::acquire`] to get a [`Session`]; the 0→1 transition
-/// runs [`Hooks::handshake`] and spawns [`Hooks::while_open`]; the 1→0
-/// transition cancels the while-open task and runs [`Hooks::teardown`].
+/// [`SharedTransport::acquire`] to get a [`Session`]. In
+/// `ServiceLifetime`, which every driver runs, [`start`](Self::start)
+/// opens the conduit, runs [`Hooks::handshake`] and spawns
+/// [`Hooks::while_open`], [`shutdown`](Self::shutdown) runs
+/// [`Hooks::shutdown`] and closes it, and the 1→0 runs only
+/// [`Hooks::on_last_disconnect`]. In `LazyAcquire` the 0→1 opens, and
+/// the 1→0 cancels the while-open task, runs
+/// [`Hooks::on_last_disconnect`] and closes.
 pub struct SharedTransport<C: Codec> {
     factory: Arc<dyn TransportFactory>,
     codec: C,
@@ -289,36 +298,39 @@ pub struct SharedTransport<C: Codec> {
     /// [`Session::close`]: crate::Session::close
     /// [`Session::drop`]: crate::Session
     count: AtomicU32,
-    /// `true` between handshake-success and teardown-start. Distinct from
-    /// `count > 0` because a connect-in-flight has `count == 1` but
-    /// `available == false`, and a teardown-in-flight has `count == 0` but
-    /// the underlying transport hasn't closed yet.
+    /// `true` while the transport serves: from the publish of a conduit
+    /// to the start of a teardown, and not while a reconnect is under
+    /// way. Distinct from `count > 0`: a lazy connect in flight has
+    /// `count == 1` but `available == false`, and a `ServiceLifetime`
+    /// transport serves with `count == 0`.
     available: AtomicBool,
-    /// `false` until [`SharedTransport::start`] is called; `true` between
-    /// start and [`SharedTransport::shutdown`]. Drives the
-    /// `LazyAcquire`-vs-`ServiceLifetime` mode discrimination at the
-    /// top of [`acquire`](Self::acquire) and inside
-    /// `run_last_disconnect_locked`. See the module-level docstring for
-    /// the two modes' behaviour.
+    /// `false` until [`SharedTransport::start`] succeeds, `true` from
+    /// then on: [`SharedTransport::shutdown`] leaves it set, so a later
+    /// `acquire` refuses and a later `start` cold-starts. Selects
+    /// `LazyAcquire` or `ServiceLifetime`; see the module docs for the
+    /// two modes' behaviour.
     service_lifetime: AtomicBool,
-    /// `true` while the reconnect supervisor is mid-recovery — between
-    /// observing a transport error and the next successful handshake.
+    /// `true` while a recovery is owed: from a wire failure the
+    /// supervisor hears, or a `ServiceLifetime` 1→0 whose stop did not
+    /// land, until a recovery is advertised or the lifecycle ends.
     /// Sessions that observe this short-circuit with
     /// [`TransportError::Reconnecting`] so callers don't drive requests
     /// against the dying transport.
     reconnecting: AtomicBool,
-    /// `Some` between the 0→1 open and the 1→0 close. Cloned out for every
-    /// new [`Session`]; cleared at teardown so the underlying transport
-    /// can drop. The cell layer ([`ConnectionCell`]) lets the supervisor
-    /// swap the inner `Arc<Connection<C>>` atomically so live `Session`s
-    /// follow the swap on their next request — see [`session::ConnectionCell`].
+    /// `Some` while a conduit is published: from a lazy 0→1 open to its
+    /// 1→0 close, or from a cold `start()` to `shutdown()`. Cloned out
+    /// for every new [`Session`]. The cell layer ([`ConnectionCell`])
+    /// lets the supervisor swap the inner `Arc<Connection<C>>`
+    /// atomically so live `Session`s follow the swap on their next
+    /// request — see [`session::ConnectionCell`].
     ///
     /// [`session::ConnectionCell`]: crate::session::ConnectionCell
     slot: Mutex<Option<ConnectionCell<C>>>,
-    /// Serialises [`acquire`] against the inline / detached cleanup paths.
-    /// Held across the entire 0→1 transition and the entire 1→0 transition;
-    /// the fast path (acquire when `count > 0`) takes it just long enough to
-    /// increment and read the slot.
+    /// Serialises [`acquire`], `start`, `shutdown` and the inline /
+    /// detached cleanup paths. Held across the entire 0→1 transition
+    /// and the entire 1→0 transition; the fast path (acquire when
+    /// `count > 0`) takes it just long enough to increment and read the
+    /// slot.
     ///
     /// [`acquire`]: SharedTransport::acquire
     acquire_lock: Mutex<()>,
@@ -329,20 +341,22 @@ pub struct SharedTransport<C: Codec> {
     /// supervisor is what makes the first retry after a manual attempt
     /// observe the interval like every other one.
     last_attempt: Mutex<Option<Instant>>,
-    /// Set when an `on_last_disconnect` could not land — its commands
-    /// went to a conduit that was already dead or closed, which is what
-    /// a 1→0 during a reconnect runs against. The refcount alone cannot
-    /// carry that: a new client can acquire before the next attempt
-    /// reads it, and the obligation would be dropped on the floor with
-    /// the mount still moving.
+    /// Incurred when an `on_last_disconnect` did not land — a command
+    /// failed on the wire (as on the dead or closed conduit a 1→0
+    /// during a reconnect runs against), the hook answered
+    /// [`StateAssertion::NotAsserted`], or it panicked — and by every
+    /// assertion on a fresh conduit before its hook runs. The refcount
+    /// alone cannot carry that: a new client can acquire before the
+    /// next attempt reads it, and the obligation would be dropped on
+    /// the floor with the mount still moving.
     ///
     /// Recorded in both modes; what discharges it differs. A reconnect
     /// pays it where a supervisor exists, the next 0→1 open where one
     /// does not, and a cold `start` either way — the handshake those
     /// run is not a substitute, because it is not the safety hook.
-    /// Removing any of those replays re-opens the hole: a session
-    /// handed out while a debt stands is a session on a conduit whose
-    /// safety state never reached the device.
+    /// Without any one of those replays, a session handed out while a
+    /// debt stands is a session on a conduit whose safety state never
+    /// reached the device.
     ///
     /// A sequence pair rather than a flag, because a payer cannot hold
     /// the cleanup out while it runs: it reads the incurred count,
@@ -365,8 +379,8 @@ pub struct SharedTransport<C: Codec> {
     /// unwind.
     supervisor_live: AtomicBool,
     /// Fired by [`Connection::request`] on every `TransportError` that
-    /// came off the wire, and by a last-client cleanup whose stop the
-    /// device answered without asserting. The supervisor
+    /// came off the wire, and by a `ServiceLifetime` last-client cleanup
+    /// whose stop did not land. The supervisor
     /// `tokio::select!`s between this and its periodic ticker.
     reconnect_signal: Arc<Notify>,
     /// Period between reconnect attempts while in the `Reconnecting`
@@ -438,7 +452,8 @@ impl<C: Codec> SharedTransport<C> {
         *self.reconnect_interval.lock().await = interval;
     }
 
-    /// Returns `true` between successful handshake and the start of teardown.
+    /// Returns `true` from a successful open to the start of a teardown
+    /// or a reconnect.
     ///
     /// Cheap, non-blocking. A `true` from this method is a moment-in-time
     /// snapshot — by the time the caller acts on it the transport may
@@ -469,14 +484,15 @@ impl<C: Codec> SharedTransport<C> {
     /// [`shutdown`](Self::shutdown) is called, regardless of how many
     /// clients are connected.
     ///
-    /// Intended call site: the service binary's `main`, after config
-    /// load and before binding the Alpaca HTTP server. On error,
-    /// `main` should map the returned [`SessionError`] to a non-zero
-    /// `ExitCode` so systemd / orchestration treats startup as a
-    /// failure instead of advertising a broken device.
+    /// Intended call site: service startup, before the Alpaca HTTP
+    /// listener binds, as every driver's `ServerBuilder::build()` does.
+    /// On error, the service should map the returned [`SessionError`]
+    /// to a non-zero `ExitCode` so systemd / orchestration treats
+    /// startup as a failure instead of advertising a broken device.
     ///
-    /// Idempotent: a second call observes `service_lifetime == true`
-    /// and returns `Ok(())` immediately.
+    /// Idempotent on a serving transport: a second call that finds
+    /// `service_lifetime` and `available` both set returns `Ok(())`
+    /// immediately.
     ///
     /// **A cold start asserts the no-client safety state.** After the
     /// handshake and before the conduit is published,
@@ -554,15 +570,6 @@ impl<C: Codec> SharedTransport<C> {
         // service holds the transport open via the `service_lifetime`
         // flag, not via a refcount slot.
         //
-        // Drop any reconnect notification still pending first. There is
-        // no live conduit at this point, so nothing pending can be
-        // about one: it was raised by a previous lifecycle's teardown,
-        // or by an earlier start whose handshake or safety replay
-        // failed on the wire and left before any supervisor existed to
-        // hear it. Inherited, it makes the supervisor spawned below
-        // tear down the conduit this call is about to open. Not done on
-        // the promote branch above, where the conduit *is* live and a
-        // pending wake is about it.
         // Armed before the quiesce, not after it. The quiesce is what
         // takes the supervisor away, and it awaits while doing so — so
         // a start dropped inside it has already lost the retry owner
@@ -576,6 +583,16 @@ impl<C: Codec> SharedTransport<C> {
             armed: true,
         };
 
+        // Drop any reconnect notification still pending. There is no
+        // live conduit at this point, so nothing pending can be about
+        // one: it was raised by a previous lifecycle's teardown, or by
+        // an earlier start whose handshake or safety replay failed on
+        // the wire and left before any supervisor existed to hear it.
+        // Inherited, it makes the supervisor spawned below tear down
+        // the conduit this call is about to open. Not done on the
+        // promote branch above, where the conduit *is* live and a
+        // pending wake is about it.
+        //
         // Release first, then drain: closing the inherited conduit can
         // itself raise a notification, and that one is as stale as the
         // rest.
@@ -602,7 +619,7 @@ impl<C: Codec> SharedTransport<C> {
         // restart does not even keep the process. The mount on the
         // other end remembers what it was doing regardless, so a start
         // that assumes it is idle is a start that can serve clients a
-        // moving mount. See #1251.
+        // moving mount.
         //
         // The refcount is zero here by construction — a cold start
         // publishes nothing until below — so this is the same
@@ -673,10 +690,11 @@ impl<C: Codec> SharedTransport<C> {
         sup.take()
     }
 
-    /// Spawn the reconnect supervisor. Idempotent: if a supervisor task
-    /// is already registered (e.g. `start()` was called twice without an
-    /// intervening `shutdown()`), the existing one is cancelled and
-    /// replaced.
+    /// Spawn the reconnect supervisor. Idempotent: a supervisor task
+    /// already registered is cancelled and replaced. No caller leaves
+    /// one there — a cold start has taken it, and the lazy transport a
+    /// promotion starts from never had one — so this only keeps a
+    /// second supervisor from leaking.
     async fn spawn_supervisor(self: &Arc<Self>) {
         let mut sup = self.supervisor_state.lock().await;
         if let Some((mut old_handle, old_cancel)) = sup.take() {
@@ -736,9 +754,9 @@ impl<C: Codec> SharedTransport<C> {
 
     /// Cancel the while-open task and wait for it, bounded. `context`
     /// names the caller in the warning a task that ignores its
-    /// cancellation earns, since the three callers — replacing a
-    /// conduit, abandoning a replacement, and opening over one left
-    /// behind — are told apart only by that.
+    /// cancellation earns, since its callers — replacing a conduit,
+    /// abandoning a replacement, opening over one left behind, the
+    /// shutdown and the lazy 1→0 — are told apart only by that.
     async fn cancel_while_open(&self, context: &'static str) {
         let while_open = self.while_open_state.lock().await.take();
         let Some((handle, cancel)) = while_open else {
@@ -976,8 +994,7 @@ impl<C: Codec> SharedTransport<C> {
     /// [`StateAssertion::NotAsserted`]. Either answer means the same
     /// thing to this method: the safety state is not known to hold.
     /// Neither says why, and this does not ask; a hook reports the
-    /// concrete error where it sees it. See
-    /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+    /// concrete error where it sees it.
     ///
     /// # Errors
     ///
@@ -1110,9 +1127,8 @@ impl<C: Codec> SharedTransport<C> {
                 // 1→0 cleanup recorded a stop the device answered
                 // without asserting — that one completes on the wire,
                 // so it raises the signal itself rather than through
-                // `request`. Flip
-                // into Reconnecting (clients short-circuit
-                // immediately) and attempt recovery.
+                // `request`. Flip into Reconnecting (clients
+                // short-circuit immediately) and attempt recovery.
                 self.reconnecting.store(true, Ordering::SeqCst);
                 self.available.store(false, Ordering::SeqCst);
             }
@@ -1250,6 +1266,10 @@ impl<C: Codec> SharedTransport<C> {
     async fn attempt_reconnect(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         let _attempt_guard = self.attempt_reconnect_lock.lock().await;
 
+        // Stamped here rather than in the supervisor so a manual
+        // `reconnect_now()` feeds the cadence floor too: otherwise the
+        // supervisor's first retry after one — which a failed replay
+        // signals for immediately — would start with no delay.
         *self.last_attempt.lock().await = Some(Instant::now());
 
         // Whether this is a no-client reconnect is settled here, not at
@@ -1262,11 +1282,6 @@ impl<C: Codec> SharedTransport<C> {
         // arrives during an attempt cannot command anything until the
         // attempt returns.
         let started_with_no_client = self.count.load(Ordering::SeqCst) == 0;
-
-        // Stamped here rather than in the supervisor so a manual
-        // `reconnect_now()` feeds the cadence floor too: otherwise the
-        // supervisor's first retry after one — which a failed replay
-        // signals for immediately — would start with no delay.
 
         // Cancel the old while_open task first: it holds its own
         // `Arc<Connection<C>>` and may be mid-request on the dying
@@ -1419,15 +1434,28 @@ impl<C: Codec> SharedTransport<C> {
         // and stopping tracking. Its commands go out on whatever
         // connection was live when the 1→0 landed, and during a
         // reconnect that connection is dead or, since this method
-        // closes it first, closed: the hook runs, every command fails,
-        // and nothing replays it. A mount that was moving when its
-        // link dropped then stays moving with no client attached and
-        // no further attempt to stop it.
+        // closes it first, closed: the hook runs and every command
+        // fails. Without a replay here, a mount that was moving when
+        // its link dropped would stay moving with no client attached
+        // and nothing left to stop it.
         //
-        // So run it again here when the refcount is still zero. Tenet
-        // 3 permits it on a reconnect path: the hook is the
-        // last-disconnect one, which is stop-class by construction —
-        // and it is a no-op for every service whose hook is empty.
+        // So run it again: when the refcount was zero at the top of the
+        // attempt, and also when a 1→0 already tried and failed — the
+        // refcount is a snapshot, so a client that acquires between
+        // that failure and this line would otherwise bury the
+        // obligation. Tenet 3 permits it on a reconnect path: the hook
+        // is the last-disconnect one, which is stop-class by
+        // construction — and it is a no-op for every service whose
+        // hook is empty.
+        //
+        // An owed stop is replayed in either mode. The no-client
+        // re-assert is a `ServiceLifetime` idea — there the conduit
+        // outlives its clients, so "nobody attached" is a state to
+        // hold; `LazyAcquire` tears the conduit down at zero instead.
+        // A *debt* has no such split: it is recorded in both modes,
+        // and a `LazyAcquire` reconnect that published without paying
+        // it would hand the session a conduit whose safety state is
+        // still unknown.
         //
         // The count is read without `acquire_lock`, so a client can
         // acquire between the check and the hook's last command. That
@@ -1439,20 +1467,6 @@ impl<C: Codec> SharedTransport<C> {
         // holds a session that cannot put a command on the wire until
         // the halt below has already gone out. It cannot be mid-slew
         // here, because it has not been able to command one.
-        // Replay when nothing is attached, and also when a 1→0 already
-        // tried and failed — the refcount is a snapshot, so a client
-        // that acquires between that failure and this line would
-        // otherwise bury the obligation. Such a client cannot be
-        // mid-slew: `reconnecting` stays set until this method returns,
-        // so every request it makes is refused until the stop lands.
-        // An owed stop is replayed in either mode. The no-client
-        // re-assert is a `ServiceLifetime` idea — there the conduit
-        // outlives its clients, so "nobody attached" is a state to
-        // hold; `LazyAcquire` tears the conduit down at zero instead.
-        // A *debt* has no such split: it is recorded in both modes,
-        // and a `LazyAcquire` reconnect that published without paying
-        // it would hand the session a conduit whose safety state is
-        // still unknown.
         let mut paying = None;
         // Asserted by default: an attempt that does not replay has no
         // verdict to carry, and must not be failed for the lack of one.
@@ -1503,7 +1517,8 @@ impl<C: Codec> SharedTransport<C> {
     /// best-effort about its own errors — it logs and continues rather
     /// than propagating — so a request that died on the wire is not
     /// something its verdict speaks to. The connection answers that
-    /// one: a request that did not complete bumped that counter. Reporting such an attempt as a success would clear
+    /// one: a request that did not complete bumped its wire-failure
+    /// counter. Reporting such an attempt as a success would clear
     /// `reconnecting` and set `available`, and a client could then
     /// acquire and drive a mount that is still moving, because the halt
     /// meant to stop it never reached the device. Compared across the
@@ -1528,13 +1543,12 @@ impl<C: Codec> SharedTransport<C> {
     /// stop the device *answered*, without the state ending up
     /// asserted. `request_typed`-style callers decode above
     /// [`Connection::request`], so such a request completes and the
-    /// wire counter reads clean. Only the hook knows, and it now says
-    /// so — a [`StateAssertion::NotAsserted`] from the replay fails the
+    /// wire counter reads clean. Only the hook knows, and it says so —
+    /// a [`StateAssertion::NotAsserted`] from the replay fails the
     /// attempt exactly as a dropped request does. What it does not say
     /// is *why*: a refusal, an unparseable reply and a device that is
     /// not the expected one all arrive as the same verdict, and the
-    /// hook is where the specific error was logged. See
-    /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+    /// hook is where the specific error was logged.
     ///
     /// None of the three sees the respawned `while_open` task, which is
     /// detached: its first request may land either side of them. A
@@ -1672,9 +1686,9 @@ impl<C: Codec> SharedTransport<C> {
             // exists is the whole test: `LazyAcquire` never has one, a
             // `ServiceLifetime` transport has one until `shutdown()`
             // takes it, and the mode flag distinguishes neither — it
-            // stays true after a shutdown, which is how a
-            // `reconnect_now()` on a torn-down transport used to leave
-            // the flag set for good.
+            // stays true after a shutdown, so asking it instead would
+            // leave the flag set for good after a `reconnect_now()` on a
+            // torn-down transport.
             //
             // Left set with nobody to clear it, live sessions
             // short-circuit on `Reconnecting` forever and the next
@@ -1694,10 +1708,12 @@ impl<C: Codec> SharedTransport<C> {
         result
     }
 
-    /// Exit `ServiceLifetime` mode: cancel the while-open task, run
-    /// [`Hooks::shutdown`], close the connection (releasing the port).
-    /// Called from the service's SIGTERM handler, and by the reload
-    /// loop between two runs of the service body.
+    /// End a `ServiceLifetime` lifecycle: stop the supervisor, cancel
+    /// the while-open task, run [`Hooks::shutdown`], close the
+    /// connection (releasing the port). The mode stays set. A driver
+    /// calls it once its HTTP server has stopped, on a shutdown and a
+    /// reload alike, and when anything after `start()` fails while the
+    /// server is being built.
     ///
     /// What gets closed is whatever the slot holds once the hook has
     /// run, as well as the conduit the hook ran on, so a replacement a
@@ -1728,19 +1744,19 @@ impl<C: Codec> SharedTransport<C> {
     /// `shutdown()` holds it while joining the supervisor that runs
     /// the attempt. Draining first is the cheaper and stronger answer,
     /// and it is what every driver here does: the router owns the
-    /// device that owns the session, and `start()`'s serve future
+    /// device that owns the session, and the driver's serve future
     /// drops all three before this is called.
     ///
     /// No-op in `LazyAcquire` mode (returns `Ok(())` immediately).
-    /// After a successful `shutdown()` the transport is back in
-    /// `Closed` state; a fresh [`start`](Self::start) re-opens it.
+    /// After a `shutdown()` the slot is empty and `acquire` refuses; a
+    /// fresh [`start`](Self::start) cold-starts the transport.
     ///
     /// # Errors
     ///
-    /// Currently infallible — teardown steps that misbehave (a task
-    /// that ignores cancellation) are logged and absorbed, and the
-    /// transport close cannot fail. The `Result` keeps the signature
-    /// ready for transports whose close can.
+    /// Infallible — teardown steps that misbehave (a task that ignores
+    /// cancellation) are logged and absorbed, and the transport close
+    /// cannot fail. The `Result` keeps the signature ready for
+    /// transports whose close can.
     ///
     /// The conduit is closed explicitly rather than left to the last
     /// `Arc` drop, so this waits for an in-flight request to finish —
@@ -1776,7 +1792,8 @@ impl<C: Codec> SharedTransport<C> {
                 handle.abort();
                 warn!(
                     timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT,
-                    "supervisor task did not respond to cancellation; aborted,                      and an attempt it was awaiting may still be running"
+                    "supervisor task did not respond to cancellation; aborted, \
+                     and an attempt it was awaiting may still be running"
                 );
             }
         }
@@ -1861,7 +1878,7 @@ impl<C: Codec> SharedTransport<C> {
         // The obligation belongs to the lifecycle that incurred it, and
         // this ends that lifecycle: `Hooks::shutdown` has just made its
         // own terminal safety assertion on the way past. Carrying the
-        // flag into a later `start()` would be worse than losing it —
+        // debt into a later `start()` would be worse than losing it —
         // that start publishes a fresh conduit and clears
         // `reconnecting`, so the debt would sit outstanding while
         // clients command freely, and then fire a stale halt at the
@@ -1870,12 +1887,12 @@ impl<C: Codec> SharedTransport<C> {
         //
         // Losing it here is not losing the obligation. A shutdown whose
         // own stop did not land is exactly what a reload runs into,
-        // and the flag could not carry it across one anyway — the
+        // and the debt could not carry it across one anyway — the
         // reload builds a new `SharedTransport` and this one goes
         // away. What answers for it is the next cold `start`, which
         // asserts the no-client state on its fresh conduit whether or
         // not anything says a stop is owed. That covers a process
-        // restart too, which no flag on an instance can. See #1251.
+        // restart too, which no state on an instance can.
         self.safety_debt_paid.fetch_max(
             self.safety_debt_incurred.load(Ordering::SeqCst),
             Ordering::SeqCst,
@@ -1890,9 +1907,9 @@ impl<C: Codec> SharedTransport<C> {
 
         // Leave `service_lifetime = true` so subsequent `acquire()` calls
         // observe `service_lifetime && !available` and refuse. The next
-        // `start()` will see `!available` and do a fresh cold-start
-        // (intended for tests / restart scenarios; production normally
-        // exits the process after `shutdown()`).
+        // `start()` will see `!available` and do a fresh cold-start.
+        // Only tests start a transport again: a driver's shutdown ends
+        // the process, and its reload builds a new transport.
         Ok(())
     }
 
@@ -1942,7 +1959,7 @@ impl<C: Codec> SharedTransport<C> {
             // resulting session's first `request()` then short-circuits
             // on `is_reconnecting()` and returns
             // `TransportError::Reconnecting`, which is the correct UX
-            // (\"try again\") rather than a misleading shutdown error.
+            // ("try again") rather than a misleading shutdown error.
             self.count.fetch_sub(1, Ordering::SeqCst);
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other("transport has been shut down"),
@@ -2045,13 +2062,14 @@ impl<C: Codec> SharedTransport<C> {
             // In LazyAcquire mode this is impossible by construction —
             // the 0→1 path populates `slot` before releasing
             // `acquire_lock`. In ServiceLifetime mode the post-shutdown
-            // case is caught above, whatever the refcount; what is left
-            // here is a caller invoking `acquire()` between `start()`
-            // failing and the failure propagating, since that rollback
-            // leaves `available` and `service_lifetime` false while a
-            // successful `start()` would have populated the slot before
-            // flipping the flag. Roll back the speculative increment
-            // and surface an I/O error rather than panicking.
+            // case is caught above, whatever the refcount, and a
+            // successful `start()` populates the slot before it sets
+            // the flag; what is left here is a flag outliving the slot
+            // it described — `reconnecting` or `available` set over a
+            // slot a teardown has emptied, as a `reconnect_now()`
+            // racing a shutdown, or a `shutdown()` dropped part-way,
+            // can leave. Roll back the speculative increment and
+            // surface an I/O error rather than panicking.
             drop(slot);
             self.count.fetch_sub(1, Ordering::SeqCst);
             return Err(SessionError::Transport(TransportError::Io(
@@ -2113,8 +2131,8 @@ impl<C: Codec> SharedTransport<C> {
     ///
     /// In `LazyAcquire` mode: cancel/join `while_open` first (so the
     /// poll loop doesn't race the safety commands on the wire),
-    /// then run [`Hooks::on_last_disconnect`], then drop the slot's
-    /// connection so the port closes. This ordering matches the
+    /// then run [`Hooks::on_last_disconnect`], then close the slot's
+    /// connection and empty the slot. This ordering matches the
     /// contract documented on [`Hooks::on_last_disconnect`] in
     /// `session.rs`.
     ///
@@ -2363,17 +2381,6 @@ mod tests {
         SharedTransport::new(Arc::new(NeverOpens), NoCodec, Hooks::noop())
     }
 
-    /// The invariant the refusal path rests on, tested where it lives
-    /// rather than through a race no caller can schedule.
-    ///
-    /// `commit_replacement` reads the debt inside the attempt; this is
-    /// the last look before clients are let back in, and it exists for
-    /// the cleanup that lands in between. That ordering cannot be
-    /// forced through the public API — `attempt_reconnect` cannot take
-    /// `acquire_lock` (shutdown holds it while joining the supervisor
-    /// that runs the attempt), and there is no seam between the
-    /// attempt returning and the publish — so the gate is asserted
-    /// directly.
     /// The invariant the whole safety scheme rests on, asserted where
     /// it is enforced: while a stop is owed, no request reaches the
     /// device — *whatever* `available` and `reconnecting` happen to
@@ -2485,6 +2492,19 @@ mod tests {
         assert_eq!(outage.recovered(), None, "a recovery is reported once");
     }
 
+    /// The invariant `publish_recovery`'s refusal rests on, tested
+    /// where it lives rather than through a race no caller can
+    /// schedule.
+    ///
+    /// `commit_replacement` reads the debt inside the attempt;
+    /// `publish_recovery` is the last look before clients are let back
+    /// in, and it exists for the cleanup that lands in between. That
+    /// ordering cannot be
+    /// forced through the public API — `attempt_reconnect` cannot take
+    /// `acquire_lock` (shutdown holds it while joining the supervisor
+    /// that runs the attempt), and there is no seam between the
+    /// attempt returning and the publish — so the gate is asserted
+    /// directly.
     #[test]
     fn a_recovery_is_withheld_while_a_stop_is_owed() {
         let st = transport();

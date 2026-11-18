@@ -2,9 +2,10 @@
 //!
 //! Verifies that `ServerBuilder` binds the ASCOM Alpaca server and registers
 //! the Rotator and Status Switch devices according to the config's
-//! `enabled` flags. The tests only exercise management endpoints — neither
-//! device is `set_connected(true)`, so the mock transport's `open` path
-//! is never reached.
+//! `enabled` flags. The tests only exercise management endpoints, and
+//! neither device is connected; `ServerBuilder::build` still opens the
+//! mock transport and runs the handshake at start, as it does in
+//! production.
 //!
 //! Gated on `feature = "mock"` because the test imports
 //! `MockFalconTransportFactory` from the falcon-rotator crate.

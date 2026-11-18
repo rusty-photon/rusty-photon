@@ -1,15 +1,16 @@
 Feature: Connection lifecycle
   The pa-falcon-rotator service exposes a Rotator and a Status Switch device on
-  a single ASCOM Alpaca server. A successful first connect performs the Falcon
-  handshake (F# → FV → DR:0 → FA → VS) before any device-bound commands. The
-  port is shared by both devices; the second device's connect is a no-op
-  refcount bump and the port closes only when the last device disconnects.
+  a single ASCOM Alpaca server. The service opens the port and runs the Falcon
+  handshake (F# → FV → DR:0 → FA → VS) when it starts, before it serves any
+  client, and keeps the port open until it stops. Both devices share the port:
+  a connect runs no handshake, and each device connects and disconnects
+  independently of the other.
 
   Scenario: Rotator starts disconnected
     Given a running pa-falcon-rotator service
     Then the rotator should be disconnected
 
-  Scenario: Rotator connects successfully and runs the handshake
+  Scenario: Rotator connects successfully after the startup handshake
     Given a running pa-falcon-rotator service
     When I connect the rotator
     Then the rotator should be connected
@@ -27,7 +28,7 @@ Feature: Connection lifecycle
     And I connect the rotator
     Then the rotator should be connected
 
-  Scenario: Shared port stays open while either device is connected
+  Scenario: The status switch stays connected when the rotator disconnects
     Given a running pa-falcon-rotator service
     When I connect the rotator
     And I connect the status switch
@@ -35,7 +36,7 @@ Feature: Connection lifecycle
     Then the status switch should be connected
     And the handshake should have run exactly once
 
-  Scenario: Shared port closes only when the last device disconnects
+  Scenario: Both devices read disconnected once each has disconnected
     Given a running pa-falcon-rotator service
     When I connect the rotator
     And I connect the status switch

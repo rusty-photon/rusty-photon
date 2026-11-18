@@ -2,7 +2,8 @@
 //!
 //! Opens the configured serial port at the configured baud rate and wraps
 //! the resulting stream in a [`SerialFrameTransport`] with `\n` as the
-//! frame terminator (UPBv2 replies are LF-terminated ASCII lines).
+//! frame terminator (UPBv2 replies are ASCII lines ending in CRLF; the codec
+//! trims the `\r`).
 
 use std::time::Duration;
 

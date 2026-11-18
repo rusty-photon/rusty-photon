@@ -5,8 +5,8 @@
 //! running in mock mode. Each test enables only the device it exercises so
 //! the conformance run targets a single ASCOM class — mirroring the
 //! ppba-driver split between its Switch and `ObservingConditions` tests.
-// The std::Mutex is intentional here: it serializes sequential test runs because
-// the ASCOM Alpaca discovery service binds to a fixed address.
+// The std::Mutex is intentional here: held across each whole test, awaits
+// included, it runs the two ConformU tests one at a time.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -36,9 +36,8 @@ use bdd_infra::{FullRunSettings, ServiceHandle};
 use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
 
-// Static mutex ensures the two conformu tests run sequentially. Both bind
-// the ASCOM Alpaca discovery service to its default port, so running them
-// concurrently would race for that UDP socket regardless of the HTTP port.
+// Static mutex ensures the two conformu tests run sequentially, each a
+// full ConformU pass against its own spawned driver.
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]

@@ -19,11 +19,12 @@
 //! State the driver cannot set is preset from the environment, which is the
 //! only channel a BDD harness has into a binary it launches as a subprocess:
 //! the firmware and identity replies, which sensors are attached, the dew
-//! modes at start, the input voltage, and the four behaviours the fault
+//! modes at start, the input voltage, and the behaviours the fault
 //! scenarios need — the stale frames, an ignored first `>H#`, an output
-//! the hub refuses to switch, and noise on the line ahead of the first
-//! reply. Each is read once at construction; the `with_…` builders are the
-//! in-process equivalents.
+//! the hub refuses to switch, a stream already running at the open, frames
+//! cut short to answer, a frame that predates a set, and noise on the line
+//! ahead of the first reply. Each is read once at construction; the
+//! `with_…` builders are the in-process equivalents.
 
 // `#[cfg(any(feature = "mock", test))]`-gated test-helper infrastructure
 // that never ships in production builds. Excluded from coverage so the
