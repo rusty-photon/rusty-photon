@@ -2654,6 +2654,9 @@ the image just written.
 
 #### Planned Capabilities and Crate Strategy
 
+The kernels these choices build are the `rp-image-analysis` crate
+(`crates/rp-image-analysis`), which `rp` shares with the guider.
+
 | Capability | Approach | Crates |
 |------------|----------|--------|
 | Pixel statistics | Custom | stdlib (`select_nth_unstable`, iterators) |
@@ -8985,23 +8988,16 @@ services/rp/src/
     #                    tools. Lands when the third-party plugin
     #                    protocol does.
 
-  # Imaging (pure analysis kernels and the compositional tools that bind them)
+  # Imaging (the compositional tools that bind the analysis kernels)
+  # The kernels themselves are crates/rp-image-analysis, which the guider
+  # shares: pure, generic over Pixel, over ArrayView2, no I/O, no async.
   # Async, I/O, and on-disk layout live in `persistence/` so the analysis
   # path stays unit-testable without a runtime.
   imaging/
     mod.rs              Module root: re-exports the flat `imaging::*` API
-                          shape that callers use, regardless of which
-                          submodule a symbol is defined in.
-    analysis/           Pure single-purpose kernels — generic over Pixel,
-                          take ArrayView2, no I/O, no async.
-      mod.rs
-      pixel.rs          Pixel trait (impls for u16 and i32) for generic analysis
-      stats.rs          Pixel statistics (median, mean, min, max ADU)
-      background.rs     Sigma-clipped background estimation
-      stars.rs          Star detection + centroiding (4-connectivity BFS)
-      hfr.rs            HFR / HFD radial flux accumulation
-      fwhm.rs           2D Gaussian fitting via rmpfit
-      snr.rs            Per-star + median SNR (CCD-equation approximation)
+                          shape that callers use, the kernels of
+                          crates/rp-image-analysis among it, whichever
+                          module or crate a symbol is defined in.
     tools/              Compositional analyzers — bind multiple kernels
                           together to answer one MCP-tool-shaped question.
                           Pure functions; the MCP wrapper in `mcp.rs`

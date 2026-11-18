@@ -10,11 +10,11 @@ use ndarray::ArrayView2;
 use serde::Serialize;
 
 use crate::error::{Result, RpError};
-use crate::imaging::analysis::aperture::{aggregate_hfr, measure_in_apertures};
-use crate::imaging::analysis::background::estimate_background;
-use crate::imaging::analysis::pixel::Pixel;
-use crate::imaging::analysis::saturation::saturation_level;
-use crate::imaging::analysis::stars::{detect, DetectionParams};
+use rp_image_analysis::aperture::{aggregate_hfr, measure_in_apertures};
+use rp_image_analysis::background::estimate_background;
+use rp_image_analysis::pixel::Pixel;
+use rp_image_analysis::saturation::saturation_level;
+use rp_image_analysis::stars::{detect, DetectionParams};
 
 /// Result of the basic image measurement. Field names match the JSON
 /// contract returned by the MCP tool — change only with intent.

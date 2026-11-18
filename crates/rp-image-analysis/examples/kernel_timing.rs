@@ -1,4 +1,4 @@
-//! Times `rp`'s single-frame image kernels on synthetic guide frames.
+//! Times the single-frame image kernels on synthetic guide frames.
 //!
 //! A guider measures every frame of a loop of short exposures, so what a
 //! frame costs to measure on the guider's host decides whether the loop
@@ -19,18 +19,18 @@
 //! `measure_listed_stars` runs before it measures.
 //!
 //! ```sh
-//! cargo run --release -p rp --example kernel_timing
+//! cargo run --release -p rp-image-analysis --example kernel_timing
 //! ```
 
 use std::hint::black_box;
 use std::time::Instant;
 
 use ndarray::{Array2, ArrayView2};
-use rp::imaging::analysis::aperture::{measure_listed, Listed, MIN_APERTURE_RADIUS};
-use rp::imaging::analysis::background::{estimate_background, BackgroundStats};
-use rp::imaging::analysis::fwhm::{fit_2d_gaussian, GaussianFit2D, FWHM_OVER_SIGMA};
-use rp::imaging::analysis::hfr::star_hfr;
-use rp::imaging::analysis::stars::{detect_stars, hot_pixels, DetectionParams, Star};
+use rp_image_analysis::aperture::{measure_listed, Listed, MIN_APERTURE_RADIUS};
+use rp_image_analysis::background::{estimate_background, BackgroundStats};
+use rp_image_analysis::fwhm::{fit_2d_gaussian, GaussianFit2D, FWHM_OVER_SIGMA};
+use rp_image_analysis::hfr::star_hfr;
+use rp_image_analysis::stars::{detect_stars, hot_pixels, DetectionParams, Star};
 
 /// Timed runs of each kernel on each frame, after one warm-up run.
 const ITERATIONS: usize = 30;

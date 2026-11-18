@@ -1,9 +1,9 @@
-//! Image analysis: pure kernels, compositional analyzers, and compound
-//! equipment-driving tools.
+//! Image analysis: compositional analyzers and compound
+//! equipment-driving tools, over the kernels of [`rp_image_analysis`].
 //!
 //! FITS I/O, the image cache, and
 //! exposure-document storage live in [`crate::persistence`] —
-//! [`analysis`] kernels and the pure compositional analyzers in
+//! the kernels and the pure compositional analyzers in
 //! [`tools`] (`measure_basic`, `measure_stars`) are async- and
 //! I/O-free so they can be unit-tested in isolation.
 //!
@@ -16,34 +16,32 @@
 //! `mcp.rs` provide concrete adapters that bind the equipment traits
 //! to live Alpaca clients; tests substitute synthetic adapters.
 //!
-//! Submodules:
-//! - [`analysis`]: single-purpose math (background, stars, hfr, fwhm,
-//!   snr, stats, pixel trait). Pure, generic over [`Pixel`], no I/O.
+//! - [`rp_image_analysis`]: single-purpose math (background, stars,
+//!   hfr, fwhm, snr, stats, pixel trait), shared with the guider. Pure,
+//!   generic over [`Pixel`], no I/O.
 //! - [`tools`]: compositional analyzers (`measure_basic`,
 //!   `measure_stars`) plus compound equipment-driving tools
 //!   (`center_on_target`, the `auto_focus` helpers).
 //!
-//! The flat re-exports below preserve the previous `crate::imaging::*`
-//! call-site shape so MCP wiring doesn't have to know which submodule
-//! a symbol lives in. See `docs/services/rp.md` (Module Structure) and
-//! `docs/plans/archive/image-evaluation-tools.md` for the rationale.
+//! The flat re-exports below keep the `crate::imaging::*` call-site
+//! shape, so MCP wiring doesn't have to know which module or crate a
+//! symbol lives in. See `docs/services/rp.md` (Module Structure).
 
-pub mod analysis;
 pub mod tools;
 
-pub use analysis::aperture::{
+pub use rp_image_analysis::aperture::{
     aggregate_hfr, measure_in_apertures, Listed, MeasuredStar, MIN_APERTURE_RADIUS,
 };
-pub use analysis::background::{
+pub use rp_image_analysis::background::{
     estimate_background, sigma_clipped_stats, sigma_clipped_values, BackgroundStats,
 };
-pub use analysis::fwhm::{fit_2d_gaussian, GaussianFit2D};
-pub use analysis::hfr::star_hfr;
-pub use analysis::pixel::Pixel;
-pub use analysis::saturation::{frame_clip, saturation_level};
-pub use analysis::snr::{compute_snr, per_star_snr, SnrResult};
-pub use analysis::stars::{detect, detect_stars, Detection, DetectionParams, Star};
-pub use analysis::stats::{compute_stats, ImageStats};
+pub use rp_image_analysis::fwhm::{fit_2d_gaussian, GaussianFit2D};
+pub use rp_image_analysis::hfr::star_hfr;
+pub use rp_image_analysis::pixel::Pixel;
+pub use rp_image_analysis::saturation::{frame_clip, saturation_level};
+pub use rp_image_analysis::snr::{compute_snr, per_star_snr, SnrResult};
+pub use rp_image_analysis::stars::{detect, detect_stars, Detection, DetectionParams, Star};
+pub use rp_image_analysis::stats::{compute_stats, ImageStats};
 pub use tools::center_on_target::haversine_arcsec;
 pub use tools::measure_basic::{measure_basic, MeasureBasicResult};
 pub use tools::measure_stars::{
