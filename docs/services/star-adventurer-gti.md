@@ -1733,8 +1733,10 @@ and "falling" are the direction of the Dec count:
 | 1000 | 21.06 | −20.72 | +22.25 | 16.85 | 16 | 17 | 1080 / 940 / 1013–1017 |
 
 - **East delivers its expected travel from 100 ms**, within 0.7 tick.
-  A shorter East pulse delivers about 1.4 ticks whatever its length:
-  the trim runs it 71 ms long, and the board adds its edge steps.
+  The 20 and 50 ms East pulses both moved about 1.4 ticks, so below
+  100 ms East's travel does not follow the length: the trim runs each
+  71 ms long, and the board's edge steps, 0.57 ticks on the 20 ms
+  pulses and 1.18 on the 50 ms ones, made up the difference.
 - **West does not deliver its expected travel at this pose.** The
   board's edge steps here are 3.06 ± 0.09 ticks West and 1.13 ± 0.14
   East (mean ± SE of 30 pulses each). West sits above the 1.5-tick
