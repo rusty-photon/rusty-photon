@@ -43,7 +43,7 @@ Without `-c`, sentinel reads `sentinel.json` from the platform config directory 
 
 ## Configuration
 
-Configuration is a JSON file where every section is optional. The sections below cover monitoring and notification; the `operation_watchdog` block is documented in the [design document](../../docs/services/sentinel.md). The services sentinel supervises are **not configured** — they are discovered from the platform service manager (see the design document's [Service Discovery](../../docs/services/sentinel.md#service-discovery) section); a config still carrying the retired `services` map fails loudly at load. See [`examples/config.json`](examples/config.json) for a complete example.
+Configuration is a JSON file where every section is optional. The sections below cover monitoring and notification; the `operation_watchdog` block is documented in the [design document](../../docs/services/sentinel.md). The services sentinel supervises are **not configured** — they are discovered from the platform service manager (see the design document's [Service Discovery](../../docs/services/sentinel.md#service-discovery) section); a `services` key in the config fails loudly at load. See [`examples/config.json`](examples/config.json) for a complete example.
 
 ### Monitors
 

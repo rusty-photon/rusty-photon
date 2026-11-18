@@ -31,7 +31,7 @@ in `services/` consumes it directly.
   [`init_service_tracing`]): logs go to stderr (stdout is reserved for the
   `bound_addr=` handshake the BDD harness parses), filtered by `RUST_LOG`
   when set, otherwise at a caller-supplied fallback level. Idempotent.
-  Every service binary calls this once at startup so logging is configured
+  Every long-running service calls this once at startup so logging is configured
   identically everywhere. The subscriber carries a
   `tracing_error::ErrorLayer` so panic reports include the active span
   stack.

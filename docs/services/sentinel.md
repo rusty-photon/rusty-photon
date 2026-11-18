@@ -62,8 +62,8 @@ Every section (the top-level `Config` plus each nested block —
 `ServerConfig`, `OperationWatchdogConfig`, `OperationPolicy`)
 rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a
 key removed by a schema change fails loudly at load instead of being silently
-ignored. In particular a config still carrying the retired `services` map
-fails at load with the offending key named: sentinel
+ignored. In particular a `services` key fails at load with the key named:
+the config has no service registry, because sentinel
 [discovers](#service-discovery) the services it supervises.
 
 See `examples/config.json` for a complete example.
