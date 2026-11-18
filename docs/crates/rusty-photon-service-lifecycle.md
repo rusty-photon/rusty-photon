@@ -5,11 +5,8 @@ owns the tokio runtime, installs OS signal handlers (or dispatches to
 the Windows Service Control Manager), and exposes a single cooperative
 shutdown handle backed by [`tokio_util::sync::CancellationToken`].
 
-This is a workspace library, not a service. Every service binary in
-`services/` consumes it directly. For the migration plan that moves
-existing services onto it, see
-[`docs/plans/archive/service-lifecycle-unification.md`](../plans/archive/service-lifecycle-unification.md);
-this doc covers the crate's own design.
+This is a workspace library, not a service. Every long-running service
+in `services/` consumes it directly.
 
 ## Scope
 
@@ -43,8 +40,8 @@ this doc covers the crate's own design.
   (`--service`), both std handles are dead, so the stderr writer is swapped
   for a `tracing-appender` rolling file
   `%PROGRAMDATA%\rusty-photon\logs\<svc>.<date>.log` (daily rotation,
-  14 files retained). Console mode is byte-for-byte unchanged. See
-  [ADR-015](../decisions/015-windows-packaging-architecture.md).
+  14 files retained). Console mode logs exactly as [`init_tracing`]
+  does.
 - Own top-level error & panic reporting ([ADR-011](../decisions/011-error-reporting-layers.md)):
   the runner installs the `color-eyre` hooks once per process, so panics
   print formatted reports with span context on every service; run-closure
@@ -147,7 +144,7 @@ where `Fut: Future<Output = RunResult> + 'static`
 and the closure itself is `Send + 'static`. The runner converts the
 closure's boxed error into the `Report` that `main` returns (preserving
 the `source()` chain) — closures keep using `?` on typed and boxed errors
-alike, and never construct `Report`s themselves (ADR-011). Bounds explained:
+alike, and never construct `Report`s themselves. Bounds explained:
 
 * `F: Send + 'static` — the SCM dispatch path stashes the closure in
   a `OnceLock` and re-enters it from the `extern "system" fn` service
@@ -196,9 +193,8 @@ fn install_shutdown_signals(name: &'static str) -> impl Future<Output = ()> {
 `None`, which `next_signal` awaits as a never-resolving future — so a
 misconfigured environment that cannot install one signal (e.g. an
 already-stolen handler) degrades to "the other source still works"
-rather than "the service panics during startup". This matches the
-no-panic pattern established workspace-wide by PR #289. One
-implementation; one log-message style; one place to fix bugs.
+rather than "the service panics during startup". One implementation;
+one log-message style; one place to fix bugs.
 
 `next_signal` is a generic function over a private `SignalHandler`
 trait, not a macro, because the platform handler types share no upstream
@@ -214,11 +210,12 @@ closure. The watcher signals a `oneshot` the moment installation
 returns, and the runner's `block_on` waits on it:
 
 ```rust
-let installed = spawn_shutdown_watcher(&rt, name, token.clone());
-rt.block_on(async move {
+let shutdown = Shutdown::new(token.clone(), restart.clone());
+let installed = spawn_shutdown_watcher(&rt, name, token);
+let result = rt.block_on(async move {
     let _ = installed.await;
-    run_fn(Shutdown::from_token(token)).await
-})
+    run_fn(shutdown).await
+});
 ```
 
 This ordering is a correctness requirement, not a nicety. Until the
@@ -229,7 +226,8 @@ that terminates. A service that reached its own readiness handshake
 first — the `bound_addr=` line, a health endpoint answering — would be
 advertising itself as stoppable during a window in which being stopped
 kills it outright. Services do enough async setup that the window is
-narrow, but "narrow" is what the unhandled-Ctrl+Break bug was too.
+narrow, and narrow is not closed: a stop that lands in it leaves no
+trace, as an unregistered Windows console event does (below).
 
 It is also why every constructor above registers **synchronously**.
 `tokio::signal::ctrl_c()` registers only when its future is first
@@ -277,31 +275,33 @@ On Windows console mode there is no SIGHUP equivalent;
 
 The runner constructs one [`CancellationToken`] per `run` invocation.
 The signal-watcher task cancels it on first fire; SCM mode cancels it
-when the control handler receives `ServiceControl::Stop`. The user
+when the control handler receives `ServiceControl::Stop`; a restart
+request cancels it too ([below](#restart-on-request)). The user
 closure receives a [`Shutdown`] wrapping this token; `.token()` hands
 out clones for spawned subtasks. All clones observe the same
-cancellation — propagation is `O(1)`, not `O(N)` per-subtask wakes.
+cancellation, whichever source fired it — propagation is `O(1)`, not
+`O(N)` per-subtask wakes.
 
-This is the existing `sentinel` pattern, generalized: sentinel
-already takes a `CancellationToken` through its engine and cancels it
-from a hand-rolled signal task. After the migration, that task goes
-away and sentinel's engine receives `shutdown.token()` directly.
+`sentinel` takes the token this way: its binary hands
+`shutdown.token()` to `SentinelBuilder::with_cancellation_token`, and
+the poll loop and the dashboard both stop on it, with no signal task of
+their own.
 
 **Do not install a second signal handler downstream.** If a server
 inside your service already takes a shutdown future (e.g. axum's
-`with_graceful_shutdown`, or `BoundServer::start` after the #294
-migration), pass `shutdown.cancelled()` *into* it rather than racing
-it externally with `tokio::select!`. Racing two independent signal
-sources lets one drop the other mid-flight — that's the bug
-[#287](https://github.com/rusty-photon/rusty-photon/issues/287) and
-the underlying motivation for funneling everything through a single
-`Shutdown` handle.
+`with_graceful_shutdown`, or a driver's `BoundServer::start`), pass
+`shutdown.cancelled()` *into* it rather than racing it externally with
+`tokio::select!`. The one handle is what makes a stop run the server's
+own stop path to its end. Raced against a second, independent signal
+source, the server's future would be dropped mid-flight when that
+source fired first: axum's drain of the requests in flight, and the
+teardown that follows it inside the future, would never run.
 
 ### Restart on request
 
 A service restarts itself when a client asks it to. The daily power
-cycle's dusk restarts each service whose device was power-cycled, so
-the service meets its device in a fresh process
+cycle's dusk will restart each service whose device was power-cycled,
+so that the service meets its device in a fresh process
 ([daily-power-cycle.md](../plans/daily-power-cycle.md), decision 5).
 The runner owns the process side of the restart; the request arrives
 however the service takes requests (a driver service's HTTP route,
@@ -333,9 +333,9 @@ however the service takes requests (a driver service's HTTP route,
   stop record with a cause (event 7024), and `dispatch` returns
   `Ok(())`.
 - **The close has a fixed deadline, [`RESTART_CLOSE_DEADLINE`] (10 s).**
-  A wedged camera can hang its close (decision 11), so the request
-  starts a watchdog on an OS thread of its own. If the closure has not
-  returned when the deadline passes, the watchdog logs that the close
+  A wedged camera can hang its close, so the request starts a watchdog
+  on an OS thread of its own. If the closure has not returned when the
+  deadline passes, the watchdog logs that the close
   did not finish and exits with the restart code, after reporting
   `SERVICE_STOPPED` with it under the SCM. A thread rather than a task:
   a close that blocks a runtime worker, or the thread that polls the
@@ -402,21 +402,20 @@ enabled, `run` / `run_with_reload` take a different path:
    `service_dispatcher::start` unblocks — SCM mode keeps console
    mode's "`main` returns the closure's error" contract.
 
-**Failure visibility / restart contract (ADR-015, windows-packaging
-W1).** The non-zero exit code on `Err` is the pinned mechanism for
-making a deliberate service exit (e.g. a serial driver's
-eager-validation failure) count as a *failure* to SCM: the installer
-configures SCM failure actions (restart after 5 s) **and** sets
-`SERVICE_CONFIG_FAILURE_ACTIONS_FLAG` (failure actions on non-crash
-failures), so a `SERVICE_STOPPED` report with a non-zero exit code
-triggers the configured restart — reproducing the systemd
-`Restart=on-failure`/`RestartSec=5` contract. The alternative
-(exiting the process without reporting `SERVICE_STOPPED`) was
-rejected: it works without the failure-actions flag, but the SCM
-record then carries no exit code and every deliberate exit shows up
-as a crash (event 7034) instead of a clean stop record with a cause
-(event 7024). Clean stops (`Ok(())` — e.g. after an SCM Stop
-request) report `Win32(0)` and trigger no restart.
+**Failure visibility / restart contract.** The non-zero exit code on
+`Err` is the pinned mechanism for making a deliberate service exit
+(e.g. a serial driver's eager-validation failure) count as a *failure*
+to SCM: the installer configures SCM failure actions (restart after
+5 s) **and** sets `SERVICE_CONFIG_FAILURE_ACTIONS_FLAG` (failure
+actions on non-crash failures), so a `SERVICE_STOPPED` report with a
+non-zero exit code triggers the configured restart — reproducing the
+systemd `Restart=on-failure`/`RestartSec=5` contract. Exiting the
+process without reporting `SERVICE_STOPPED` would work without the
+failure-actions flag, but the SCM record would then carry no exit code
+and every deliberate exit would show up as a crash (event 7034)
+instead of a clean stop record with a cause (event 7024). Clean stops
+(`Ok(())` — e.g. after an SCM Stop request) report `Win32(0)` and
+trigger no restart.
 
 When `scm_mode(false)` (or the `scm` feature is off, or the target
 is not Windows), the runner falls through to the OS-signal path
@@ -449,17 +448,17 @@ passing their `--service` flag value:
 - **Console mode** (`scm_mode = false`, or any non-Windows target, or
   the `scm` feature off): behaves exactly like [`init_tracing`] —
   stderr, `RUST_LOG`/fallback filtering, `ErrorLayer`. Byte-for-byte
-  unchanged output.
+  the same output.
 - **SCM mode** (`cfg(all(windows, feature = "scm"))` and
   `scm_mode = true`): the fmt layer writes to a `tracing-appender`
   rolling file `%PROGRAMDATA%\rusty-photon\logs\<svc>.<date>.log` —
   daily rotation, 14 files retained, ANSI disabled. The ProgramData
   root resolves from the `ProgramData` environment variable with a
   `C:\ProgramData` fallback (the resolver is private to this crate;
-  `rusty-photon-config` grows its own for the W2 config path —
-  dedup is a noted follow-up). The writer is non-blocking: the
-  returned [`TracingGuard`] owns the worker guard and **must be held
-  in `main` until process exit** (`let _tracing_guard = ...`) so the
+  `rusty-photon-config` has its own, for the config path). The writer
+  is non-blocking: the returned [`TracingGuard`] owns the worker guard
+  and **must be held in `main` until process exit**
+  (`let _tracing_guard = ...`) so the
   final shutdown-path lines flush on SCM Stop. If the log file cannot
   be opened (unusable ProgramData ACL), init falls back to the stderr
   subscriber instead of failing service startup. Idempotent like
@@ -477,23 +476,24 @@ rendered (full `source()` chain) into the rolling file via
 **Raw std-handle writes are gated on [`is_scm_service`].** SCM mode is
 recorded in a sticky process-global flag (set by `init_service_tracing`
 and, belt-and-braces, by the SCM dispatch itself). Anything a service
-still writes to a raw std handle on its service path checks it:
+writes to a raw std handle on its service path checks it:
 
 - every service's stdout `bound_addr=` handshake is wrapped in
   `if !is_scm_service() { println!(...) }` — the only stdout consumer
   is `bdd-infra`'s port parser, which never runs services with
   `--service`, so console/BDD port discovery is unaffected;
 - pre-runner error prints go through `tracing::error!` instead of
-  `eprintln!` (plate-solver's startup-config failure is the precedent):
+  `eprintln!`, as plate-solver's startup-config failure does:
   in console mode the subscriber writes to stderr anyway, in SCM mode
   the message lands in the rolling file instead of a dead handle.
 
 In the common case a dead-handle write would merely sink (Rust's
 Windows stdio treats absent handles as successful sinks) — but sunk
 means *lost diagnostics*, and gating is also belt-and-braces against a
-genuinely invalid (non-NULL, closed) handle. Confirming benign
-std-handle behavior under a real SCM stays a `cargo ci verify-msi` smoke
-item (windows-packaging plan, W4/W5).
+genuinely invalid (non-NULL, closed) handle. The services run under a
+real SCM in `cargo ci verify-msi`, the installed-MSI check
+([packaging-windows.md § Building and verifying the
+MSI](../packaging-windows.md#building-and-verifying-the-msi)).
 
 ### Why the runner owns the runtime
 
@@ -506,21 +506,20 @@ context that owns the entry point — there is no tokio runtime when
 entry point unless the runner owns runtime construction. The same
 shape works for console mode without any compromise.
 
-Practically, this means services move from `#[tokio::main] async fn
-main() -> Result<...>` to `fn main() -> Result<...> { runner.run(|s|
-async move { ... }) }`. The visible diff is small, and there's only
-one place in main where `async` enters.
+Practically, a service's `main` is `fn main() -> ServiceResult {
+runner.run(|s| async move { ... }) }`, not `#[tokio::main] async fn
+main()`, and there is only one place in `main` where `async` enters.
 
 ## Usage
 
 ### ASCOM Alpaca driver, console only
 
-The common case (10 of 12 services after migration). The server
-consumes `shutdown.cancelled()` directly — there is no outer
-`tokio::select!`. This avoids the double-installation race described
-in [issue #287](https://github.com/rusty-photon/rusty-photon/issues/287)
-by making axum's `with_graceful_shutdown` (inside `BoundServer::start`)
-fire on the same source as the OS-signal watcher.
+The smallest driver shape; the drivers in `services/` add reload,
+restart on request and SCM mode to it. The server consumes
+`shutdown.cancelled()` directly — there is no outer `tokio::select!` —
+so axum's `with_graceful_shutdown` (inside `BoundServer::start`) fires
+on the same source as the OS-signal watcher and the drain runs to its
+end ([§ Shutdown propagation](#shutdown-propagation)).
 
 ```rust
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
@@ -529,7 +528,7 @@ fn main() -> ServiceResult {
     let args = Args::parse();
     init_tracing(args.log_level);
 
-    ServiceRunner::new("dsd-fp2").run(|shutdown| async move {
+    ServiceRunner::new("my-driver").run(|shutdown| async move {
         let bound = ServerBuilder::new()
             .with_config(args.config)
             .build()
@@ -544,9 +543,9 @@ fn main() -> ServiceResult {
 }
 ```
 
-For services where the server still does its own
-`tokio::select!` internally (e.g. the engine in `sentinel`),
-pass `shutdown.token()` instead — see the next example.
+For a server that runs its own `tokio::select!` internally (e.g. the
+engine in `sentinel`), pass `shutdown.token()` instead — see
+[§ Service with spawned worker tasks](#service-with-spawned-worker-tasks-sentinel-style).
 
 ### Axum service (graceful shutdown drains in-flight requests)
 
@@ -613,8 +612,8 @@ fn main() -> ServiceResult {
 
 ### Enabling SCM in a new service
 
-Every service binary in `services/` already has this (windows-packaging
-plan, W1). For a new one, three changes:
+Every long-running service in `services/` has this. A new one makes
+three changes:
 
 ```toml
 # services/<name>/Cargo.toml
@@ -657,10 +656,10 @@ across platforms.) No per-service Bazel wiring is needed: the service's
 `//crates/rusty-photon-service-lifecycle` label, and the lifecycle
 library target itself enables the `scm` feature via a `crate_features`
 `select()` on Windows. That keeps a single crate instantiation per
-platform across every consumer, direct or transitive — a per-consumer
-`_scm` library variant was tried and reverted because two
-instantiations in one binary's graph stop the crate's types
-(`ReloadSignal`, `Shutdown`) from unifying (E0308 on Windows).
+platform across every consumer, direct or transitive. A per-consumer
+`_scm` library variant would put two instantiations in one binary's
+graph, and the crate's types (`ReloadSignal`, `Shutdown`) would not
+unify (E0308 on Windows).
 
 That's the whole adoption cost. The SCM control-handler glue and the
 rolling-file logging live in the crate; the service binary just opts in.
@@ -681,9 +680,8 @@ crates/rusty-photon-service-lifecycle/src/
 └── runner.rs    # ServiceRunner — builder + run/run_with_reload
 ```
 
-There is intentionally no `scm.rs` module today; the SCM dispatch
-code lives inline in `runner.rs` behind `#[cfg(feature = "scm")]`.
-If the SCM glue grows past ~100 LOC it gets its own module.
+There is no `scm.rs` module: the SCM dispatch code is the inline
+`mod scm` in `runner.rs`, behind `#[cfg(all(windows, feature = "scm"))]`.
 
 ## Testing
 
@@ -730,14 +728,17 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   verify-msi` requires each gated service with no config to be stopped
   with exit code 0 and its log to say it did not start.
 - **SCM mode** — `scm_mode(false)` is a no-op and falls through to
-  the OS-signal path on Windows. The full SCM dispatch is *not*
-  exercised in CI: `windows_service::service_dispatcher::start` only
-  succeeds when invoked by the actual SCM (it returns
-  `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT` otherwise). SCM mode is
-  manually validated via filemonitor's existing Windows install/run
-  procedure on each release; `cargo ci verify-msi` (the
-  windows-packaging plan's W4/W5) adds an installed-service smoke
-  including a kill-and-observe restart check.
+  the OS-signal path on Windows. The crate's own tests do *not*
+  exercise the full SCM dispatch:
+  `windows_service::service_dispatcher::start` only succeeds when
+  invoked by the actual SCM (it returns
+  `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT` otherwise). `cargo ci
+  verify-msi` exercises it installed, on `windows-latest`: the services
+  start under the real SCM, sentinel, killed, is restarted, and
+  filemonitor takes a `ParamChange`, its reload. CI runs it when a pull
+  request changes the packaging, every night, and before a release
+  uploads its MSI ([packaging-windows.md § Building and verifying the
+  MSI](../packaging-windows.md#building-and-verifying-the-msi)).
 - **SCM logging** — the rolling-file helpers in `mod scm_file` are
   gated on the `scm` feature alone (not `cfg(windows)`), so their
   unit tests run cross-platform: ProgramData resolution is
@@ -750,12 +751,16 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   OSes); under Cargo via
   `cargo test -p rusty-photon-service-lifecycle --features scm`.
 - **No `coverage(off)` exclusions.** Per workspace policy, production
-  code is covered or it isn't shipped. The dead-code arms in the
-  no-panic signal-install path (`std::future::pending` fallbacks)
-  are deliberately impossible to provoke in a unit test — they fire
-  only when the OS refuses to install a handler — and we accept the
-  coverage gap rather than write a `#[cfg(test)]` injection seam
-  for a single branch.
+  code is covered or it isn't shipped. The degraded arms of the
+  no-panic signal install need no injection seam: `install` takes the
+  registration's `io::Result` and `next_signal` an `Option`, so unit
+  tests hand each the failure the OS would
+  (`install_degrades_a_failed_registration_to_none`,
+  `a_handler_that_failed_to_install_never_fires`). The SIGHUP watcher's
+  failed-install arm (a `std::future::pending` fallback) is the one
+  left uncovered — it fires only when the OS refuses to install the
+  handler — and the coverage gap is accepted rather than a
+  `#[cfg(test)]` injection seam for a single branch.
 
 ## Dependencies
 
@@ -765,7 +770,7 @@ If the SCM glue grows past ~100 LOC it gets its own module.
 | `tokio-util` | `CancellationToken` |
 | `tracing` | warn/debug logging on signal events |
 | `tracing-subscriber` | `init_tracing` subscriber (fmt + `EnvFilter`) |
-| `color-eyre` | panic hook + `Report` formatting at the binary boundary (ADR-011) |
+| `color-eyre` | panic hook + `Report` formatting at the binary boundary |
 | `tracing-error` | `ErrorLayer` so panic reports carry the active `SpanTrace` |
 | `tracing-appender` (opt, feature `scm`) | SCM-mode rolling log file + non-blocking writer |
 | `windows-service` (opt, feature `scm`) | Windows Service Control Manager dispatch + control handler |
@@ -774,12 +779,12 @@ Workspace-pinned versions live in the workspace `Cargo.toml` — except
 `color-eyre`, `tracing-error`, and `tracing-appender`, which are
 **deliberately crate-local**: this crate is the sole owner of top-level
 error/panic reporting (the structural guardrail that keeps `eyre!`-style
-ad-hoc errors out of the `thiserror`-typed library/device code — see
-[ADR-011](../decisions/011-error-reporting-layers.md) §3.4 of the plan)
-and of the SCM rolling-file writer (no service touches `tracing-appender`
-directly). The `scm` feature is opt-in per consumer — every service
-binary enables it, but only under
-`[target.'cfg(windows)'.dependencies]`, so Unix builds get zero
+ad-hoc errors out of the `thiserror`-typed library/device code: a crate
+that wanted `eyre!` would have to add `color-eyre` to its own
+`Cargo.toml`, in plain sight) and of the SCM rolling-file writer (no
+service touches `tracing-appender` directly). The `scm` feature is
+opt-in per consumer — every long-running service enables it, but only
+under `[target.'cfg(windows)'.dependencies]`, so Unix builds get zero
 `windows-service`/`tracing-appender` content in their dep tree.
 
 `windows-service` is `windows-service = "0.8"` — the Mullvad-
