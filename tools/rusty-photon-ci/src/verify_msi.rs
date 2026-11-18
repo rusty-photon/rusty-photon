@@ -815,12 +815,13 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             "timed out after 30s waiting for the delay-load to resolve either way (started, or \
              reported the missing DLL; not a loader crash)",
         )?;
+        self.created("qhy-camera")?;
         if log.contains("qhyccd.dll not found") {
             println!("== qhy-camera: OK (preflight reported the missing DLL; no loader crash)");
         } else {
             println!("== qhy-camera: OK (delay-load resolved; service started)");
         }
-        self.created("qhy-camera")
+        Ok(())
     }
 
     fn has_log(&self, service: &str) -> bool {

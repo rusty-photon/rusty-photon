@@ -412,7 +412,9 @@ impl<R: Runner> Run<'_, R> {
     }
 
     /// zwo-focuser under launchd, blocked on the HID privacy grant: alive,
-    /// not restarting, and serving when run in the foreground.
+    /// not restarting, and serving when run in the foreground. Under
+    /// launchd it blocks before `main`, so the foreground run is what
+    /// writes its config.
     fn hid_gated(&mut self, service: &str, url: &str, port: u16) -> Result<(), Error> {
         (self.sleep)(Duration::from_secs(3));
         let info = self.info(service);
@@ -438,6 +440,13 @@ impl<R: Runner> Run<'_, R> {
                 "no HTTP response on port {port} ({}) even in a foreground run",
                 probe_path(service)
             ),
+        )?;
+        let config = self.config_file(service);
+        let created = self.wait_until(15, |_| config.is_file());
+        self.require(
+            created,
+            service,
+            &format!("config not self-created at {}", config.display()),
         )?;
         println!(
             "== {service}: OK (foreground serve, port {port}; launchd probe skipped — HID discovery \
@@ -518,14 +527,6 @@ impl<R: Runner> Run<'_, R> {
         let port = packaging::port(service).unwrap_or_default();
         let url = format!("http://127.0.0.1:{port}{}", probe_path(service));
         if service == "zwo-focuser" {
-            // It writes its config before it reaches the HID APIs, which
-            // under launchd block it short of serving.
-            let created = self.wait_until(15, has_config);
-            self.require(
-                created,
-                service,
-                &format!("config not self-created at {}", config.display()),
-            )?;
             return self.hid_gated(service, &url, port);
         }
         let served = self.wait_until(30, |run| run.answers(&url));
@@ -1119,8 +1120,15 @@ mod tests {
             "home/Library/Application Support/rusty-photon/{service}.json"
         ));
         let bin = mac.path(&format!("prefix/bin/rusty-photon-{service}"));
+        // zwo-focuser blocks before `main` under launchd on a runner, which
+        // cannot grant HID access: only its foreground run writes a config.
+        let writes = if service == "zwo-focuser" {
+            bin.display().to_string()
+        } else {
+            "brew services start".to_owned()
+        };
         mac.brew()
-            .on("brew services start", move || {
+            .on(&writes, move || {
                 fs::create_dir_all(config.parent().unwrap()).unwrap();
                 fs::write(&config, "{}").unwrap();
                 Ok(String::new())
@@ -1253,13 +1261,13 @@ mod tests {
     }
 
     #[test]
-    fn zwo_focuser_is_held_to_its_config_before_the_hid_gate() {
+    fn zwo_focuser_is_held_to_the_config_its_foreground_run_writes() {
         let mac = Mac::new(&["zwo-focuser"]);
         let keg = mac.path("prefix/opt/rusty-photon-zwo-focuser-nightly/lib");
         fs::create_dir_all(&keg).unwrap();
         fs::write(keg.join("libEAFFocuser.dylib"), "").unwrap();
         mac.install("rusty-photon-zwo-focuser");
-        // Its start writes no config.
+        // Neither its launchd start nor its foreground run writes a config.
         let mut runner = mac
             .brew()
             .on("otool -L", || Ok("@rpath/libEAFFocuser.dylib\n".to_owned()))
