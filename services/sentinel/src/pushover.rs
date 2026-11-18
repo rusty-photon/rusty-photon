@@ -1,6 +1,7 @@
 //! Pushover notification client
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -9,6 +10,12 @@ use crate::io::HttpClient;
 use crate::notifier::{Notification, Notifier};
 
 const PUSHOVER_API_URL: &str = "https://api.pushover.net/1/messages.json";
+
+/// The longest a notification waits for the Pushover endpoint. Notifications
+/// are sent from a monitor's poll loop, so an endpoint that accepts the
+/// connection and stalls would otherwise stop the polling; 10 s leaves room
+/// for a rig's uplink to the public API.
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Pushover notification sender
 #[derive(derive_more::Debug)]
@@ -106,7 +113,14 @@ impl Notifier for PushoverNotifier {
             priority
         );
 
-        let response = self.http.post_form(&self.endpoint, &params).await?;
+        let response =
+            tokio::time::timeout(NOTIFY_TIMEOUT, self.http.post_form(&self.endpoint, &params))
+                .await
+                .map_err(|_| {
+                    crate::SentinelError::Notifier(format!(
+                        "Pushover API did not answer within {NOTIFY_TIMEOUT:?}"
+                    ))
+                })??;
 
         if response.status != 200 {
             return Err(crate::SentinelError::Notifier(format!(
@@ -280,5 +294,31 @@ mod tests {
         let mock = MockHttpClient::new();
         let notifier = PushoverNotifier::new(&test_config(), Arc::new(mock));
         assert_eq!(notifier.type_name(), "pushover");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_post_the_endpoint_does_not_answer_fails_at_the_bound() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_post_form()
+            .returning(|_, _| Box::pin(std::future::pending()));
+        let notifier = PushoverNotifier::new(&test_config(), Arc::new(mock));
+        let notification = Notification {
+            title: String::new(),
+            message: "Roof Monitor changed to Unsafe".to_string(),
+            priority: 0,
+            sound: None,
+        };
+        let start = tokio::time::Instant::now();
+
+        let err = tokio::time::timeout(2 * NOTIFY_TIMEOUT, notifier.notify(&notification))
+            .await
+            .expect("the POST outwaited its bound")
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("did not answer within 10s"),
+            "{err}"
+        );
+        assert_eq!(start.elapsed(), NOTIFY_TIMEOUT);
     }
 }

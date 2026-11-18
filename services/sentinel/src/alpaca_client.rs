@@ -16,14 +16,25 @@ use crate::monitor::{Monitor, MonitorState};
 /// from holding the poll loop, or start-up, which awaits each connect.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// ASCOM `NotConnected` (`0x407`): the device must be connected before it
+/// answers.
+const NOT_CONNECTED: i32 = 0x407;
+
+/// What one `issafe` request learned.
+enum Answer {
+    Reading(MonitorState),
+    /// The device has to be connected first.
+    NotConnected,
+}
+
 /// ASCOM Alpaca API response for boolean values
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct AlpacaBoolResponse {
+    /// Absent from an error answer, which carries only the error.
+    #[serde(default)]
     value: bool,
-    #[allow(dead_code)]
     error_number: i32,
-    #[allow(dead_code)]
     error_message: String,
 }
 
@@ -101,15 +112,9 @@ impl AlpacaSafetyMonitor {
         }
         Ok(())
     }
-}
 
-#[async_trait]
-impl Monitor for AlpacaSafetyMonitor {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    async fn poll(&self) -> MonitorState {
+    /// Ask the device `issafe` once.
+    async fn ask_is_safe(&self) -> Answer {
         let url = format!("{}/issafe", self.base_url);
         tracing::debug!("Polling {} at {}", self.name, url);
 
@@ -119,7 +124,7 @@ impl Monitor for AlpacaSafetyMonitor {
                 self.name,
                 REQUEST_TIMEOUT
             );
-            return MonitorState::Unknown;
+            return Answer::Reading(MonitorState::Unknown);
         };
         match response {
             Ok(response) => {
@@ -129,11 +134,14 @@ impl Monitor for AlpacaSafetyMonitor {
                         self.name,
                         response.status
                     );
-                    return MonitorState::Unknown;
+                    return Answer::Reading(MonitorState::Unknown);
                 }
 
                 match serde_json::from_str::<AlpacaBoolResponse>(&response.body) {
                     Ok(parsed) => {
+                        if parsed.error_number == NOT_CONNECTED {
+                            return Answer::NotConnected;
+                        }
                         if parsed.error_number != 0 {
                             tracing::debug!(
                                 "ASCOM error from {}: {} - {}",
@@ -141,23 +149,50 @@ impl Monitor for AlpacaSafetyMonitor {
                                 parsed.error_number,
                                 parsed.error_message
                             );
-                            return MonitorState::Unknown;
+                            return Answer::Reading(MonitorState::Unknown);
                         }
-                        if parsed.value {
+                        Answer::Reading(if parsed.value {
                             MonitorState::Safe
                         } else {
                             MonitorState::Unsafe
-                        }
+                        })
                     }
                     Err(e) => {
                         tracing::debug!("Failed to parse response from {}: {}", self.name, e);
-                        MonitorState::Unknown
+                        Answer::Reading(MonitorState::Unknown)
                     }
                 }
             }
             Err(e) => {
                 tracing::debug!("Failed to poll {}: {}", self.name, e);
-                MonitorState::Unknown
+                Answer::Reading(MonitorState::Unknown)
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Monitor for AlpacaSafetyMonitor {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn poll(&self) -> MonitorState {
+        match self.ask_is_safe().await {
+            Answer::Reading(state) => state,
+            Answer::NotConnected => {
+                tracing::debug!("{} answered NotConnected: connecting it again", self.name);
+                if let Err(e) = self.connect().await {
+                    tracing::debug!("Connecting {} again failed: {}", self.name, e);
+                    return MonitorState::Unknown;
+                }
+                match self.ask_is_safe().await {
+                    Answer::Reading(state) => state,
+                    Answer::NotConnected => {
+                        tracing::debug!("{} still answers NotConnected", self.name);
+                        MonitorState::Unknown
+                    }
+                }
             }
         }
     }
@@ -214,10 +249,29 @@ mod tests {
         }
     }
 
+    /// filemonitor's answer to `issafe` while its device is not connected,
+    /// captured from the running service: an error answer has no `Value`.
+    fn not_connected_response() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: r#"{"ClientTransactionID":1,"ServerTransactionID":2,"ErrorNumber":1031,"ErrorMessage":"The communications channel is not connected."}"#
+                .to_string(),
+        }
+    }
+
+    /// Another ASCOM error (`0x500`, unspecified), in the same shape.
     fn ascom_error_response() -> HttpResponse {
         HttpResponse {
             status: 200,
-            body: r#"{"Value": false, "ErrorNumber": 1031, "ErrorMessage": "Not connected"}"#
+            body: r#"{"ClientTransactionID":1,"ServerTransactionID":2,"ErrorNumber":1280,"ErrorMessage":"Unspecified error"}"#
+                .to_string(),
+        }
+    }
+
+    fn connected_response() -> HttpResponse {
+        HttpResponse {
+            status: 200,
+            body: r#"{"ClientTransactionID":1,"ServerTransactionID":3,"ErrorNumber":0,"ErrorMessage":""}"#
                 .to_string(),
         }
     }
@@ -280,6 +334,62 @@ mod tests {
         let mut mock = MockHttpClient::new();
         mock.expect_get()
             .returning(|_| Box::pin(async { Ok(ascom_error_response()) }));
+        mock.expect_put_form().never();
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn a_device_that_answers_not_connected_is_connected_again_and_read() {
+        let mut mock = MockHttpClient::new();
+        let mut seq = mockall::Sequence::new();
+        mock.expect_get()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_| Box::pin(async { Ok(not_connected_response()) }));
+        mock.expect_put_form()
+            .withf(|url, params| {
+                url.ends_with("/connected") && params.contains(&("Connected", "true"))
+            })
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_, _| Box::pin(async { Ok(connected_response()) }));
+        mock.expect_get()
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_| Box::pin(async { Ok(unsafe_response()) }));
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Unsafe);
+    }
+
+    #[tokio::test]
+    async fn a_device_still_not_connected_after_the_reconnect_reads_unknown() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get()
+            .times(2)
+            .returning(|_| Box::pin(async { Ok(not_connected_response()) }));
+        mock.expect_put_form()
+            .times(1)
+            .returning(|_, _| Box::pin(async { Ok(connected_response()) }));
+
+        let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
+        let state = monitor.poll().await;
+        assert_eq!(state, MonitorState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn a_failed_reconnect_reads_unknown_without_asking_again() {
+        let mut mock = MockHttpClient::new();
+        mock.expect_get()
+            .times(1)
+            .returning(|_| Box::pin(async { Ok(not_connected_response()) }));
+        mock.expect_put_form().times(1).returning(|_, _| {
+            Box::pin(async { Err(crate::SentinelError::Http("refused".to_string())) })
+        });
 
         let monitor = AlpacaSafetyMonitor::new(&test_config(), Arc::new(mock));
         let state = monitor.poll().await;

@@ -23,6 +23,9 @@ pub struct SentinelWorld {
     // Filemonitor config accumulation
     pub fm_rules: Vec<serde_json::Value>,
     pub fm_polling_interval: u64,
+    /// filemonitor's port, reserved at its first start so a restart
+    /// rebinds it.
+    pub fm_port: Option<u16>,
 
     // Sentinel config accumulation
     pub sentinel_monitor_name: String,
@@ -148,7 +151,7 @@ impl SentinelWorld {
                 "case_sensitive": false
             },
             "server": {
-                "port": 0,
+                "port": self.fm_port.unwrap_or(0),
                 "discovery_port": null
             }
         })
@@ -231,6 +234,7 @@ impl SentinelWorld {
 
     /// Start filemonitor binary with the accumulated config.
     pub async fn start_filemonitor(&mut self) {
+        bdd_infra::reserved_port_once(&mut self.fm_port).await;
         let config_json = self.build_filemonitor_config();
         let dir = self
             .temp_dir
@@ -242,6 +246,33 @@ impl SentinelWorld {
         let handle = ServiceHandle::start("filemonitor", config_path.to_str().unwrap()).await;
 
         self.filemonitor = Some(handle);
+    }
+
+    /// Stop the running filemonitor; [`Self::start_filemonitor`] brings it
+    /// back on the same port, with its device disconnected, as a restarted
+    /// service is.
+    pub async fn stop_filemonitor(&mut self) {
+        self.filemonitor
+            .take()
+            .expect("filemonitor not started")
+            .stop()
+            .await;
+    }
+
+    /// Whether the running filemonitor's device reports itself connected.
+    pub async fn filemonitor_connected(&self) -> bool {
+        let fm = self.filemonitor.as_ref().expect("filemonitor not started");
+        let url = format!(
+            "http://127.0.0.1:{}/api/v1/safetymonitor/0/connected",
+            fm.port()
+        );
+        let body: serde_json::Value = reqwest::get(&url)
+            .await
+            .expect("failed to GET filemonitor connected")
+            .json()
+            .await
+            .expect("connected answer is not JSON");
+        body["Value"].as_bool() == Some(true)
     }
 
     /// Add a monitor config entry pointing at the running filemonitor.
@@ -281,20 +312,17 @@ impl SentinelWorld {
         port
     }
 
-    /// Connect or disconnect the running filemonitor's device through its
-    /// Alpaca API, as any client may. Disconnected, its `IsSafe` answers
-    /// `NotConnected`, an ASCOM error sentinel reads as `Unknown`; connected
-    /// again, it re-reads its file.
-    pub async fn set_filemonitor_connected(&self, connected: bool) {
+    /// Disconnect the running filemonitor's device through its Alpaca API,
+    /// as any client may. Its `IsSafe` then answers `NotConnected`.
+    pub async fn disconnect_filemonitor(&self) {
         let fm = self.filemonitor.as_ref().expect("filemonitor not started");
         let url = format!(
             "http://127.0.0.1:{}/api/v1/safetymonitor/0/connected",
             fm.port()
         );
-        let value = if connected { "true" } else { "false" };
         let resp = reqwest::Client::new()
             .put(&url)
-            .form(&[("Connected", value), ("ClientID", "2")])
+            .form(&[("Connected", "false"), ("ClientID", "2")])
             .send()
             .await
             .expect("failed to PUT filemonitor connected");
@@ -302,7 +330,7 @@ impl SentinelWorld {
         assert_eq!(
             body["ErrorNumber"].as_i64(),
             Some(0),
-            "filemonitor refused Connected={value}: {body}"
+            "filemonitor refused Connected=false: {body}"
         );
     }
 
