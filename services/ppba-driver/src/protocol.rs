@@ -217,7 +217,7 @@ impl std::str::FromStr for PpbaStatus {
         let parts: Vec<Payload<'_>> = response.split(':').map(Payload).collect();
 
         // Expect 13 parts: PPBA + 12 values; the trailing `..` tolerates
-        // extra parts, matching the previous `len() < 13` check.
+        // extra parts.
         let [_prefix, voltage, current, temperature, humidity, dewpoint, quad_12v, adjustable_output, dew_a, dew_b, auto_dew, power_warning, power_adj, ..] =
             parts.as_slice()
         else {
@@ -267,7 +267,7 @@ impl std::str::FromStr for PpbaPowerStats {
         let parts: Vec<Payload<'_>> = response.split(':').map(Payload).collect();
 
         // Expect 5 parts: PS + 4 values; the trailing `..` tolerates extra
-        // parts, matching the previous `len() < 5` check.
+        // parts.
         let [_prefix, average_amps, amp_hours, watt_hours, uptime_ms, ..] = parts.as_slice() else {
             return Err(PpbaError::InvalidResponse(format!(
                 "Expected 5 parts in PS response, got {}: {}",

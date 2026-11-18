@@ -3,11 +3,10 @@
 //!
 //! `main.rs`'s reload loop awaits `start()` to completion so the old
 //! server drains HTTP and the transport shuts down, and only then
-//! rebuilds. Nothing tested that claim: the BDD mock hands out as many
-//! concurrent transports as it is asked for, so a reload that leaked
-//! the port would pass there and fail only on a rig, where a COM port
-//! is exclusive per handle and the second open returns `Access is
-//! denied`.
+//! rebuilds. The BDD mock hands out as many concurrent transports as it
+//! is asked for, so a reload that leaked the port would pass there and
+//! fail only on a rig, where a COM port is exclusive per handle and the
+//! second open returns `Access is denied`.
 //!
 //! These tests drive the same build → serve → rebuild sequence against
 //! a factory that refuses to open while a transport it handed out

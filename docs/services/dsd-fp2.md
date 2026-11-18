@@ -624,8 +624,8 @@ are converted to `ASCOMError` for protocol boundaries:
 | `SerialPort(_)`              | `INVALID_OPERATION`  |
 
 `debug!` is used for the per-operation breadcrumbs; only the
-once-per-lifecycle messages (server bound, port opened, port closed) use
-`info!` (CLAUDE.md rule 9).
+once-per-lifecycle messages (the startup handshake, the registered device,
+the serial port, the bound address) use `info!` (CLAUDE.md rule 9).
 
 ## Module Structure
 

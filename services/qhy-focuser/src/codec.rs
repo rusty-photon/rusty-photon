@@ -126,9 +126,9 @@ impl Codec for QhyCodec {
     fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
         let text = std::str::from_utf8(bytes)?.trim();
         // The device's responses are flat JSON objects terminated by `}`;
-        // `SerialFrameTransport` includes the terminator. Trim leading
-        // junk (matches the legacy `TokioSerialReader` defensive
-        // behaviour) before parsing.
+        // `SerialFrameTransport` includes the terminator. Bytes before the
+        // first `{`, left over from a partial earlier read, are skipped
+        // before parsing.
         let json = text
             .find('{')
             .and_then(|start| text.get(start..))
@@ -162,8 +162,7 @@ impl Codec for QhyCodec {
 
     fn max_skip(&self) -> usize {
         // The device emits unsolicited position (idx 5) frames during
-        // movement; the legacy driver allowed up to 5 stale-frame
-        // discards before erroring. Preserve that.
+        // movement.
         5
     }
 }
@@ -293,9 +292,8 @@ mod tests {
 
     #[test]
     fn decode_trims_leading_junk_before_opening_brace() {
-        // Matches the legacy defensive behaviour in TokioSerialReader,
-        // preserved here so leftover bytes from a partial prior read
-        // don't break decode.
+        // Leftover bytes from a partial earlier read must not break
+        // decode.
         let frame = b"junk{\"idx\": 5, \"pos\": 42}";
         match QhyCodec.decode(frame).unwrap() {
             QhyResponse::Position(p) => assert_eq!(p.position, 42),
@@ -475,8 +473,7 @@ mod tests {
         // SessionError::Codec(QhyCodecError::Transport(Timeout(...))).
         // It must map to QhyFocuserError::Timeout — same classification
         // a steady-state timeout (SessionError::Transport(Timeout(...)))
-        // would receive — so the ASCOM client doesn't see a generic
-        // Communication error for connect-time timeouts.
+        // receives — not to a generic Communication error.
         let err: SessionError<QhyCodecError> = SessionError::Codec(QhyCodecError::Transport(
             TransportError::Timeout(std::time::Duration::from_secs(2)),
         ));

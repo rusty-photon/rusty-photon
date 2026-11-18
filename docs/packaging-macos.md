@@ -292,6 +292,22 @@ brew uninstall rusty-photon-<svc>          # or the whole family:
 brew uninstall rusty-photon $(brew list --formula | grep '^rusty-photon-')
 ```
 
+If you installed the meta-formula, it holds the services it installed in
+both directions:
+
+- While `rusty-photon` is installed, Homebrew refuses to uninstall one of
+  its services ("required by rusty-photon, which is currently installed");
+  `brew uninstall --ignore-dependencies rusty-photon-<svc>` removes it
+  anyway.
+- Uninstalling `rusty-photon` on its own uninstalls every service it
+  installed as well: Homebrew 7.0.13 and later autoremove a formula that
+  came in only as a dependency once nothing depends on it. A service you
+  installed by name stays. To keep one that came in with the family, mark
+  it before uninstalling the meta-formula:
+  `brew tab --installed-on-request rusty-photon-<svc>`. Stop the services
+  you run first, as the first line above does: uninstalling removes their
+  binaries.
+
 Homebrew never touches runtime-created state (the rpm-erase parity, not
 dpkg purge): to fully clean up, delete
 `~/Library/Application Support/rusty-photon/` by hand.

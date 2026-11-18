@@ -20,8 +20,8 @@ use crate::units::{MechanicalDegrees, Steps};
 ///   implemented as a driver-side offset instead; see
 ///   `docs/services/falcon-rotator.md#sync-semantics--why-driver-side-not-sd`.
 ///
-/// Keeping these variants out of the public surface removes the temptation
-/// to reach for them from later phases.
+/// With no variant for either, the codec cannot encode them, so no path in
+/// the driver can send one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// `F#` — ping / status check. Expect `FR_OK`.
@@ -79,14 +79,14 @@ impl Command {
     }
 
     /// Reject command instances that would serialise to an invalid wire
-    /// payload — currently just a `MoveDeg` whose `MechanicalDegrees` holds a
-    /// non-finite value, which would emit `MD:NaN` / `MD:inf` / `MD:-inf`.
+    /// payload — a `MoveDeg` whose `MechanicalDegrees` holds a non-finite
+    /// value, which would emit `MD:NaN` / `MD:inf` / `MD:-inf`, is the one
+    /// such command.
     ///
     /// The ASCOM boundary rejects non-finite move targets before a
-    /// `MechanicalDegrees` is ever constructed, so this is defence-in-depth
-    /// for callers that hand-build a `Command` and route it through the
-    /// public `send_command` entry point. `to_command_string` stays
-    /// infallible.
+    /// `MechanicalDegrees` is ever constructed, and no driver path calls
+    /// this: it is a check for a caller that builds a `Command` by hand.
+    /// `to_command_string` stays infallible.
     ///
     /// # Errors
     ///
@@ -219,7 +219,7 @@ impl std::str::FromStr for FalconStatus {
             )));
         }
         let fields: Vec<Payload<'_>> = parts.map(Payload).collect();
-        // Exactly 6 fields, as before — the slice pattern has no rest arm.
+        // Exactly 6 fields: the slice pattern has no rest arm.
         let [position_steps, position_deg, is_moving, limit_detect, do_derotation, motor_reverse] =
             fields.as_slice()
         else {
@@ -229,9 +229,8 @@ impl std::str::FromStr for FalconStatus {
             )));
         };
         // Signed: negative for positions CCW of the 0° home (e.g. a target
-        // past the 220° CW limit reached the long way round). Parsing as u32
-        // here is the bug that broke every status read whenever steps went
-        // negative.
+        // past the 220° CW limit reached the long way round). Parsed as
+        // u32, every status read would fail while steps are negative.
         let steps_raw: i32 = field!("FA", position_steps);
         let deg_raw: f64 = field!("FA", position_deg);
         if !deg_raw.is_finite() {
@@ -661,8 +660,8 @@ mod tests {
         // sends the rotator the long way round — CCW past the 0° home — where
         // the signed step counter goes negative while position_deg wraps into
         // [0, 360). Parsing field 0 as i32 (not u32) is what keeps status reads
-        // alive across that region; the u32 parse here used to abort the read
-        // with "FA position_steps: invalid digit found in string".
+        // alive across that region; a u32 parse aborts the read with
+        // "FA position_steps: invalid digit found in string".
         let status = "FR_OK:-2838:327.24:1:0:0:0"
             .parse::<FalconStatus>()
             .unwrap();

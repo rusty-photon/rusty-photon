@@ -9,8 +9,9 @@
 //! plug in additional ones as needed.
 //!
 //! [`TransportFactory`] is the "open me a transport" trait. The
-//! [`SharedTransport`] core holds a factory and calls `open()` exactly
-//! once per 0→1 connect transition.
+//! [`SharedTransport`] core holds a factory and calls `open()` once per
+//! open: a lazy 0→1 `acquire`, a cold `start`, and each reconnect
+//! attempt.
 //!
 //! [`SharedTransport`]: crate::SharedTransport
 
@@ -71,12 +72,10 @@ pub trait FrameTransport: Send {
     /// Receive one whole frame, overwriting `buf`.
     ///
     /// For [`SerialFrameTransport`], reads bytes until the configured
-    /// terminator is seen; the terminator is **included** in the result
-    /// (this matches what `qhy-focuser`'s JSON parser, the
-    /// `skywatcher-motor-protocol` codec, and the
-    /// `pa-falcon-rotator`/`ppba-driver` ASCII echoes all expect). For
-    /// [`UdpFrameTransport`], reads exactly one datagram; the buffer is
-    /// resized to the datagram's length.
+    /// terminator is seen; the terminator is **included** in the result,
+    /// which is what [`Codec::decode`](crate::Codec::decode) receives.
+    /// For [`UdpFrameTransport`], reads exactly one datagram; the buffer
+    /// is resized to the datagram's length.
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError>;
 
     /// Drop whatever input has arrived on this conduit and not been read,
@@ -97,8 +96,9 @@ pub trait FrameTransport: Send {
     }
 }
 
-/// Constructs a fresh [`FrameTransport`] each time the 0→1 connect
-/// transition fires.
+/// Constructs a fresh [`FrameTransport`] on every open: a lazy 0→1
+/// [`acquire`](crate::SharedTransport::acquire), a cold
+/// [`start`](crate::SharedTransport::start), and each reconnect attempt.
 ///
 /// The factory carries the configuration — port path, baud rate, peer
 /// address, etc. — captured at service-startup time. Per-call
@@ -108,18 +108,18 @@ pub trait TransportFactory: Send + Sync + 'static {
     /// Open the underlying device and return a ready-to-use transport.
     ///
     /// On error, no resources are leaked: the transport core leaves
-    /// `count` and `available` untouched and the caller sees an `Err`
-    /// from [`crate::SharedTransport::acquire`].
+    /// `count` and `available` as they were, and the error reaches the
+    /// caller of [`crate::SharedTransport::acquire`] or
+    /// [`crate::SharedTransport::start`], or fails the reconnect attempt.
     async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError>;
 }
 
 /// Default I/O timeout applied when a transport is built without one.
 ///
-/// Five seconds matches the existing per-service defaults
-/// (`qhy-focuser`, `ppba-driver`, SAG-GTI all configure this in their
-/// `Config`); centralising the default here lets services that don't
-/// care use [`SerialFrameTransport::new`] / [`UdpFrameTransport::new`]
-/// without specifying timeouts.
+/// Every driver's factory sets both timeouts from its own config, so
+/// this is the timeout of a transport built with
+/// [`SerialFrameTransport::new`] / [`UdpFrameTransport::new`] alone, as
+/// in tests.
 pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Classify an [`io::Error`] surfaced by a wrapped stream / socket into
@@ -280,8 +280,8 @@ where
         // preempt it once entered. A peer that enumerates but never
         // services its endpoints (e.g. a bus-powered USB-CDC device
         // whose firmware is dead) wedges the write forever instead of
-        // surfacing the honest `TransportError::Timeout` that drives
-        // the reconnect/restart ladder. `write_all` alone hands the
+        // surfacing the honest `TransportError::Timeout` that wakes
+        // the reconnect supervisor. `write_all` alone hands the
         // bytes to the kernel's non-blocking write path; a
         // non-responding peer is instead caught by `recv_frame`'s
         // bounded read timeout.
@@ -472,13 +472,12 @@ const SERIAL_OPEN_RETRY_DELAYS: [Duration; 4] = [
 /// re-open issued in the same breath as the drop therefore finds the
 /// port still held and fails with `Access is denied`, microseconds
 /// after the code that owned it let go. Unix closes at drop, which is
-/// why this only ever bites on the rig.
+/// why this only ever bites on Windows.
 ///
 /// Retrying is the honest fix: there is no API that waits for the
 /// handle to be gone. [`SERIAL_OPEN_RETRY_DELAYS`] bounds the wait, and
 /// a port held by another process — the case that must still be
-/// reported — surfaces the same error it always did, half a second
-/// later.
+/// reported — surfaces the OS's error half a second later.
 ///
 /// # Errors
 ///
@@ -584,10 +583,8 @@ mod tests {
     #[tokio::test]
     async fn serial_frame_transport_recv_frame_rejects_oversized_frame() {
         // Stream emits 16 bytes with no terminator, max_frame_size is 8.
-        // After max_frame_size + buffer fills, read_until returns
-        // success at EOF without seeing the terminator. We require a
-        // terminator to consider the frame complete, so this surfaces
-        // as Framing.
+        // The frame passes the cap before a terminator is seen, which
+        // surfaces as Framing.
         let reader = Cursor::new(b"0123456789ABCDEF".to_vec());
         let writer = Vec::<u8>::new();
         let stream = tokio::io::join(reader, writer);
@@ -748,12 +745,9 @@ mod tests {
     }
 
     // ============================================================================
-    // send_frame must never flush the wrapped stream: on Unix,
-    // `tokio_serial::SerialStream::poll_flush` issues a blocking `tcdrain(2)`
-    // ioctl that a `tokio::time::timeout` cannot preempt once entered, so a
-    // peer that enumerates but never services its endpoints (dead firmware
-    // behind a bus-powered USB-CDC port) wedges the write forever instead of
-    // surfacing an honest timeout. See issue #622.
+    // send_frame never flushes the wrapped stream (the comment in
+    // `send_frame` above, and docs/crates/rusty-photon-shared-transport.md
+    // § Writing without a flush).
     // ============================================================================
 
     /// Test-only AsyncRead/AsyncWrite whose `poll_flush` panics — standing
@@ -944,10 +938,8 @@ mod tests {
     async fn serial_frame_transport_read_timed_out_io_surfaces_as_timeout() {
         // Wrap a stream whose underlying read returns ErrorKind::TimedOut.
         // Without the classification, this would surface as
-        // TransportError::Io(TimedOut) — and the legacy qhy-focuser /
-        // ppba-driver factories that set `.timeout(...)` on the
-        // tokio-serial builder relied on accidental termios behaviour
-        // for the kind, with no guarantee the variant ever lined up.
+        // TransportError::Io(TimedOut), and a port-level timer would not
+        // read as a timeout.
         let stream = TimedOutStream {
             fail_next_read: true,
             fail_next_write: false,

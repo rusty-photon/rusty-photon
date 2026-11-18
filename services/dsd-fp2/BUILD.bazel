@@ -51,13 +51,12 @@ rust_binary(
 
 # Unit tests compile the lib with `crate_features = ["mock"]` so the in-lib
 # `#[cfg(all(test, feature = "mock"))]` suites in device.rs / manager.rs compile
-# and run, matching the Cargo coverage job's `cargo test --all-features`. The
-# default non-mock compile cfg-excluded them — the dominant bazel<cargo coverage
-# gap (see docs/plans/archive/bazel-migration.md "Coverage under Bazel"). `crate_features`
-# must be on the rust_test itself — `crate = ":..._lib_mock"` does NOT inherit
-# the library's features. The `mock` module is additive and every
-# `not(feature = "mock")` block lives in main.rs (outside this lib), so nothing
-# is lost. Same pattern as `conformu_integration` below.
+# and run here, as they do under `cargo test --all-features`; without it they
+# are cfg'd out of the Bazel test and of the coverage `bazel coverage` reports.
+# `crate_features` must be on the rust_test itself — `crate = ":..._lib_mock"`
+# does NOT inherit the library's features. The `mock` module is additive and
+# every `not(feature = "mock")` block lives in main.rs (outside this lib), so
+# nothing is lost. Same pattern as `conformu_integration` below.
 rust_test(
     name = "dsd-fp2_unit_test",
     size = "medium",

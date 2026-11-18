@@ -17,15 +17,15 @@ use ndarray::ArrayView2;
 use serde::Serialize;
 
 use crate::error::{Result, RpError};
-use crate::imaging::analysis::aperture::{
+use rp_image_analysis::aperture::{
     aggregate_hfr, aperture_snr, measure_in_apertures, measure_listed, peak_in_aperture, Listed,
     MeasuredStar,
 };
-use crate::imaging::analysis::background::{estimate_background, BackgroundStats};
-use crate::imaging::analysis::fwhm::fit_2d_gaussian;
-use crate::imaging::analysis::pixel::Pixel;
-use crate::imaging::analysis::saturation::saturation_level;
-use crate::imaging::analysis::stars::{detect, hot_pixels, DetectionParams};
+use rp_image_analysis::background::{estimate_background, BackgroundStats};
+use rp_image_analysis::fwhm::fit_2d_gaussian;
+use rp_image_analysis::pixel::Pixel;
+use rp_image_analysis::saturation::saturation_level;
+use rp_image_analysis::stars::{detect, hot_pixels, DetectionParams};
 
 /// Default postage-stamp half-size (pixels). 8 ⇒ 17×17 stamp, comfortably
 /// captures a PSF with σ ≤ 4 px (FWHM ≤ ~9 px).

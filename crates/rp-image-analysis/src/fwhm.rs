@@ -17,7 +17,7 @@
 //! HFR (half-flux radius) for a Gaussian has a closed form: HFR = σ ·
 //! √(2 ln 2) ≈ 1.1774σ. This module exposes only the fit; the empirical
 //! HFR (sum of background-subtracted flux out to half the total) lives in
-//! `imaging/hfr.rs` and is preferred when the connected-component pixel
+//! [`crate::hfr`] and is preferred when the connected-component pixel
 //! list is available (i.e. when stars came from `detect_stars`).
 
 use ndarray::ArrayView2;

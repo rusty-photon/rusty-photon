@@ -1,11 +1,9 @@
-//! While-open task lifecycle.
+//! While-open task lifecycle in `LazyAcquire`.
 //!
-//! The poll-task teardown leak is the third bug class the plan calls
-//! out (speculative on `main`, but the same copy-paste shape that
-//! produced the race and the refcount leak). After this crate, the
-//! while-open task is owned by `SharedTransport`: it is spawned on the
-//! 0→1 transition, sees a cancellation signal on the 1→0 transition,
-//! and is joined (with a bounded timeout + abort) before teardown runs.
+//! The while-open task is owned by `SharedTransport`: it is spawned on
+//! the 0→1 transition, sees a cancellation signal on the 1→0 transition,
+//! and is joined (for up to 5 s, then aborted) before the last-disconnect
+//! hook runs and the conduit closes.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(

@@ -107,8 +107,8 @@ pub enum SkywatcherCodecError {
     WrongDevice { port: String, reason: String },
 }
 
-/// Flatten a [`SessionError`] arising inside a handshake / teardown
-/// hook (which returns `Result<_, SkywatcherCodecError>`) into the
+/// Flatten a [`SessionError`] arising inside a hook (the handshake
+/// returns `Result<_, SkywatcherCodecError>`) into the
 /// codec error type so `?` works without losing the structured
 /// transport-error variant. The device-layer
 /// `From<SessionError<SkywatcherCodecError>> for StarAdvError` then
@@ -551,8 +551,7 @@ mod tests {
         // SessionError::Codec(SkywatcherCodecError::Transport(Timeout(...))).
         // It must map to StarAdvError::Timeout — same classification a
         // steady-state timeout (SessionError::Transport(Timeout(...)))
-        // would receive — so the ASCOM client doesn't see a generic
-        // INVALID_OPERATION for connect-time timeouts.
+        // receives — not to a generic INVALID_OPERATION.
         let err: SessionError<SkywatcherCodecError> =
             SessionError::Codec(SkywatcherCodecError::Transport(TransportError::Timeout(
                 std::time::Duration::from_secs(2),

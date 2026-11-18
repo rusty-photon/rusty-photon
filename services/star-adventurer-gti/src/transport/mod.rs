@@ -2,8 +2,8 @@
 //!
 //! Each per-transport module ([`serial`], [`udp`], [`mock`] under the
 //! `mock` feature) provides a [`TransportFactory`] that the shared
-//! crate's [`SharedTransport`] uses to open the underlying conduit on
-//! the 0→1 connect transition. Framing — terminator-delimited for
+//! crate's [`SharedTransport`] calls for every conduit it opens — the
+//! cold `start()` and each reconnect attempt. Framing — terminator-delimited for
 //! serial (`\r`), datagram-bounded for UDP — lives inside the
 //! [`FrameTransport`] each factory hands back.
 //!

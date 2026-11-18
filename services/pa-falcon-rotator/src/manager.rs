@@ -66,8 +66,8 @@ impl FalconManager {
                 Box::pin(handshake(conn, last))
             }),
             on_last_disconnect: Box::new(|_| {
-                // Nothing to assert: this service holds no state that must
-                // survive a no-client gap, so the answer is trivially yes.
+                // Nothing to assert: no device state has to hold while no
+                // client is attached, so the answer is trivially yes.
                 Box::pin(async { StateAssertion::Asserted })
             }),
             shutdown: Box::new(|_| Box::pin(async {})),
@@ -97,10 +97,10 @@ impl FalconManager {
     /// `limit_detect` edge log.
     ///
     /// Logs `warn!` exactly once on the `None → true` or
-    /// `Some(false) → true` transition of `FA.limit_detect`. The state
-    /// initialises to `None` on connect, so a fresh connection whose
-    /// very first observation reports `limit_detect = 1` still surfaces
-    /// the warning.
+    /// `Some(false) → true` transition of `FA.limit_detect`. The handshake
+    /// — at service start and on every reconnect — initialises the state
+    /// to `None`, so a fresh connection whose very first observation
+    /// reports `limit_detect = 1` still surfaces the warning.
     ///
     /// # Errors
     ///
@@ -295,10 +295,13 @@ impl FalconManager {
         *self.target_position.lock().await
     }
 
-    /// Reset all driver-side per-session state. Called by the devices on
-    /// the 1→0 disconnect transition so a subsequent reconnect starts
-    /// from a clean slate (`sync_offset = 0`, no target, no remembered
-    /// limit edge).
+    /// Reset all driver-side state: `sync_offset = 0`, no target, no
+    /// remembered limit edge. A device calls it after its disconnect when
+    /// the transport is unavailable — reconnecting or shut down. Under
+    /// `ServiceLifetime`, which `ServerBuilder::build` starts, the
+    /// transport stays available after the last client goes, so the state
+    /// outlives an ordinary disconnect; under `LazyAcquire`, as in the unit
+    /// tests, the last disconnect closes the transport and so resets it.
     pub async fn clear_session_state(&self) {
         *self.sync_offset.lock().await = SyncOffset::ZERO;
         *self.target_position.lock().await = None;
@@ -309,8 +312,8 @@ impl FalconManager {
 /// The `limit_detect` rising-edge rule: `None → true` and
 /// `Some(false) → true` are edges, everything else is not.
 ///
-/// `previous` is the `last_limit_detected` tracker, which the connect-time
-/// handshake initialises to `None` so a fresh connection whose very first
+/// `previous` is the `last_limit_detected` tracker, which the handshake
+/// initialises to `None` so a fresh connection whose very first
 /// observation reports `limit_detect = 1` still counts as an edge.
 ///
 /// Split out of [`FalconManager::read_status`] deliberately: it makes the
@@ -344,7 +347,8 @@ impl std::fmt::Debug for FalconManager {
     }
 }
 
-/// Connect-time handshake: `F#` → `FV` → `DR:0` → `FA` → `VS`.
+/// Handshake, run on every open of the port — at service start and on
+/// each reconnect: `F#` → `FV` → `DR:0` → `FA` → `VS`.
 ///
 /// The `FA` and `VS` reads are smoke tests — we just want to confirm
 /// the wire format is honoured and that the device responds, so the
@@ -402,8 +406,9 @@ async fn handshake(
         )));
     }
 
-    // Initialise the edge tracker so the first post-connect read_status sees
-    // a fresh observation (rising-edge log fires on None → true).
+    // Initialise the edge tracker so the first read_status after the
+    // handshake sees a fresh observation (rising-edge log fires on
+    // None → true).
     *last_limit_detected.lock().await = None;
     Ok(())
 }
@@ -452,6 +457,9 @@ mod edge_rule_tests {
 ///
 /// Exercises the handshake + protocol API against the deterministic
 /// [`MockFalconTransportFactory`](crate::mock::MockFalconTransportFactory).
+/// Nothing here calls `start()`, so the transport runs `LazyAcquire`: the
+/// first acquire opens the port and runs the handshake, and the last
+/// release closes it.
 /// Race / refcount / rollback invariants are tested once for everyone in
 /// `rusty-photon-shared-transport`'s own test suite — not duplicated here.
 #[cfg(all(test, feature = "mock"))]
@@ -583,7 +591,7 @@ mod mock_tests {
         assert_eq!(log, vec!["MD:330.00".to_string()]);
     }
 
-    // Non-finite rejection now lives at the ASCOM boundary (the
+    // Non-finite rejection lives at the ASCOM boundary (the
     // `MechanicalDegrees` argument is finite by construction); see the
     // `move_*_rejects_non_finite` tests in `rotator_device`.
 
@@ -725,7 +733,7 @@ mod mock_tests {
     // These tests deliberately do NOT capture the `warn!` itself. A
     // thread-local subscriber cannot reliably observe an event whose
     // callsite another test in the same binary may register first — see
-    // issue #949 and `testing.md` §6.8.
+    // `docs/skills/testing.md` §6.8.
 
     #[tokio::test]
     async fn read_status_records_each_limit_detect_observation() {

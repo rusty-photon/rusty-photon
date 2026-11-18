@@ -1,10 +1,10 @@
 //! Step definitions for `status_switch.feature`
 //!
-//! Phase 3e wires every step body. The status switch exposes two read-only
-//! switches: id 0 (raw voltage from `VS`) and id 1 (limit-hit boolean from
-//! `FA.limit_detect`). Helpers seed mock device state, drive the Alpaca HTTP
-//! surface, and assert on either the parsed value, the boolean projection,
-//! or the captured ASCOM error code.
+//! The status switch exposes two read-only switches: id 0 (raw voltage
+//! from `VS`) and id 1 (limit-hit boolean from `FA.limit_detect`). Helpers
+//! seed mock device state, drive the Alpaca HTTP surface, and assert on
+//! either the parsed value, the boolean projection, or the captured ASCOM
+//! error code.
 
 use crate::world::FalconRotatorWorld;
 use cucumber::{given, then, when};
@@ -41,13 +41,11 @@ async fn read_max_switch(world: &mut FalconRotatorWorld) {
     world.max_switch_result = Some(value);
 }
 
-// `I read GetSwitchValue for id N` is referenced by a Phase 3d scenario in
-// `connection_lifecycle.feature` (NOT_CONNECTED for disconnected switch),
-// so its body landed earlier — the `ensure_connected!` guard on the switch
-// getter handles that case without needing Phase 3e's value plumbing. The
-// other read steps follow the same shape: Ok → populate the result slot
-// and clear `last_error_code`; Err → record the code for the failure-path
-// assertions.
+// `I read GetSwitchValue for id N` also serves the NOT_CONNECTED scenario
+// in `connection_lifecycle.feature`, where the `ensure_connected!` guard
+// on the switch getter answers. Every read step has the same shape:
+// Ok → populate the result slot and clear `last_error_code`; Err → record
+// the code for the failure-path assertions.
 #[when(expr = "I read GetSwitchValue for id {int}")]
 async fn read_switch_value(world: &mut FalconRotatorWorld, id: usize) {
     match world.status_switch().get_switch_value(id).await {

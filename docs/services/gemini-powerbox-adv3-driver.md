@@ -110,7 +110,7 @@ The driver does not bundle it.
 
 | Item | Value | Source |
 |------|-------|--------|
-| Serial | 19200 baud, 8N1, DTR and RTS asserted | both drivers; measured |
+| Serial | 19200 baud, 8N1, DTR and RTS asserted. This driver sets neither line: Linux raises both as the port opens, which is where it was measured; Windows leaves both low | both drivers; measured |
 | Command | ASCII `>X…#` followed by `\n` | both drivers (the vendor's uses `SerialPort.WriteLine`; INDI sends `\r\n`); measured with `\n` |
 | Reply | ASCII `*X…#` where `X` echoes the command letter; **no line ending after `#`** | measured: frames arrive back to back, `…P#*G…` |
 | Frame terminator for `SerialFrameTransport` | `#` | follows from the above |

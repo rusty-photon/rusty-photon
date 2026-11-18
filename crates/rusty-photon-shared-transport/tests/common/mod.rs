@@ -1,9 +1,10 @@
 //! Test helpers shared across `rusty-photon-shared-transport` integration tests.
 //!
 //! Each integration test file (`race.rs`, `rollback.rs`, etc.) declares
-//! `mod common;` to pull these in. Helpers here are deliberately minimal
-//! — just enough for the lifecycle tests to construct a [`SharedTransport`]
-//! over a stub codec and a programmable factory.
+//! `mod common;` to pull these in: a stub codec and transport to build a
+//! [`SharedTransport`] over, a programmable factory that counts its opens,
+//! an exclusive one that refuses a second open as a Windows COM port does,
+//! and hook sets that count, park, fail or panic on cue.
 
 // The failure-injection helpers panic *inside closures* rather than inside a
 // `#[test]` fn, which is what `allow-panic-in-tests` recognises.
@@ -388,10 +389,10 @@ impl TransportFactory for ExclusiveFactory {
     }
 }
 
-/// Build a [`SharedTransport`] with the [`EchoCodec`], no while-open
-/// task, and an infallible no-op handshake/teardown. Returns the
-/// transport plus a handle to the factory config so tests can read
-/// `opens()`/`dropped_count()`.
+/// Build a [`SharedTransport`] with the [`EchoCodec`] and
+/// [`Hooks::noop`]: no while-open task, and hooks that do nothing.
+/// Returns the transport plus a handle to the factory config so tests
+/// can read `opens()`/`dropped_count()`.
 pub fn build_noop_transport() -> (Arc<SharedTransport<EchoCodec>>, FactoryConfig) {
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
@@ -403,8 +404,7 @@ pub fn build_noop_transport() -> (Arc<SharedTransport<EchoCodec>>, FactoryConfig
 /// the right hook fired the right number of times across N connect /
 /// disconnect / start / shutdown cycles.
 ///
-/// `teardown_calls` is the historical name retained for the `on_last_disconnect`
-/// counter — old tests pre-date the hook split.
+/// `teardown_calls` counts `on_last_disconnect`.
 #[expect(
     clippy::struct_field_names,
     reason = "the shared `_calls` postfix is the point: one counter per hook"
@@ -488,8 +488,7 @@ pub fn panicking_handshake_hooks() -> Hooks<EchoCodec> {
 
 /// Hooks where the while-open closure panics during construction
 /// (before it can return a future). Verifies the rollback guard stays
-/// armed until after `slot` / `available` would be published — the
-/// failure mode flagged in Copilot's review of PR #269.
+/// armed until after `slot` / `available` would be published.
 pub fn panicking_while_open_constructor_hooks() -> Hooks<EchoCodec> {
     Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
@@ -615,10 +614,11 @@ impl WhileOpenHooks {
 
     /// Hook where the while-open task marks `started`, yields once so
     /// it's observably alive, then panics. Used to exercise the
-    /// `Ok(Err(join_err))` join-error arms in `shutdown()` and
-    /// `run_cleanup_locked()` — tokio catches the panic at the task
-    /// boundary and surfaces it via `JoinHandle::await`, which both
-    /// teardown paths log and continue past.
+    /// `Ok(Err(join_err))` join-error arm of the poll task's teardown,
+    /// which `shutdown()` and `run_cleanup_locked()` both reach — tokio
+    /// catches the panic at the task boundary and surfaces it via
+    /// `JoinHandle::await`, which both teardown paths log and continue
+    /// past.
     pub fn panicking_hooks(&self) -> Hooks<EchoCodec> {
         let started = self.started.clone();
         Hooks {
@@ -638,11 +638,10 @@ impl WhileOpenHooks {
 }
 
 /// Hooks with a counter for while-open spawn invocations. Distinct from
-/// [`WhileOpenHooks`] because the cooperative variant uses an
-/// `AtomicBool` for `started` — switching to `AtomicU32` everywhere
-/// would churn existing tests for no benefit. Used by the reconnect
-/// respawn test to assert the closure was invoked twice (once at
-/// start, once at `attempt_reconnect`).
+/// [`WhileOpenHooks`], whose `started` flag says whether a task ran,
+/// not how many did. Used by the reconnect respawn test to assert the
+/// closure was invoked twice (once at start, once at
+/// `attempt_reconnect`).
 pub struct CountingWhileOpenHooks {
     pub spawns: Arc<AtomicU32>,
     pub cancelled: Arc<AtomicU32>,
@@ -790,9 +789,9 @@ impl SafetyStopHooks {
     }
 
     /// Answer `NotAsserted` from the nth invocation on, without
-    /// failing anything on the wire. That is #1250's case: the request
-    /// completes, `wire_failures` does not move, and the hook is the
-    /// only witness to the refusal.
+    /// failing anything on the wire. That is a device that answers and
+    /// refuses: the request completes, `wire_failures` does not move,
+    /// and the hook is the only witness to the refusal.
     pub const fn refusing_from(mut self, nth: u32) -> Self {
         self.refuse_from = nth;
         self

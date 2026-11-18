@@ -1,10 +1,10 @@
 //! Mock Scops OAG transport for testing without real hardware.
 //!
 //! Provides a [`TransportFactory`] that hands out a [`FrameTransport`] backed by
-//! an in-memory state machine that mimics the Scops OAG's ASCII protocol.
-//! Persists state across reconnects so tests can disconnect/reconnect and still
-//! observe their prior writes (matching real hardware that keeps its position
-//! when an ASCOM client cycles `Connected`).
+//! an in-memory state machine that mimics the Scops OAG's ASCII protocol. The
+//! state lives in the factory, so it survives a reopen of the transport — a
+//! reconnect, or a reacquire in a `LazyAcquire` unit test — as a real Scops
+//! keeps its position when its port closes.
 
 // `#[cfg(any(feature = "mock", test))]`-gated test-helper infrastructure that
 // never ships in production builds. Excluded from coverage so the workspace

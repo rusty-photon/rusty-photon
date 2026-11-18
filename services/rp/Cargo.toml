@@ -38,6 +38,8 @@ rp-auth = { workspace = true }
 rp-catalog = { workspace = true }
 rp-ephemeris = { workspace = true }
 rp-guider = { workspace = true }
+# The image kernels, shared with the guider.
+rp-image-analysis = { workspace = true }
 rp-mcp-client = { workspace = true }
 rp-plate-solver = { workspace = true }
 rp-targets = { workspace = true }
@@ -55,8 +57,6 @@ rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-setup = { workspace = true }
 maud = { workspace = true }
 ndarray = { workspace = true }
-ndarray-ndimage = { workspace = true }
-rmpfit = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 ascom-alpaca = { workspace = true, features = ["client", "camera", "filter_wheel", "cover_calibrator", "focuser", "telescope", "safety_monitor", "switch", "rotator", "observing_conditions", "dome"] }

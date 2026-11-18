@@ -136,7 +136,8 @@ a lost link is the supervisor's to recover, not the next client's.
 - `start()` on a transport a client has already opened lazily promotes
   it in place: it spawns the supervisor, then sets the mode, with no
   I/O and no assertion, since a client may be driving the device. On a
-  started transport it returns `Ok` at once.
+  started transport that is serving it returns `Ok` at once; one a
+  reconnect or an unlanded stop has taken out of service is cold-started.
 - `acquire` bumps the refcount and clones the cell; it runs no
   handshake. During a reconnect it hands out a session whose requests
   answer the retryable `Reconnecting`, not a shutdown error. After
@@ -317,8 +318,12 @@ reconnect and the shutdown that need the port; timing out the lock
 instead would leave the handle open, the thing being released. Both
 transports here wrap each send and receive in a `tokio::time::timeout`
 (`DEFAULT_IO_TIMEOUT`, 5 s, unless the factory sets one), and the
-serial discard never waits. A close waits out one whole request: the
-write timeout plus `max_skip + 1` read timeouts.
+serial discard never waits. A close waits out the exchange on the wire
+and every one queued ahead of it on the lock, each bounded by the write
+timeout plus `max_skip + 1` read timeouts. At `shutdown()`, with the
+server drained and the poll task cancelled, that is at most one; a
+reconnect's close can find several sessions queued behind a silent
+device.
 
 Each frame is a `trace!` event under
 `RUST_LOG=rusty_photon_shared_transport=trace`, with bytes outside
@@ -677,7 +682,7 @@ flush, timeouts and the retry ladder.
 | File in `tests/` | Pins |
 |------|------|
 | `race.rs` | Concurrent first acquires open and handshake once; a session queued behind another's exchange is timed from its own |
-| `rollback.rs` | A failed 0→1 — factory, handshake, a panic in either, a panicking poll constructor — leaves the refcount at zero, and the next acquire opens again |
+| `rollback.rs` | A failed 0→1 — the factory, the handshake, a panic in the handshake, a panicking poll constructor — leaves the refcount at zero, and the next acquire opens again |
 | `idempotent.rs` | Sequential acquires share one open; a reacquire handshakes again; the `Drop` release; availability by phase |
 | `while_open.rs` | The poll task's lifetime in `LazyAcquire`; the abort of one that ignores cancellation |
 | `lifecycle.rs` | `start` and `shutdown`, the startup gate's two failures, promotion, the `ServiceLifetime` release, releasing the port with sessions alive, panicking hooks, the quiesce before a cold open, tolerated probes |

@@ -11,9 +11,9 @@
 //! Connection state is the device's [`Session<FalconCodec>`] slot, the
 //! same shape as [`crate::rotator_device::FalconRotatorDevice`]. The two
 //! devices share a single [`FalconManager`] and therefore a single
-//! [`rusty_photon_shared_transport::SharedTransport`] — refcounting on
-//! that transport is what makes both devices' connect/disconnect calls
-//! cooperate on one open serial port.
+//! [`rusty_photon_shared_transport::SharedTransport`]: each device holds
+//! its own session on the one serial port, which the service opens at
+//! start and keeps open until it stops.
 
 use std::sync::Arc;
 
@@ -71,9 +71,8 @@ macro_rules! ensure_connected {
 
 /// Typed switch-id discriminant. Constructed via [`SwitchId::try_from`];
 /// every `Switch` trait method that takes a `usize` id parses it once at
-/// the boundary, then matches on this enum exhaustively. Replaces the
-/// previous untyped `validate_id` + `match id { _ => unreachable!(...) }`
-/// pattern so the compiler proves all id cases are handled.
+/// the boundary, then matches on this enum exhaustively, so the compiler
+/// proves every id is handled and no arm needs `unreachable!`.
 #[derive(Debug, Clone, Copy, strum::EnumCount)]
 enum SwitchId {
     /// Id 0: input voltage (raw ADC count from `VS`).
@@ -111,8 +110,7 @@ impl TryFrom<usize> for SwitchId {
 #[derive(derive_more::Debug)]
 pub struct FalconStatusSwitchDevice {
     config: SwitchConfig,
-    /// `Some` between successful acquire and explicit close. The session
-    /// existing is the truth — no second-source bool to desync.
+    /// `Some` between successful acquire and explicit close.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<FalconCodec>>>>,
     #[debug(skip)]
@@ -182,17 +180,9 @@ impl Device for FalconStatusSwitchDevice {
         reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Hold the write lock across the whole check-and-modify so two
-        // concurrent `Connected=true` requests for this switch don't both
-        // observe `None` and both call `acquire()` (same fix shape as
-        // `FalconRotatorDevice` — PR #241 round-5).
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
-                // `?` does SessionError → FalconRotatorError via the
-                // .map_err (the SessionError generic carries
-                // FalconCodecError), then FalconRotatorError → ASCOMError
-                // via the From impl in error.rs.
                 let session = self
                     .manager
                     .transport()
@@ -204,17 +194,14 @@ impl Device for FalconStatusSwitchDevice {
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
-                    // `Session::close` returns Result<_, TransportError>;
-                    // `From<TransportError> for FalconRotatorError`
-                    // handles the conversion, and the existing
-                    // `From<FalconRotatorError> for ASCOMError` does the
-                    // second hop on `?`.
                     session.close().await.map_err(FalconRotatorError::from)?;
                 }
-                // Only reset per-session driver state when this disconnect
-                // truly closed the transport. If the rotator device still
-                // holds a session, the manager stays available and state
-                // should stay intact for it.
+                // Reset the driver-side state only when the transport is
+                // unavailable after the close — reconnecting or shut down
+                // (see `FalconManager::clear_session_state`). While it is
+                // available the rotator may still hold a session that
+                // reads the same state. Mirrors the guard on
+                // `FalconRotatorDevice::set_connected`.
                 if !self.manager.is_available() {
                     self.manager.clear_session_state().await;
                 }

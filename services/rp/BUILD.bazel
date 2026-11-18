@@ -15,6 +15,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-ephemeris:rp-ephemeris",
     "//crates/rp-fits:rp-fits",
     "//crates/rp-focus-curve:rp-focus-curve",
+    "//crates/rp-image-analysis:rp-image-analysis",
     "//crates/rp-mcp-client:rp-mcp-client",
     "//crates/rp-targets:rp-targets",
     "//crates/rp-vocabulary:rp-vocabulary",
@@ -74,13 +75,6 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     aliases = aliases(),
-    # `imaging/analysis/stars.rs` embeds a star-detection fixture via
-    # `include_bytes!("../../../tests/fixtures/star_detection/*.fits")`;
-    # `compile_data` makes those files visible to rustc inside
-    # Bazel's compilation sandbox. Only needed on the test-twin
-    # because the embeds sit inside a `#[cfg(test)] mod tests`
-    # block — the production twin (`rp_lib`) skips them.
-    compile_data = glob(["tests/fixtures/**"]),
     crate_name = "rp",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -101,6 +95,15 @@ rust_binary(
         _RP_PLATE_SOLVER,
         _RP_GUIDER,
     ] + all_crate_deps(normal = True),
+)
+
+# The real frames of tests/fixtures/star_detection, which rp's BDD
+# scenarios hand rp by path and the kernels' unit tests in
+# crates/rp-image-analysis embed.
+filegroup(
+    name = "star_detection_fixtures",
+    srcs = glob(["tests/fixtures/star_detection/*.fits"]),
+    visibility = ["//crates/rp-image-analysis:__pkg__"],
 )
 
 rust_test(

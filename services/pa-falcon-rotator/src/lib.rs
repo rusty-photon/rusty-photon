@@ -15,9 +15,9 @@
 //! limit-detect flag).
 //!
 //! See `docs/services/falcon-rotator.md` for the behavioural contract.
-//! Lifecycle scaffolding is shared with `qhy-focuser`, `ppba-driver`, and
-//! `star-adventurer-gti` via
-//! [`rusty_photon_shared_transport::SharedTransport`].
+//! The port and its lifecycle come from
+//! [`rusty_photon_shared_transport::SharedTransport`], which every serial
+//! and UDP Alpaca driver in the workspace is built on.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -326,7 +326,7 @@ pub struct BoundServer {
     /// `start()`'s select so its socket closes when serving ends (reload).
     discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
     /// Held so `start()` can call `manager.transport().shutdown()` after
-    /// the HTTP server stops. No-op in `LazyAcquire` mode.
+    /// the HTTP server stops.
     manager: Arc<FalconManager>,
 }
 

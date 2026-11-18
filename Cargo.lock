@@ -4350,17 +4350,16 @@ dependencies = [
  "maud",
  "mockall",
  "ndarray",
- "ndarray-ndimage",
  "regex",
  "reqwest",
  "rmcp",
- "rmpfit",
  "rp-auth",
  "rp-catalog",
  "rp-ephemeris",
  "rp-fits",
  "rp-focus-curve",
  "rp-guider",
+ "rp-image-analysis",
  "rp-mcp-client",
  "rp-plate-solver",
  "rp-targets",
@@ -4467,6 +4466,20 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rp-image-analysis"
+version = "0.1.0"
+dependencies = [
+ "ndarray",
+ "ndarray-ndimage",
+ "rmpfit",
+ "rp-fits",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
  "tracing",
 ]
 

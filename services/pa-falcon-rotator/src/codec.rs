@@ -64,7 +64,7 @@ pub enum FalconResponse {
 /// *through* the handshake hook (which returns
 /// `Result<_, FalconCodecError>`) can still be classified as `Open` /
 /// `Io` / `Timeout` / `Eof` / `Framing` by the device layer instead of
-/// collapsing to a generic `Communication` error at connect time.
+/// collapsing to a generic `Communication` error.
 #[derive(Debug, Error)]
 pub enum FalconCodecError {
     #[error("invalid UTF-8 in response: {0}")]
@@ -561,8 +561,8 @@ mod tests {
         // SessionError::Codec(FalconCodecError::Transport(Timeout(...))).
         // It must map to FalconRotatorError::Timeout — same classification
         // a steady-state timeout (SessionError::Transport(Timeout(...)))
-        // would receive — so the ASCOM client doesn't see a generic
-        // Communication error for connect-time timeouts.
+        // would receive — so a handshake timeout is not reported as a
+        // generic Communication error.
         let err: SessionError<FalconCodecError> = SessionError::Codec(FalconCodecError::Transport(
             TransportError::Timeout(std::time::Duration::from_secs(2)),
         ));

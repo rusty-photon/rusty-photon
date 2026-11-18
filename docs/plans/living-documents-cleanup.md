@@ -450,7 +450,7 @@ for every batch.
 | B2 — doctor, ui-htmx, the installer | Merged: the docs on 2026-11-16, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1798), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1806) |
 | B3 — rp and its client crates | Not started | — |
 | B4 — BDD infrastructure and OmniSim | Merged: the docs on 2026-11-15, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1790), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1793) |
-| B5 — shared transport and the serial drivers | Under way: the docs first, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1819) |
+| B5 — shared transport and the serial drivers | Merged: the docs on 2026-11-17, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1819), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1822) |
 | B6 — cameras and SDK crates | Merged: the design docs on 2026-11-14, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1779), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1783) |
 | B7 — guiding, solving, sentinel, lifecycle, TLS | Under way: the docs first, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1823) |
 | B8 — catalog, planner, focus | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1758), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1759) |

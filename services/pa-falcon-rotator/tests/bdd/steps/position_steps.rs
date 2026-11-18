@@ -17,11 +17,11 @@ async fn given_mechanical(world: &mut FalconRotatorWorld, degrees: f64) {
 #[given(expr = "the driver-side sync offset is {float} degrees")]
 #[when(expr = "the driver-side sync offset is {float} degrees")]
 async fn given_sync_offset(world: &mut FalconRotatorWorld, degrees: f64) {
-    // `SerialManager::sync` stores `(sky - mech) mod 360`. Driving it via
+    // `FalconManager::sync` stores `(sky - mech) mod 360`. Driving it via
     // the public Alpaca `sync(target)` keeps the test honest about how the
     // offset actually gets set in production — there's no test-only setter.
     //
-    // Read the current mech position from the mock and call sync at
+    // Read the current mech position over Alpaca and call sync at
     // (mech + degrees). The resulting offset is exactly `degrees mod 360`.
     let mech_now = world.rotator().mechanical_position().await.unwrap();
     world
