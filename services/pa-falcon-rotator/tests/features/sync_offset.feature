@@ -4,6 +4,13 @@ Feature: Driver-side Sync
   device's stored counter, which would change MechanicalPosition on the next
   FA read — so the driver tracks the offset in software and never issues SD.
 
+  ASCOM requires the offset to persist across driver starts, so the driver
+  keeps it in a record beside its config file, named after it: config.json
+  has config.sync-offset.json, holding {"sync_offset_deg": <offset>}. Sync
+  writes the record before it returns; a Sync whose record cannot be written
+  fails with INVALID_OPERATION (1035) and leaves the offset as it was. Only
+  Sync changes the offset: a disconnect, even the last client's, keeps it.
+
   Scenario: Sync shifts Position without changing MechanicalPosition
     Given a running pa-falcon-rotator service
     When I connect the rotator
@@ -19,6 +26,45 @@ Feature: Driver-side Sync
     And I call Sync with 37.50
     And I read Position
     Then Position should be 37.50 degrees
+
+  Scenario: The sync offset survives the last client's disconnect
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And the rotator reports mechanical position 142.30 degrees
+    And I call Sync with 37.50
+    And I disconnect the rotator
+    And I connect the rotator
+    And I read Position
+    Then Position should be 37.50 degrees
+
+  Scenario: Sync writes the offset to the record beside the config file
+    Given a running pa-falcon-rotator process
+    When I connect the rotator
+    And I read MechanicalPosition
+    Then MechanicalPosition should be 0.00 degrees
+    When I call Sync with 37.50
+    Then the record config.sync-offset.json beside the config holds sync_offset_deg 37.50
+
+  Scenario: The sync offset survives a restart of the service
+    Given a running pa-falcon-rotator process
+    When I connect the rotator
+    And I read MechanicalPosition
+    Then MechanicalPosition should be 0.00 degrees
+    When I call Sync with 37.50
+    And the process stops and starts again on the same config
+    And I connect the rotator
+    And I read Position
+    Then Position should be 37.50 degrees
+
+  Scenario: A Sync whose record cannot be written fails and leaves the offset as it was
+    Given a pa-falcon-rotator process whose sync-offset record cannot be written
+    When I connect the rotator
+    And I read MechanicalPosition
+    Then MechanicalPosition should be 0.00 degrees
+    When I call Sync with 37.50
+    Then Sync should fail with code 1035
+    When I read Position
+    Then Position should be 0.00 degrees
 
   Scenario Outline: Sync rejects non-finite angles with INVALID_VALUE
     Given a running pa-falcon-rotator service
