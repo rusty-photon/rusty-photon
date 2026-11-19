@@ -120,7 +120,9 @@ time as the clock moves.
 - **Refusals.** A pulse is refused while the mount is parked (`Parked`),
   while it slews (`Slewing`), and while a pulse on the same axis is in
   progress (`AxisBusy`). A pulse on the other axis runs alongside.
-- **Zero duration.** A pulse of zero duration is accepted and does nothing.
+- **Zero duration.** A pulse of zero duration is accepted and does
+  nothing, even on a busy axis, as the GTi's driver accepts it; parked or
+  slewing, it is refused like any other.
 - **`is_pulse_guiding`** is true while a pulse on either axis is in
   progress: from its start to the end of the length the mount delivers.
 
@@ -186,7 +188,8 @@ play. Drift and periodic error do not pass through the gear.
   another replaces it from where the first one stands. A parked mount
   refuses to slew (`Parked`).
 - **`park()`** parks at once: `at_park` reads true, tracking turns off,
-  pulses and a slew stop where they stand. **`unpark()`** clears `at_park`
+  and pulses and a slew stop where they stand, a Dec step still to come
+  dropped as a slew drops it. **`unpark()`** clears `at_park`
   and leaves tracking off. Neither moves the pointing; with tracking off,
   the sky moves instead.
 - **`set_tracking(on)`** stops an RA pulse in progress where it stands,
@@ -279,7 +282,9 @@ Besides its pixels, a frame carries its truth:
   the pointing's effect alone, without seeing;
 - the transmission, averaged over the exposure;
 - for each star whose position lies on the frame: its index in the field,
-  its position with seeing included, and the electrons it delivered.
+  its position with seeing included, and the electrons of its light that
+  land on the sensor, before any Bayer response. A star near the edge
+  loses what falls off it.
 
 The field's shift and the stars' positions are averaged over the exposure
 with the light as the weight, as the pixels' centroid weighs them, so a

@@ -169,7 +169,8 @@ pub struct StarTruth {
     pub index: usize,
     /// Its position, seeing included.
     pub position: SensorPoint,
-    /// The electrons it delivered, before any Bayer response.
+    /// The electrons of its light that land on the sensor, before any
+    /// Bayer response.
     pub electrons: f64,
 }
 
@@ -280,7 +281,7 @@ impl Camera {
                     sample.flipped,
                 );
                 let light = star.e_per_s * sample.transmission * sample.secs;
-                draw(&mut electrons, at, sigma, light);
+                tally.landed += draw(&mut electrons, at, sigma, light);
                 tally.add(at, light);
             }
             shift.add(
@@ -304,7 +305,7 @@ impl Camera {
                 .map(|(index, tally)| StarTruth {
                     index,
                     position: tally.mean(),
-                    electrons: tally.light,
+                    electrons: tally.landed,
                 })
                 .filter(|star| self.on_frame(star.position))
                 .collect(),
@@ -375,6 +376,8 @@ struct Tally {
     plain_x: f64,
     plain_y: f64,
     count: f64,
+    /// The electrons drawn onto the sensor.
+    landed: f64,
 }
 
 impl Tally {
@@ -400,10 +403,12 @@ impl Tally {
 }
 
 /// Adds `light` electrons of a Gaussian image of standard deviation
-/// `sigma` pixels, centred on `at`, to `image`.
-fn draw(image: &mut Array2<f64>, at: SensorPoint, sigma: f64, light: f64) {
+/// `sigma` pixels, centred on `at`, to `image`, and answers how many
+/// landed on it.
+fn draw(image: &mut Array2<f64>, at: SensorPoint, sigma: f64, light: f64) -> f64 {
+    let mut landed = 0.0;
     if light <= 0.0 {
-        return;
+        return landed;
     }
     let (height, width) = image.dim();
     let reach = REACH_SIGMAS * sigma;
@@ -417,9 +422,11 @@ fn draw(image: &mut Array2<f64>, at: SensorPoint, sigma: f64, light: f64) {
         for (col, share) in cols.clone().zip(&across) {
             if let Some(value) = image.get_mut((row, col)) {
                 *value = down.mul_add(*share, *value);
+                landed = down.mul_add(*share, landed);
             }
         }
     }
+    landed
 }
 
 /// The indices of the pixels, of `len` along an axis, whose span reaches
@@ -515,9 +522,10 @@ mod tests {
     #[test]
     fn a_star_s_light_lands_on_the_sensor_but_for_its_far_wings() {
         let mut image = Array2::<f64>::zeros((40, 40));
-        draw(&mut image, SensorPoint::new(20.3, 19.6), 1.5, 1000.0);
+        let landed = draw(&mut image, SensorPoint::new(20.3, 19.6), 1.5, 1000.0);
         let kept = 1000.0 * erf(4.0 * FRAC_1_SQRT_2).powi(2);
         assert!((image.sum() - kept).abs() < 0.5, "sum {}", image.sum());
+        assert!((landed - image.sum()).abs() < 1e-9);
     }
 
     #[test]
@@ -618,7 +626,7 @@ mod tests {
             (measured.y - truth.y).abs() < 0.01,
             "{measured:?} against {truth:?}"
         );
-        assert!((frame.truth.stars[0].electrons - 200_000.0).abs() < 1e-6);
+        assert!((frame.truth.stars[0].electrons - 200_000.0).abs() < 200_000.0 * 2e-4);
     }
 
     #[test]
@@ -724,6 +732,23 @@ mod tests {
     }
 
     #[test]
+    fn the_truth_counts_only_the_electrons_that_land_on_the_sensor() {
+        let mut c = camera(quiet());
+        // A star centred on the first column: what falls left of its
+        // edge, half a pixel out, never lands.
+        let east = -c.centre().x * c.config().pixel_scale_arcsec;
+        let frame = render(&mut c, &[star(east, 0.0, 10_000.0)], &[still(1.0)]);
+        let truth = frame.truth.stars[0];
+        assert!(truth.position.x.abs() < 1e-9, "{truth:?}");
+        let sigma = seeing().fwhm_arcsec / FWHM_PER_SIGMA / c.config().pixel_scale_arcsec;
+        let on = f64::midpoint(1.0, erf(0.5 * FRAC_1_SQRT_2 / sigma));
+        assert!(
+            (truth.electrons - 10_000.0 * on).abs() < 2.0,
+            "{truth:?} against {on}"
+        );
+    }
+
+    #[test]
     fn the_truth_lists_only_the_stars_on_the_frame() {
         let mut c = camera(quiet());
         let frame = render(
@@ -753,7 +778,7 @@ mod tests {
         let frame = render(&mut c, &[star(0.0, 0.0, 100_000.0)], &moving);
         assert_eq!(frame.truth.pointing, SkyOffset::new(-4.0, 0.0));
         assert_eq!(frame.truth.transmission, 0.75);
-        assert_eq!(frame.truth.stars[0].electrons, 75_000.0);
+        assert!((frame.truth.stars[0].electrons - 75_000.0).abs() < 75_000.0 * 2e-4);
         // The light weighs the positions: 1 px with two thirds of it,
         // 3 px with one third.
         let shift = frame.truth.field_shift;

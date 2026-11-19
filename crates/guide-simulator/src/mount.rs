@@ -419,7 +419,7 @@ impl Mount {
     ///
     /// [`MountError::Parked`] while parked, [`MountError::Slewing`]
     /// while slewing, and [`MountError::AxisBusy`] while a pulse on the
-    /// same axis is in progress.
+    /// same axis is in progress, unless the pulse has no length.
     pub fn pulse(
         &mut self,
         direction: GuideDirection,
@@ -431,15 +431,15 @@ impl Mount {
         if self.slewing() {
             return Err(MountError::Slewing);
         }
+        if duration.is_zero() {
+            return Ok(());
+        }
         let busy = match direction {
             GuideDirection::East | GuideDirection::West => self.ra_busy(),
             GuideDirection::North | GuideDirection::South => self.dec_busy(),
         };
         if busy {
             return Err(MountError::AxisBusy);
-        }
-        if duration.is_zero() {
-            return Ok(());
         }
         match direction {
             GuideDirection::East => self.start_ra(1.0, self.config.delivery.east, duration),
@@ -1036,6 +1036,16 @@ mod tests {
         assert!(!m.is_pulse_guiding());
         m.advance_to(at(1.0));
         assert_eq!(m.pointing(), SkyOffset::ZERO);
+    }
+
+    #[test]
+    fn a_pulse_of_zero_duration_is_accepted_on_a_busy_axis() {
+        let mut m = mount(MountConfig::default());
+        m.pulse(GuideDirection::East, Duration::from_secs(1))
+            .unwrap();
+        m.pulse(GuideDirection::West, Duration::ZERO).unwrap();
+        m.advance_to(at(2.0));
+        close(m.pointing().east, GUIDE, 1e-9);
     }
 
     #[test]
