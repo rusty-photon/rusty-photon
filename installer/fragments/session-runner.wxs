@@ -35,7 +35,7 @@
                               ResetPeriodInDays="1" />
           <!-- SERVICE_CONFIG_FAILURE_ACTIONS_FLAG: the SCM wrapper reports a
                failed run closure as SERVICE_STOPPED + ServiceSpecific(1) (see
-               rusty-photon-service-lifecycle runner.rs), which only counts as
+               rusty-photon-service-lifecycle runner/scm.rs), which only counts as
                a failure — and triggers the restart actions above — with this
                flag set. Without it the serial drivers' eager-validation exits
                would stop the service permanently. -->
