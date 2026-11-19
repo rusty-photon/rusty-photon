@@ -112,11 +112,11 @@ time as the clock moves.
   including the steps below. `set_rate_factors` changes both factors for
   the pulses that follow, as when a mount stops following its pulses
   part way through a run.
-- **Tracking off.** A pulse moves the pointing the same way whether
-  tracking is on or off; with tracking off, the sidereal motion comes on
-  top. An East pulse slows the drive, and stopping it is the limit of
-  slowing it, so both move the pointing East. The GTi likewise accepts a
-  pulse with tracking off.
+- **Tracking off.** An RA pulse starts the stopped axis at the pulse's
+  rate, as the GTi's driver does, so for its length the pointing moves
+  against the sky as it does while tracking, and the stopped mount's
+  sidereal motion pauses. A Dec pulse is the same either way. The GTi
+  likewise accepts a pulse with tracking off.
 - **Refusals.** A pulse is refused while the mount is parked (`Parked`),
   while it slews (`Slewing`), and while a pulse on the same axis is in
   progress (`AxisBusy`). A pulse on the other axis runs alongside.
@@ -128,7 +128,9 @@ time as the clock moves.
 
 By default a pulse moves its axis at the guide rate for exactly the
 duration asked. A `PulseDelivery` models what a real mount does to short
-pulses instead:
+pulses instead. Its RA part applies while the mount tracks: an RA pulse
+that starts the axis from rest is delivered as asked, as the GTi's driver
+neither trims it nor gets the edge steps of a running motor.
 
 - **RA, East and West each.** The delivered length is the requested length
   plus `lengthened_by`, less `shortened_by`, and at least `shortest`. The

@@ -590,7 +590,13 @@ impl Mount {
                 .tracked
                 .saturating_add(t.since_start().saturating_sub(self.now.since_start()));
         } else {
-            self.ra_axis_arcsec = SIDEREAL_ARCSEC_PER_S.mul_add(to - from, self.ra_axis_arcsec);
+            // An RA pulse runs the stopped axis at its own rate, so the
+            // sidereal motion pauses for it.
+            let held = self.ra_pulse.map_or(0.0, |pulse| {
+                overlap(from, to, pulse.start.secs(), pulse.end.secs())
+            });
+            self.ra_axis_arcsec =
+                SIDEREAL_ARCSEC_PER_S.mul_add(to - from - held, self.ra_axis_arcsec);
         }
         if let Some(pulse) = self.ra_pulse {
             self.ra_axis_arcsec += pulse.travel(from, to);
@@ -621,6 +627,12 @@ impl Mount {
     }
 
     fn start_ra(&mut self, sign: f64, delivery: RaDelivery, duration: Duration) {
+        // A pulse that starts the axis from rest is delivered as asked.
+        let delivery = if self.tracking {
+            delivery
+        } else {
+            RaDelivery::default()
+        };
         let delivered = duration
             .saturating_add(delivery.lengthened_by)
             .saturating_sub(delivery.shortened_by)
@@ -1290,6 +1302,43 @@ mod tests {
         m.set_tracking(true).unwrap();
         m.advance_to(at(3.0));
         close(m.pointing().east, -GUIDE, 1e-9);
+    }
+
+    #[test]
+    fn with_tracking_off_a_pulse_moves_against_the_sky_as_while_tracking() {
+        for (direction, sign) in [(GuideDirection::East, 1.0), (GuideDirection::West, -1.0)] {
+            let mut m = mount(MountConfig {
+                tracking: false,
+                ..MountConfig::default()
+            });
+            m.pulse(direction, Duration::from_secs(1)).unwrap();
+            m.advance_to(at(1.0));
+            close(m.pointing().east, sign * GUIDE, 1e-9);
+            m.advance_to(at(2.0));
+            close(
+                m.pointing().east,
+                sign.mul_add(GUIDE, SIDEREAL_ARCSEC_PER_S),
+                1e-9,
+            );
+        }
+    }
+
+    #[test]
+    fn with_tracking_off_the_gti_preset_delivers_an_ra_pulse_as_asked() {
+        let mut m = mount(MountConfig {
+            tracking: false,
+            delivery: PulseDelivery::star_adventurer_gti(),
+            ..MountConfig::default()
+        });
+        m.pulse(GuideDirection::West, ms(50)).unwrap();
+        m.advance_to(at(0.04));
+        assert!(m.is_pulse_guiding());
+        m.advance_to(at(1.0));
+        close(
+            m.pointing().east,
+            SIDEREAL_ARCSEC_PER_S.mul_add(0.95, -GUIDE * 0.05),
+            1e-9,
+        );
     }
 
     #[test]
