@@ -3,13 +3,10 @@
 //!
 //! Every long-running service in this workspace needs the same three things:
 //! a tokio runtime, OS signal handlers for graceful shutdown, and a way to
-//! propagate "time to stop" to its workers. This crate is the single
-//! workspace-wide replacement for the per-service boilerplate that grew
-//! up around those needs.
+//! propagate "time to stop" to its workers. This crate provides them once,
+//! for every service.
 //!
 //! Full design and usage: `docs/crates/rusty-photon-service-lifecycle.md`.
-//! Migration plan from the existing per-service shutdown handlers:
-//! `docs/plans/archive/service-lifecycle-unification.md` (issue #294).
 //!
 //! The public surface is small:
 //!
@@ -24,6 +21,10 @@
 //! * [`ReloadSignal`] — opt-in (via [`ServiceRunner::with_reload`]) reload
 //!   notifier, driven by `SIGHUP` on Unix or `ServiceControl::ParamChange` in
 //!   SCM mode. On Windows console mode it never fires.
+//! * [`Restart`] — handed out by [`Shutdown::restart`]: a request stops the
+//!   service as a shutdown does, and the runner then exits with
+//!   [`RESTART_EXIT_CODE`] for the service manager to start it again, within
+//!   [`RESTART_CLOSE_DEADLINE`] even when the close hangs.
 //! * [`init_tracing`] — installs the shared tracing subscriber: logs to stderr
 //!   (stdout is reserved for the `bound_addr=` handshake), filtered by `RUST_LOG`
 //!   or a fallback level.
@@ -42,8 +43,8 @@
 //!   plain `?` ergonomics on typed and boxed errors alike. The runner also
 //!   installs the `color-eyre` panic hook (once per process), so panics print
 //!   formatted reports with span context (via the `ErrorLayer` that
-//!   [`init_tracing`] composes in). Per ADR-011 this crate is the **only**
-//!   owner of `color-eyre`: errors stay `thiserror`-typed everywhere below the
+//!   [`init_tracing`] composes in). This crate is the **only** owner of
+//!   `color-eyre`: errors stay `thiserror`-typed everywhere below the
 //!   binary boundary, and only the *types* are re-exported here — never the
 //!   `eyre!`/`bail!` macros.
 //!
@@ -66,15 +67,25 @@
 //!
 //! ## Behavioral guarantees
 //!
-//! * **No panic on signal install failure.** Both `tokio::signal::ctrl_c()`
-//!   and `tokio::signal::unix::signal(...)` errors are logged via
-//!   `tracing::warn!` and replaced with a never-resolving future. This
-//!   matches the pattern established by PR #289.
+//! * **No panic on signal install failure.** The runner registers each
+//!   handler through a platform constructor that returns an `io::Result` on
+//!   call — `tokio::signal::unix::signal(...)` on Unix,
+//!   `tokio::signal::windows::ctrl_c()` and `ctrl_break()` on Windows — and a
+//!   registration that fails is logged via `tracing::warn!` and replaced with
+//!   a never-resolving future, so the other sources keep working
+//!   (`docs/crates/rusty-photon-service-lifecycle.md` § Signal install
+//!   (no-panic)).
+//! * **Shutdown handlers install before the service starts.** The runner
+//!   calls the closure only once they are registered, so a stop that arrives
+//!   after the service reports itself ready runs the shutdown path rather
+//!   than the platform's default, which kills the process.
 //! * **Cross-platform.** On Unix: `SIGINT` (Ctrl+C) + `SIGTERM`, plus `SIGHUP`
-//!   if `with_reload()` is set. On Windows console: Ctrl+C only. On Windows
-//!   SCM mode: `ServiceControl::Stop` + `ServiceControl::ParamChange`.
-//! * **Single propagation primitive.** Both the signal-handler task and SCM
-//!   control-handler callback feed the same [`CancellationToken`]. Consumers
+//!   if `with_reload()` is set. On Windows console: Ctrl+C + Ctrl+Break. On
+//!   Windows SCM mode: `ServiceControl::Stop`, plus
+//!   `ServiceControl::ParamChange` if `with_reload()` is set.
+//! * **Single propagation primitive.** The signal-handler task, the SCM
+//!   control-handler callback and a restart request all cancel the same
+//!   [`CancellationToken`](tokio_util::sync::CancellationToken). Consumers
 //!   never need to know which source triggered shutdown.
 
 #![deny(unsafe_code)]
@@ -142,5 +153,5 @@ pub use shutdown::Shutdown;
 /// `Report::msg(...)`) remains *possible* through this re-export, but it is
 /// against workspace policy outside the binary boundary — errors below it
 /// stay `thiserror`-typed, and the crate-local dependency on `color-eyre`
-/// is the structural guardrail (ADR-011).
+/// is the structural guardrail.
 pub use color_eyre::Report;

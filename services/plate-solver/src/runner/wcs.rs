@@ -105,7 +105,7 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
     let crval2 = read_required_float(header, "CRVAL2")?;
 
     // Pixel scale and rotation: prefer CDELT1/CROTA2 (the convention
-    // ASTAP writes today), but fall back to deriving them from the
+    // ASTAP writes), but fall back to deriving them from the
     // CD matrix when present. Either representation alone is
     // sufficient for these two response fields.
     let pixel_scale_arcsec = derive_pixel_scale_arcsec(header)?;
@@ -117,8 +117,7 @@ pub fn parse_wcs_bytes(bytes: &[u8]) -> Result<SolveOutcome, WcsParseError> {
     // Run `WCSParams::deserialize` as the canonical structural validator
     // — catches missing CTYPE1, missing NAXIS, type errors on any other
     // WCS keyword (SIP, etc.) before we hand the wrapper a `SolveOutcome`
-    // derived from a half-broken header. Forward-compatible with future
-    // consumers that need the full `WCSParams`.
+    // derived from a half-broken header.
     WCSParams::deserialize(header.into_deserializer())
         .map_err(|e| WcsParseError::Malformed(format!("WCS deserialization failed: {e}")))?;
 
@@ -399,8 +398,7 @@ mod tests {
     #[test]
     fn cd_without_crpix_leaves_wcs_matrix_none() {
         // Complete CD matrix, no CRPIX: scalar fields derive from the
-        // CD matrix as before, but the all-or-nothing matrix stays
-        // absent.
+        // CD matrix, but the all-or-nothing matrix stays absent.
         let bytes = build_wcs(&[
             ("CRVAL1", "10.6848"),
             ("CRVAL2", "41.2690"),
@@ -552,10 +550,9 @@ mod tests {
 
     #[test]
     fn non_numeric_crval1_returns_named_error() {
-        // ASTAP would never emit this, but a corrupt or wrong-tooling
-        // sidecar might land here. The wrapper must surface the bad
-        // keyword by name rather than collapsing to a generic
-        // deserialization failure (issue #160 review feedback).
+        // ASTAP never emits this, but a corrupt sidecar, or one another
+        // tool wrote, can. The error names the bad keyword and carries
+        // its value, not a generic deserialization failure.
         let bytes = build_wcs(&[
             ("CRVAL1", "'oops'"),
             ("CRVAL2", "41.2690"),
@@ -576,11 +573,10 @@ mod tests {
 
     #[test]
     fn naxis_zero_header_only_sidecar_parses() {
-        // Real ASTAP writes a `.wcs` whose primary HDU has no data block
-        // (`NAXIS = 0`). Confirm the parser accepts that production
-        // shape — issue #160 review feedback. `build_wcs` emits a
-        // `NAXIS = 2` preamble for `WCSParams`'s mandatory keywords, so
-        // construct this case by hand.
+        // ASTAP writes its `.wcs` as a primary HDU header with no data
+        // block (`NAXIS = 0`), and the parser takes it as it is.
+        // `build_wcs` emits a `NAXIS = 2` preamble for `WCSParams`'s
+        // mandatory keywords, so this case is built by hand.
         let cards = [
             card("SIMPLE", "T"),
             card("BITPIX", "8"),

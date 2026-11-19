@@ -29,9 +29,9 @@ use crate::state::StateHandle;
 /// being polled by the engine on an interval.
 ///
 /// It owns either a long-lived connection it reacts to (the operation
-/// watchdog) or a poll loop it paces itself (the service health
-/// supervisor). The engine spawns one task per `EventMonitor` and runs
-/// it until the cancellation token fires.
+/// watchdog) or a poll loop it paces itself (the discovery supervisor,
+/// which runs one health supervisor per service). The engine spawns one
+/// task per `EventMonitor` and runs it until the cancellation token fires.
 #[async_trait]
 pub trait EventMonitor: Send + Sync + std::fmt::Debug {
     /// Display name (used in logs and notification history records).
@@ -300,8 +300,8 @@ impl OperationDeadlineMonitor {
             .unwrap_or(self.config.default_buffer)
     }
 
-    /// Corrective-action policy for a family. Phase 4 always notifies; this
-    /// is read so Phase 5 can branch on it without a signature change.
+    /// Corrective-action policy for a family: its `on_expiry`, or
+    /// `notify_only` when the family has no `operations` entry.
     fn on_expiry_for(&self, family: &str) -> OnExpiry {
         self.config
             .operations

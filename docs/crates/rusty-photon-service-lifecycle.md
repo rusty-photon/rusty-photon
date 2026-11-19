@@ -692,8 +692,8 @@ There is no `scm.rs` module: the SCM dispatch code is the inline
   resolves on `notify()`, `is_cancelled()` flips after `cancel()`.
 - **Signal-install integration tests** drive the full
   `ServiceRunner::run` / `run_with_reload` path on Unix: spawn a
-  task that `libc::raise`s `SIGTERM` (or `SIGHUP` followed by
-  `SIGTERM`) after a brief delay, then assert that
+  task that `libc::raise`s `SIGTERM` or `SIGINT` (or `SIGHUP`
+  followed by `SIGTERM`) after a brief delay, then assert that
   `shutdown.cancelled()` resolves (and that `reload.recv()` fires
   at least once for the SIGHUP variant). Tokio's signal handlers
   are reference-counted, but raising signals to self affects the

@@ -1,10 +1,10 @@
 //! [`ClaimsPages`]: a camera driver's own part of its setup pages — the
 //! Cameras section that edits `usb_devices` on the server page, and each
-//! camera's page (the driver-setup-pages plan's D11, the device-claims
-//! plan's C8; `docs/services/svbony-camera.md`, "Setup pages"). A driver
-//! whose entries declare a camera's filter wheel (`qhy-camera`) also gets
-//! a wheel column in the section and a page per wheel, which edits its
-//! filter names.
+//! camera's page (`docs/crates/rusty-photon-setup.md` § A driver's own part;
+//! the pages as an operator sees them, `docs/services/svbony-camera.md` §
+//! Setup pages). A driver whose entries declare a camera's filter wheel
+//! (`qhy-camera`) also gets a wheel column in the section and a page per
+//! wheel, which edits its filter names.
 //!
 //! The driver records what its build registered — each number's camera or
 //! placeholder, each wheel's, and every camera the join placed — and hands
@@ -1849,7 +1849,8 @@ mod tests {
         )
     }
 
-    /// The form the rows `ports` submit, `checked` among them, in `mode`.
+    /// The form `rows` submit in `mode`: each row's port, whether it is
+    /// checked, and its name.
     fn rows_form(mode: &str, rows: &[(&str, bool, &str)]) -> FormValues {
         let mut pairs = vec![(MODE.to_string(), mode.to_string())];
         for (i, (port, checked, name)) in rows.iter().enumerate() {

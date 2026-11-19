@@ -1,4 +1,4 @@
-//! In-process certificate hot-reload (ADR-002 §Certificate Hot-Reloading).
+//! In-process certificate hot-reload.
 //!
 //! [`ReloadableCertResolver`] implements rustls' `ResolvesServerCert` over a
 //! cert/key file pair: on a TLS handshake — throttled to at most one check

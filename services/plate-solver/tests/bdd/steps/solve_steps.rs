@@ -324,10 +324,10 @@ async fn then_argv_value_after_flag(world: &mut PlateSolverWorld, flag: String, 
 // Append "<label>,<elapsed_ms>" to the CSV file named by the
 // `PLATE_SOLVER_PERF_CSV` env var. When the env var is unset (the
 // local-dev default), the step is a no-op so BDD runs aren't burdened
-// with perf-trending side effects. The nightly workflow sets the var
-// per matrix leg and uploads the resulting CSV as an artifact (issue
-// #236). Writes a header row on first write so the CSV is
-// self-describing.
+// with perf-trending side effects. The smoke workflow sets the var per
+// matrix leg, uploads the CSV and guards its times
+// (docs/services/plate-solver.md § Real-ASTAP Coverage Cadence). Writes
+// a header row on first write so the CSV is self-describing.
 #[then(expr = "I record the solve duration as {string}")]
 async fn then_record_solve_duration(world: &mut PlateSolverWorld, label: String) {
     use std::io::Write;

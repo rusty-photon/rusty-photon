@@ -11,10 +11,10 @@ use crate::{ReloadSignal, Restart, Shutdown, RESTART_CLOSE_DEADLINE, RESTART_EXI
 /// exit escaping `main` prints a readable multi-line report with the full
 /// `source()` chain instead of a single-line `Debug` dump.
 ///
-/// Per ADR-011, this crate is the *only* place `color-eyre` enters the
-/// workspace: services name this alias (and [`Report`](color_eyre::Report))
-/// but never construct ad-hoc `eyre!` errors — errors stay `thiserror`-typed
-/// everywhere below the binary boundary.
+/// This crate is the *only* place `color-eyre` enters the workspace:
+/// services name this alias (and [`Report`](color_eyre::Report)) but never
+/// construct ad-hoc `eyre!` errors — errors stay `thiserror`-typed everywhere
+/// below the binary boundary.
 pub type ServiceResult = Result<(), color_eyre::Report>;
 
 /// Boxed error the closures passed to [`ServiceRunner::run`] /
@@ -64,7 +64,7 @@ impl std::error::Error for BoxedRunError {
 /// (config-path resolution, identity minting) when the helper returns a
 /// boxed error. It only converts an error that already exists — it is not a
 /// substitute for `eyre!`-style ad-hoc error construction, which stays out
-/// of service code per ADR-011.
+/// of service code.
 ///
 /// `#[track_caller]` so the report's `Location:` section names the call
 /// site (the service's `main`, or the runner boundary) rather than this
@@ -766,18 +766,15 @@ mod scm {
             return Ok(());
         }
 
-        // Surface the closure's outcome to SCM. This is the failure-visibility
-        // mechanism ADR-015 / windows-packaging W1 pins: on Err we still
-        // report SERVICE_STOPPED, but with a non-zero exit code —
+        // Surface the closure's outcome to SCM: on Err we still report
+        // SERVICE_STOPPED, but with a non-zero exit code —
         // dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR with
-        // dwServiceSpecificExitCode = 1. The installer configures restart
-        // failure actions *and* sets SERVICE_CONFIG_FAILURE_ACTIONS_FLAG
-        // (failure actions on non-crash failures), so SCM counts a stop with
-        // a non-zero exit code as a failure and runs the configured restart —
-        // restoring the systemd `Restart=on-failure` contract the serial
-        // drivers' eager-validation exits rely on. Reporting Win32(0) on
-        // every stop would make failures look like clean shutdowns (no
-        // restart, and ops tooling like services.msc shown a clean stop).
+        // dwServiceSpecificExitCode = 1 — which the installer's failure
+        // actions restart, as systemd's `Restart=on-failure` restarts the
+        // serial drivers' eager-validation exits. Reporting Win32(0) on every
+        // stop would make failures look like clean shutdowns: no restart, and
+        // a clean stop in services.msc
+        // (docs/crates/rusty-photon-service-lifecycle.md § SCM mode).
         let run_error = result.err();
         if let Some(e) = &run_error {
             // Under SCM the rolling log file is often the only place this
@@ -1110,13 +1107,13 @@ mod tests {
         assert_eq!(reached_shutdown.load(Ordering::SeqCst), 1);
     }
 
-    /// Ctrl+C must still cancel after the move off `tokio::signal::ctrl_c()`.
+    /// Ctrl+C (SIGINT) cancels the shutdown token.
     ///
-    /// That wrapper *is* SIGINT on Unix, but it registers only when polled,
-    /// which the install-before-start barrier cannot allow — so the runner now
-    /// builds the same handler through `signal(SignalKind::interrupt())`.
-    /// Nothing covered Ctrl+C before, which is a poor thing to assume about a
-    /// mechanism one has just swapped out.
+    /// The runner registers SIGINT through `signal(SignalKind::interrupt())`,
+    /// not `tokio::signal::ctrl_c()`: that wrapper is the same signal on Unix,
+    /// but it registers only when polled, which the install-before-start
+    /// barrier cannot allow. This pins that the handler built instead
+    /// delivers.
     #[cfg(unix)]
     #[test]
     fn sigint_cancels_shutdown_token() {

@@ -1,7 +1,8 @@
 //! Subprocess-runner abstraction.
 //!
 //! `AstapRunner` is the trait the HTTP handler calls. The real
-//! implementation is in `astap.rs`; tests use `mockall`'s generated mock.
+//! implementation is in `astap.rs`; the tests run it against the
+//! `mock_astap` binary (`src/bin/mock_astap.rs`).
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

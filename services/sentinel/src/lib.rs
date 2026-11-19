@@ -127,9 +127,10 @@ impl Config {
             .collect()
     }
 
-    /// Build the push-based event monitors from config. Today this is the
-    /// optional `operation_watchdog`; an absent block yields no event
-    /// monitors (safety-polling-only behavior). The watchdog's corrective
+    /// Build the push-based event monitors from config: the optional
+    /// `operation_watchdog`, or none when the block is absent. The
+    /// discovery supervisor is not among them: [`SentinelBuilder::build`]
+    /// appends it to whatever this returns. The watchdog's corrective
     /// ladder shares the same `http` client used for polling, the same
     /// restart `gate` as every other restart path, and resolves
     /// `operations.<family>.service` against the discovered-services
@@ -271,10 +272,9 @@ impl SentinelBuilder {
     ///
     /// # Errors
     ///
-    /// Never errors in the current implementation — a dashboard bind
-    /// failure degrades to running without the dashboard (logged), and
-    /// every other step is infallible. The `Result` keeps the fleet's
-    /// builder contract.
+    /// Never returns an error: a dashboard bind failure degrades to
+    /// running without the dashboard (logged), and every other step is
+    /// infallible. The `Result` keeps the fleet's builder contract.
     pub async fn build(self) -> Result<Sentinel> {
         let http = self.http;
         let cancel = self.cancel;
@@ -292,8 +292,7 @@ impl SentinelBuilder {
             .notifiers
             .unwrap_or_else(|| config.build_notifiers(&http));
 
-        // Build shared state. Service snapshots are populated by discovery,
-        // not seeded from config.
+        // Build shared state; discovery populates the service snapshots.
         let monitors_with_intervals: Vec<(String, std::time::Duration)> = monitors
             .iter()
             .map(|m| (m.name().to_string(), m.polling_interval()))
@@ -522,9 +521,19 @@ impl Sentinel {
     }
 }
 
+/// The remediation to append when the authenticated probe client cannot
+/// be built — only a pinned install has a `ca_cert` to fix or remove.
+const fn degraded_probe_advice(has_pin: bool) -> &'static str {
+    if has_pin {
+        " Fix or remove ca_cert to restore authenticated probes."
+    } else {
+        ""
+    }
+}
+
 /// The client the health-supervision probes use, keyed off the
 /// doctor-written `service_auth` credential and the optional `ca_cert` pin
-/// (a pin *replaces* the platform trust roots — ADR-002):
+/// (a pin *replaces* the platform trust roots):
 ///
 /// - credential + pin: authenticated probes (HTTP Basic, https requests
 ///   only — see [`ReqwestHttpClient`]) verifying peers against the pinned
@@ -546,16 +555,6 @@ impl Sentinel {
 /// peers the pin was for keep probing as alive rather than down. If even
 /// that client cannot be built, fall back to the `shared` (verifying)
 /// client loudly — self-signed TLS peers would then probe as down.
-/// The remediation to append when the authenticated probe client cannot
-/// be built — only a pinned install has a `ca_cert` to fix or remove.
-const fn degraded_probe_advice(has_pin: bool) -> &'static str {
-    if has_pin {
-        " Fix or remove ca_cert to restore authenticated probes."
-    } else {
-        ""
-    }
-}
-
 fn build_probe_client(
     service_auth: Option<&rp_auth::config::ClientAuthConfig>,
     ca_path: Option<&std::path::Path>,
@@ -683,8 +682,8 @@ mod tests {
         let client = build_probe_client(Some(&observatory_auth()), None, &shared);
         // The peer's throwaway CA is not in the platform trust store, so
         // the handshake must be refused — verification stays on with no
-        // pin (issue #810: absent means platform roots, not verification
-        // off).
+        // pin: an absent pin means the platform roots, not verification
+        // off.
         let err = client.get(&url).await.unwrap_err();
         match &err {
             crate::SentinelError::Http(msg) => {

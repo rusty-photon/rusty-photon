@@ -74,10 +74,10 @@ async fn dashboard_reports_service_health(
 
 #[then("the service manager records no restarts after a settle period")]
 async fn no_restarts_after_settle(world: &mut SentinelWorld) {
-    // A negative assertion needs a fixed window: with the stub policy's
-    // 200ms probes, 4 consecutive failures (not 1-2) are needed to trip a
-    // restart, so a single slow/timed-out probe under CI load never reads
-    // as a dead service — see issue #677.
+    // A negative assertion needs a fixed window. The stub policy
+    // (`SentinelWorld::service_manager_dir`) restarts only after 4
+    // consecutive failed 200ms probes, so up to three slow or timed-out
+    // probes in a row under CI load do not read as a dead service.
     tokio::time::sleep(Duration::from_secs(1)).await;
     let log = world.restart_log();
     assert!(log.is_empty(), "unexpected restarts recorded: {log:?}");

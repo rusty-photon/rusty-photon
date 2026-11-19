@@ -13,7 +13,7 @@ Group=rusty-photon
 Environment=RUST_LOG=info
 Environment=HOME=/var/lib/rusty-photon
 WorkingDirectory=/var/lib/rusty-photon
-# No EnvironmentFile= here for $VAR-indirected dns_credentials (ADR-002):
+# No EnvironmentFile= here for $VAR-indirected dns_credentials:
 # `doctor tls renew` loads <config-root>/renew.env itself, so the same
 # file convention works unchanged on launchd/Windows too. See
 # docs/services/doctor.md §Renewal.

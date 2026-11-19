@@ -1,7 +1,8 @@
 Feature: GET /health — readiness probe
 
   The /health endpoint is the standard HTTP health-probe pattern,
-  exposed for operational tooling and any future Sentinel probe path.
+  exposed for Sentinel's service health supervision and any other
+  operational tooling.
   It checks both runtime dependencies — the configured ASTAP binary
   and the configured database directory — match the startup-validation
   set, so "healthy at probe time" means "still capable of solving."

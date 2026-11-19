@@ -69,9 +69,11 @@ pub fn generate_service_cert(
     params
         .distinguished_name
         .push(DnType::CommonName, service_name);
-    // Match production shape (doctor's `cert::generate_service_cert`): AKI
-    // + SKI, so tests exercise the same strict-verifier-compatible certs
-    // that are actually issued (issue #621).
+    // Match production shape (doctor's
+    // `provision::cert::generate_service_cert`): AKI + SKI, without which
+    // strict verifiers (e.g. Python 3.13's default `VERIFY_X509_STRICT`)
+    // reject a CA-issued leaf, so tests exercise the certs that are actually
+    // issued.
     params.is_ca = IsCa::ExplicitNoCa;
     params.use_authority_key_identifier_extension = true;
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];

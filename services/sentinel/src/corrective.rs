@@ -28,7 +28,7 @@ use crate::restart::RestartGate;
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How many times the ladder re-checks health after a restart before giving up
-/// on confirming recovery. The total wait is bounded by `max_restart_duration`.
+/// on confirming recovery. The total wait is bounded by the restart budget.
 const RECOVERY_ATTEMPTS: u32 = 5;
 
 /// The ASCOM device type and abort verb for an operation family.
@@ -80,7 +80,7 @@ pub struct CorrectiveTarget {
 
 impl CorrectiveTarget {
     /// Resolve a target from the family and the discovered service that owns
-    /// it. The device number is always `0`: one service per device (ADR-014).
+    /// it. The device number is always `0`: one service per device.
     #[must_use]
     pub fn new(family: &str, service: &DiscoveredService) -> Self {
         Self {
@@ -435,7 +435,7 @@ impl CorrectiveLadder {
     /// restart `budget` runs out. The whole phase — health checks (each up to
     /// `HEALTH_TIMEOUT`) *and* the sleeps between them — is bounded by `budget`
     /// via an outer timeout, so the command and the recovery wait together
-    /// never exceed `max_restart_duration`.
+    /// never exceed the restart budget.
     async fn await_recovery(&self, target: &CorrectiveTarget, budget: Duration) -> bool {
         if budget.is_zero() {
             return false;

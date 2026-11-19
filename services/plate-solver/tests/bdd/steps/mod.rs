@@ -5,11 +5,6 @@
 //! phrases (e.g., "the response status is N") live in
 //! `solve_steps.rs` and are reused across other feature files'
 //! scenarios.
-//!
-//! All step bodies are Phase 3 stubs (`todo!("Phase 4")`). The
-//! `@wip` filter in `tests/bdd.rs` skips every scenario at runtime,
-//! so the stubs compile but never panic. Phase 4 fills the bodies in
-//! and removes the `@wip` tag in the same commit.
 
 pub mod auth_steps;
 pub mod config_steps;

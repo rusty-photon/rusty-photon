@@ -269,8 +269,10 @@ a **directory-backed stub** (all platforms, no shell):
 
 - enumeration reads `<dir>/units.txt` — one `<unit> <run-state>` pair per
   line;
-- a restart appends the unit name to `<dir>/restarts.log` and succeeds,
-  unless `<dir>/restart-fail-<unit>` exists (then it fails);
+- a restart appends the unit name to `<dir>/restarts.log`, sets the
+  unit's `units.txt` state to `running` unless `<dir>/stuck-<unit>`
+  exists, and succeeds — unless `<dir>/restart-fail-<unit>` exists (then
+  it fails without logging);
 - the recovery check passes iff the unit's `units.txt` state is `running`;
 - an optional `<dir>/policy.json` overrides any of the supervision
   constants `discovery_interval`, `poll_interval`, `failure_threshold`,

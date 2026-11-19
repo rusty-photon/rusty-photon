@@ -124,8 +124,7 @@ impl AstapRunner for AstapCliRunner {
 /// handled directly by `Path::with_extension`. Compound extensions
 /// like `.fits.fz` are **not supported** here — `with_extension`
 /// would yield `something.fits.wcs` rather than `something.wcs`.
-/// Real fixtures using `.fits.fz` haven't surfaced; revisit if they
-/// do.
+/// Nothing in the workspace writes `.fits.fz`.
 fn wcs_sidecar_path(fits_path: &Path) -> PathBuf {
     fits_path.with_extension("wcs")
 }

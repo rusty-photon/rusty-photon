@@ -33,7 +33,8 @@ pub enum AppError {
     Internal(String),
 }
 
-/// Wire-format error codes (frozen by the implementation plan).
+/// Wire-format error codes, the five of
+/// [§ HTTP API](../../../docs/services/plate-solver.md#http-api).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {

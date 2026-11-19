@@ -7,7 +7,7 @@
 //! [`ServiceHealthSupervisor`] task per service in a supervised run state
 //! (`running` or `failed`) — reaping the task when the service stops, is
 //! removed, or leaves supervision. There is no opt-in: every discovered
-//! service in a supervised state is supervised (plan D3s).
+//! service in a supervised state is supervised.
 //!
 //! A supervisor probes `GET {derived health URL}` every poll interval, with
 //! HTTP Basic credentials when the doctor-written `service_auth` credential
@@ -16,9 +16,9 @@
 //! alive but degraded: the service deliberately reports an external
 //! dependency unavailable, which no restart can cure, so a 503 resets the
 //! outage like a healthy probe and publishes `Degraded` with the body's
-//! optional opaque `message` for display (issue #595). Any other
-//! status, a timeout, or a connection error is a failed probe; a `failed`
-//! unit counts as a failed probe without HTTP. After the failure threshold
+//! optional opaque `message` for display. Any other status, a timeout, or
+//! a connection error is a failed probe; a `failed` unit counts as a failed
+//! probe without HTTP. After the failure threshold
 //! the supervisor restarts the service through the shared [`RestartManager`]
 //! (inheriting the one-restart-per-service gate), then backs off — doubling
 //! up to the ceiling — before any further attempt. Probing never stops and
@@ -862,7 +862,7 @@ mod tests {
 
     impl Fixture {
         /// Spawn a supervisor over a scripted probe answer and a registry
-        /// seeded with one service in `run_state`.
+        /// seeded with `service`.
         fn spawn(answer: ProbeAnswer, service: DiscoveredService, fails: bool) -> Self {
             let http = ScriptedHttp::new(answer);
             let manager = Arc::new(RecordingManager {

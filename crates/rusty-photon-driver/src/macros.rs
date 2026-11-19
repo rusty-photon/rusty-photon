@@ -1,14 +1,13 @@
 //! The [`driver_error!`] macro: define a driver error enum that shares the common
 //! transport-driver failure modes and their ASCOM classification.
 //!
-//! Each transport-backed Alpaca driver previously hand-rolled a near-identical
-//! error enum (`NotConnected`, `Io`, `Timeout`, `Communication`, …) plus the same
-//! `to_ascom_error` / `From<DriverError> for ASCOMError` / `From<TransportError>`
-//! impls and ~25 unit tests. This macro defines that common core **once** and
-//! splices in each driver's device-specific variants, generating a **flat** enum —
-//! so existing `XxxError::Variant` call sites keep working with no churn — that is
-//! still a local type (so a driver's own `From<SessionError<XxxCodecError>>` stays
-//! orphan-legal).
+//! The transport-backed Alpaca drivers share one error core (`NotConnected`,
+//! `Io`, `Timeout`, `Communication`, …) and the same `to_ascom_error` /
+//! `From<DriverError> for ASCOMError` / `From<TransportError>` impls. This macro
+//! defines that core **once** and splices in each driver's device-specific
+//! variants, generating a **flat** enum — a common variant is
+//! `XxxError::NotConnected` beside the driver's own — that is still a local type
+//! (so a driver's own `From<SessionError<XxxCodecError>>` stays orphan-legal).
 
 /// Define a driver error enum sharing the common transport-driver variants.
 ///

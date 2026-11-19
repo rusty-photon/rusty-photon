@@ -34,8 +34,8 @@ impl ReqwestHttpClient {
     /// Create a new HTTP client with optional CA certificate trust.
     ///
     /// When `ca_cert_path` is `Some`, the PEM-encoded CA certificate at that
-    /// path is added as a trusted root, allowing connections to services using
-    /// certificates signed by the Rusty Photon CA.
+    /// path replaces the platform trust roots: the client trusts only
+    /// certificates that CA signed (the Rusty Photon CA's services).
     ///
     /// # Errors
     ///
