@@ -258,10 +258,11 @@ The service uses Rust's `PathBuf` for cross-platform path handling:
 
 #### Linux (Debian/Ubuntu) — `.deb` package
 ```bash
-sudo dpkg -i rusty-photon-filemonitor_0.1.0-1_amd64.deb
+sudo apt-get install ./rusty-photon-filemonitor_0.1.0-1_amd64.deb
 ```
 
-This installs the binary to `/usr/bin/rusty-photon-filemonitor`, enables and
+`apt-get install ./<file>`, not `dpkg -i`, so that the package's runtime
+dependencies resolve. This installs the binary to `/usr/bin/rusty-photon-filemonitor`, enables and
 starts the `rusty-photon-filemonitor` systemd unit, and creates the shared
 `rusty-photon` system user (see
 [ADR-012](../decisions/012-service-packaging-architecture.md)). The package
@@ -273,16 +274,22 @@ Upgrades never touch the config; package purge removes it.
 
 #### Linux (Fedora/RHEL) — `.rpm` package
 ```bash
-sudo rpm -i rusty-photon-filemonitor-0.1.0-1.x86_64.rpm
+sudo dnf install ./rusty-photon-filemonitor-0.1.0-1.x86_64.rpm
+sudo systemctl start rusty-photon-filemonitor
 ```
 
-Same layout and config behavior as the `.deb` package.
+Same layout and config behavior as the `.deb` package, except that the rpm
+enables the unit without starting it (the Fedora convention), hence the
+`systemctl start`. The signed apt and dnf repositories, upgrades and
+downgrades are in [docs/packaging.md](../packaging.md).
 
 #### macOS — Homebrew
 ```bash
 brew tap rusty-photon/rusty-photon
-brew install filemonitor
+brew install rusty-photon-filemonitor
 ```
+
+See [docs/packaging-macos.md](../packaging-macos.md).
 
 #### Windows — suite `.msi` installer
 filemonitor ships as a feature of the family-wide
