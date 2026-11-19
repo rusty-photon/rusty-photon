@@ -1279,13 +1279,13 @@ event carries only `event_id`, `event_seq`, `event`, `timestamp` and
 |-------|---------|
 | `event_id` | Per-emission UUID; the key the plugin completion contract routes a completion by (`POST /api/plugins/{event_id}/complete`, designed and not built — § [Delivery: Webhooks](#delivery-webhooks)). |
 | `event_seq` | Monotonically increasing per-emission counter. Total order across all events; the SSE `id` (and `Last-Event-ID` replay key) for the [Real-Time Stream](#real-time-stream). |
-| `operation_id` | Correlation key shared by an operation's `*_started`, `*_complete`, and `*_failed` events. Omitted for point events (e.g. `filter_switch`, `safety_changed`). |
+| `operation_id` | Correlation key shared by an operation's `*_started` event and the event that ends it: `*_complete` or `*_failed`, or `*_settled` for a guide start or a dither. Omitted for point events (e.g. `filter_switch`, `safety_changed`). |
 | `event` | The event-type string, e.g. `"slew_started"`. |
 | `timestamp` | ISO-8601 emission time in whole seconds (`2026-05-19T20:14:33Z`). |
-| `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started`/`*_complete`/`*_failed` triple; `ended_at` only on `*_complete`/`*_failed`. |
-| `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`. |
+| `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started` event and the event that ends it; `ended_at` only on the ending event (`*_complete`, `*_failed` or `*_settled`). |
+| `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`/`*_settled`. |
 | `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Carried on: `slew_started` — `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`; `park_started` — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle` (worst-case traverse; rp can't read the park position via Alpaca), `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)`; `move_focuser_started` — per leg, `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` and a backlash-compensated move is the overshoot hop then the return hop (see [Focuser Tool Details](#focuser-tool-details)); `predicted` and `max` are the sums over the legs; `exposure_started` — `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom (advisory only — rp does not enforce it; the camera driver owns the exposure, and rp keeps a separate, more generous internal readout backstop); `centering_started` — outer-loop only (advisory; per-iteration slews/captures carry their own deadlines): `per_iter = duration + centering.solve_time_estimate (default 30 s) + centering.slew_overhead_estimate (default 10 s)`, `predicted = per_iter` (single-pass convergence), `max = max_attempts × per_iter`; and `guide_started` / `dither_started` when a settle timeout is resolved (see [Events](#events)). Every other event omits them, and so do a slew, a park and a focuser move whose prediction cannot be sized (a failed pre-move read, or no mount configured), which fall back to a fixed ceiling. |
-| `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`, the outcome (or `{"error": "..."}` on failure). |
+| `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`/`*_settled`, the outcome (or `{"error": "..."}` on failure). |
 
 The deadline fields feed Sentinel's operation watchdog
 ([sentinel.md § Operation Watchdog](sentinel.md#operation-watchdog),
@@ -7266,7 +7266,7 @@ enforce**, without writing anything.
 
 **MCP only — there is no REST counterpart.** rp's HTTP surface covers
 service-level concerns (health, the setup page, equipment status,
-documents and images, plugin callbacks, events — § [REST
+documents and images, events — § [REST
 Endpoints](#rest-endpoints)); plan data lives entirely on the MCP
 surface, so these tools add no routes.
 
@@ -7330,8 +7330,8 @@ one entry per `AcquisitionGoal`, so two goals that share a filter (e.g.
 `Ha` at two different exposure lengths) are reported apart.
 
 Taking a past frame's target, frame type and sub-spec from its file
-and directory names, rather than from its sidecar, is a gap
-[Ground rules](#ground-rules) lists: a frame whose name the current
+and directory names, rather than from its sidecar, is deliberate
+([Ground rules](#ground-rules)): a frame whose name the current
 patterns no longer parse is not counted.
 
 **When derivation is inert.** The whole scan is predicated on a
