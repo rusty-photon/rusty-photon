@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/bdd-infra",
+  "crates/guide-simulator",
   "crates/qhyccd-rs",
   "crates/qhyccd-rs/libqhyccd-sys",
   "crates/rp-auth",
@@ -150,6 +151,7 @@ fitsrs = "0.4"
 wcs = "0.4"
 ndarray = "0.17"
 ndarray-ndimage = "0.6.0"
+num-traits = "0.2.19"
 rmpfit = "2.0"
 thiserror = "2.0.18"
 # A YAML 1.2 parser that keeps each node's line, for rusty-photon-ci's tests

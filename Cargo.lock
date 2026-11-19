@@ -1937,6 +1937,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "guide-simulator"
+version = "0.1.0"
+dependencies = [
+ "ndarray",
+ "num-traits",
+ "rand 0.10.3",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
