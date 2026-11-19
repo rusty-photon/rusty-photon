@@ -114,9 +114,10 @@
     )
 )]
 
-// Every binary in this workspace depends on this crate, so this is the one
-// place a workspace-wide target guard reaches all of them. Cargo.toml cannot
-// express it — `compile_error!` in the root of the common dependency can.
+// Every service binary depends on this crate, so a workspace-wide target
+// guard here reaches all of them; doctor, the one shipped binary that does
+// not, carries a copy in its own crate root. Cargo.toml cannot express the
+// guard — `compile_error!` in the root of the common dependency can.
 //
 // The workspace assumes a little-endian target throughout: the catalog format
 // (`rp-catalog`), the mount wire protocols (`skywatcher-motor-protocol`,

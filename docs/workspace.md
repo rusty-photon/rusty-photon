@@ -492,8 +492,9 @@ compile_error!("Rusty Photon supports little-endian targets only. ...");
 ```
 
 Cargo.toml has no way to express a target guard, so it lives in the root of the
-crate every binary depends on — 44 of the 49 workspace members, and every
-service. Verify it with a cross-check against an installed BE target:
+crate every service binary depends on, and doctor — the one shipped binary
+that does not depend on it — carries a copy in its own crate root. Verify the
+lifecycle crate's with a cross-check against an installed BE target:
 
 ```sh
 cargo check -p rusty-photon-service-lifecycle --target s390x-unknown-linux-gnu
