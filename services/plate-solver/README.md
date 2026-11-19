@@ -1,21 +1,15 @@
 # plate-solver
 
 rp-managed service that wraps the ASTAP CLI and exposes a narrow HTTP
-solve API to `rp`. Operator installs ASTAP separately (BYO per ADR-005);
+solve API to `rp`. Operator installs ASTAP separately (bring-your-own);
 `plate-solver` ships no ASTAP binary or index database.
 
 See [`docs/services/plate-solver.md`](../../docs/services/plate-solver.md)
-for the design contract and [`docs/plans/archive/plate-solver.md`](../../docs/plans/archive/plate-solver.md)
-for implementation sequencing (archived 2026-05-15).
+for the design contract.
 
 ## Status
 
-All eight phases of the [implementation plan](../../docs/plans/archive/plate-solver.md#phases)
-have shipped: design doc, crate scaffolding + `AstapRunner` trait +
-`.wcs` parser, BDD scenarios, HTTP server + supervision,
-process-supervisor recipes, nightly cross-platform real-ASTAP smoke,
-hint-plumbing verification, and LGPL §4/§6 review under BYO. The
-service exposes `POST /api/v1/solve` and `GET /health`, supervises
+The service exposes `POST /api/v1/solve` and `GET /health`, supervises
 each spawned `astap_cli` child with the documented graceful-signal
 → 2 s grace → force-kill escalation, and serializes overlapping
 solves through a single-flight semaphore. ASTAP is invoked as an
@@ -31,12 +25,14 @@ per-OS table ([`assets.json`](../../.github/actions/install-astap/assets.json))
 by hand:
 
 - Linux: download `astap_command-line_version_Linux_*.zip` from
-  SourceForge, place `astap_cli` somewhere in `$PATH`.
+  SourceForge and put `astap_cli` where `astap_binary_path` (below)
+  will point.
 - macOS: same, plus `xattr -d com.apple.quarantine astap_cli` on first run.
 - Windows: download `astap_command-line_version_win64.zip`, extract.
 
-The D05 star database (~100 MB) is required for typical 0.6°–6° FOV
-imaging; download from the same SourceForge project. A narrower field
+The D05 star database (~100 MB) is enough for typical 0.6°–6° FOV
+imaging, where any of D05/D20/D50/D80 works; download from the same
+SourceForge project. A narrower field
 needs a denser one (D20, ~400 MB, and up): with ASTAP CLI-2026.10.30 and
 later, CI's 0.42° test frame solves with D20 and not with D05.
 
@@ -84,19 +80,22 @@ Graceful shutdown: SIGTERM and SIGINT on Unix, Ctrl-C on Windows.
 ## Process-supervisor recipes
 
 An OS-level process supervisor restarts the wrapper on **crash /
-non-zero exit**. It pairs with Sentinel's health supervision (see
-[Sentinel integration](#sentinel-integration) below): the supervisor
-owns relaunch-on-exit, and its restart command (`systemctl restart …`,
-`launchctl kickstart -k …`, `nssm restart …`) is exactly what Sentinel
-shells out to when probes fail.
+non-zero exit**. A packaged install has one already: the service
+manager running its `rusty-photon-plate-solver` unit, which
+Sentinel's health supervision also restarts when probes fail (see
+[Sentinel integration](#sentinel-integration) below). The recipes
+here set one up by hand, under the name `plate-solver`
+(`com.rusty-photon.plate-solver` under launchd), which Sentinel does
+not discover.
 
 > **Hang recovery is *not* covered by these recipes alone.** systemd
 > `Restart=on-failure`, launchd `KeepAlive`, and NSSM's auto-restart
 > all fire on process exit, not on a hung-but-still-alive wrapper.
 > A wedged wrapper that's still bound to its port will keep the
 > supervisor happy. Hangs are covered by Sentinel's `/health`-polling
-> supervision ([Sentinel integration](#sentinel-integration) below),
-> or by any other external `/health` watchdog (Prometheus blackbox
+> supervision of a packaged install
+> ([Sentinel integration](#sentinel-integration) below), or by any
+> other external `/health` watchdog (Prometheus blackbox
 > exporter, Nagios, a small cron-driven probe). The wrapper does not
 > hang waiting for `astap_cli`: every request is bounded by a
 > wall-clock deadline that escalates from a graceful signal to a
@@ -191,15 +190,17 @@ Sentinel supervises this wrapper through its
 and on a packaged install it needs **no configuration at all**:
 sentinel discovers the installed `rusty-photon-plate-solver` unit from
 the service manager, derives the `GET /health` probe from this
-service's own config file, and after three consecutive failures
-(non-200, timeout, or connection refused) runs
-`systemctl restart rusty-photon-plate-solver` — with doubling backoff
-between attempts and a Pushover notification for every autonomous
-restart. This covers both crashes and hangs; the OS process supervisor
-(recipes above) remains the relaunch mechanism the restart drives.
-Hand-run wrappers (`cargo run`, the ad-hoc recipes above under
-non-packaged names) are not under the service manager and are
-therefore not supervised.
+service's own config file, and after three consecutive failures (an
+answer other than `200`, `401`, `403` or `503`, a timeout, or a
+refused connection) runs the restart command it derives for the unit
+(`systemctl restart rusty-photon-plate-solver` on Linux) — with
+doubling backoff between attempts and a Pushover notification for
+every autonomous restart. This covers both crashes and hangs; the
+service manager that runs the unit carries out the restart. A `503` —
+the ASTAP binary or its database missing — shows the service degraded
+instead, since a restart cannot bring them back. A wrapper run by hand
+(`cargo run`) or under a recipe above is not a `rusty-photon-*` unit
+Sentinel discovers, and so is not supervised.
 
 Defense in depth around it:
 
@@ -232,5 +233,5 @@ Defense in depth around it:
   read verbatim from the `.wcs` sidecar. `null` unless the sidecar
   carries all six keys — never synthesized from CDELT/CROTA2.
 
-Full HTTP contract in [`docs/plans/archive/plate-solver.md`](../../docs/plans/archive/plate-solver.md)
-§"HTTP contract".
+Full HTTP contract in
+[`docs/services/plate-solver.md` § HTTP API](../../docs/services/plate-solver.md#http-api).

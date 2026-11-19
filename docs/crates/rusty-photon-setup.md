@@ -5,8 +5,7 @@ configuration: the form a page renders from the service's config type, the
 save a `POST` to it performs, and the rules both follow. The pages are the
 ones the Alpaca Management API defines — `/setup` for the whole server and
 `/setup/v1/{device_type}/{device_number}/setup` for one device — served by
-the service itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)).
+the service itself behind its own TLS and Basic Auth.
 
 This is a workspace library, not a service. It depends on neither
 `ascom-alpaca` nor any service: an Alpaca driver reaches it through
@@ -221,10 +220,10 @@ Nothing a `GET` does changes state.
 A driver whose configuration the walker cannot render, or whose devices
 its configuration alone cannot name, adds its own part to its pages: a
 `DriverPages` the handler is built with (`SetupPages::with_driver_pages`).
-The camera drivers are the first: their `usb_devices` list is an array of
+The camera drivers have one: their `usb_devices` list is an array of
 objects, which the walker names as file-only, and the devices a camera
 server serves follow the USB placement its last start or reload found, not
-the file (the driver-setup-pages plan's D11). `zwo-focuser`'s devices are
+the file. `zwo-focuser`'s devices are
 the EAFs its SDK enumerates, which the file only renames through a
 `devices` map of overrides, so its part (`rusty-photon-driver`'s
 `overrides` module) is a page per EAF that edits that EAF's override. A
@@ -257,7 +256,7 @@ whose configuration is an array of entries draws each entry's fields with
 `FieldModel::from_node_under`, which walks the entry's schema under its
 place in the file (`equipment.cameras.0`), so each field is named as the
 service's validation names its errors and labelled by its own key. `rp`'s
-roster is the first ([rp.md § Setup Page](../services/rp.md#setup-page)). An error a section draws beside its control is
+roster is such a section ([rp.md § Setup Page](../services/rp.md#setup-page)). An error a section draws beside its control is
 not repeated above the form; any other is named there with its path, as
 for a field the page does not show.
 
@@ -265,7 +264,7 @@ for a field the page does not show.
 
 A section can ask that a save be confirmed before it is written: one that
 moves a camera to another device number, which every client bound to the
-old number must follow (D11). After the save has passed validation — and
+old number must follow. After the save has passed validation — and
 only when it changes something, so fires a reload, since a save that
 changes nothing has nothing to confirm — each section on the page is
 shown the file before and after it; one that wants
@@ -387,12 +386,11 @@ guiding and parks the mount
 ([rp.md § SafetyMonitor Polling](../services/rp.md#safetymonitor-polling)).
 The park is meant for a monitor that is gone, not for one that is
 reloading, so a safety monitor's reload keeps its clients
-([below](#a-reload-that-keeps-its-clients), since
-[#1652](https://github.com/rusty-photon/rusty-photon/issues/1652)).
-Before it, a monitor's reload made `rp` run the transition whenever a
-safety poll read the monitor before the reconnect supervisor had
-reconnected it (with the defaults' 10 s polls and 30 s passes, about
-five reloads in six): on the field rig a `filemonitor` save, with no
+([below](#a-reload-that-keeps-its-clients)). A reload that ended them
+would make `rp` run the transition whenever a safety poll read the
+monitor before the reconnect supervisor had reconnected it (with the
+defaults' 10 s polls and 30 s passes, about five reloads in six): on
+the field rig a `filemonitor` save whose reload ended them, with no
 session running, made `rp` park a mount that was already parked, so
 nothing moved
 ([record](../validation/2026-10-26-setup-pages-rig-linux/README.md)).
