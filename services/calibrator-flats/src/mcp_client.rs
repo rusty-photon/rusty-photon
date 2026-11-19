@@ -118,8 +118,13 @@ impl McpClient {
             }
             Err(e) => return Err(CalibratorFlatsError::ToolCall(format!("{tool}: {e}"))),
         };
-        let value = rp_mcp_client::tool_result_value(&result)
-            .map_err(|e| CalibratorFlatsError::ToolCall(format!("{tool}: {e}")))?;
+        let value = rp_mcp_client::tool_result_value(&result).map_err(|e| {
+            let message = format!("{tool}: {e}");
+            match rp_mcp_client::ascom_error_code(&result) {
+                Some(code) => CalibratorFlatsError::Device { code, message },
+                None => CalibratorFlatsError::ToolCall(message),
+            }
+        })?;
         serde_json::from_value(value).map_err(|e| {
             CalibratorFlatsError::ToolCall(format!("{tool}: failed to parse result: {e}"))
         })

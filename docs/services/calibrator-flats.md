@@ -323,6 +323,15 @@ start), and stops at a floor of 1. A pass that ends *under* the target
 is not retried: dimming further cannot help. Either stop reports the
 filter as `unconverged` with the best duration and the last median.
 
+**A refused step** ends the ladder the same way. A panel with a minimum
+brightness refuses a level below it: `calibrator_on` fails with the
+device's `INVALID_VALUE`, which `rp` relays as its ASCOM code ([rp.md
+§ CoverCalibrator Tool Details](rp.md#covercalibrator-tool-details)).
+The filter is `unconverged`, the panel stays at the last level it took,
+and the run goes on: the next filter starts at that level. Any other
+`calibrator_on` failure fails the run, because the panel's level is then
+unknown and a record would name a brightness the panel may not be at.
+
 ## Store
 
 One redb file, `calibrator-flats.redb`, with the `rp-targets`
@@ -493,7 +502,8 @@ credential — and that `tools/list` answers with no `rp` running.
   schema refused, staleness per field.
 - Workflow, against a `mockall` rig: the proportional step and its
   clamps, the floor (a start below it is raised, a step below it ends
-  the pass over-bright), the ladder, train resolution and filter
+  the pass over-bright), the ladder (a refused step ends it and the run
+  goes on; any other `calibrator_on` failure fails the run), train resolution and filter
   selection, `take_flats`'s pre-flight refusal actuating nothing, the
   cleanup guard on success, error and cancellation, the refused reopen
   as a warning, unconverged-writes-nothing.

@@ -7,7 +7,10 @@ Feature: CoverCalibrator tools
   Every tool takes exactly one of calibrator_id or train_id (the cover
   calibrator first in that optical train's device list), and every result
   carries the resolved calibrator_id and trains, the optical trains the
-  cover or panel affects.
+  cover or panel affects. When the device refuses calibrator_on with an
+  ASCOM error, the tool error carries the device's code in its structured
+  content as ascom_error.code: 1025 (INVALID_VALUE) for a brightness the
+  panel does not accept.
 
   Scenario: close_cover closes the cover successfully
     Given a running Alpaca simulator
@@ -37,6 +40,15 @@ Feature: CoverCalibrator tools
     And an MCP client connected to rp
     When the MCP client calls "calibrator_on" with calibrator "flat-panel" and brightness 50
     Then the tool call should succeed
+
+  Scenario: calibrator_on at a brightness the panel refuses is an error carrying the device's code
+    Given a running Alpaca simulator
+    And rp is running with a cover calibrator on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "calibrator_on" with calibrator "flat-panel" and brightness 1000000
+    Then the tool call should return an error
+    And the error message should contain "INVALID_VALUE"
+    And the tool error should carry the device's ASCOM error code 1025
 
   Scenario: calibrator_off turns off the light
     Given a running Alpaca simulator

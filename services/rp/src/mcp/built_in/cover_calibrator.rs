@@ -275,7 +275,10 @@ impl McpHandler {
 
         debug!(calibrator_id = %calibrator_id, brightness = brightness, "turning calibrator on");
         if let Err(e) = cc.calibrator_on(brightness).await {
-            return Ok(tool_error!("failed to turn calibrator on: {}", e));
+            return Ok(ascom_tool_error(
+                format!("failed to turn calibrator on: {e}"),
+                &e,
+            ));
         }
 
         let now = tokio::time::Instant::now();
@@ -431,4 +434,16 @@ impl McpHandler {
             .map(|t| t.id.clone())
             .collect()
     }
+}
+
+/// A tool error relaying the device's ASCOM error: `text` for a reader, and
+/// the device's code and message in the structured content, for a client
+/// that has to tell one refusal from another (rp.md § `CoverCalibrator` Tool
+/// Details).
+fn ascom_tool_error(text: String, error: &ascom_alpaca::ASCOMError) -> CallToolResult {
+    let mut result = CallToolResult::error(vec![rmcp::model::ContentBlock::text(text)]);
+    result.structured_content = Some(serde_json::json!({
+        "ascom_error": { "code": error.code.raw(), "message": error.message },
+    }));
+    result
 }
