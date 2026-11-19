@@ -4,10 +4,7 @@
 //! based on configuration flags and starts the ASCOM Alpaca server.
 //!
 //! Requires the `mock` feature; all tests are skipped under Miri because it
-//! cannot call socket syscalls. Tests run sequentially because the ASCOM
-//! Alpaca discovery service binds to a fixed address, so only one server
-//! can run at a time.
-#![allow(clippy::await_holding_lock)]
+//! cannot call socket syscalls.
 #![cfg(feature = "mock")]
 #![allow(
     clippy::unwrap_used,
@@ -37,15 +34,13 @@
     clippy::struct_excessive_bools
 )]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use star_adventurer_gti::{
     AlpacaServerConfig, BoundServer, Config, Handover, MockTransportFactory, MountConfig,
     ServerBuilder, TransportConfig, TransportFactory, UdpConfig,
 };
-
-static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_config(mount_enabled: bool) -> Config {
     let mut cfg = Config::default();
@@ -95,7 +90,6 @@ const READY_TIMEOUT: Duration = Duration::from_secs(5);
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_starts_with_mount_enabled() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(true)).await;
     let status = poll_status(port, "/api/v1/telescope/0/name", READY_TIMEOUT).await;
     assert_eq!(status, 200, "Telescope name endpoint should respond");
@@ -106,7 +100,6 @@ async fn test_server_starts_with_mount_enabled() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_starts_with_mount_disabled() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(false)).await;
     let status = poll_status(port, "/api/v1/telescope/0/name", READY_TIMEOUT).await;
     assert_ne!(status, 200, "Telescope should not be registered");
@@ -215,7 +208,6 @@ fn fast_park_config() -> Config {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn a_lifecycle_without_a_mount_hands_on_what_it_was_given() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let parked = parked_lifecycle(fast_park_config()).await;
 
     // A reload that disables the mount registers no device, so it has
@@ -229,7 +221,6 @@ async fn a_lifecycle_without_a_mount_hands_on_what_it_was_given() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn a_hand_over_applies_only_to_the_mount_it_was_kept_for() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let parked = parked_lifecycle(fast_park_config()).await;
 
     assert!(
@@ -265,7 +256,6 @@ async fn a_hand_over_applies_only_to_the_mount_it_was_kept_for() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_binds_to_os_assigned_port() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(true)).await;
     assert_ne!(port, 0, "OS should have assigned a real port");
     let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await;

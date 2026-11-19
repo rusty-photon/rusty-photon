@@ -3,7 +3,6 @@
 //! These tests verify ASCOM Alpaca compliance by running the `ConformU` test suite
 //! against the driver running in mock mode.
 #![cfg(feature = "conformu")]
-#![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(

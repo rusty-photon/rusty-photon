@@ -4,10 +4,7 @@
 //! configuration flags and starts the ASCOM Alpaca server.
 //!
 //! Requires the `mock` feature. All tests are skipped under Miri since it cannot
-//! call socket syscalls. Tests run sequentially behind `SERVER_LOCK` so the
-//! spawned server + transport lifecycles never overlap (discovery is disabled
-//! in these configs, so there is no shared discovery port to contend for).
-#![allow(clippy::await_holding_lock)]
+//! call socket syscalls.
 #![cfg(feature = "mock")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
@@ -32,14 +29,12 @@
     clippy::struct_excessive_bools
 )]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use pa_scops_oag::config::{AlpacaServerConfig, FocuserConfig, SerialConfig};
 use pa_scops_oag::{Config, MockScopsTransportFactory};
 use rusty_photon_shared_transport::TransportFactory;
-
-static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_config(focuser_enabled: bool) -> Config {
     Config {
@@ -97,7 +92,6 @@ async fn get_status(port: u16, path: &str) -> u16 {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_starts_with_focuser_enabled() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, stop, handle) = spawn_server(test_config(true)).await;
 
     let status = get_status(port, "/api/v1/focuser/0/name").await;
@@ -110,7 +104,6 @@ async fn test_server_starts_with_focuser_enabled() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_starts_with_focuser_disabled() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, stop, handle) = spawn_server(test_config(false)).await;
 
     let status = get_status(port, "/api/v1/focuser/0/name").await;
@@ -123,7 +116,6 @@ async fn test_server_starts_with_focuser_disabled() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_binds_to_os_assigned_port() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, stop, handle) = spawn_server(test_config(true)).await;
 
     assert_ne!(port, 0, "OS should have assigned a real port");

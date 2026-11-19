@@ -6,7 +6,6 @@
 //! [`MockSurveyClient`]'s helper so `ConformU` can drive
 //! `StartExposure` / `ImageArray` end-to-end without touching NASA.
 #![cfg(feature = "conformu")]
-#![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -33,15 +32,10 @@
 use bdd_infra::ServiceHandle;
 use sky_survey_camera::mock::synthetic_fits;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
-
-static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = CONFORMU_LOCK.lock().unwrap();
-
     let _ = fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()

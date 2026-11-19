@@ -9,13 +9,7 @@
 //!
 //! Gated on `feature = "mock"` because the test imports
 //! `MockFalconTransportFactory` from the falcon-rotator crate.
-//!
-//! Tests run sequentially via `SERVER_LOCK` to mirror the qhy-focuser /
-//! ppba-driver precedent — even though each test sets
-//! `discovery_port = None`, serialising the binds keeps a future change to
-//! that default from racing.
 #![cfg(feature = "mock")]
-#![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -39,12 +33,10 @@
     clippy::struct_excessive_bools
 )]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use pa_falcon_rotator::{Config, MockFalconTransportFactory, ServerBuilder};
 use rusty_photon_shared_transport::TransportFactory;
-
-static SERVER_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_config(switch_enabled: bool) -> Config {
     let mut config = Config::default();
@@ -87,7 +79,6 @@ async fn get(port: u16, path: &str) -> reqwest::Response {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_starts_with_mock_factory() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(true)).await;
 
     let status = get(port, "/management/v1/description")
@@ -106,7 +97,6 @@ async fn test_server_starts_with_mock_factory() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_server_registers_both_devices() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(true)).await;
 
     let resp = get(port, "/management/v1/configureddevices").await;
@@ -132,7 +122,6 @@ async fn test_server_registers_both_devices() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)]
 async fn test_rotator_only_when_switch_disabled() {
-    let _lock = SERVER_LOCK.lock().unwrap();
     let (port, handle) = spawn_server(test_config(false)).await;
 
     let resp = get(port, "/management/v1/configureddevices").await;

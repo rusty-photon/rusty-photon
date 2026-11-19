@@ -7,7 +7,6 @@
 //! one with both in Auto (the reverse), and both `ObservingConditions`
 //! suites once.
 #![cfg(feature = "conformu")]
-#![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(

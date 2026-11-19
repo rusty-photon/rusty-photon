@@ -6,7 +6,6 @@
 //! `--all-features` so the right path is exercised automatically.
 
 #![cfg(feature = "conformu")]
-#![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -31,15 +30,10 @@
 )]
 
 use bdd_infra::{FullRunSettings, ServiceHandle};
-use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
-
-static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = CONFORMU_LOCK.lock().unwrap();
-
     let _ = fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
