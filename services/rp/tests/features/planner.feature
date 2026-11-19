@@ -5,8 +5,8 @@ Feature: Planner convenience tools
   `get_session_progress` — that compose the primitives from
   `ephemeris_primitives.feature`, the embedded catalog, and the
   per-goal progress derived from the frames on disk
-  (`target_store_progress.feature`). v1 implements §"Dynamic
-  Planner" decision-logic bullets 1 (altitude half), 2, 3, 4, and 6
+  (`target_store_progress.feature`). `get_next_target` implements
+  bullets 1 (altitude half), 2, 3, 4, and 6 of rp.md § Decision Logic
   (eliminate below-floor and goal-met targets, prefer transiting,
   break near-transit ties by least progress then filter batching,
   twilight / end-of-session fallback).
@@ -17,9 +17,9 @@ Feature: Planner convenience tools
   by calling `record_exposure` — which increments nothing.
 
   Planner candidates come from the active rows of the rp-targets store
-  (seeded via the `add_target` MCP tool); the legacy `targets[]` config
-  array was retired. Altitude-gating parity against the store is pinned
-  separately in `target_store_planner.feature`.
+  (seeded via the `add_target` MCP tool), never from config. Altitude
+  gating against the store is pinned separately in
+  `target_store_planner.feature`.
 
   The filter-batching tie-break (bullet 4) reads the filter wheel: among
   equally transiting, equally progressed candidates, the target whose

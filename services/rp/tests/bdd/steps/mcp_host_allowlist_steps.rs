@@ -2,14 +2,14 @@
 //! (`mcp_host_allowlist.feature`).
 //!
 //! The scenarios spawn their own rp on port 0 bound to all interfaces —
-//! the deployment shape whose advertised hostname URL rp used to reject
-//! — and address the loopback listener with an explicit `Host` header,
+//! the deployment shape that advertises a hostname URL — and address
+//! the loopback listener with an explicit `Host` header,
 //! which is exactly what an orchestrator dialing that URL sends. The
 //! probe is a self-contained 2026-07-28 `tools/list`
 //! (`mcp_transport_steps::post_2026_07_28`); the status assertion
 //! lives there too. They never touch `OmniSim`, so the feature is
 //! untagged (no `@serial`), and they reuse `rp is started with that
-//! config file` from `config_rest_steps`.
+//! config file` from `scenario_config_steps`.
 
 use cucumber::{given, when};
 use serde_json::Value;

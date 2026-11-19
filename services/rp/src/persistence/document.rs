@@ -2,20 +2,18 @@
 //! tool-produced sections written against it.
 //!
 //! `rp` owns the core document fields (id, `captured_at`, `file_path`, camera/
-//! exposure metadata). Image-analysis tools and plugins contribute additional
-//! data via named sections — see `docs/services/rp.md` (Exposure Document and
-//! Plugin Sections).
+//! exposure metadata). Image-analysis tools add data in named sections — see
+//! `docs/services/rp.md` (Exposure Document and Sections).
 //!
 //! Persistence is a sidecar JSON file written next to each FITS file
 //! (`<image>.json`). Writes are atomic: data is staged into a `.tmp` file and
 //! `rename`d into place, so a crash mid-write cannot leave a torn document.
 //!
-//! As of Phase 7 (`docs/plans/archive/image-evaluation-tools.md`), the document lives
-//! inline on each `imaging::CachedImage` cache entry. Lookups go through
-//! `ImageCache::get_document` and section updates through
-//! `ImageCache::put_section`; the sidecar JSON pair on disk plus the disk-
-//! fallback resolution path together provide the "live as long as the file
-//! is on disk" contract.
+//! The document lives inline on its frame's `cache::CachedImage` entry.
+//! Lookups go through `ImageCache::resolve_document` and section updates
+//! through `ImageCache::put_section`; the sidecar JSON pair on disk plus
+//! the disk-fallback resolution path together provide the "live as long
+//! as the file is on disk" contract.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -88,9 +86,7 @@ pub struct ExposureDocument {
     /// outside `rp` re-binning the camera after the read-back; `rp`'s
     /// own captures through one camera run one at a time (rp.md
     /// §"Capture Tool Details", "Binning" → Concurrency). Present on
-    /// every frame this version captures;
-    /// absent on sidecars written before `capture` set the binning at
-    /// all.
+    /// every frame this version captures; absent on older sidecars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binning: Option<rp_vocabulary::Binning>,
     /// The filter in the camera's train filter wheel during the
@@ -137,10 +133,9 @@ pub struct ExposureDocument {
     pub electrons_per_adu: Option<f64>,
     /// Camera's `MaxADU` at the time of capture. The sidecar carries it
     /// forward so a disk-fallback rehydration of the image cache can
-    /// pick the correct `CachedPixels` variant without needing the
-    /// originating camera to still be connected — see Phase 7
-    /// (`docs/plans/archive/image-evaluation-tools.md`) and the Image and
-    /// Document Cache section of `docs/services/rp.md`.
+    /// pick the correct `CachedPixels` variant without the originating
+    /// camera connected — see `docs/services/rp.md` §"Storage Type
+    /// Selection (u16 vs i32)".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_adu: Option<u32>,
     /// The camera's ASCOM `SensorType`, read once per connection: mono,
@@ -251,13 +246,13 @@ pub struct ExposureDocument {
     /// `docs/services/rp.md` §"Core Fields".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optics: Option<Optics>,
-    /// The sky target this frame belongs to (Decision 11), resolved by
-    /// `capture` when its `frame_type` parameter is supplied — a
-    /// target-store lookup for `Light` frames, or a reserved slug for
-    /// `Dark`/`Flat`/`Bias` absent an explicit `target`. Omitted
-    /// (absent, not `null`) when `frame_type` was omitted — today's
-    /// flat `<doc_uuid_8>.fits` capture path. See `docs/services/rp.md`
-    /// §"Capture Tool Details".
+    /// The sky target this frame belongs to, resolved by `capture` when
+    /// its `frame_type` parameter is supplied — a target-store lookup
+    /// for `Light` frames, or a reserved slug for `Dark`/`Flat`/`Bias`
+    /// absent an explicit `target`. Omitted (absent, not `null`) when
+    /// `frame_type` was omitted, a capture that writes a flat
+    /// `<doc_uuid_8>.fits`. See `docs/services/rp.md` §"Capture Tool
+    /// Details".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<ExposureTarget>,
     /// This capture's `frame_type` parameter, verbatim. Omitted under
@@ -288,7 +283,7 @@ pub enum LightSource {
     Sky,
 }
 
-/// The exposure document's `target` field (Decision 11).
+/// The exposure document's `target` field.
 ///
 /// `display_name`/`ra_hours`/`dec_degrees` are populated only when
 /// `slug` resolved against a real target-store row — `None` for a
@@ -761,7 +756,7 @@ impl ExposureDocument {
     ///
     /// Stages into a sibling temp file, fsyncs, renames into place, fsyncs
     /// the parent directory (unix-only). Mirrors the FITS write treatment
-    /// in `imaging::fits::write_fits`.
+    /// of `persistence::fits`' `write_fits_*`.
     ///
     /// # Errors
     ///
@@ -794,7 +789,7 @@ impl ExposureDocument {
         let body = serde_json::to_vec_pretty(self)?;
         let path = path.to_path_buf();
         // Run the whole stage-and-commit sequence on the blocking pool. Matches
-        // the `imaging::fits::write_fits` pattern: one task spawn per write rather
+        // the `persistence::fits` write pattern: one task spawn per write rather
         // than one per `tokio::fs::*` call, and lets us use sync-only crates like
         // `tempfile` for the staging file.
         tokio::task::spawn_blocking(move || write_sidecar_sync(&path, &body))
@@ -1148,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn a_complete_optics_block_without_the_newer_fields_still_parses() {
+    fn an_optics_block_without_aperture_obstruction_or_step_size_parses() {
         let body = serde_json::json!({
             "focal_length_mm": 1000.0,
             "pixel_size_x_um": 3.76,

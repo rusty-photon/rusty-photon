@@ -28,8 +28,8 @@
 //! without an MCP transport at all); helpers treat a `None` sink as a
 //! no-op, so the emission path is purely additive.
 //!
-//! Tests construct a [`CountingProgressEmitter`] to inspect the
-//! number and shape of emissions without instantiating a real rmcp
+//! Tests construct a `test_support::CountingProgressEmitter` to inspect
+//! the number and shape of emissions without instantiating a real rmcp
 //! peer.
 
 use std::time::Duration;

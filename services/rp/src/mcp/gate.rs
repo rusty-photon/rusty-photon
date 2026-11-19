@@ -14,7 +14,8 @@
 //! secures (`park`, `abort_slew`, `close_cover`, ...) is never gated,
 //! because it is what the transition itself does, and every indoor
 //! actuator stays available so an unsafe hour can still go to darks,
-//! bias, panel flats and cooling (tenet 1).
+//! bias, panel flats and cooling (tenet 1 of docs/workspace.md § Project
+//! Tenets).
 //!
 //! There is no default class: [`class_of`] returns `None` for a name
 //! that is in neither list, and the unit test below walks the merged
@@ -118,6 +119,7 @@ pub const UNGATED: &[&str] = &[
     "get_guiding_stats",
     // safety
     "get_safety_status",
+    // cooling
     "start_cooldown",
     "start_warmup",
     // planner
@@ -489,7 +491,7 @@ mod tests {
         );
     }
 
-    /// The D5 table, pinned: a change to the gated set is a design
+    /// The built-in gated set, pinned: a change to it is a design
     /// change (rp.md § In-Flight Tool Calls) and should show up here.
     #[test]
     fn the_gated_set_matches_the_design_table() {

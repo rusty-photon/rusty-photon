@@ -136,7 +136,7 @@ async fn rp_with_camera_and_wheel_in_train(world: &mut RpWorld) {
 }
 
 /// `main` = [flat-panel, main-fw, main-cam] on the simulator — the
-/// `get_train_info` fixture (calibrator-flats-provider plan, D4).
+/// `get_train_info` fixture.
 #[given(
     "rp is running with a cover calibrator, a filter wheel and a camera on the simulator in an imaging train"
 )]

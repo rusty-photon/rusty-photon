@@ -831,8 +831,8 @@ Implementation pins (`src/events.rs`):
   watchdog, `bdd-infra`'s harness client): a chunked `reqwest` `GET` and
   a hand-rolled `id:`/`event:`/`data:` parser.
 
-Webhook delivery is not used: `session-runner` registers no
-`subscribes_to`/`barrier_gates` and never blocks `rp`'s tool pipeline. It is
+Webhook delivery is not used: `session-runner` registers no event plugin
+and never blocks `rp`'s tool pipeline. It is
 purely a *consumer* of the stream plus an MCP *client*.
 
 ## Runs

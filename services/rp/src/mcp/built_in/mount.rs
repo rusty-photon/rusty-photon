@@ -89,7 +89,7 @@ impl McpHandler {
 
     /// Body of the `slew` MCP tool, split out so unit tests can pass
     /// `None` for the progress emitter without constructing a real
-    /// rmcp `Peer` (its constructor is `pub(crate)` in rmcp 1.7).
+    /// rmcp `Peer` (its constructor is `pub(crate)` in rmcp).
     pub(crate) async fn slew_inner(
         &self,
         params: SlewParams,

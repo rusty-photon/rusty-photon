@@ -30,8 +30,7 @@ _INTRA_WORKSPACE_DEPS = [
 
 # rp-plate-solver ships two Bazel variants — production-clean for
 # library/binary targets and `_with_mock` for tests that need
-# MockPlateSolveClient. See docs/plans/archive/bazel-migration.md
-# ("Mockall mock variants") for the pattern.
+# MockPlateSolveClient (crates/rp-plate-solver/BUILD.bazel says why).
 _RP_PLATE_SOLVER = "//crates/rp-plate-solver:rp-plate-solver"
 
 _RP_PLATE_SOLVER_WITH_MOCK = "//crates/rp-plate-solver:rp-plate-solver_with_mock"
@@ -58,15 +57,15 @@ rust_library(
     ] + all_crate_deps(normal = True),
 )
 
-# Test-only twin of `rp_lib` linking the `_with_mock` plate-solver
-# variant so unit tests in mcp.rs can use MockPlateSolveClient.
-# Same crate_name as `rp_lib` — they are never linked into the same
-# binary. rules_rust merges `crate=`'s parent deps with the test's
-# own, so the test must reach the with-mock plate-solver through
-# this twin (not by overriding deps on the rust_test directly,
-# which produces an `E0464 multiple candidates` link conflict).
-# `testonly = True` is also required here because the twin depends
-# on the testonly `:rp-plate-solver_with_mock`.
+# Test-only twin of `rp_lib` linking the `_with_mock` plate-solver and
+# guider variants so unit tests can use MockPlateSolveClient and
+# MockGuiderClient. Same crate_name as `rp_lib` — they are never linked
+# into the same binary. rules_rust merges `crate=`'s parent deps with
+# the test's own, so the test must reach the with-mock variants through
+# this twin (not by overriding deps on the rust_test directly, which
+# produces an `E0464 multiple candidates` link conflict).
+# `testonly = True` is also required here because the twin depends on
+# the testonly `_with_mock` variants.
 rust_library(
     name = "rp_lib_with_mock",
     testonly = True,
@@ -130,8 +129,8 @@ rust_test(
 
 rust_test(
     name = "bdd",
-    # ~534 cucumber scenarios (Scenario Outlines expanded), most of them
-    # feature-tagged @serial (shared OmniSim device state), so a single
+    # Hundreds of cucumber scenarios (Scenario Outlines expanded), most of
+    # them feature-tagged @serial (shared OmniSim device state), so a single
     # process runs them nearly serially. "large" gives each shard a 15 min
     # budget so occasional CI slowness doesn't time out.
     size = "large",

@@ -42,28 +42,32 @@ pub struct AppState {
     pub setup: crate::setup::Pages,
 }
 
-/// Build rp's router. `mcp_extra_allowed_hosts` are the `Host`
+/// Build rp's router.
+///
+/// `mcp_extra_allowed_hosts` are the `Host`
 /// authorities the MCP transport accepts on top of rmcp's loopback
-/// defaults — the names rp advertises itself as (rp.md § MCP Server).
+/// defaults — every name a client can reasonably be configured with
+/// (rp.md § MCP Server).
 pub fn build_router(state: AppState, mcp_extra_allowed_hosts: Vec<String>) -> Router {
     let mcp_handler = state.mcp.clone();
     let mut mcp_config = StreamableHttpServerConfig::default();
-    // Session-less (rp.md § MCP Server, ADR-021): every request is served
+    // Session-less (rp.md § MCP Server): every request is served
     // statelessly, no response carries `Mcp-Session-Id`, and a client on
     // a pre-2026-07-28 revision has its `initialize` answered without a
     // session and is served statelessly from then on. Nothing in rp
     // keys on a session — the safety contract is per call (the in-flight
     // registry and the gate in `mcp::call_tool`). Per-request metadata
-    // is not *required* yet (`stateless_protocol_metadata_required`
-    // stays at its default) so an older client is served, not rejected.
+    // is not *required* (`stateless_protocol_metadata_required` stays at
+    // its default) so an older client is served, not rejected.
     mcp_config.legacy_session_mode = false;
     // A `tools/call` answers as plain JSON unless the body emits a
     // notification first, in which case rmcp upgrades to SSE.
     mcp_config.json_response = true;
     // rmcp's DNS-rebinding protection answers 403 to any `Host` outside
     // this list, whose defaults cover loopback only — which would reject
-    // the hostname URL rp advertises for a wildcard bind. Extend it, never
-    // replace it: an empty list switches the protection off entirely.
+    // a client configured with the system hostname of a wildcard bind.
+    // Extend it, never replace it: an empty list switches the protection
+    // off entirely.
     mcp_config.allowed_hosts.extend(mcp_extra_allowed_hosts);
     let mcp_service = StreamableHttpService::new(
         move || Ok(mcp_handler.clone()),
@@ -1072,8 +1076,8 @@ mod tests {
         assert_eq!(parse_last_event_id(&headers, &params), None);
     }
 
-    /// Acceptance §3.3(3): a consumer that lags the broadcast channel is
-    /// disconnected (server-initiated end-of-body) rather than backing it up.
+    /// A consumer that lags the broadcast channel is disconnected
+    /// (server-initiated end-of-body) rather than backing it up.
     /// We subscribe, then overrun `BROADCAST_CAPACITY` (256) *before* the
     /// response body is polled, so the subscriber's first `recv()` returns
     /// `Lagged`; the handler must emit a final `stream_gap` (carrying the

@@ -38,19 +38,18 @@ pub struct CaptureParams {
     /// the frame. A capture through a camera rp is already capturing on
     /// waits for that capture, so two overlapping calls cannot
     /// interleave their writes; a client outside rp is not queued — see
-    /// docs/services/rp.md § Capture Tool Details, "Binning" →
-    /// Concurrency.
+    /// docs/services/rp.md § Capture Tool Details, Concurrency.
     #[serde(default)]
     pub binning: Option<rp_vocabulary::Binning>,
-    /// Sky-target slug this capture belongs to (Decision 11). Required
+    /// Sky-target slug this capture belongs to. Required
     /// when `frame_type` is `Light`; optional for `Dark`/`Flat`/`Bias`
     /// (falls back to a reserved slug when omitted); ignored when
     /// `frame_type` is omitted. See docs/services/rp.md § Capture Tool
     /// Details.
     #[serde(default)]
     pub target: Option<String>,
-    /// This capture's intent. Omitted (the default) keeps today's flat
-    /// `<doc_uuid_8>.fits` behavior — `target` is then ignored and
+    /// This capture's intent. Omitted (the default), the frame is named
+    /// `<doc_uuid_8>.fits` — `target` is then ignored and
     /// nothing is denormalized onto the exposure document. Supplying
     /// it requires `session.file_naming_pattern` to be configured and
     /// activates directory/file rendering per docs/services/rp.md §
@@ -117,8 +116,8 @@ impl McpHandler {
                         (outside rp) is exposing on is not queued. Optional \
                         target (slug) + frame_type (Light/Dark/Flat/Bias) link the frame to \
                         the target store and render session.directory_pattern/ \
-                        file_naming_pattern into the final path (Decision 11) — omit both to \
-                        keep the flat <doc_uuid_8>.fits behavior. Optional light_source \
+                        file_naming_pattern into the final path — omit both and the frame \
+                        is named <doc_uuid_8>.fits. Optional light_source \
                         (panel/sky, with a Flat or an untyped capture) says what lights the \
                         frame. While conditions are unsafe only a Dark, a Bias or a \
                         light_source panel capture is taken; any other is refused with the \
@@ -241,8 +240,7 @@ impl McpHandler {
 
         // Gain and offset are read from the driver on every call, never
         // cached here — they are operator-mutable, and a record of flat
-        // timing is only valid at the gain it was trained at
-        // (calibrator-flats plan, D4/D5).
+        // timing is only valid at the gain it was trained at.
         // `null` means exactly one thing: the driver has no such
         // property (ASCOM `NotImplemented`, the common case for CCDs).
         // Any other read failure is a tool error, so a transport blip

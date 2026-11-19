@@ -4,10 +4,6 @@ use serde::{Deserialize, Serialize};
 /// An ASCOM Alpaca `SafetyMonitor` device gating the session (rp.md
 /// § Safety). Polled at `safety.poll_interval`; a monitor that cannot
 /// be read counts as unsafe.
-///
-/// Unknown fields are rejected — stricter than the other equipment
-/// entries, deliberately: a typo in safety-critical config must fail
-/// at load, not be silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SafetyMonitorConfig {

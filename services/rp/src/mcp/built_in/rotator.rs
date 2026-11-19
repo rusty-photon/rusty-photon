@@ -6,8 +6,8 @@
 //! model and requires the train to contain exactly one rotator.
 //! `move_rotator` moves to an absolute **sky** angle (the ASCOM
 //! `Position` frame) and blocks polling `IsMoving` until idle under a
-//! fixed 120 s ceiling: there is no per-rotator rate config yet, so
-//! the `move_rotator_started` envelope carries no predictive
+//! fixed 120 s ceiling: the rotator config has no rate to size one
+//! from, so the `move_rotator_started` envelope carries no predictive
 //! deadline. `moved_trains` on the result lists every train
 //! containing the rotator; when it includes the guiding train and a
 //! guider is configured, the move runs the rotate-while-guiding ladder

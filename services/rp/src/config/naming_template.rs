@@ -19,9 +19,10 @@
 //! disk-fallback resolver's prefilter ([`frame_name_carries_uuid8`]) is
 //! its inverse.
 //!
-//! [`NamingTemplates`] bundles both compiled patterns; `capture`
-//! (`mcp::internals::do_capture`, Decision 11) is the landed caller —
-//! see rp.md § Capture Tool Details.
+//! [`NamingTemplates`] bundles both compiled patterns: `capture`
+//! (`mcp::internals::do_capture`, rp.md § Capture Tool Details) renders
+//! through them, and the progress scan ([`crate::planner::progress_scan`])
+//! parses frames back with them.
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -640,8 +641,8 @@ impl TemplateFields {
             // Humantime, with its inter-unit spaces removed so the result
             // is a single filename token — the same encoding the goal wire
             // and the redb store use, except space-free. A sub-second
-            // calibration exposure keeps its true value (`32us`) instead
-            // of the old whole-second-only formatter that rounded it away.
+            // calibration exposure keeps its true value (`32us`) rather
+            // than rounding to whole seconds.
             Token::ExposureDuration => self
                 .exposure_duration
                 .map(|d| humantime::format_duration(d).to_string().replace(' ', "")),
@@ -658,9 +659,9 @@ impl TemplateFields {
     /// the enclosing regex already constrained its shape) leaves the
     /// field `None` rather than panicking; `capture`'s caller sees an
     /// absent field, not a crash. The `match` is exhaustive, so a new
-    /// token can't be added without deciding how it parses back — the
-    /// previous string `match`'s `_ => {}` would have silently dropped
-    /// it on the round trip.
+    /// token can't be added without deciding how it parses back, where a
+    /// string `match` with a `_ => {}` arm would silently drop it on the
+    /// round trip.
     fn set_from_capture(&mut self, token: Token, value: &str) {
         match token {
             Token::Target => self.target = TargetSlug::new(value).ok(),
@@ -953,8 +954,8 @@ impl NamingTemplates {
     /// Compiles both patterns from `SessionConfig`. `directory_pattern`
     /// falls back to [`Self::DEFAULT_DIRECTORY_PATTERN`] when unset —
     /// only `file_naming_pattern` needs to be configured to opt in.
-    /// `Ok(None)` when `file_naming_pattern` is unset (today's flat
-    /// `<doc_uuid_8>.fits` capture behavior).
+    /// `Ok(None)` when `file_naming_pattern` is unset (`capture` then
+    /// writes a flat `<doc_uuid_8>.fits`).
     ///
     /// # Errors
     ///
@@ -1267,10 +1268,10 @@ mod tests {
 
     #[test]
     fn render_and_parse_round_trip_sub_second_exposures() {
-        // The motivating case: a microsecond bias frame must keep its
-        // true exposure in the filename (`32us`), not collapse to `0s`
-        // as the old whole-second-only encoding did. Fractional exposures
-        // (`1s500ms`) round-trip too via the shared humantime encoding.
+        // A microsecond bias frame keeps its true exposure in the
+        // filename (`32us`) rather than collapsing to `0s`. Fractional
+        // exposures (`1s500ms`) round-trip too via the shared humantime
+        // encoding.
         let template = CompiledTemplate::compile(DEFAULT_PATTERN).unwrap();
         for exposure in [
             Duration::from_micros(32),
@@ -1487,11 +1488,10 @@ mod tests {
 
     /// `capture` joins the rendered directory onto `data_directory`
     /// while the progress scan walks to the pattern's component depth,
-    /// so a non-canonical pattern makes the two disagree. Each of these
-    /// used to load cleanly and then derive 0 for every goal — and the
-    /// absolute form was worse than that, since `PathBuf::join` with an
-    /// absolute path discards the base and would write frames outside
-    /// `data_directory`.
+    /// so a non-canonical pattern makes the two disagree. Loaded, each of
+    /// these would derive 0 for every goal — and the absolute form would
+    /// do worse, since `PathBuf::join` with an absolute path discards the
+    /// base and would write frames outside `data_directory`.
     #[test]
     fn directory_pattern_must_be_a_canonical_relative_path() {
         for (pattern, expected) in [

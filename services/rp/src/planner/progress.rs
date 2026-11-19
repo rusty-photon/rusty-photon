@@ -223,7 +223,8 @@ mod tests {
     fn duplicate_filter_entries_track_their_own_goals() {
         // Two Luminance entries with different durations are distinct
         // goals with distinct sub-specs, so the scan counts them
-        // separately — the old filter-keyed counters could not.
+        // separately, where a count keyed by filter alone would merge
+        // them.
         let mut first = entry(Some("L"), Some(2));
         first.duration_secs = 300.0;
         let mut second = entry(Some("L"), Some(2));

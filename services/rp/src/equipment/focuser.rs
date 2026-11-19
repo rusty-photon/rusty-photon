@@ -261,7 +261,7 @@ mod tests {
     async fn connect_focuser_unreachable_returns_disconnected_entry() {
         // 127.0.0.1:1 is reserved and refuses connections — `get_devices`
         // returns an error inside the 5s timeout window, exercising the
-        // `Ok(Err(e))` arm of `connect_focuser`'s match.
+        // `Ok(Err(e))` arm of `binding::list_of_kind`'s match.
         let cfg = config::FocuserConfig {
             microns_per_step: None,
             id: "main-focuser".to_string(),
@@ -280,9 +280,10 @@ mod tests {
         assert!(entry.device().is_none());
     }
 
-    /// `Value: []` — `get_devices` succeeds but yields no Focuser, so the
-    /// device-search loop falls into the `None` arm and `connect_focuser`
-    /// returns a disconnected entry without ever calling `set_connected`.
+    /// `Value: []` — `get_devices` succeeds but yields no Focuser, so
+    /// `binding::select` refuses the entry as not listed and
+    /// `connect_focuser` returns a disconnected entry without ever calling
+    /// `set_connected`.
     ///
     /// Transaction IDs are deliberately omitted from the response. The
     /// upstream client deserializes them as `Option<NonZeroU32>`; emitting
@@ -308,8 +309,9 @@ mod tests {
     }
 
     /// Server returns a Focuser at device 0, but the `set_connected` PUT
-    /// responds with `ErrorNumber != 0`, exercising the final match arm in
-    /// `connect_focuser` (the Alpaca-level rejection of `Connected=true`).
+    /// responds with `ErrorNumber != 0`, exercising the `set_connected`
+    /// failure arm of `binding::establish_listed` (the Alpaca-level
+    /// rejection of `Connected=true`).
     #[tokio::test]
     async fn connect_focuser_set_connected_fails_returns_disconnected_entry() {
         let app = Router::new()
@@ -349,8 +351,8 @@ mod tests {
     }
 
     /// Handler hangs forever; the 5 s `tokio::time::timeout` wrapping
-    /// `client.get_devices()` fires and `connect_focuser` falls into the
-    /// `Err(_)` (timeout) arm. `start_paused = true` lets tokio
+    /// `client.get_devices()` fires and `binding::list_of_kind` falls into
+    /// its `Err(_)` (timeout) arm. `start_paused = true` lets tokio
     /// auto-advance virtual time once every other future is pending, so
     /// the test completes in real-time milliseconds rather than waiting 5
     /// wallclock seconds.
@@ -450,10 +452,10 @@ mod tests {
     }
 
     /// Server advertises a focuser at index 0 and accepts `set_connected`,
-    /// exercising the `Ok(())` arm of `connect_focuser` plus the device
-    /// iteration `Some(_)` match arm — the success path that doesn't run
-    /// in any of the failure-branch tests above. The driver's name,
-    /// `StepSize` and `MaxStep` are read once and cached on the entry.
+    /// exercising the success arm of `connect_focuser` — the path that
+    /// doesn't run in any of the failure-branch tests above. The driver's
+    /// name, `StepSize` and `MaxStep` are read once and cached on the
+    /// entry.
     #[tokio::test]
     async fn connect_focuser_success_returns_connected_entry() {
         let stub = spawn_stub(ok_focuser_router()).await;

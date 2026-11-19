@@ -1,13 +1,12 @@
 //! BDD step definitions for the target store's CRUD MCP tools
-//! (`target_store_crud.feature`, rp.md § Target Store — *(planned, P1)*,
-//! not yet implemented; scenarios are tagged `@wip`).
+//! (`target_store_crud.feature`, rp.md § Target Store).
 //!
 //! These scenarios never touch `OmniSim`: `add_target`/`get_target`/
 //! `list_targets`/`update_target`/`delete_target` are pure plan-data
 //! operations, so rp is spawned directly from a scenario-private temp
 //! config on port 0 (the `setup_pages.feature` pattern), skipping the
 //! simulator entirely. `write_target_store_config` and
-//! `start_target_store_rp` are `pub(crate)` and reused by the sibling
+//! `start_target_store_rp` are `pub` and reused by the sibling
 //! `target_store_goals_steps.rs` and `target_store_progress_steps.rs`.
 
 use cucumber::{given, then, when};
@@ -19,7 +18,7 @@ use crate::steps::tool_steps::ensure_mcp_client;
 use crate::world::RpWorld;
 
 // ---------------------------------------------------------------------------
-// Shared config/launch helpers (reused by goals/progress/rest step files)
+// Shared config/launch helpers (reused by the goals and progress step files)
 // ---------------------------------------------------------------------------
 
 /// Write a scenario-private rp config for target-store scenarios: no
@@ -158,10 +157,11 @@ async fn added_catalog_target(world: &mut RpWorld, catalog_ref: String) {
     add_target_fixture(world, serde_json::json!({ "catalog_ref": catalog_ref })).await;
 }
 
-/// A framed (offset) import of a catalog object — coordinates supplied
-/// explicitly rather than resolved, standing in for a P3-bridge-style
-/// precise framing that differs from the catalog centroid (Decision 3's
-/// same-`catalog_ref`-but-different-coordinates protection).
+/// A framed (offset) add of a catalog object — coordinates supplied
+/// explicitly rather than resolved, standing in for a precise framing
+/// that differs from the catalog centroid, such as one the planetarium
+/// bridge sends (rp.md § Slug allocation (add-time): a matching
+/// `catalog_ref` alone does not make the same object).
 #[given(
     expr = "the MCP client has added a target with catalog_ref {string} ra_hours {float} dec_degrees {float}"
 )]

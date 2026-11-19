@@ -1,5 +1,5 @@
 //! BDD step definitions for the effective position angle
-//! (`target_position_angle.feature`, plan Decision 5 / P2).
+//! (`target_position_angle.feature`, rp.md § Position angle).
 //!
 //! These scenarios boot rp the ordinary `OmniSim` way (`tool_steps`)
 //! with a camera in an imaging train, since the second fallback layer

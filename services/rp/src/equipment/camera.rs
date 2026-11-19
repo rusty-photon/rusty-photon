@@ -15,17 +15,16 @@ use crate::config;
 /// pitch, array dimensions, the camera model's facts). They cannot
 /// change for the life of the connection, so `do_capture` consumes them
 /// from this cache instead of paying one Alpaca round-trip per property
-/// per exposure — per Tenet 1 ("don't re-fetch invariant data").
-/// `MaxADU` is not among them: a driver may tie it to the readout mode,
-/// which any client can change, so a capture reads it live. Each field
-/// is `Option<...>` so a transient read failure at session-establish
-/// time simply drops that piece of metadata (downstream the document's
-/// `optics` block degrades gracefully) rather than refusing to register
-/// the camera. The reconnect supervisor re-reads the whole set on every
-/// re-established session — a service restart may have put a different
-/// device behind the same config entry — and installs the fresh reads
-/// with the fresh handle in one step, so the two cannot be paired
-/// across sessions.
+/// per exposure. `MaxADU` is not among them: a driver may tie it to the
+/// readout mode, which any client can change, so a capture reads it
+/// live. Each field is `Option<...>` so a transient read failure at
+/// session-establish time simply drops that piece of metadata
+/// (downstream the document's `optics` block degrades gracefully) rather
+/// than refusing to register the camera. The reconnect supervisor
+/// re-reads the whole set on every re-established session — a service
+/// restart may have put a different device behind the same config
+/// entry — and installs the fresh reads with the fresh handle in one
+/// step, so the two cannot be paired across sessions.
 #[derive(Clone, Debug, Default)]
 pub struct CameraInvariants {
     /// The driver's ASCOM `Name` (e.g. `QHY600M`), persisted as the

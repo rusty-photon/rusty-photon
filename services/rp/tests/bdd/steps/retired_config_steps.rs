@@ -1,5 +1,5 @@
 //! BDD step definitions for the retired orchestrator surface
-//! (`retired_config.feature`, rp.md § Plugin Types, mcp-sessionless D11):
+//! (`retired_config.feature`, rp.md § Plugin Types):
 //! a config still carrying a `type: "orchestrator"` registration or a
 //! `session.session_state_file` key fails rp's load. The migration
 //! message itself is pinned by `config::tests` — the spawned process

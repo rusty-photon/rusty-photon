@@ -379,8 +379,8 @@ mod tests {
     async fn validate_site_passes_across_antimeridian() {
         // Configured at 179.999° E; mount reports -179.999° E. They
         // describe meridians 0.002° apart going the short way — well
-        // within the 0.01° tolerance. Without the wraparound fix,
-        // raw subtraction would produce ~360° and SiteMismatch.
+        // within the 0.01° tolerance. Without the wraparound, raw
+        // subtraction would produce ~360° and SiteMismatch.
         let stub = spawn_stub(mount_router_with_site(0.0, -179.999)).await;
         let registry = registry_with_mount(&stub.url()).await;
         let site = config::SiteConfig {

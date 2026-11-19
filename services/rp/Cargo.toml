@@ -21,8 +21,7 @@ humantime = { workspace = true }
 humantime-serde = { workspace = true }
 hostname = { workspace = true }
 # Enumerates the local interface addresses a wildcard bind answers on,
-# for the MCP transport's Host allowlist (rp.md § MCP Server). Only rp
-# needs it, so it stays a service-level dependency.
+# for the MCP transport's Host allowlist (rp.md § MCP Server).
 if-addrs = { workspace = true }
 clap = { workspace = true }
 async-trait = { workspace = true }
@@ -138,10 +137,10 @@ cucumber = { workspace = true }
 derive_more = { workspace = true }
 libc = { workspace = true }
 mockall = { workspace = true }
-# Re-declared in dev-deps with the `mock` feature so unit tests in
-# mcp.rs can build against MockPlateSolveClient. The non-test build
-# pulls the same crate without the feature, keeping mockall out of
-# the production binary.
+# Re-declared in dev-deps with the `mock` feature so unit tests can
+# build against MockGuiderClient and MockPlateSolveClient. The non-test
+# build pulls the same crates without the feature, keeping mockall out
+# of the production binary.
 rp-guider = { workspace = true, features = ["mock"] }
 rp-plate-solver = { workspace = true, features = ["mock"] }
 tokio-test = { workspace = true }

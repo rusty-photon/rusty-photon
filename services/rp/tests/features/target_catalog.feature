@@ -1,8 +1,8 @@
 @serial
 Feature: Target catalog resolution
-  rp ships an embedded Messier + NGC + IC deep-sky catalogue
-  (sourced from openNGC, ~13.8k entries) and exposes it via the
-  `resolve_target` MCP tool. Lookup is case- and
+  rp ships an embedded sky catalog (docs/crates/rp-catalog.md: Messier,
+  NGC, IC and further deep-sky catalogs, plus the HD stars) and exposes
+  it via the `resolve_target` MCP tool. Lookup is case- and
   whitespace-insensitive: `"M 41"`, `"M41"`, `"m 41"`, and
   `"Messier 41"` all resolve to the same target. Common-name aliases
   (`"Andromeda Galaxy"` → NGC 224) are honoured.
@@ -12,9 +12,8 @@ Feature: Target catalog resolution
   "suggestions": [<top-3 fuzzy matches>]}` so a planner plugin can
   surface "did you mean…?" without parsing free-form text.
 
-  Targets defined in `targets[]` config still accept literal
-  RA/Dec — catalog lookup is a tool call, not a config-time
-  resolution.
+  A target-store add takes literal RA/Dec as well as a catalog name
+  (target_store_crud.feature).
 
   Scenario: Tool catalog includes resolve_target
     Given a running Alpaca simulator

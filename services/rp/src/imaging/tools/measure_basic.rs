@@ -1,10 +1,11 @@
-//! `measure_basic` MVP: compose background estimation, star detection, the
+//! `measure_basic`: compose background estimation, star detection, the
 //! aperture measurement, and the aggregate HFR into a single result the MCP
 //! tool returns and persists.
 //!
-//! Pure logic — no I/O, no MCP types. The MCP wrapper in `mcp.rs` resolves
-//! pixels (cache hit or FITS read) and serializes the result; this module
-//! only computes.
+//! Pure logic — no I/O, no MCP types. The MCP wrapper
+//! (`mcp/built_in/imaging.rs`, over `mcp/internals.rs`) resolves pixels
+//! (cache hit or FITS read) and serializes the result; this module only
+//! computes.
 
 use ndarray::ArrayView2;
 use serde::Serialize;

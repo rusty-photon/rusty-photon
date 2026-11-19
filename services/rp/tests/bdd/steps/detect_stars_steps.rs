@@ -241,7 +241,8 @@ async fn call_tool(
         args.insert("threshold_sigma".to_string(), serde_json::json!(threshold));
     }
     // min_area / max_area are required parameters with no defaults (they
-    // encode pixel-scale assumptions per docs/services/rp.md). Same fixture
+    // encode pixel-scale assumptions per docs/services/rp.md § `detect_stars`
+    // Contract). Same fixture
     // values as measure_basic_steps: 5 admits any plausible PSF, 65536
     // admits very large smoothed components on the OmniSim synthetic frame.
     if include_min_area {

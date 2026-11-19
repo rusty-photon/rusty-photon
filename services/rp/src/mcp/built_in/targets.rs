@@ -32,12 +32,12 @@ use crate::planner::goal_wire::GoalWire;
 use super::super::handler::McpHandler;
 use super::super::{tool_error, tool_success};
 
-/// Coordinates are the same object when within Decision 3's dedup
-/// tolerance (~10 arcmin, `docs/plans/archive/planetarium-target-import.md`).
-/// A flat, `cos(dec)`-weighted approximation rather than a full
-/// great-circle formula — at this scale the two are indistinguishable,
-/// and every case this guards against (a genuine re-add vs. a framing
-/// a degree away) is nowhere near the boundary.
+/// Coordinates are the same object when within 10′ of each other
+/// (rp-targets.md § Slug allocation). A flat, `cos(dec)`-weighted
+/// approximation rather than a full great-circle formula — at this
+/// scale the two are indistinguishable, and every case this guards
+/// against (a genuine re-add vs. a framing a degree away) is nowhere
+/// near the boundary.
 const DEDUP_TOLERANCE_DEGREES: f64 = 10.0 / 60.0;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -62,12 +62,11 @@ pub struct AddTargetParams {
     /// land paused pending operator review.
     #[serde(default)]
     pub active: Option<bool>,
-    /// Defaults to `targets.default_goals` from config when omitted.
+    /// Defaults to `target_store.default_goals` from config when omitted.
     #[serde(default)]
     pub goals: Option<Vec<GoalWire>>,
-    /// Per-target scheduling overrides (Decision 9 — altitude-gating
-    /// parity, `docs/plans/archive/planetarium-target-import.md`). Omitted
-    /// fields fall back to `targets.default_scheduling` from config.
+    /// Per-target scheduling overrides. Omitted fields fall back to
+    /// `target_store.default_scheduling` from config.
     #[serde(default)]
     pub scheduling: Option<SchedulingWire>,
     /// Not accepted with `source` — rp writes the provenance line into
@@ -92,7 +91,7 @@ pub struct AddTargetParams {
 }
 
 /// `add_target`'s `source` parameter — typed provenance from a
-/// non-operator writer (the planetarium bridge today).
+/// non-operator writer (such as the planetarium bridge).
 ///
 /// `kind` becomes the row's `created_by`/`updated_by` writer identity;
 /// all three fields feed the human-readable provenance line in `notes`.
@@ -175,7 +174,7 @@ pub struct UpdateTargetParams {
     /// Store → Position angle): omitted → untouched; a number → set;
     /// an explicit `null` → cleared back to inherit-the-train-default
     /// — "blank" and "0.0 north-up" must stay distinguishable for the
-    /// P4 inbox.
+    /// ui-htmx targets inbox.
     #[serde(default, deserialize_with = "deserialize_patch")]
     #[schemars(with = "Option<f64>")]
     pub position_angle_degrees: Patch<f64>,
@@ -235,12 +234,12 @@ impl McpHandler {
                        (coordinates within ~10 arcmin) -> in-place update \
                        (created: false, slug unchanged); present and a \
                        different object -> a suffixed slug is allocated. \
-                       goals[] defaults to targets.default_goals from \
+                       goals[] defaults to target_store.default_goals from \
                        config when omitted; every goal's filter must be \
                        in the connected rig's configured filter roster. \
                        scheduling overrides fall back field-wise to \
-                       targets.default_scheduling from config when \
-                       omitted (Decision 9 — altitude-gating parity). \
+                       target_store.default_scheduling from config when \
+                       omitted. \
                        position_angle_degrees is the framing angle in \
                        degrees east of north (at least 0.0, below 360.0); \
                        omitted, the imaging train's configured default \
@@ -341,8 +340,8 @@ impl McpHandler {
             }
         };
 
-        // Validate coordinates up front — the newtype closes the
-        // store-write gap by construction (ADR-019), so an out-of-range
+        // Validate coordinates up front — the newtype admits no
+        // out-of-range coordinate by construction, so an out-of-range
         // add is rejected here before any store I/O.
         let coord = match IcrsCoord::try_new(ra_hours, dec_degrees) {
             Ok(c) => c,
@@ -549,7 +548,7 @@ impl McpHandler {
             target.display_name = v;
         }
         // Re-validate through the newtype whenever either coordinate moves,
-        // so an out-of-range edit is rejected (ADR-019 store-write gap).
+        // so an out-of-range edit is rejected before it reaches the store.
         if params.ra_hours.is_some() || params.dec_degrees.is_some() {
             let ra = params.ra_hours.unwrap_or_else(|| target.coord.ra_hours());
             let dec = params
@@ -737,7 +736,7 @@ impl McpHandler {
             }
             // Active, operator-edited, or operator-created: the row is
             // never modified — fall through and create a new pending
-            // target beside it (Decision 3's protection, enforced here).
+            // target beside it (rp.md § Target Store → Import form).
         }
 
         let naming = self.import_naming(&coord, ra_hours, dec_degrees, &all);
@@ -767,7 +766,8 @@ impl McpHandler {
             magnitude: naming.magnitude,
             size_arcmin: naming.size_arcmin,
             // Imports never carry a framing angle — the operator enters
-            // one in the P4 inbox; until then the train default applies.
+            // one in the ui-htmx targets inbox; until then the train
+            // default applies.
             position_angle_degrees: None,
             priority: 0,
             active: false,
@@ -852,10 +852,11 @@ struct ImportNaming {
     base_slug_input: String,
 }
 
-/// Decision 3's refresh-in-place: a still-pending row unedited since
-/// the same importer wrote it takes new coordinates and provenance;
-/// slug, `display_name`, and goals stay. `None` when the row is
-/// protected — the caller creates a new pending target beside it.
+/// The import form's refresh-in-place (rp.md § Target Store → Import
+/// form): a still-pending row unedited since the same importer wrote
+/// it takes new coordinates and provenance; slug, `display_name`, and
+/// goals stay. `None` when the row is protected — the caller creates a
+/// new pending target beside it.
 async fn refresh_import_in_place(
     store: &dyn TargetStore,
     existing: &Target,
@@ -939,8 +940,8 @@ fn validate_position_angle(value: Option<f64>) -> Result<Option<f64>, String> {
 }
 
 /// Renders the first [`FieldError`] of a validation pass into the flat
-/// string the write tools have always returned. The structured list is
-/// what `validate_plan` reports; a writer stops at the first offending
+/// string the write tools return. The structured list is what
+/// `validate_plan` reports; a writer stops at the first offending
 /// field, so it only ever needs this one.
 fn render_first(errors: &[rusty_photon_config::driver::FieldError]) -> String {
     errors
@@ -990,9 +991,9 @@ fn parse_goals(
 }
 
 /// The human-readable provenance line an import writes into `notes` —
-/// display data, never parsed (Decision 3). Refreshed wholesale on an
-/// in-place import upsert, which is safe because only rows the importer
-/// itself last wrote are ever upserted.
+/// display data, never parsed. Refreshed wholesale on an in-place
+/// import upsert, which is safe because only rows the importer itself
+/// last wrote are ever upserted.
 fn provenance_line(source: &SourceWire) -> String {
     format!(
         "Imported via {} from {} at {}",

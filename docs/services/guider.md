@@ -306,7 +306,7 @@ camera's frame depends on `SensorType`:
 - **Saturation.** A star with a pixel at full scale is not chosen as a
   guide star. Full scale is the saturation level of the camera's frame,
   by the rule `rp` measures with
-  ([rp.md § MVP: `measure_basic` Contract](rp.md#mvp-measure_basic-contract)):
+  ([rp.md § `measure_basic` Contract](rp.md#measure_basic-contract)):
   the frame's own clip when it shows one, `MaxADU` otherwise, and the
   lower of the two when both are known. `MaxADU` alone is not enough:
   `qhy-camera` reports the top of its 16-bit container, and its frames

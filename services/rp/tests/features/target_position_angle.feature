@@ -1,12 +1,11 @@
 @serial
-Feature: Effective position angle (P2)
-  Decision 5 of the planetarium-target-import plan
-  (docs/plans/archive/planetarium-target-import.md): a target's framing angle
-  is a three-layer fallback resolved at read time — the target's own
-  position_angle_degrees, then the imaging train's configured
-  default_position_angle_degrees, then 0.0 (north-up) — homed per
-  optical train, because a camera's fixed mounting angle is a physical
-  fact of one light path (rp.md § Target Store → Position angle).
+Feature: Effective position angle
+  A target's framing angle is a three-layer fallback resolved at read
+  time — the target's own position_angle_degrees, then the imaging
+  train's configured default_position_angle_degrees, then 0.0
+  (north-up) — homed per optical train, because a camera's fixed
+  mounting angle is a physical fact of one light path (rp.md § Target
+  Store → Position angle).
 
   get_next_target resolves the fallback: it accepts an optional
   train_id (an equipment.optical_trains[] id; unknown ids are an

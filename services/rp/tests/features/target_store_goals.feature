@@ -1,8 +1,8 @@
-Feature: Target acquisition goals and filter-roster validation (P1)
+Feature: Target acquisition goals and filter-roster validation
   `set_goals` replaces a target's goal set atomically; `add_target`
-  applies `targets.default_goals` from config when the caller supplies
-  none (Decision 10, docs/plans/archive/planetarium-target-import.md — default
-  goals are rp-owned policy, not bridge/UI config). Every goal's
+  applies `target_store.default_goals` from config when the caller
+  supplies none — default goals are rp-owned policy, not bridge or UI
+  config. Every goal's
   `filter` is validated against the connected rig's configured filter
   roster at add/set time, so a plan referencing a filter the rig lacks
   fails at add, not mid-session. `get_target_context` reads that roster

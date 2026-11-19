@@ -6,7 +6,7 @@
 //! event plus a matching `*_complete` / `*_failed`, sharing one
 //! `operation_id`, each with a fresh `event_id` and monotonic
 //! `event_seq`, the `started_at` / `ended_at` / `elapsed_ms` timing, and
-//! the Phase-1-reserved deadline fields absent. Self-contained: the
+//! the deadline fields where the operation sizes one. Self-contained: the
 //! webhook subscription and rp-launch steps here use a dedicated plugin
 //! name so they never interact with `event_delivery.feature`'s plugin.
 
@@ -223,11 +223,11 @@ async fn event_reserves_deadline_fields(world: &mut RpWorld, event_type: String)
     let ev = find_event(world, &event_type).await;
     assert!(
         ev.predicted_duration_ms.is_none(),
-        "Phase 1: '{event_type}' must not carry predicted_duration_ms"
+        "'{event_type}' must not carry predicted_duration_ms"
     );
     assert!(
         ev.max_duration_ms.is_none(),
-        "Phase 1: '{event_type}' must not carry max_duration_ms"
+        "'{event_type}' must not carry max_duration_ms"
     );
 }
 

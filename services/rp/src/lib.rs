@@ -144,7 +144,7 @@ impl ServerBuilder {
         let site = build_site(&config)?;
 
         // Target store (rp.md § Target Store): the sole source of planner
-        // targets (the legacy `targets[]` config array was retired).
+        // targets — the config holds none, and a `targets` key fails at load.
         let (target_store, target_store_config) = open_target_store(&config).await?;
         let default_min_alt = planner_default_min_altitude(&config)?;
         let (plate_solver_client, plate_solver_default_radius) = build_plate_solver(&config)?;
@@ -597,10 +597,10 @@ fn validated_trains(config: &Config) -> Result<crate::equipment::trains::TrainMo
 }
 
 /// `capture`'s target-linkage naming templates (rp.md § Capture Tool
-/// Details, Decision 11). `load_config` already validated both
-/// patterns via the same `naming_template::validate_*` calls this
-/// compiles with, so a failure here is a code bug — surface it loud
-/// regardless, same posture as `validated_trains`.
+/// Details, § Capture-time target linkage). `load_config` already
+/// validated both patterns via the same `naming_template::validate_*`
+/// calls this compiles with, so a failure here is a code bug — surface it
+/// loud regardless, same posture as `validated_trains`.
 fn build_naming_templates(
     config: &Config,
 ) -> Result<Option<Arc<crate::config::naming_template::NamingTemplates>>> {
@@ -952,7 +952,8 @@ mod tests {
 
     #[test]
     fn the_advertised_host_is_allowed_with_its_port() {
-        // The URL rp hands out must be one rp accepts — the bug in #792.
+        // A client configured with the advertised URL must be accepted,
+        // port and all.
         let hosts = additional_allowed_hosts(
             Some(&advertised("https://observatory.example:11115")),
             ip("0.0.0.0"),
@@ -1059,7 +1060,8 @@ mod tests {
     /// `ServerBuilder::build` aborts loud when the plate-solver client
     /// can't be built — here, an invalid `ca_cert` path makes
     /// `client_builder` fail. Pins the "`plate_solver`: failed to build
-    /// HTTP client" error path (issue #609's `ca_cert_path` plumbing).
+    /// HTTP client" error path: the client carries rp's top-level
+    /// `ca_cert` (rp.md § Configuration).
     #[tokio::test]
     async fn build_fails_loud_when_plate_solver_client_cannot_be_built() {
         let dir = tempfile::tempdir().unwrap();

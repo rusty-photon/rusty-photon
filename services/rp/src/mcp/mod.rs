@@ -4,11 +4,11 @@
 //! streamable-HTTP transport. The handler [`McpHandler`] owns shared
 //! state (equipment registry, event bus, session config, image cache,
 //! observer site, planner targets, plate-solver client, guider
-//! client, target store, train leases) and exposes 69 tools across 18
-//! categories: camera, imaging, filter wheel, cover/calibrator, focuser,
+//! client, target store, train leases) and exposes its built-in tools
+//! by category: camera, imaging, filter wheel, cover/calibrator, focuser,
 //! mount, rotator, `auto_focus`, `plate_solve`,
 //! guider, `center_on_target`, planner, targets, `plan_schema`, safety,
-//! cooling, optical trains, train lease — plus
+//! cooling, optical trains, train lease, power — plus
 //! every tool a registered tool provider offers, proxied through
 //! [`providers`] (rp.md § Plugin-Provided Tools).
 //!
@@ -44,8 +44,8 @@
 //! 2. Add `pub mod <name>;` to `built_in/mod.rs` and a re-export of the
 //!    category's param structs.
 //! 3. Add `+ Self::tool_router_<name>()` to the merge chain in
-//!    [`handler::McpHandler::new`]. No edits needed in any existing
-//!    category file.
+//!    `McpHandler::merged_tool_router`, which [`handler::McpHandler::new`]
+//!    calls. No edits needed in any existing category file.
 //!
 //! ## Adding a tool to an existing category
 //!
@@ -141,8 +141,8 @@ pub(crate) use tool_success;
 // merged router off `McpHandler::tool_router` (the field populated in
 // `McpHandler::new` by summing per-category routers via `+`). We use
 // the standalone form rather than the `#[tool_router(server_handler)]`
-// shortcut because pattern (c) — multiple per-category `#[tool_router]`
-// blocks merged manually — would otherwise emit conflicting
+// shortcut because the shortcut on each of the per-category
+// `#[tool_router]` blocks merged here would emit conflicting
 // `ServerHandler` impls.
 //
 // `call_tool` is written out by hand (the macro only generates it when

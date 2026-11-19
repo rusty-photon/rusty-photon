@@ -13,11 +13,11 @@ const fn site_configured(world: &mut RpWorld, lat: f64, lon: f64) {
     world.site = Some((lat, lon));
 }
 
-// Planner-target seeding for the `planner` feature now goes through the
-// target store (post-boot `add_target` fixtures) — see
+// Planner targets for the `planner` feature are seeded in the target
+// store (post-boot `add_target` fixtures) — see
 // `target_store_planner_steps.rs`. The `get_next_target` /
 // `record_exposure` / `get_session_progress` When+Then steps below are
-// tool-agnostic and stay here.
+// tool-agnostic.
 
 // --- When steps ---
 
@@ -188,8 +188,7 @@ fn recommended_target(world: &mut RpWorld, expected: String) {
 // The per-goal progress assertions ("the reported progress should be
 // exactly:" / "the progress for target {string} should be exactly:")
 // live in target_store_progress_steps.rs, alongside the frame-seeding
-// Given that produces the counts. The filter-keyed `{completed, goal}`
-// steps they replaced are gone with the counters themselves.
+// Given that produces the counts.
 
 // `get_next_target` surfaces the recommended plan entry as a nested
 // `exposure: {filter, duration_secs}` object (null when the target has

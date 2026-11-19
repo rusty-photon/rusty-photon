@@ -1,6 +1,6 @@
 Feature: Plan schema and validation tools
   The plan-data analogue of what a service's setup pages do for its
-  configuration (ADR-019, rp.md § Plan schema and validation): two read-only
+  configuration (rp.md § Plan schema and validation): two read-only
   MCP tools that let any surface discover the shape of plan data and check
   a candidate against the same rules the write tools enforce, without
   writing anything.
@@ -210,10 +210,9 @@ Feature: Plan schema and validation tools
     When the MCP client adds the target it just validated
     Then the tool call should return an error
 
-  # Grading thresholds were the direction this agreement used to fail:
-  # config load rejected a negative default_grading while add_target
-  # accepted the same value as a per-target override. Both now go
-  # through the one validator.
+  # A grading threshold is checked where config load reads
+  # default_grading and where add_target takes a per-target override;
+  # both go through the one validator validate_plan calls.
   Scenario: A negative grading threshold is rejected by both tools alike
     Given rp is running with a target store
     And an MCP client connected to rp

@@ -6,8 +6,7 @@
 //! checked at startup; a bad pattern fails the load, not a session" —
 //! rp-targets.md), covering both `file_naming_pattern` and
 //! `directory_pattern`. `capture`'s actual render/parse use of these
-//! patterns (Decision 11) is covered by
-//! `capture_target_linkage.feature` instead.
+//! patterns is covered by `capture_target_linkage.feature` instead.
 
 use cucumber::{given, then, when};
 

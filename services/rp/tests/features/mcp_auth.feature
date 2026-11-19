@@ -3,7 +3,7 @@ Feature: rp MCP endpoint TLS and authentication
   The /mcp endpoint sits behind the same server-wide TLS and HTTP Basic
   authentication as every REST route — there is no unauthenticated MCP
   carve-out. First-party clients present the observatory credential over
-  verified HTTPS (ADR-017).
+  verified HTTPS.
 
   Scenario: the MCP tool catalog is served over TLS to a credentialed client
     Given generated TLS certificates

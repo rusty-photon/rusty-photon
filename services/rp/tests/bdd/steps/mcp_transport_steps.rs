@@ -1,5 +1,5 @@
 //! BDD step definitions for the session-less MCP transport
-//! (`mcp_transport.feature`; rp.md § MCP Server, ADR-021), plus the raw
+//! (`mcp_transport.feature`; rp.md § MCP Server), plus the raw
 //! JSON-RPC probe the Host-allowlist steps share.
 //!
 //! The probes here bypass the standard client on purpose: the contract

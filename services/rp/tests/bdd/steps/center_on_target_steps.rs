@@ -257,11 +257,12 @@ fn mount_position_approx(world: &mut RpWorld, expected_ra: f64, expected_dec: f6
         .get("dec")
         .and_then(serde_json::Value::as_f64)
         .unwrap_or_else(|| panic!("expected 'dec' in mount position, got: {result:?}"));
-    // OmniSim's slew-echo drift is ~0.001° on both axes (~3.6
-    // arcsec) — same root cause as mount.feature's slew tolerance.
-    // For the dec axis (degrees) the 0.01 cap here gives ~3× slack
-    // over the drift; for the ra axis (hours) 0.01h = 0.15° = ~540
-    // arcsec, far above the ~0.001° / ~0.000067h drift but still
+    // OmniSim's slew echo lands ~0.001° (~3.6 arcsec) off the
+    // requested coordinates on both axes — the stale sidereal-time
+    // offset `SLEW_ECHO_TOLERANCE` in mount_steps.rs absorbs
+    // (testing.md §5.14). For the dec axis (degrees) the 0.01 cap here
+    // gives ~10× slack over it; for the ra axis (hours) 0.01h = 0.15° =
+    // ~540 arcsec, far above the ~0.001° / ~0.000067h offset but still
     // tight enough to distinguish the iter-1 sync-then-slew outcome
     // (≈ input ra/dec) from an iter-N solved position that lands
     // tens of arcsec — or hours, in our scenarios — away.

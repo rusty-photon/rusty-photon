@@ -31,8 +31,8 @@ tools on `rp`.
 8. **MCP is the surface.** Every capability a client drives — UI, plugin, or
    external — is an MCP tool on `rp`'s `/mcp` server; that is the one way to
    command `rp`. HTTP/REST is not a second surface: it carries only what
-   cannot ride MCP — raw image bytes (`/api/images/{id}/pixels`), the SSE
-   event stream, and plugin completion callbacks — plus config, which must
+   cannot ride MCP — raw image bytes (`/api/images/{id}/pixels`) and the SSE
+   event stream — plus config, which must
    stay reachable while conditions are unsafe. A REST endpoint that
    mirrors an MCP tool is a design error, not a feature.
 
@@ -120,7 +120,7 @@ restarts. The guider ([`guider.md`](guider.md), designed
 and not yet built) is the one component of this kind; an algorithm that is a
 tool call, which starts, runs and returns, stays built-in.
 
-Workflow logic stays out of `rp` (design tenet 7), but not as a
+Workflow logic stays out of `rp`, but not as a
 plugin: an orchestrator is an ordinary MCP client that `rp` neither
 registers nor starts (§ [Orchestration](#orchestration)), so a
 different imaging type is a different client — `session-runner` with a
@@ -227,12 +227,9 @@ count follows the names.
   "readout_mode": 1,
   "readout_mode_name": "High Gain Mode 16BIT",
   "duration": "5m",
-  "planned_at": "2026-03-02T01:15:00Z",
   "exposure_started_at": "2026-03-02T01:15:00.412+00:00",
   "captured_at": "2026-03-02T01:20:02Z",
   "file_path": "/data/lights/M31/M31_L_5m_001.fits",
-  "session_id": "session-2026-03-01",
-  "sequence_number": 42,
   "max_adu": 65535,
   "sensor_type": "Monochrome",
   "cooler_setpoint_c": -10,
@@ -301,9 +298,7 @@ count follows the names.
 }
 ```
 
-**The example's `session_id`, `sequence_number` and `planned_at` are
-not written: no code path sets them yet.** `target` and
-`frame_type` are populated only when `capture`'s `frame_type` parameter
+`target` and `frame_type` are populated only when `capture`'s `frame_type` parameter
 was supplied — see [Capture Tool Details](#capture-tool-details) for
 the full resolution rules (target-store lookup for `Light`, the
 reserved `"dark"`/`"flat"`/`"bias"` slugs for calibration frames
@@ -784,14 +779,12 @@ most of them under N.I.N.A.'s cards, one device's entry for a list
   In both lists an entry with no reading is left out, and the list is
   omitted when it would be empty.
 
-### Plugin Sections (contributed via API)
+### Sections
 
 Results live in named sections. `rp`'s own analysis tools and
-`plate_solve` write theirs in-process (`image_analysis`, `wcs`, …); the
-route that would let a plugin write one is designed and not built
-([Plugin Section Updates](#plugin-section-updates)). `rp` merges each
-section into the document and persists the sidecar JSON. Each section is
-opaque to `rp` — it stores and serves whatever its writer provides.
+`plate_solve` write theirs in-process (`image_analysis`, `wcs`, …); no
+route lets another process write one. `rp` merges each section into the
+document and persists the sidecar JSON.
 
 ```json
 {
@@ -1242,17 +1235,6 @@ Point events (e.g. `filter_switch`, `safety_changed`) carry no
 | `filter_switch` | camera_id, old_filter, new_filter | Filter change on a camera |
 | `document_persistence_failed` | document_id, file_path, error | Sidecar write failed during capture. The FITS file is on disk but the cache is not populated and no sidecar exists; `document_id`-keyed lookups return 404 (disk fallback requires the sidecar). Recover by reading the FITS via `file_path` from the payload. See [Capture Tool Details](#capture-tool-details). |
 
-Six event names have no emitter in `rp`. `meridian_flip_started`
-(hour_angle), `meridian_flip_complete` and `target_switch` (old_target,
-new_target) name what an orchestrator does with `rp`'s tools — a flip
-is a sequence of tool calls it makes, and a target switch its answer
-to `get_next_target` (§ [Orchestration](#orchestration)). `frame_rejected`
-(document_id, plugin, reason), `plugin_timeout` (plugin, event_id) and
-`document_updated` (document_id, section_name) belong to the plugin
-completion contract and the section route, which are designed and not
-built (§ [Delivery: Webhooks](#delivery-webhooks), § [Plugin Section
-Updates](#plugin-section-updates)).
-
 ### Event Envelope
 
 Every emitted event is wrapped in a uniform envelope, which is both the
@@ -1277,7 +1259,7 @@ event carries only `event_id`, `event_seq`, `event`, `timestamp` and
 
 | Field | Meaning |
 |-------|---------|
-| `event_id` | Per-emission UUID; the key the plugin completion contract routes a completion by (`POST /api/plugins/{event_id}/complete`, designed and not built — § [Delivery: Webhooks](#delivery-webhooks)). |
+| `event_id` | Per-emission UUID. |
 | `event_seq` | Monotonically increasing per-emission counter. Total order across all events; the SSE `id` (and `Last-Event-ID` replay key) for the [Real-Time Stream](#real-time-stream). |
 | `operation_id` | Correlation key shared by an operation's `*_started`, `*_complete`, and `*_failed` events. Omitted for point events (e.g. `filter_switch`, `safety_changed`). |
 | `event` | The event-type string, e.g. `"slew_started"`. |
@@ -1297,16 +1279,6 @@ Plugins register a callback URL and subscribed events in the configuration.
 `rp` POSTs each event's envelope to every registration subscribed to it,
 and reads only the response's status: delivery is fire-and-forget,
 bounded at 5 s per delivery, connect included, and never retried.
-
-The acknowledgment and completion a plugin answers with
-([Step 1](#step-1-acknowledgment-immediate-http-response),
-[Step 2](#step-2-completion-callback-post-to-rp)), and the
-[barriers](#barriers), [corrections](#corrections) and
-[timeout behavior](#timeout-behavior) built on them, are designed and
-not built. `rp` reads no acknowledgment body, serves no
-`POST /api/plugins/{event_id}/complete` route, ignores a registration's
-`barrier_gates` key, and emits none of `frame_rejected`,
-`plugin_timeout` and `document_updated`.
 
 **A `type: "event"` registration must be deliverable.** `name`,
 `webhook_url`, and a `subscribes_to` list holding at least one
@@ -1381,242 +1353,6 @@ Content-Type: application/json
   }
 }
 ```
-
-#### Step 1: Acknowledgment (immediate HTTP response)
-
-The plugin responds immediately to the webhook HTTP request with an
-acknowledgment declaring how long it expects to take:
-
-```json
-{
-  "estimated_duration": "20s",
-  "max_duration": "30s"
-}
-```
-
-- `estimated_duration`: humantime string for how long the plugin expects
-  processing to take. The planner uses this for scheduling decisions.
-  Provided dynamically per invocation — a plate solve on a wide-field
-  image may differ from a narrow-field one.
-- `max_duration`: hard timeout. If the plugin doesn't complete within
-  this time, `rp` proceeds and emits a warning.
-
-`rp` records the durations and continues with the orchestration. The next
-exposure can start immediately after `exposure_complete` — the plugin
-processes in parallel.
-
-#### Step 2: Completion (callback POST to `rp`)
-
-When the plugin finishes processing, it POSTs a completion to `rp`:
-
-```
-POST /api/plugins/{event_id}/complete
-Content-Type: application/json
-
-{
-  "status": "complete"
-}
-```
-
-Or, to request a corrective action:
-
-```json
-{
-  "status": "complete",
-  "correction": {
-    "action": "focus",
-    "reason": "HFR degraded from 2.3 to 4.8 — likely focus drift",
-    "urgency": "immediate"
-  }
-}
-```
-
-- `correction` (optional): requests that the orchestrator perform a
-  corrective action (see Corrections below).
-  - `action`: the corrective action to take (e.g., `"focus"`,
-    `"center"`). Must be a recognized action name.
-  - `reason`: human-readable explanation, logged and included in events.
-  - `urgency`: either `"immediate"` (abort in-flight operations, reject
-    the frame) or `"after_current"` (queue until the current operation
-    completes naturally, frame counts normally).
-
-#### Barriers
-
-A plugin can optionally declare **barrier gates** — MCP tools that must
-not proceed until the plugin has posted its completion for the most
-recent webhook. This tells `rp`: "if you haven't heard back from me yet,
-block these tools until you have."
-
-```json
-{
-  "name": "image-analyzer",
-  "webhook_url": "http://localhost:11140/webhook",
-  "subscribes_to": ["exposure_complete"],
-  "barrier_gates": ["slew", "set_filter"]
-}
-```
-
-When the orchestrator calls a gated tool, `rp` checks whether any
-barrier plugin still has an outstanding (uncompleted) webhook. If so,
-`rp` blocks the tool call — up to `max_duration` from the
-acknowledgment — before executing. All outstanding plugins are waited on
-in parallel.
-
-A plugin with no `barrier_gates` (or an empty list) is never waited on.
-Its completion is still processed when it arrives, but `rp` never blocks
-on it.
-
-If a barrier plugin completes with a correction while a tool call is
-blocked, the gated tool returns the correction to the orchestrator
-instead of executing (see Corrections below).
-
-#### Corrections
-
-A plugin can request that the orchestrator perform a corrective action
-by including a `correction` in its completion. Corrections have two
-urgency levels that determine how `rp` delivers them to the
-orchestrator:
-
-**`immediate`** — the current frame is unusable. `rp` aborts any
-in-flight operation (e.g., aborts the active camera exposure), returns
-the correction to the orchestrator in the aborted tool call's result,
-and rejects the frame:
-
-```json
-{
-  "status": "aborted",
-  "correction": {
-    "action": "focus",
-    "reason": "HFR 4.8, frame unusable",
-    "source": "image-analyzer"
-  }
-}
-```
-
-**`after_current`** — the current frame is still usable, but a
-corrective action should happen before the next exposure. `rp` queues
-the correction and surfaces it in the result of the current in-flight
-tool call when it completes naturally:
-
-```json
-{
-  "image_path": "/data/lights/M31/M31_L_5m_004.fits",
-  "document_id": "doc-043",
-  "pending_correction": {
-    "action": "focus",
-    "reason": "HFR 3.0, trending worse",
-    "source": "image-analyzer"
-  }
-}
-```
-
-In both cases the orchestrator decides **what to do** with the
-correction. `rp` controls **when** the orchestrator hears about it.
-
-**Conflict resolution:** when multiple plugins request corrections,
-the most disruptive action wins. If one plugin requests refocus and
-another requests recenter, recenter wins because it includes refocusing.
-
-**Frame rejection:** an `immediate` correction implicitly rejects the
-frame that triggered the event. `rp`:
-
-1. Does not count the rejected frame toward the exposure goal.
-2. Marks the exposure document with the rejection reason.
-3. Emits a `frame_rejected` event.
-
-An `after_current` correction does not reject the frame. The current
-exposure counts normally.
-
-**Barrier interaction:** when a barrier plugin completes with a
-correction while a gated tool call is blocked, `rp` returns the
-correction to the orchestrator instead of executing the gated tool.
-The orchestrator sees the correction and acts accordingly (e.g.,
-refocuses instead of slewing to a new target).
-
-#### Timeout Behavior
-
-When `max_duration` (from the acknowledgment) expires without a
-completion:
-
-1. `rp` proceeds as if the plugin completed with `"complete"` and no
-   correction.
-2. If a tool call was blocked on this barrier, it unblocks and executes
-   normally.
-3. A `plugin_timeout` warning event is emitted.
-4. The timeout is logged.
-
-Webhook delivery failures (connection refused, HTTP errors) are treated
-as immediate completion with no correction. Plugins are responsible for
-their own reliability.
-
-#### Example: Image Analyzer Flow
-
-Setup: 5 exposures on the same target, 5m each, analysis takes 20s.
-
-```
-Exposure 3 completes
-  → rp POSTs exposure_complete to analyzer
-  → analyzer responds immediately:
-      {"estimated_duration": "20s", "max_duration": "30s"}
-  → rp records outstanding barrier, starts exposure 4 (not gated)
-
-  Case A — frame OK, no target switch pending:
-    → analyzer POSTs completion: {"status": "complete"}
-    → rp notes completion, clears barrier
-    → capture continues normally
-
-  Case B — frame bad (immediate), exposure 4 in-flight:
-    → analyzer POSTs completion:
-        {"status": "complete", "correction": {"action": "focus",
-         "reason": "HFR 4.8", "urgency": "immediate"}}
-    → rp aborts exposure 4, returns capture with:
-        {"status": "aborted", "correction": {"action": "focus", ...}}
-    → orchestrator refocuses, resumes capture
-
-  Case C — frame marginal (after_current), exposure 4 in-flight:
-    → analyzer POSTs completion:
-        {"status": "complete", "correction": {"action": "focus",
-         "reason": "HFR 3.0, trending", "urgency": "after_current"}}
-    → rp queues correction, exposure 4 continues
-    → exposure 4 completes, capture returns with:
-        {"image_path": "...", "pending_correction": {"action": "focus", ...}}
-    → orchestrator refocuses before starting exposure 5
-
-  Case D — frame bad, slew pending (barrier in action):
-    → orchestrator calls slew → rp blocks (outstanding barrier)
-    → analyzer POSTs completion with immediate correction
-    → rp returns slew with correction instead of executing:
-        {"status": "blocked_by_correction",
-         "correction": {"action": "focus", ...}}
-    → orchestrator refocuses, stays on current target
-```
-
-### Plugin Section Updates
-
-A plugin's results are designed to come back to `rp` as a section of
-the exposure document, through a route that is not built:
-
-```
-POST /api/documents/{document_id}/sections
-Content-Type: application/json
-
-{
-  "section_name": "wcs",
-  "data": {
-    "ra_center": 10.6848,
-    "dec_center": 41.2690,
-    "pixel_scale_arcsec": 1.05,
-    "rotation_deg": 12.3,
-    "solver": "astap-0.9.1"
-  }
-}
-```
-
-`rp` merges the section into the document and persists the updated
-sidecar JSON. `rp` serves no route that writes a document, so a
-section reaches one only from a built-in tool that writes it
-in-process (`compute_image_stats`'s `image_stats`, `plate_solve`'s
-`wcs` and the like).
 
 ## Action System
 
@@ -1885,7 +1621,7 @@ accepted, `document_id` takes precedence.
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
 | `compute_image_stats` | document_id or image_path | median_adu, mean_adu, min_adu, max_adu, pixel_count | Pixel-level statistics; with a `document_id`, persisted as the document's `image_stats` section. See [Image Statistics Tool Details](#image-statistics-tool-details). |
-| `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. See [`measure_basic` Contract](#mvp-measure_basic-contract). |
+| `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. See [`measure_basic` Contract](#measure_basic-contract). |
 | `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. |
 | `measure_stars` | document_id or image_path, max_area, min_area (unless `stars`), threshold_sigma (optional), stars (optional: \[{x, y, radius}\]), stamp_half_size (optional) | stars: \[{x, y, radius, hfr, fwhm, eccentricity, flux, snr}\], star_count, hfr, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics, measured in the same apertures as `measure_basic`. Runs `detect_stars` internally, or measures the listed `stars` where they were last seen. |
 | `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. |
@@ -1977,6 +1713,14 @@ that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
 written atomically (stage to a sibling temp file, fsync, rename, fsync
 parent directory). See
 [Persistence](#persistence) for the full rule set.
+
+**A failed exposure ends the capture.** While the frame is not ready,
+a camera that reads `Error` fails the capture at once with
+`exposure_failed`, carrying the reason the camera's `image_array` read
+returns, rather than being polled as still exposing: a camera that
+fails an exposure reads `Error` and never reports `image_ready`. The
+readout backstop, `duration` + 120 s from the exposure's start, fails a
+capture whose camera stays in `Exposing`.
 
 **Pixel geometry.** Alpaca's `image_array` is width-major — the
 `[x][y]` array of the ASCOM specification, `x` varying slowest on the
@@ -2178,7 +1922,7 @@ step 2 catches a re-bin that lands before the read-back, but nothing
 in `rp` can see one that lands after it. Capture through a camera from
 one client at a time.
 
-**Target linkage (Decision 11).** `capture` takes two optional
+**Target linkage.** `capture` takes two optional
 parameters: `target` (a slug string) and `frame_type`
 (`Light`/`Dark`/`Flat`/`Bias`). `rp` itself has no session-side notion
 of "the current target" — that state lives entirely in the
@@ -2693,7 +2437,7 @@ re-decoding the image just written.
 | Background estimation | Custom | Iterative sigma clip over the whole frame; a star's local background over an annulus around its aperture (`measure_basic` step 9) |
 | Noise / SNR | Custom | The CCD equation with the dark and read noise folded into the sigma-clipped background variance (`compute_snr`) |
 
-#### MVP: `measure_basic` Contract
+#### `measure_basic` Contract
 
 `measure_basic` reports a frame's aggregate HFR, its star count and its
 background. Behavioral contract:
@@ -3143,9 +2887,8 @@ slope that sweep's own V-curve rises at.
   or fine (cloudy frame still useful for stats).
 
 **Persistence**: when called with `document_id`, results are written into
-the exposure document as the `image_analysis` section per the rule that
-"all tool results that produce image metrics MUST be written into the
-exposure document as a section."
+the exposure document as the `image_analysis` section, as every
+built-in image-metric tool's are.
 
 #### `estimate_background` Contract
 
@@ -3643,7 +3386,6 @@ we use `u16` whenever possible.
 | Endpoint | Returns | Description |
 |----------|---------|-------------|
 | `GET /api/documents/{document_id}` | JSON | Full exposure document with all sections. Resolves through the cache (hit → return; miss → disk fallback; not found → 404). See [Document Resolution](#document-resolution). |
-| `POST /api/documents/{document_id}/sections` | — | Plugin section update. Requires the document be resolvable; persists the sidecar atomically and updates the cached entry. *(planned — the router does not serve it)* |
 | `GET /api/images/{document_id}` | JSON metadata | Width, height, bitpix, FITS path, exposure document link, in-cache flag. Resolves through the same cache + disk fallback. `fits_path` is the file the lookup found, not the sidecar's recorded `file_path` ([Document Resolution](#document-resolution)). |
 | `GET /api/images/{document_id}/pixels` | `application/imagebytes` | Raw pixel data in [ASCOM Alpaca ImageBytes](https://ascom-standards.org/api/) format: 44-byte header (metadata version, error number, transaction IDs, data offset, image element type, transmission element type, rank, dimensions) followed by little-endian pixel bytes in the Alpaca width-major order (`x` varies slowest: pixel `(x, y)` sits at index `x × height + y`). |
 
@@ -3760,13 +3502,11 @@ with `rp`):
 | `measure_wavefront` | wavefront-analyzer | Optical aberration analysis from defocused star images |
 | `score_field_flatness` | tilt-analyzer | Detect sensor tilt by per-quadrant HFR comparison |
 
-**All tool results that produce image metrics MUST be written into the
-exposure document as a section.** This is the one rule — the document is
-the shared data bus. `rp`'s own imaging tools and `plate_solve` write
-their sections themselves when called on a document. A provider's
-result is relayed verbatim (below) and `rp` writes nothing for it, so a
-provider writes its own section through the section endpoint, which is
-planned ([HTTP API](#http-api-services-and-plugins)).
+**`rp`'s own image-metric tools write their results into the exposure
+document as a section.** The document is the frame's record: `rp`'s
+imaging tools and `plate_solve` write their sections themselves when
+called on a document. A provider's result is relayed verbatim to its
+caller (below), and `rp` writes nothing for it.
 
 #### How a proxied call behaves
 
@@ -3819,7 +3559,7 @@ role:
 
 | Type | Role | Interface | Typical authorship |
 |------|------|-----------|-------------------|
-| **Event** | React to events asynchronously | Webhook (receive events; the completion callback is designed, not built) | Either |
+| **Event** | React to events asynchronously | Webhook (receive events) | Either |
 | **Tool provider** | Add tools beyond `rp`'s built-in catalog | MCP server (rp aggregates their tools) | Mostly third-party |
 
 A plugin can combine types. For example, a focus plugin can be a
@@ -4004,7 +3744,6 @@ Orchestrator calls: tools/call classify_image_quality {document_id: "doc-042"}
     → GET /api/images/doc-042/pixels  (Alpaca ImageBytes)
     ← raw pixel bytes
     → runs inference locally
-    → POST /api/documents/doc-042/sections {section_name: "ml_quality", data: {...}}
 
   ml-quality-classifier returns to rp:
     ← {score: 0.87, classification: "keep", model: "psf-cnn-v3"}
@@ -4014,9 +3753,8 @@ Orchestrator calls: tools/call classify_image_quality {document_id: "doc-042"}
 ```
 
 The plugin reuses `rp`'s image cache HTTP API for pixel access (no FITS
-re-decode), and writes its results back into the exposure document via
-the section endpoint, which is planned
-([HTTP API](#http-api-services-and-plugins)). The built-in compound tool `center_on_target`
+re-decode), and its result reaches the orchestrator through `rp`'s relay.
+The built-in compound tool `center_on_target`
 follows the same orchestration pattern but without the MCP-over-HTTP
 hop — see [Compound Tools](#compound-tools).
 
@@ -7404,7 +7142,7 @@ under this rule, on disk and in progress alike — do not name a filter
 **Good vs rejected.** For each counted frame `rp` reads the sidecar's
 `grading` section and applies the target's **effective** thresholds
 (`target.grading` field-wise over `target_store.default_grading`).
-The section is a plugin section like any other (§ Plugin Sections) —
+The section is opaque to `rp` like any other (§ [Sections](#sections)) —
 `rp` neither writes nor validates it; the grading plugin that measures
 frames is a separate component and is not part of this service. `rp`
 reads four optional numeric metrics, each paired with the threshold
@@ -8253,10 +7991,6 @@ Store).
   on-disk fallback; returns `404` only when neither cache nor disk has
   the document. See
   [Document Resolution](#document-resolution).
-- `POST /api/documents/{id}/sections` — add/update a section (plugin
-  endpoint). Requires the document be resolvable; persists the sidecar
-  atomically. *(planned — no route lets a plugin write a section; only
-  `rp`'s own image-analysis tools and `plate_solve` write sections)*
 
 #### Images
 - `GET /api/images/{document_id}` — image metadata (width, height, bitpix,
@@ -8268,15 +8002,9 @@ Store).
   wanting FITS read the file directly from the path in the exposure
   document.
 
-#### Plugins
-- `POST /api/plugins/{id}/complete` — event plugin completion callback
-  (status, optional `correction`). The `{id}` is the delivery's
-  `event_id`. *(planned — the router does not serve it, so a delivery
-  ends at the webhook POST)*
-
 #### MCP
-- `/mcp` — MCP server endpoint (streamable HTTP transport). Workflow
-  plugins connect here as MCP clients to discover and call tools.
+- `/mcp` — MCP server endpoint (streamable HTTP transport). MCP clients
+  (orchestrators, the web UI) connect here to discover and call tools.
 
 #### System
 - `GET /health` — health check

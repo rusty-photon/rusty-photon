@@ -50,10 +50,9 @@ Feature: Center on target compound tool
 
   # Canned WCS values are kept within ~2 arcmin of the input target
   # so the iter-1 sync teleports the mount only a tiny distance and
-  # the subsequent slew completes well within do_slew_blocking's
-  # 300 s deadline (and rmcp's 300 s keep-alive). Earlier values
-  # ~9° off target reliably hung windows / bdd / rp under CI load
-  # — see issue tracker for the OmniSim slew-time investigation.
+  # the subsequent slew stays short and fast even under CI load, well
+  # within its deadline (do_slew_blocking's 30 s floor for a slew this
+  # short).
   Scenario: Multi-iteration happy path converges on iteration 2
     Given a running Alpaca simulator
     And a stub plate solver returning these per-call WCS responses:
@@ -246,14 +245,13 @@ Feature: Center on target compound tool
       | ra               | 24    |
       | dec              | 91    |
 
-  # Closed-loop scenarios (Phase 4 of
-  # docs/plans/archive/sky-survey-camera-mount-following.md): the camera is a
-  # real `sky-survey-camera` process following OmniSim's Telescope.
-  # Before invoking `center_on_target`, the scenario `POST`s to the
-  # camera's `/sky-survey/position` endpoint, which in follow mode
-  # arms a *one-shot* pointing override (F7) — the next light
-  # exposure renders at that overridden position; subsequent
-  # exposures resume reading the mount.
+  # Closed-loop scenarios: the camera is a real `sky-survey-camera`
+  # process following OmniSim's Telescope (sky-survey-camera.md
+  # § Telescope follow mode). Before invoking `center_on_target`, the
+  # scenario `POST`s to the camera's `/sky-survey/position` endpoint,
+  # which in follow mode arms a *one-shot* pointing override (contract
+  # F7 there) — the next light exposure renders at that overridden
+  # position; subsequent exposures resume reading the mount.
   #
   # That one-shot semantic is what makes the loop converge: iter 0
   # sees the camera "off-target" (the overridden position), syncs
@@ -262,8 +260,9 @@ Feature: Center on target compound tool
   # (now back at the target via the slew), plate-solves to that
   # mount-reported position, and converges. A persistent camera-side
   # offset (the `offset_*_arcsec` config fields) cannot be driven to
-  # zero by sync+slew — see the plan's "Note on the offset model" —
-  # which is why we use a one-shot override here instead.
+  # zero by sync+slew — the camera renders the mount-reported position
+  # plus the offset, and a sync moves what the mount reports — which is
+  # why we use a one-shot override here instead.
   #
   # The plate-solver stub walks a Sequence: first call returns the
   # "off-target" coordinates, second call returns the requested

@@ -5,7 +5,7 @@
 //! flight, one settings cache, one image slot and one abort for all its
 //! clients. rp keeps its own captures through that camera and the starts
 //! of guiding it sends off each other here, in its memory: the guider
-//! serves nothing for it (ADR-026).
+//! serves nothing for it.
 //!
 //! Captures and a guiding train's train lease are rp's own users of the
 //! camera and hold the guard together; a start holds it alone. Whichever

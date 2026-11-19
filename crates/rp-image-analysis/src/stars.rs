@@ -11,7 +11,7 @@
 //! Saturated components are *not* rejected — they're flagged via
 //! [`Star::saturated_pixel_count`] so downstream consumers (a focus
 //! sweep, quality-screen tools) apply their own policy. See `docs/services/rp.md`
-//! (MVP `measure_basic` Contract, algorithm step 7) for the rationale.
+//! (`measure_basic` Contract, algorithm step 7) for the rationale.
 //!
 //! Connected-components is a hand-rolled 4-connectivity BFS over `Array2<bool>`
 //! because `ndarray-ndimage` 0.6's `label` is 3D-only with a hard `assert!`

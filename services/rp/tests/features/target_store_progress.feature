@@ -1,13 +1,12 @@
-Feature: Target progress derivation (P1)
+Feature: Target progress derivation
   Progress is computed on demand from goals plus the frames on disk,
   never stored (rp.md § Target Store → Progress derivation).
   `get_target`, `list_targets`, `get_target_status`,
   `get_session_progress`, and `record_exposure` all report, per target,
   a list of `{filter, binning, exposure_duration, good, total,
   desired_count}` — one entry per `AcquisitionGoal`, in goal order —
-  superseding the filter-only `{completed, goal}` counter shape, which
-  could not distinguish two goals that share a filter (e.g. Ha at two
-  different exposure lengths).
+  so two goals that share a filter (e.g. Ha at two different exposure
+  lengths) are counted apart.
 
   `rp` walks the night directories under the target's slug using the
   configured `directory_pattern` and `file_naming_pattern`, so it finds

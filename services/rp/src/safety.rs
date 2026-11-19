@@ -218,8 +218,8 @@ pub struct SafetyEnforcer<P: SafetyProbe> {
     leases: Arc<TrainLeases>,
     equipment: Arc<EquipmentRegistry>,
     /// Guider-service client shared with `McpHandler`; the unsafe
-    /// transition stops guiding through it. `None` when no `guider`
-    /// block is configured — the step is skipped.
+    /// transition stops guiding through it. `None` when no
+    /// `equipment.mount.guiding` is configured — the step is skipped.
     guider: Option<Arc<dyn rp_guider::GuiderClient>>,
     /// The safety state shared with `McpHandler`: the gate the MCP
     /// dispatch reads to refuse gated tools while conditions are
@@ -274,8 +274,8 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
         // sleeping: a monitor that is unsafe (or unreadable) at startup
         // must gate immediately, not after the first interval elapses.
         // (The production path in `BoundServer::start` runs this first
-        // poll inline instead — before startup recovery — and continues
-        // via `run_from`.)
+        // poll inline instead — before it serves the first request — and
+        // continues via `run_from`.)
         let mut per_monitor: HashMap<String, bool> = HashMap::new();
         let overall = self.poll_once(&mut per_monitor, true).await;
         self.run_from(cancel, per_monitor, overall).await;
@@ -1226,13 +1226,7 @@ mod tests {
         assert!(!enforcer.status.is_safe());
     }
 
-    /// Build the enforcer from a real registry so the production
-    /// [`AlpacaSafetyProbe`] is exercised (not the scripted test probe):
-    /// a connected monitor reads through the Alpaca `issafe` endpoint,
-    /// and a monitor whose connect failed reads as an error → unsafe.
-    /// The registry also carries cameras so the unsafe transition's
-    /// exposure abort covers all three arms: abort acknowledged, abort
-    /// rejected (no exposure in progress), and camera not connected.
+    /// A camera entry `id` at `url`, every optional field unset.
     fn camera_cfg(id: &str, url: &str, device_number: u32) -> crate::config::CameraConfig {
         crate::config::CameraConfig {
             id: id.to_string(),
@@ -1249,6 +1243,13 @@ mod tests {
         }
     }
 
+    /// Build the enforcer from a real registry so the production
+    /// [`AlpacaSafetyProbe`] is exercised (not the scripted test probe):
+    /// a connected monitor reads through the Alpaca `issafe` endpoint,
+    /// and a monitor whose connect failed reads as an error → unsafe.
+    /// The registry also carries cameras so the unsafe transition's
+    /// exposure abort covers all three arms: abort acknowledged, abort
+    /// rejected (no exposure in progress), and camera not connected.
     #[tokio::test]
     async fn alpaca_probe_reads_issafe_and_unsafe_aborts_exposures() {
         use axum::routing::{get, put};

@@ -22,9 +22,9 @@ use crate::safety::SafetyStatus;
 
 /// The slice of the `session.*` config block the tools read at runtime.
 ///
-/// Where captures and the target store land. The block keeps its
-/// historical name — it never described a session registry, and
-/// `data_directory` / naming patterns are all it carries now.
+/// Where captures and the target store land. The block names no
+/// session registry: `data_directory` and the naming patterns are all
+/// it carries.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
     pub data_directory: String,
@@ -68,9 +68,8 @@ pub struct McpHandler {
     /// The derived optical-train model (rp.md § Optical Trains).
     /// `do_capture` resolves each camera's train through it, for the
     /// exposure document's train facts and the light path in its
-    /// `optics` block. The default (no trains) is the pre-train
-    /// behavior — no train facts, and an `optics` block of the
-    /// camera's own geometry alone.
+    /// `optics` block. The default (no trains) gives no train facts,
+    /// and an `optics` block of the camera's own geometry alone.
     pub trains: crate::equipment::trains::TrainModel,
     /// The mount motion gate (rp.md § Mount Motion Gate). Behind an
     /// `Arc` so every clone of the handler — rmcp clones it per MCP
@@ -89,7 +88,7 @@ pub struct McpHandler {
     /// the handler shares it.
     pub guide_camera: Arc<crate::guide_camera::GuideCameraGuard>,
     /// Per-rig estimates sizing the advisory `center_on_target` deadline
-    /// (§2.5) carried on `centering_started`. Wired by
+    /// carried on `centering_started` (rp.md § Event Envelope). Wired by
     /// `with_centering_config` from the `centering` block in rp config;
     /// tests use `CenteringConfig::default()`.
     pub centering: crate::config::CenteringConfig,
@@ -104,17 +103,20 @@ pub struct McpHandler {
     /// only exercise other tool categories and configs where opening
     /// it failed to matter — the target CRUD tools then report "target
     /// store not configured". Wired by `with_target_store` from
-    /// lib.rs, which always opens one (`targets.db_path`, default
+    /// lib.rs, which always opens one (`target_store.db_path`, default
     /// `<data_directory>/targets.redb`).
     pub target_store: Option<Arc<dyn rp_targets::TargetStore>>,
-    /// `targets.default_goals` from config — applied by `add_target`
-    /// when the caller supplies no `goals[]` (Decision 10).
+    /// The `target_store` config block (rp.md § Target Store →
+    /// Configuration): the goals `add_target` applies when the caller
+    /// supplies no `goals[]`, the scheduling and grading defaults a
+    /// target inherits, and the import tunables.
     pub target_store_defaults: crate::config::TargetStoreConfig,
     /// `session.file_naming_pattern`/`directory_pattern`, compiled once
-    /// at startup (Decision 11). `None` when `file_naming_pattern` is
-    /// unset — `do_capture` then keeps writing a flat `<doc_uuid_8>.fits`
-    /// regardless of `capture`'s `target`/`frame_type` parameters. Wired
-    /// by `with_naming_templates` from lib.rs.
+    /// at startup (rp.md § Persistence). `None` when
+    /// `file_naming_pattern` is unset — `do_capture` then keeps writing
+    /// a flat `<doc_uuid_8>.fits` regardless of `capture`'s
+    /// `target`/`frame_type` parameters. Wired by `with_naming_templates`
+    /// from lib.rs.
     pub naming_templates: Option<Arc<crate::config::naming_template::NamingTemplates>>,
     /// Merged tool catalog. Built by summing per-category routers
     /// in [`McpHandler::new`]; consumed by the
@@ -172,13 +174,13 @@ impl McpHandler {
             target_store: None,
             target_store_defaults: crate::config::TargetStoreConfig::default(),
             naming_templates: None,
-            // Pattern (c) merge: each `built_in/<category>.rs`
-            // declares a `#[tool_router(router = tool_router_<name>,
-            // vis = "pub")]` block whose generated associated function
-            // returns the per-category `ToolRouter<Self>`. The
-            // `ToolRouter` type implements `Add` so we sum them into
-            // one merged catalog. Adding a new tool category =
-            // append one `+ Self::tool_router_<name>()` here.
+            // Each `built_in/<category>.rs` declares a
+            // `#[tool_router(router = tool_router_<name>, vis = "pub")]`
+            // block whose generated associated function returns the
+            // per-category `ToolRouter<Self>`. The `ToolRouter` type
+            // implements `Add` so we sum them into one merged catalog.
+            // Adding a new tool category = append one
+            // `+ Self::tool_router_<name>()` in `merged_tool_router`.
             tool_router: Self::merged_tool_router(),
             in_flight: Arc::new(InFlight::default()),
             classes: Arc::new(ClassTable::default()),
@@ -302,7 +304,7 @@ impl McpHandler {
         self
     }
 
-    /// Wire the per-rig centering estimates (§2.5) from the `centering`
+    /// Wire the per-rig centering estimates from the `centering`
     /// config block. The lib.rs build path calls this with
     /// `config.centering`; tests leave the default.
     #[must_use]
@@ -339,7 +341,7 @@ impl McpHandler {
     }
 
     /// Wire the compiled `session.file_naming_pattern`/`directory_pattern`
-    /// (Decision 11). `None` when `file_naming_pattern` is unset.
+    /// (rp.md § Persistence). `None` when `file_naming_pattern` is unset.
     #[must_use]
     pub fn with_naming_templates(
         mut self,

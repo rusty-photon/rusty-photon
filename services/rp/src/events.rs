@@ -3,26 +3,27 @@
 //! `rp` emits events when operations happen. Two delivery paths share one
 //! [`EventBus`]:
 //!
-//! 1. **Webhooks** — the historical path. Plugins register a callback URL
-//!    and a set of subscribed event types; the bus fire-and-forget POSTs
-//!    matching events to each (see [`docs/services/rp.md` §Event System]).
+//! 1. **Webhooks** — plugins register a callback URL and a set of
+//!    subscribed event types; the bus fire-and-forget POSTs matching events
+//!    to each ([§ Delivery: Webhooks](../../../docs/services/rp.md#delivery-webhooks)).
 //! 2. **In-process broadcast** — a [`tokio::sync::broadcast`] channel that
-//!    carries every emitted [`EventEnvelope`]. Phase 3 of the
-//!    predictive-deadlines plan wires this to a `/api/events/subscribe`
-//!    SSE endpoint; unit tests use it as the assertion seam.
+//!    carries every emitted [`EventEnvelope`] to the `/api/events/subscribe`
+//!    SSE stream ([§ Real-Time Stream](../../../docs/services/rp.md#real-time-stream));
+//!    unit tests use it as the assertion seam.
 //!
-//! Every event is wrapped in a uniform [`EventEnvelope`]. The envelope is
-//! **additive** over the historical webhook body: the `event_id`, `event`,
-//! `timestamp`, and `payload` keys keep their exact meaning, so existing
-//! plugins are unaffected. New fields (`event_seq`, `operation_id`, the
-//! `started_at` / `ended_at` / `elapsed_ms` timing, and the
-//! `predicted_duration_ms` / `max_duration_ms` deadline fields — populated
-//! on `slew_started` since Phase 2.1, omitted for operations not yet
-//! converted) are carried alongside.
+//! Every event is wrapped in a uniform [`EventEnvelope`]
+//! ([§ Event Envelope](../../../docs/services/rp.md#event-envelope)): a
+//! point event carries `event_id`, `event_seq`, `event`, `timestamp` and
+//! `payload`; an operation's events add `operation_id` and the
+//! `started_at` / `ended_at` / `elapsed_ms` timing, and the `*_started` of
+//! an operation rp sizes a deadline for adds `predicted_duration_ms` /
+//! `max_duration_ms`.
 //!
 //! Blocking operations emit a *triple*: a `*_started` envelope at the
-//! entry point and a `*_complete` or `*_failed` envelope at the end, all
-//! sharing one `operation_id` so a consumer can correlate them.
+//! entry point and a `*_complete`, `*_settled` or `*_failed` envelope at
+//! the end, all sharing one `operation_id` so a consumer can correlate
+//! them. `*_settled` ends a start of guiding and a dither, which end when
+//! guiding settles.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -47,7 +48,7 @@ use crate::config::EventSubscription;
 const BROADCAST_CAPACITY: usize = 256;
 
 /// Capacity of the in-memory event-history ring that backs `Last-Event-ID`
-/// replay on the SSE stream ([`EventBus::subscribe_with_history`], Phase 3).
+/// replay on the SSE stream ([`EventBus::subscribe_with_history`]).
 /// Larger than [`BROADCAST_CAPACITY`] so a consumer that lagged out of the
 /// live channel (256) can still recover its missed window on reconnect.
 /// Events older than the most recent `HISTORY_CAPACITY` are evicted; a
@@ -67,9 +68,9 @@ const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 /// rp's client for webhook delivery: `ca_cert_path` is the observatory CA
 /// (`Config::ca_cert_path`, rp.md § Configuration), without which an
 /// `https://` `webhook_url` signed by that CA fails certificate
-/// verification. Built once per bus rather than per delivery — the old
-/// per-event build repeated TLS-backend setup for every event of the
-/// night, and would have re-read the CA file just as often.
+/// verification. Built once per bus rather than per delivery: a per-event
+/// build would repeat TLS-backend setup, and re-read the CA file, for every
+/// event of the night.
 fn build_webhook_client(
     ca_cert_path: Option<&Path>,
 ) -> Result<reqwest::Client, Box<dyn std::error::Error + Send + Sync>> {
@@ -110,54 +111,52 @@ impl From<EventSubscription> for EventPlugin {
 
 /// The uniform wire shape for every emitted event.
 ///
-/// Serializes to the webhook body and (Phase 3) the SSE `data:` payload.
-/// Optional fields are omitted from JSON when absent (`skip_serializing_if`),
-/// so historical point events (e.g. `filter_switch`) keep their original
-/// `{event_id, event, timestamp, payload}` shape plus the new `event_seq`.
+/// Serializes to the webhook body and the SSE `data:` payload. Optional
+/// fields are omitted from JSON when absent (`skip_serializing_if`), so a
+/// point event (e.g. `filter_switch`) carries only `event_id`,
+/// `event_seq`, `event`, `timestamp` and `payload`.
 #[derive(Debug, Clone, Serialize)]
 pub struct EventEnvelope {
-    /// Per-emission UUID. Unchanged from the historical webhook body; this
-    /// is the routing key for the plugin completion contract
-    /// (`POST /api/plugins/{event_id}/complete`). Assigned by the bus.
+    /// Per-emission UUID, assigned by the bus.
     pub event_id: String,
     /// Monotonically increasing per-emission counter. Total order across
-    /// all events; used as the SSE `id` (and `Last-Event-ID` replay key)
-    /// in Phase 3. Assigned by the bus.
+    /// all events; used as the SSE `id` (and `Last-Event-ID` replay key).
+    /// Assigned by the bus.
     pub event_seq: u64,
-    /// Correlation key shared by an operation's `*_started`, `*_complete`,
-    /// and `*_failed` events. `None` for historical point events.
+    /// Correlation key shared by an operation's `*_started` event and the
+    /// `*_complete`, `*_settled` or `*_failed` event that ends it. `None`
+    /// for point events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
     /// The event type string, e.g. `"slew_started"`.
     pub event: String,
-    /// ISO-8601 emission timestamp. Unchanged historical format. Assigned
-    /// by the bus.
+    /// ISO-8601 emission time in whole seconds. Assigned by the bus.
     pub timestamp: String,
     /// When the operation began (RFC-3339, millisecond precision).
     /// Present on operation events.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
-    /// When the operation ended. Present on `*_complete` / `*_failed`.
+    /// When the operation ended. Present on `*_complete`, `*_settled` and
+    /// `*_failed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
-    /// Wall-clock duration of the operation. Present on
-    /// `*_complete` / `*_failed`.
+    /// Wall-clock duration of the operation. Present on `*_complete`,
+    /// `*_settled` and `*_failed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
-    /// Predicted operation duration. Populated on `slew_started`
-    /// (Phase 2.1); omitted for operations not yet converted to
-    /// predictive deadlines.
+    /// Predicted operation duration, on the `*_started` of an operation rp
+    /// sizes a deadline for ([`EventEnvelope::with_deadlines`]); omitted
+    /// everywhere else.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub predicted_duration_ms: Option<u64>,
-    /// Hard ceiling beyond which the operation is considered overrun.
-    /// Populated on `slew_started` (Phase 2.1); omitted for operations
-    /// not yet converted to predictive deadlines.
+    /// Hard ceiling beyond which the operation is considered overrun, on
+    /// the same `*_started` envelopes as `predicted_duration_ms`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_duration_ms: Option<u64>,
     /// Operation-specific detail. For `*_started` this carries the inputs
-    /// (e.g. target coordinates); for `*_complete` / `*_failed` it carries
-    /// the outcome (result fields, or `{"error": "..."}`). Kept under the
-    /// historical `payload` key so existing subscribers are unaffected.
+    /// (e.g. target coordinates); for the `*_complete`, `*_settled` or
+    /// `*_failed` that ends an operation it carries the outcome (result
+    /// fields, or `{"error": "..."}`).
     pub payload: Value,
 }
 
@@ -188,7 +187,7 @@ impl EventEnvelope {
     }
 
     /// Attach the predicted duration and hard-ceiling deadline (both in
-    /// milliseconds) to a `*_started` envelope (Phase 2). Chainable; every
+    /// milliseconds) to a `*_started` envelope. Chainable; every
     /// other field is untouched, so operations without a prediction keep
     /// both fields `None` (omitted from the JSON).
     #[must_use]
@@ -298,11 +297,12 @@ pub struct Subscription {
 pub struct EventBus {
     plugins: Vec<EventPlugin>,
     /// Shared by every webhook delivery. Carries rp's top-level `ca_cert`
-    /// trust, so a `webhook_url` served with the observatory's
-    /// self-signed certificate verifies (issue #800). `None` when no
-    /// subscriber is registered: with nothing to deliver to there is no
-    /// client to build, so a rig with no event plugins is never failed by
-    /// a `ca_cert` it would not have used.
+    /// trust, so a `webhook_url` served with a certificate the
+    /// observatory's CA signed verifies
+    /// ([§ Delivery: Webhooks](../../../docs/services/rp.md#delivery-webhooks)).
+    /// `None` when no subscriber is registered: with nothing to deliver to
+    /// there is no client to build, so a rig with no event plugins is never
+    /// failed by a `ca_cert` it would not have used.
     client: Option<reqwest::Client>,
     broadcast: broadcast::Sender<EventEnvelope>,
     next_seq: AtomicU64,
@@ -372,7 +372,7 @@ impl EventBus {
 
     /// Subscribe to the in-process event stream. Each subscriber receives
     /// every envelope emitted after it subscribes. Used by the SSE endpoint
-    /// (Phase 3) and by tests.
+    /// and by tests.
     pub fn subscribe(&self) -> broadcast::Receiver<EventEnvelope> {
         self.broadcast.subscribe()
     }
@@ -414,8 +414,8 @@ impl EventBus {
         }
     }
 
-    /// Emit a historical point event (no operation lifecycle). Keeps the
-    /// original signature; the envelope carries `operation_id == None`.
+    /// Emit a point event (no operation lifecycle): the envelope carries
+    /// `operation_id == None`.
     pub fn emit(&self, event_type: &str, payload: Value) {
         let envelope = EventEnvelope {
             event_id: String::new(),
@@ -434,7 +434,8 @@ impl EventBus {
     }
 
     /// Emit an operation lifecycle event built via [`EventEnvelope::started`],
-    /// [`EventEnvelope::complete`], or [`EventEnvelope::failed`].
+    /// [`EventEnvelope::complete`], [`EventEnvelope::settled`], or
+    /// [`EventEnvelope::failed`].
     pub fn emit_operation(&self, envelope: EventEnvelope) {
         self.dispatch(envelope);
     }
@@ -564,7 +565,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_emit_has_no_operation_id_and_monotonic_seq() {
+    async fn point_event_has_no_operation_id_and_monotonic_seq() {
         let bus = bus();
         let mut rx = bus.subscribe();
 
@@ -620,7 +621,8 @@ mod tests {
         // complete carries the full timing trio.
         assert!(complete.ended_at.is_some());
         assert!(complete.elapsed_ms.is_some());
-        // Phase 1 reserves but never populates the deadline fields.
+        // Neither constructor sets the deadline fields: only
+        // `with_deadlines` does.
         assert!(started.predicted_duration_ms.is_none());
         assert!(complete.max_duration_ms.is_none());
     }
@@ -668,8 +670,8 @@ mod tests {
 
     #[test]
     fn envelope_omits_absent_optional_fields_in_json() {
-        // A legacy point event serializes to the historical shape plus
-        // event_seq — no operation_id / timing / deadline keys.
+        // A point event serializes to event_id, event_seq, event,
+        // timestamp and payload — no operation_id / timing / deadline keys.
         let envelope = EventEnvelope {
             event_id: "e1".to_string(),
             event_seq: 7,
@@ -779,15 +781,13 @@ mod tests {
         assert!(sub.oldest_retained_seq.unwrap() > 2 + 1);
     }
 
-    // Webhook delivery had neither CA trust nor a credential, which pinned
-    // every event plugin to plain HTTP: the moment one served TLS or
-    // 401-challenged, it silently stopped receiving events — a
-    // fire-and-forget path logs the failure at `debug!` and moves on, so
-    // nothing surfaces until someone notices the plugin did no work all
-    // night. These tests pin both halves against a stub that actually
-    // challenges and one that actually serves a CA-signed certificate,
-    // because the config fields alone prove nothing about the client that
-    // reads them.
+    // Webhook delivery carries the registration's credential and rp's CA
+    // trust; without them a plugin that 401-challenges or serves TLS
+    // receives nothing all night, and fire-and-forget delivery surfaces
+    // that only as a log line. These tests pin both halves against a stub
+    // that actually challenges and one that actually serves a CA-signed
+    // certificate, because the config fields alone prove nothing about the
+    // client that reads them.
 
     /// A webhook subscriber, and what it received. `_shutdown` stops the
     /// server when the stub drops.

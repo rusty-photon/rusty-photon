@@ -71,10 +71,11 @@ async fn rp_running_with_mount_and_settle(world: &mut RpWorld, settle_ms: i64) {
 /// Used by slew-and-related scenarios as a self-documenting
 /// precondition ("this scenario requires the mount to be unparked").
 /// The per-scenario `before` hook in `bdd.rs` calls
-/// `OmniSimHandle::reset_telescope`, which already leaves `OmniSim`'s
-/// telescope at AtPark=false — so this step is functionally
-/// redundant on the standard run path. It exists for readability and
-/// as a safety net if the reset endpoint ever changes or is bypassed.
+/// `OmniSimHandle::reset_all_devices`, whose telescope restart already
+/// leaves `OmniSim`'s telescope at AtPark=false — so this step is
+/// functionally redundant on the standard run path. It exists for
+/// readability and as a safety net if the reset endpoint ever changes or
+/// is bypassed.
 #[given("the mount is unparked")]
 async fn mount_is_unparked(world: &mut RpWorld) {
     ensure_mcp_client(world).await;
@@ -231,7 +232,7 @@ async fn mcp_call_abort_slew(world: &mut RpWorld) {
 /// 100 ms `MoveAxes` tick, and re-derives the echoed coordinates from a
 /// freshly read one — see docs/skills/testing.md §5.14, which also
 /// explains why the same mechanism can grow unbounded on a stalled
-/// runner (issue #1252).
+/// runner.
 ///
 /// One constant, two units, because each assertion below takes the
 /// tool's own: `actual_ra` is decimal hours, so `0.001` there is 3.6

@@ -1,6 +1,5 @@
 //! BDD step definitions for target acquisition goals and filter-roster
-//! validation (`target_store_goals.feature`, rp.md § Target Store —
-//! *(planned, P1)*, not yet implemented; scenarios are tagged `@wip`).
+//! validation (`target_store_goals.feature`, rp.md § Target Store).
 
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
@@ -16,8 +15,8 @@ fn names(list: &str) -> Vec<String> {
 
 /// Parses a `| filter | binning | exposure_duration | desired_count |` Gherkin
 /// table into the JSON shape `add_target`/`set_goals` accept for their
-/// `goals[]` parameter. `pub(crate)` so `target_store_planner_steps.rs`
-/// reuses it for the planner-feature always-visible-with-goals seeds.
+/// `goals[]` parameter. `pub` so `target_store_planner_steps.rs` reuses
+/// it for the planner-feature always-visible-with-goals seeds.
 pub fn goals_from_table(step: &Step) -> Vec<Value> {
     let table = step
         .table

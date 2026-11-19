@@ -2,10 +2,9 @@
 //! HTTP client for the `plate-solver` rp-managed service.
 //!
 //! Wraps the wrapper's frozen HTTP contract (`POST /api/v1/solve`)
-//! behind a small, mockable Rust API. Used by `rp`'s `plate_solve`
-//! MCP tool today; future callers (workflow plugins, ad-hoc CLI
-//! tools, the `center_on_target` compound tool) consume the same
-//! `PlateSolveClient` trait.
+//! behind a small, mockable Rust API, the `PlateSolveClient` trait:
+//! `rp`'s `plate_solve` MCP tool and its `center_on_target` compound
+//! tool solve through it.
 //!
 //! Wire types are defined here, not pulled from the `plate-solver`
 //! crate — the inter-service contract is HTTP, not in-process Rust
@@ -192,11 +191,12 @@ impl PlateSolverClient {
     /// `max(http_timeout, timeout + SOLVE_SUPERVISION_MARGIN)`.
     ///
     /// `auth` sends HTTP Basic Auth credentials on every request, for
-    /// an auth-enabled plate-solver service (issue #620).
+    /// an auth-enabled plate-solver service (rp's `plate_solver.auth`,
+    /// rp.md § Plate Solver).
     ///
-    /// `ca_cert_path` is the observatory CA (rp.md §Configuration):
-    /// without it, an `https://` `base_url` signed by that CA fails
-    /// certificate verification (issue #609).
+    /// `ca_cert_path` is the observatory CA, rp's top-level `ca_cert`
+    /// (rp.md § ASCOM Alpaca Devices): without it, an `https://`
+    /// `base_url` signed by that CA fails certificate verification.
     ///
     /// # Errors
     ///
@@ -771,8 +771,8 @@ mod tests {
 
     #[test]
     fn new_with_missing_ca_cert_fails() {
-        // Proves `ca_cert_path` is actually wired to the CA-trust
-        // builder, not silently dropped (issue #609).
+        // Proves `ca_cert_path` is wired to the CA-trust builder, not
+        // silently dropped.
         let result = PlateSolverClient::new(
             "http://localhost:11131".to_string(),
             Duration::from_secs(5),
