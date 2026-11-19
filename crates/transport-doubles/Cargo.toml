@@ -1,0 +1,22 @@
+[package]
+name = "transport-doubles"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Test doubles for the transports of rusty-photon-shared-transport: factory decorators that hold a reply back, so a driver's unit test can put a poll's store behind a command's, and that fail a send"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+rusty-photon-shared-transport = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+# test-util: unlocks paused tokio time (start_paused), so the hold deadline is
+# tested without waiting it out.
+tokio = { workspace = true, features = ["test-util"] }

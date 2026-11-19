@@ -2,18 +2,18 @@
 
 Safe Rust bindings for the **SVBony camera SDK**. Sibling crate to
 [`qhyccd-rs`](https://github.com/ivonnyssen/qhyccd-rs) and
-[`zwo-rs`](../zwo-rs); consumed by rusty-photon's `svbony-camera` ASCOM
-Alpaca driver (a later phase — see `docs/plans/archive/svbony-camera.md`).
+[`zwo-rs`](../zwo-rs); consumed by rusty-photon's
+[`svbony-camera`](https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/svbony-camera.md)
+ASCOM Alpaca driver.
 
-> **Status: under construction (Phase A/B).** Enumeration, SDK-version
-> queries, typed SVBony error mapping, and the camera **handle** (open/close,
-> `CameraInfo` — including the serial number, which arrives at enumeration
-> time — `CameraProperty`/`CameraPropertyEx`, control caps/get/set with typed
-> convenience wrappers for gain/exposure/black-level/cooling, ROI, camera
-> mode, the video-capture exposure model incl. the soft-trigger flow, ST4
-> guiding, pixel size) are all wired to the FFI. SVBony has only one device
-> (camera) and one SDK library, so — unlike `zwo-rs` — there is no per-device
-> Cargo feature union.
+Enumeration, SDK-version queries, typed SVBony error mapping, and the camera
+**handle** (open/close, `CameraInfo` — including the serial number, which
+arrives at enumeration time — `CameraProperty`/`CameraPropertyEx`, control
+caps/get/set with typed convenience wrappers for
+gain/exposure/black-level/cooling, ROI, camera mode, the video-capture
+exposure model incl. the soft-trigger flow, ST4 guiding, pixel size) are all
+wired to the FFI. SVBony has only one device (camera) and one SDK library,
+so — unlike `zwo-rs` — there is no per-device Cargo feature union.
 
 ## Crates
 
@@ -34,8 +34,10 @@ grant for the header text. `libsvbony-sys/lib.rs` is instead
 and named constants are reproduced from reading the header (facts like
 function names, parameter order/types, and struct field order are not
 copyrightable), the same posture `libqhyccd-sys` takes toward QHY's similarly
-unlicensed header. See `docs/plans/archive/svbony-camera.md` ("Verified SDK ground
-truth") for the full provenance trail and the source URL used.
+unlicensed header. The header transcribed is SDK 1.13.4's, as indi-3rdparty's
+`libsvbony` packages it;
+[ADR-018](https://github.com/rusty-photon/rusty-photon/blob/main/docs/decisions/018-svbony-sdk-no-license-payload-policy.md)
+records where the license text was looked for.
 
 ## Enum representation
 
@@ -79,10 +81,11 @@ newer SDK), into `/usr/local` on Linux and Intel Macs:
 bazel run //.github/actions:install -- svbony-sdk
 ```
 
-The library goes into `/usr/local/lib` as `libSVBCameraSDK.so.1`, with a
-`libSVBCameraSDK.so` link to it, and the header into `/usr/local/include`,
-where libsvbony-sys's build script looks, using `sudo` for the copy when you
-cannot write there; it replaces those files and nothing else. The library
+The library goes into `/usr/local/lib`, where libsvbony-sys's build script
+looks — on Linux as `libSVBCameraSDK.so.1` with a `libSVBCameraSDK.so` link
+to it, on an Intel Mac as `libSVBCameraSDK.dylib` — and the header into
+`/usr/local/include`, using `sudo` for the copy when you cannot write there;
+it replaces those files and nothing else. The library
 carries no SONAME, so on Linux a binary that loads it finds it through the
 loader's cache, and where that has no `/usr/local/lib`, as on Fedora, the
 install prints an `LD_LIBRARY_PATH` line to set. With `--prefix DIR`
@@ -90,7 +93,7 @@ elsewhere it also prints the `SVBONY_SDK_LIB_DIR` Cargo needs to link.
 
 There is no build for Apple Silicon. On Windows the install offers nothing:
 CI's copy of SVBony's SDK is on the project's private mirror, which
-developers are not given (ADR-018 §7). Download the SDK from SVBony's site,
+developers are not given. Download the SDK from SVBony's site,
 behind its CAPTCHA, and point `SVBONY_SDK_LIB_DIR` at its `SVBONY\lib\x64`,
 which a binary that loads the DLL also needs on `PATH`.
 
@@ -151,10 +154,11 @@ The simulated `SV605CC-Simulated` camera models the full control set
   `path` exists, from a camera off the bus too — a readout handed back as a
   success though it stalled, so a host can exercise its guard against one.
 
-Frames are filled with sensor noise via a seeded xorshift64 fill (the same
-approach `zwo-rs`'s `fill_noise` settled on after the lessons recorded in its
-doc comment — a per-byte RNG lookup and a `rayon` parallel fill both
-either tripped or risked tripping ConformU's `StartExposure` timeout).
+Frames are filled with sensor noise by a seeded xorshift64, the fill
+`zwo-rs`'s `fill_noise` uses: a per-byte RNG lookup is slow enough in a
+debug build to risk ConformU's `StartExposure` timeout, and a `rayon`
+parallel fill grabs every core, starving sibling ConformU suites in the same
+CI job into it.
 
 ## License
 

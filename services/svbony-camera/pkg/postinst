@@ -16,12 +16,11 @@ fi
 # Camera packages ship a udev rule; make it effective without a reboot.
 udevadm control --reload-rules || true
 udevadm trigger || true
-# SVBony's SDK carries no license grant at all (ADR-018) — unlike QHY's
-# proprietary-but-nameable firmware, it is never packaged even as a named
-# blob. Point the operator at the download-on-target helper. (Named
+# SVBony's SDK carries no license grant at all, so the package never ships
+# it: point the operator at the download-on-target helper. (Named
 # rusty-photon-svbony-sdk-install, not the generic *-firmware-install
-# convention qhy-camera/zwo-focuser's shared postinst stanza computes, so
-# this is spelled out directly rather than derived from
+# convention the shared postinst stanza (packaging/postinst.udev-stanza)
+# computes, so this is spelled out directly rather than derived from
 # $DPKG_MAINTSCRIPT_PACKAGE.)
 echo "rusty-photon-svbony-camera: the SVBony SDK is not bundled (ADR-018)."
 echo "Run '/usr/sbin/rusty-photon-svbony-sdk-install' once as root before first use."

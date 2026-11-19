@@ -283,6 +283,16 @@ fn tool_list_includes(world: &mut RpWorld, tool_name: String) {
     );
 }
 
+#[then(expr = "the tool list should not include {string}")]
+fn tool_list_excludes(world: &mut RpWorld, tool_name: String) {
+    let tools = world.last_tool_list.as_ref().expect("no tool list");
+
+    assert!(
+        !tools.contains(&tool_name),
+        "expected no tool '{tool_name}' in catalog, got: {tools:?}"
+    );
+}
+
 // --- Helpers (pub for reuse in other step files) ---
 
 pub async fn ensure_mcp_client(world: &mut RpWorld) {

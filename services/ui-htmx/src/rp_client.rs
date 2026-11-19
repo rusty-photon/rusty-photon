@@ -68,31 +68,6 @@ pub struct EquipmentStatus {
     pub mount: Option<MountStatus>,
 }
 
-impl EquipmentStatus {
-    /// The live `connected` flag for a device by equipment kind + config id
-    /// (`None` when rp doesn't know the device — e.g. a roster entry added to
-    /// the config after rp last started).
-    #[must_use]
-    pub fn connected(&self, kind_key: &str, id: &str) -> Option<bool> {
-        if kind_key == "mount" {
-            return self.mount.as_ref().map(|m| m.connected);
-        }
-        let list = match kind_key {
-            "cameras" => &self.cameras,
-            "filter_wheels" => &self.filter_wheels,
-            "cover_calibrators" => &self.cover_calibrators,
-            "focusers" => &self.focusers,
-            "safety_monitors" => &self.safety_monitors,
-            "switches" => &self.switches,
-            "rotators" => &self.rotators,
-            "observing_conditions" => &self.observing_conditions,
-            "domes" => &self.domes,
-            _ => return None,
-        };
-        list.iter().find(|d| d.id == id).map(|d| d.connected)
-    }
-}
-
 /// rp's REST surface, behind a trait so page handlers can be unit tested
 /// with canned responses.
 #[async_trait]
@@ -160,24 +135,38 @@ mod tests {
         RestRpApi::new(Arc::new(http), "http://rp:11115/")
     }
 
+    fn flags(list: &[DeviceStatus]) -> Vec<(&str, bool)> {
+        list.iter().map(|d| (d.id.as_str(), d.connected)).collect()
+    }
+
     #[tokio::test]
     async fn equipment_status_parses_all_kinds_and_null_mount() {
         let api = api_returning(
             "/api/equipment",
             json!({
                 "cameras": [ { "id": "main-cam", "connected": true } ],
-                "filter_wheels": [],
+                "filter_wheels": [ { "id": "wheel", "connected": true } ],
                 "cover_calibrators": [ { "id": "flat", "connected": false } ],
-                "focusers": [],
-                "safety_monitors": [],
+                "focusers": [ { "id": "eaf", "connected": true } ],
+                "safety_monitors": [ { "id": "cloud", "connected": true } ],
+                "switches": [ { "id": "power", "connected": false } ],
+                "rotators": [ { "id": "rot", "connected": true } ],
+                "observing_conditions": [ { "id": "wx", "connected": true } ],
+                "domes": [ { "id": "roof", "connected": false } ],
                 "mount": null
             }),
         );
         let status = api.equipment_status().await.unwrap();
-        assert_eq!(status.connected("cameras", "main-cam"), Some(true));
-        assert_eq!(status.connected("cover_calibrators", "flat"), Some(false));
-        assert_eq!(status.connected("cameras", "unknown"), None);
-        assert_eq!(status.connected("mount", "mount"), None);
+        assert_eq!(flags(&status.cameras), [("main-cam", true)]);
+        assert_eq!(flags(&status.filter_wheels), [("wheel", true)]);
+        assert_eq!(flags(&status.cover_calibrators), [("flat", false)]);
+        assert_eq!(flags(&status.focusers), [("eaf", true)]);
+        assert_eq!(flags(&status.safety_monitors), [("cloud", true)]);
+        assert_eq!(flags(&status.switches), [("power", false)]);
+        assert_eq!(flags(&status.rotators), [("rot", true)]);
+        assert_eq!(flags(&status.observing_conditions), [("wx", true)]);
+        assert_eq!(flags(&status.domes), [("roof", false)]);
+        assert!(status.mount.is_none(), "{:?}", status.mount);
     }
 
     #[tokio::test]
@@ -191,7 +180,7 @@ mod tests {
             }),
         );
         let status = api.equipment_status().await.unwrap();
-        assert_eq!(status.connected("mount", "anything"), Some(true));
+        assert_eq!(status.mount.map(|m| m.connected), Some(true));
     }
 
     #[tokio::test]
@@ -208,11 +197,5 @@ mod tests {
         let api = RestRpApi::new(Arc::new(http), "http://rp:11115");
         let err = api.equipment_status().await.unwrap_err();
         assert!(matches!(err, RpApiError::Transport(_)), "{err:?}");
-    }
-
-    #[test]
-    fn unknown_kind_key_is_none() {
-        let status = EquipmentStatus::default();
-        assert_eq!(status.connected("rotators", "x"), None);
     }
 }

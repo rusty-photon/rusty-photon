@@ -10,6 +10,8 @@ exists, and the family ships a single Windows installer. The filemonitor-only
 MSI (cargo-wix, WiX v3) is retired. ADR-013's native-SDK payload policy is
 unchanged and extended to Windows below. Homebrew/macOS remains deferred
 (PR-7 of the service-packaging plan).
+Decision 2's demand-start clause is superseded by
+[ADR-025](025-config-gated-services-gate-themselves-on-windows.md).
 
 ## Context
 

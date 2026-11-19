@@ -102,8 +102,10 @@ jobs:
           runner: ${{ matrix.runner }}
           verify: ${{ matrix.verify }}
 
+      # A result is written when the archive rotated, or when the unverified
+      # leg could not download it (its pin then stays).
       - uses: actions/upload-artifact@v7
-        if: steps.detect.outputs.rotated == 'true'
+        if: steps.detect.outputs.rotated == 'true' || steps.detect.outputs.unavailable == 'true'
         with:
           name: refresh-result-${{ matrix.runner }}
           path: refresh-result/
@@ -113,7 +115,9 @@ jobs:
     # Default success() gate is implicit — open-pr runs only when every
     # detect leg succeeded. A detect-leg infra failure (download, unzip,
     # a binary that will not start) skips this job; the next
-    # install-astap nightly will retrigger refresh. An M101 verification
+    # install-astap nightly will retrigger refresh. The unverified
+    # Windows-ARM64 leg is the exception: an archive it cannot download
+    # is a result that keeps its pin, so the other runners still refresh. An M101 verification
     # failure does NOT fail the leg — it surfaces in the leg's result,
     # and open-pr files the blocker issue for it.
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'

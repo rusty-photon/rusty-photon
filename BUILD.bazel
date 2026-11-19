@@ -38,7 +38,10 @@ exports_files(
 # agree with each other and with the MSRV
 # (tools/rusty-photon-ci/src/toolchain_pins.rs).
 exports_files(
-    ["MODULE.bazel"],
+    [
+        "BUILD.bazel",
+        "MODULE.bazel",
+    ],
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )
 
@@ -68,7 +71,10 @@ exports_files(
 # remote-cache action's tests check it agrees with.
 exports_files(
     [".bazelrc"],
-    visibility = ["//.github/actions:__pkg__"],
+    visibility = [
+        "//.github/actions:__pkg__",
+        "//tools/rusty-photon-ci:__pkg__",
+    ],
 )
 
 # The coverage job's check poster and the module it imports, which the

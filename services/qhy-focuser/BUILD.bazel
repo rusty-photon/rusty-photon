@@ -58,7 +58,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/transport-doubles"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -189,5 +189,22 @@ rust_test(
 filegroup(
     name = "pkg",
     srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

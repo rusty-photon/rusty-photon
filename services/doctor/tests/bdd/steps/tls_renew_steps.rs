@@ -130,12 +130,12 @@ const PROBE_ATTEMPTS: usize = 3;
 const PROBE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The most one probe attempt may take, end to end. The server's own bounds
-/// cover a connection that stalls *on its side*, but nothing covered one
-/// that stalled on the client's: an unanswered connect, a handshake, or a
-/// response read with no end. A CI run once sat silent in this probe until
-/// Bazel killed the suite at 300 s, leaving no clue which stage it was in.
-/// With the deadline that becomes a `TimedOut` naming the stage — retried
-/// like any other transport abort, and reported if every attempt stalls.
+/// cover a connection that stalls *on its side*, not one that stalls on the
+/// client's: an unanswered connect, a handshake, or a response read with no
+/// end. Without this deadline such a stall sits silent until Bazel kills the
+/// suite at its 300 s timeout, with no clue which stage it is in; with it,
+/// the stall is a `TimedOut` naming the stage — retried like any other
+/// transport abort, and reported if every attempt stalls.
 ///
 /// 15 s is past the server's 10 s handshake bound, so a server-side drop
 /// still reaches the client as the abort it is rather than as our timeout.

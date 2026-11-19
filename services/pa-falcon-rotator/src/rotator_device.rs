@@ -7,10 +7,7 @@
 //!
 //! Connection state is the device's [`Session<FalconCodec>`] slot: when
 //! it's `Some`, we hold a live handle to the shared transport; when it's
-//! `None`, we don't. The "requested" bool that previously diverged from
-//! the transport refcount is gone by construction (the race the
-//! `connect_lock` defended against in `serial_manager.rs` is now
-//! impossible because the flag *is* the resource).
+//! `None`, we don't. No flag beside the slot can disagree with it.
 
 use std::sync::Arc;
 
@@ -47,11 +44,7 @@ macro_rules! ensure_connected {
 #[derive(derive_more::Debug)]
 pub struct FalconRotatorDevice {
     config: RotatorConfig,
-    /// `Some` between successful acquire and explicit close. The session
-    /// existing is the truth — no second-source bool to desync. The
-    /// write lock spans every `set_connected` check-and-modify so two
-    /// concurrent `Connected=true` requests can't both observe `None`
-    /// and both call `acquire()` (PR #241 round-5 race fix).
+    /// `Some` between successful acquire and explicit close.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<FalconCodec>>>>,
     #[debug(skip)]
@@ -121,19 +114,9 @@ impl Device for FalconRotatorDevice {
         reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // The write lock spans the whole check-and-modify so two concurrent
-        // `Connected=true` requests can't both observe `None` and both
-        // call `acquire()` (PR #241 round-5 / issue #251 fix shape). With
-        // the session slot replacing the old `requested` bool, the flag
-        // and the resource are the same value — there is no second source
-        // to desync.
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
-                // `?` does SessionError → FalconRotatorError via the
-                // .map_err (the SessionError generic carries
-                // FalconCodecError), then FalconRotatorError → ASCOMError
-                // via the From impl in error.rs.
                 let session = self
                     .manager
                     .transport()
@@ -145,19 +128,15 @@ impl Device for FalconRotatorDevice {
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
-                    // `Session::close` returns Result<_, TransportError>;
-                    // `From<TransportError> for FalconRotatorError`
-                    // handles the conversion, and the existing
-                    // `From<FalconRotatorError> for ASCOMError` does the
-                    // second hop on `?`.
                     session.close().await.map_err(FalconRotatorError::from)?;
                 }
-                // Only reset per-session driver state when this disconnect
-                // truly closed the transport. If the status switch device
-                // still holds a session, the manager stays available and
-                // the shared state (sync_offset, target_position,
-                // limit-detect edge tracker) must stay intact for it.
-                // Mirrors the guard on `FalconStatusSwitchDevice::set_connected`.
+                // Reset the driver-side state (sync_offset, target_position,
+                // limit-detect edge tracker) only when the transport is
+                // unavailable after the close — reconnecting or shut down
+                // (see `FalconManager::clear_session_state`). While it is
+                // available the status switch may still hold a session that
+                // reads the same state. Mirrors the guard on
+                // `FalconStatusSwitchDevice::set_connected`.
                 if !self.manager.is_available() {
                     self.manager.clear_session_state().await;
                 }
@@ -302,8 +281,8 @@ impl Rotator for FalconRotatorDevice {
                 // Set TargetPosition only after the MD command has been
                 // accepted — a failed echo on the wire must NOT leave a
                 // stale target the client could read back via
-                // TargetPosition (PR #241 round-5). Derive TargetPosition
-                // from the wire-quantised value so a near-boundary input
+                // TargetPosition. Derive TargetPosition from the
+                // wire-quantised value so a near-boundary input
                 // (e.g. 359.999 → MD:0.00) doesn't leave a stored target
                 // the device was never told to reach.
                 self.manager.move_mechanical(session, target_mech).await
@@ -572,6 +551,8 @@ mod tests {
 /// Mock-backed integration tests for the rotator device. Exercises the
 /// arithmetic and command routing through [`FalconManager`] against the
 /// deterministic [`MockFalconTransportFactory`](crate::mock::MockFalconTransportFactory).
+/// Nothing here calls `start()`, so the transport runs `LazyAcquire`: the
+/// last disconnect closes it.
 /// Race / refcount / rollback invariants are tested once in
 /// `rusty-photon-shared-transport`'s own test suite — not duplicated here.
 #[cfg(all(test, feature = "mock"))]
@@ -717,7 +698,7 @@ mod mock_tests {
         // 359.999 quantises to 360.00 then normalises to 0.00 on the wire.
         // TargetPosition must follow the wire value so a client comparing
         // it against Position after IsMoving=false doesn't see a stale
-        // 359.999 vs a fresh 0.00 — PR #241 round-7 Copilot comment.
+        // 359.999 vs a fresh 0.00.
         let factory = Arc::new(MockFalconTransportFactory::default());
         let (device, _manager, _factory) = connected_device_with(factory);
         device.set_connected(true).await.unwrap();
@@ -767,9 +748,9 @@ mod mock_tests {
         device.set_connected(true).await.unwrap();
 
         // After reconnect, the sync offset must be reset by
-        // `clear_session_state` (the rotator was the only session holder,
-        // so its disconnect was the 1→0 transition that closed the
-        // transport). Position == MechanicalPosition confirms it.
+        // `clear_session_state`: the rotator was the only session holder,
+        // so its disconnect was the 1→0 that closed this `LazyAcquire`
+        // transport. Position == MechanicalPosition confirms it.
         let pos = device.position().await.unwrap();
         let mech = device.mechanical_position().await.unwrap();
         assert!(
@@ -780,16 +761,14 @@ mod mock_tests {
 
     #[tokio::test]
     async fn rotator_disconnect_preserves_state_while_switch_still_connected() {
-        // Regression test for the bug Copilot flagged on PR #282: if the
-        // status switch is still holding a session, the rotator's
-        // disconnect must NOT clear shared driver state (sync_offset,
-        // target_position, limit-detect edge tracker) — the switch's
-        // `read_status` calls still rely on the edge tracker, and any
-        // `TargetPosition` reads via the manager would see stale `None`.
-        //
-        // The fix gates `clear_session_state` on `!manager.is_available()`
-        // so it only runs when this disconnect was the one that actually
-        // closed the transport.
+        // With the status switch still holding a session, the rotator's
+        // disconnect must NOT clear the shared driver state (sync_offset,
+        // target_position, limit-detect edge tracker): the switch's
+        // `read_status` calls rely on the edge tracker. The offset is 270
+        // before the rotator disconnects and must still be 270 after; a
+        // reset would read 0. `set_connected` clears the state only when
+        // the transport is unavailable after the close, and the switch's
+        // session keeps this `LazyAcquire` transport open.
         use crate::switch_device::FalconStatusSwitchDevice;
         use crate::SwitchConfig;
 

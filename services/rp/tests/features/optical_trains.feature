@@ -40,14 +40,17 @@ Feature: Optical trains configuration
   as a read: shared focusers upstream-first, each run in the train where
   it is terminal, then the train's own focuser, a guiding-train step
   last, plus whether a capture step moves a focuser the guiding train
-  shares. A focuser an imaging train holds is focused through the
-  imaging camera alone, the guide camera taken as parfocal with it: it
-  runs in an imaging train — one where it is terminal, else one that
-  holds it — so a guide step appears only for a focuser the guiding
-  train alone holds. A guiding train whose terminal focuser has another
-  focuser after it in an imaging train is rejected, since no camera
-  could then focus the shared one for both paths. Device-id addressing
-  stays first-class.
+  shares. An imaging train holds at most one focuser, the one its
+  camera is focused with, and a train holding more is rejected naming
+  it; only the guiding train may hold more. A focuser an imaging train
+  holds is focused through the imaging camera alone, the guide camera
+  taken as parfocal with it: it runs in that imaging train, so a guide
+  step appears only for a focuser the guiding train alone holds. An
+  imaging train carries no auto_focus block — the focus-model provider
+  focuses it, from its own focus-model.json — so a block on one is
+  rejected naming the train and that file; the guiding train's block
+  holds its metric sweep's fields. Device-id addressing stays
+  first-class.
 
   Scenario: Configured optical trains are drawn as edited in the configuration file
     Given a temp rp config with the reference optical trains
@@ -156,16 +159,17 @@ Feature: Optical trains configuration
     And rp is started with that config file
     When I save rp's setup page after setting the file's "/equipment/optical_trains" to:
       """
-      [ { "id": "main",  "devices": ["main-focuser", "guide-focuser", "main-cam"] },
-        { "id": "guide", "devices": ["guide-focuser", "main-focuser", "guide-cam"] } ]
+      [ { "id": "main",  "devices": ["main-fw", "falcon", "main-cam"] },
+        { "id": "guide", "devices": ["falcon", "main-fw", "guide-cam"] } ]
       """
     Then the save is refused
     And the page reports the submitted values were rejected naming "equipment.optical_trains"
 
   # main-helical moves the main camera's focus and not the guide
   # camera's, so main-focuser, the guide path's only focuser, could not
-  # be focused through the main camera with the guide camera parfocal.
-  Scenario: A guiding train's focuser with a focuser after it in an imaging train is rejected
+  # be focused through the main camera with the guide camera parfocal;
+  # and the main camera is focused with one focuser.
+  Scenario: An imaging train holding two focusers is rejected, naming the train
     Given a temp rp config with the reference roster and the optical trains:
       """
       [ { "id": "main",  "devices": ["main-focuser", "main-fw", "falcon", "main-cam"] },
@@ -178,7 +182,35 @@ Feature: Optical trains configuration
         { "id": "guide", "purpose": "guiding", "devices": ["main-focuser", "guide-cam"] } ]
       """
     Then the save is refused
-    And the refusal at "equipment.optical_trains.1.devices.0" says "guiding train 'guide' ends in focuser 'main-focuser', which imaging train 'main' follows with 'main-helical'"
+    And the refusal at "equipment.optical_trains.0.devices" says "imaging train 'main' holds focusers 'main-focuser' and 'main-helical'; an imaging train holds at most one"
+
+  Scenario: An imaging train's auto_focus block is rejected, naming the train and focus-model.json
+    Given a temp rp config with the reference optical trains
+    And rp is started with that config file
+    When I save rp's setup page after setting the file's "/equipment/optical_trains/0/auto_focus" to the JSON {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500}
+    Then the save is refused
+    And the refusal at "equipment.optical_trains.0.auto_focus" says "imaging train 'main' carries an auto_focus block"
+    And the refusal at "equipment.optical_trains.0.auto_focus" says "trains.main in focus-model.json"
+
+  Scenario: A config whose imaging train carries an auto_focus block fails to load
+    Given a temp rp config with the reference roster and the optical trains:
+      """
+      [ { "id": "main", "devices": ["main-focuser", "main-fw", "falcon", "main-cam"],
+          "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
+                          "min_area": 4, "max_area": 500 } } ]
+      """
+    When rp attempts to start
+    Then rp should fail to start
+
+  # The same config without the block: what fails the load above is the
+  # block, not the rest of it.
+  Scenario: The same config without the imaging train's auto_focus block loads
+    Given a temp rp config with the reference roster and the optical trains:
+      """
+      [ { "id": "main", "devices": ["main-focuser", "main-fw", "falcon", "main-cam"] } ]
+      """
+    When rp attempts to start
+    Then rp should start successfully
 
   Scenario: A non-positive train focal length is rejected at parse
     Given a temp rp config with the reference optical trains
@@ -197,7 +229,7 @@ Feature: Optical trains configuration
   Scenario Outline: A train auto_focus block with a non-positive sweep field is rejected at parse
     Given a temp rp config with the reference optical trains
     And rp is started with that config file
-    When I save rp's setup page after setting the file's "/equipment/optical_trains/0/auto_focus/<field>" to "<value>"
+    When I save rp's setup page after setting the file's "/equipment/optical_trains/1/auto_focus/<field>" to "<value>"
     Then the save is refused
     And the page says "<named>"
 
@@ -256,14 +288,10 @@ Feature: Optical trains configuration
 
     Examples:
       | pointer                                  | value                                                                                     | named                          |
-      | /equipment/optical_trains/0/auto_focus   | {"step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500}                    | auto_focus.duration            |
-      | /equipment/optical_trains/0/auto_focus   | {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500, "frames_per_step": 3} | auto_focus.frames_per_step |
       | /equipment/optical_trains/1/auto_focus   | {"step_size": 50, "half_width": 500, "duration": "3s"}                                    | auto_focus.duration            |
       | /equipment/optical_trains/1/auto_focus   | {"half_width": 500}                                                                       | step_size                      |
       | /equipment/optical_trains/1/auto_focus   | {"step_size": 50, "half_width": 500, "min_star_fraction": 0.2}                            | auto_focus.min_star_fraction   |
-      | /equipment/optical_trains/0/auto_focus   | {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500, "min_star_fraction": 1.5} | min_star_fraction |
-      | /equipment/optical_trains/0/auto_focus   | {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500, "confirmation_tolerance": -1.0} | confirmation_tolerance |
-      | /equipment/optical_trains/0/auto_focus   | {"duration": "3s", "step_size": 100, "half_width": 1000, "min_area": 4, "max_area": 500, "max_attempts": 0} | max_attempts |
+      | /equipment/optical_trains/1/auto_focus   | {"step_size": 50, "half_width": 500, "confirmation_tolerance": -1.0}                      | confirmation_tolerance         |
       | /equipment/optical_trains/1/auto_focus   | {"step_size": 50, "half_width": 500, "max_attempts": 2}                                   | auto_focus.max_attempts        |
       | /equipment/mount/guiding/focus_watch/window        | 2   | focus_watch.window        |
       | /equipment/mount/guiding/focus_watch/degrade_ratio | 1.0 | focus_watch.degrade_ratio |
@@ -383,7 +411,7 @@ Feature: Optical trains configuration
 
   Scenario: get_train_info names the terminal focuser a temperature event would carry
     Given a running Alpaca simulator
-    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block
+    And rp is running with a camera and a focuser on the simulator in train "main"
     And an MCP client connected to rp
     When the MCP client calls "get_train_info" with train "main"
     Then the tool call should succeed
@@ -590,20 +618,6 @@ Feature: Optical trains configuration
     When the MCP client calls "get_refocus_plan" with train "guide"
     Then the tool result at "/guide_coupled" should be the JSON true
     And the tool result at "/steps" should be the JSON [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture"}]
-
-  # main-focuser is upstream in both trains and terminal in neither:
-  # the imaging camera still measures it, ahead of the guide step.
-  Scenario: get_refocus_plan runs a shared focuser terminal in no train through the imaging camera, before the guide step
-    Given a temp rp config with the reference roster and the optical trains:
-      """
-      [ { "id": "main",  "devices": ["main-focuser", "main-helical", "main-cam"] },
-        { "id": "guide", "purpose": "guiding", "devices": ["main-focuser", "guide-focuser", "guide-cam"] } ]
-      """
-    And rp is started with that config file
-    And an MCP client connected to rp
-    When the MCP client calls "get_refocus_plan" with train "guide"
-    Then the tool result at "/guide_coupled" should be the JSON true
-    And the tool result at "/steps" should be the JSON [{"focuser_id": "main-focuser", "run_train_id": "main", "camera_id": "main-cam", "metric": "capture"}, {"focuser_id": "guide-focuser", "run_train_id": "guide", "camera_id": null, "metric": "guide"}]
 
   Scenario: get_refocus_plan on an unknown train is an error naming it
     Given a temp rp config with the reference optical trains

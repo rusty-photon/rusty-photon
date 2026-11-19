@@ -29,7 +29,7 @@ pub struct Context {
     /// Deliberately treat a staging `acme.json` as convergeable — set
     /// only by `tls flip-to-acme --allow-staging`'s own contexts
     /// (docs/services/doctor.md §The flip orchestrator); every other
-    /// entry point keeps D4's withholding.
+    /// entry point withholds the convergence fixes on a staging install.
     pub converge_staging: bool,
 }
 
@@ -102,7 +102,7 @@ impl Context {
     /// operator-written file), so the flip leaves nothing behind, and
     /// when the operator later enables one on the flipped install the
     /// ACME-aware provisioning pass wires it to the wildcard pair
-    /// directly (#616).
+    /// directly.
     #[must_use]
     pub fn installed_without_config(&self) -> Vec<String> {
         self.scans
@@ -222,9 +222,10 @@ fn inventory(ctx: &Context) -> Vec<Check> {
                 // A config-gated service (docs/packaging.md) hard-requires a
                 // hand-written config — "start it once" would do nothing.
                 // `condition_path` is the Linux/systemd fact naming the exact
-                // gate file; Windows (start type Manual) and macOS carry no
-                // equivalent fact, so `scan.entry.config_gated` is the
-                // portable signal every platform can fall back to.
+                // gate file; Windows (the service stops itself without its
+                // config) and macOS carry no equivalent fact, so
+                // `scan.entry.config_gated` is the portable signal every
+                // platform can fall back to.
                 let systemd_gate = ctx
                     .facts
                     .unit(&scan.entry.unit_name())
@@ -299,9 +300,11 @@ fn inventory(ctx: &Context) -> Vec<Check> {
             (false, false) => {}
         }
     }
+    // A service's state file is its own, not a misnamed config: the
+    // remedy below would destroy the state it holds.
     let known: Vec<String> = catalog::catalog()
         .iter()
-        .map(super::catalog::CatalogEntry::config_file)
+        .flat_map(|entry| std::iter::once(entry.config_file()).chain(entry.state_file.clone()))
         .collect();
     for name in unknown_config_files(&ctx.config_dir, &known) {
         checks.push(Check::warn(
@@ -721,14 +724,13 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
     checks
 }
 
-/// Config keys retired by D3s, #569 and the setup pages: sentinel's
-/// `services` map (sentinel discovers its services), ui-htmx's whole
-/// `drivers` override map (rp's roster is the only device source), and
-/// ui-htmx's `sentinel` block (the BFF restarts nothing). The first two
-/// fail the service's own strict load, so the key keeps the service from
-/// starting. The `sentinel` block, which doctor itself once wired, ui-htmx
-/// ignores with a warning, so its check warns: dead weight, deleted by the
-/// same fix.
+/// Retired config keys: sentinel's `services` map (sentinel discovers its
+/// services), ui-htmx's whole `drivers` override map (rp's roster is the
+/// only device source), and ui-htmx's `sentinel` block (the BFF restarts
+/// nothing). The first two fail the service's own strict load, so the key
+/// keeps the service from starting. Installs an earlier doctor fixed carry
+/// the `sentinel` block, which ui-htmx ignores with a warning, so its check
+/// warns: dead weight, deleted by the same fix.
 fn retired_keys(sentinel: Option<&SentinelView>, ui: Option<&UiHtmxView>) -> Vec<Check> {
     let mut checks = Vec::new();
     if sentinel.is_some_and(|s| s.services.is_some()) {
@@ -797,11 +799,11 @@ fn retired_keys(sentinel: Option<&SentinelView>, ui: Option<&UiHtmxView>) -> Vec
     checks
 }
 
-/// star-adventurer-gti's `mount.flip_policy.flip_range_hours`, retired by
-/// #1301 (pier side is derived from the CW exclusion zone alone). The
-/// service's own self-created default config carried it, so every install
-/// upgraded from before the removal has it — and the strict load refuses
-/// to start over it. The remedy is deletion; nothing replaces it.
+/// star-adventurer-gti's retired `mount.flip_policy.flip_range_hours`:
+/// pier side is derived from the CW exclusion zone alone. The service's
+/// own self-created default config wrote it, so every install upgraded
+/// from before the removal has it — and the strict load refuses to start
+/// over it. The remedy is deletion; nothing replaces it.
 fn gti_retired_keys(ctx: &Context) -> Vec<Check> {
     const POINTER: &str = "/mount/flip_policy/flip_range_hours";
     let carries_it = ctx
@@ -948,7 +950,8 @@ fn url_conventions(ctx: &Context) -> Vec<Check> {
         )
     };
     // rp's alpaca_url lives inside the device-usage block doctor checks but
-    // does not own (ADR-016 decision 4): suggestion only, never a fix.
+    // does not own (docs/services/doctor.md §URL conventions): suggestion
+    // only, never a fix.
     if let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) {
         for url in rp.alpaca_urls() {
             if carries_suffix(&url) {
@@ -1142,7 +1145,7 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
                 "server.auth without server.tls sends HTTP Basic credentials in \
                  cleartext on the wire"
                     .to_string(),
-                Some("add a server.tls block (ADR-003: Basic auth over TLS)".to_string()),
+                Some("add a server.tls block: Basic auth needs TLS".to_string()),
             ));
         }
     }
@@ -1152,10 +1155,10 @@ fn tls_and_auth(ctx: &Context) -> Vec<Check> {
 
 /// The D6a absent checks: an installed service without a `server.tls` /
 /// `server.auth` block serves plain, unauthenticated HTTP. Legal (absent
-/// means off — ADR-016 decision 10(d)) and fixable: each check plans the
-/// whole-block write the provisioning pass applies. The `auth` plan needs
-/// the observatory credential, so it appears only once `pki/credential`
-/// exists (under `--fix` the material pass runs first).
+/// means off) and fixable: each check plans the whole-block write the
+/// provisioning pass applies. The `auth` plan needs the observatory
+/// credential, so it appears only once `pki/credential` exists (under
+/// `--fix` the material pass runs first).
 fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
     if matches!(scan.server, ServerBlock::FileAbsent) {
         // No config file at all — never started, or one that existed was
@@ -1186,8 +1189,8 @@ fn tls_auth_absent(ctx: &Context, scan: &ServiceScan) -> Vec<Check> {
     if tls_absent {
         // On an ACME install the fix points at the shared wildcard pair —
         // never at freshly issued self-signed material, which the flipped
-        // fleet's clients could not verify (issue #616). While the pair is
-        // missing, conjuring it is renewal's job, so no fix is planned.
+        // fleet's clients cannot verify. While the pair is missing,
+        // conjuring it is renewal's job, so no fix is planned.
         let acme = crate::provision::acme_active(&ctx.config_dir);
         let tls_value = if acme {
             crate::provision::acme_tls_block_value(&ctx.config_dir)
@@ -1477,9 +1480,11 @@ fn expiry_window_days(ctx: &Context, cert_file: &Path) -> i64 {
 //
 // A client's config points a URL (or, for sentinel's monitors, a
 // scheme/host/port triple) at another catalog service. These checks join
-// that URL against the *named* service's own `server.tls`/`server.auth` —
-// the gap #607 named: provisioning upgrades a service's server side, but
-// nothing told doctor to look at who points at it.
+// that URL against the *named* service's own `server.tls`/`server.auth`:
+// without the join, a provisioning pass that turns a target TLS-on and
+// auth-on leaves every client dialling it over `http://` without a
+// credential, and no service-local check says so
+// (docs/services/doctor.md §Client-target joins).
 
 /// Doctor diagnoses one config directory, so a client→target join only
 /// resolves when the URL's host names *this* machine — a different host
@@ -1508,7 +1513,7 @@ fn is_loopback_host(host: &str) -> bool {
 /// the documented "plain HTTP, no auth, catalog default port" state, so
 /// it still resolves.
 ///
-/// On an ACME install one more host shape joins (#805): exactly
+/// On an ACME install one more host shape joins: exactly
 /// `<svc>.<domain>`, `domain` read from `acme.json` and `<svc>` the
 /// port-matched service's own catalog name — the flip rewrites client
 /// URLs onto exactly those names, and the join family must keep judging
@@ -1581,10 +1586,9 @@ pub(crate) fn parse_target_url(url: &str) -> Option<(String, String, u16)> {
 /// the `--fix` value for a client target whose scheme lives inside a full
 /// URL string. A parse-and-reserialize round trip (`Url::set_scheme` +
 /// `to_string`) would normalize an origin-only URL by appending a trailing
-/// `/` (`http://host:port` becomes `http://host:port/`), which several
-/// client call sites (e.g. ui-htmx's `sse_proxy`) concatenate a
-/// `/`-prefixed path onto without trimming, turning a healthy URL into a
-/// double-slashed one that 404s.
+/// `/` (`http://host:port` becomes `http://host:port/`), and a client that
+/// concatenates a `/`-prefixed path onto its base URL without trimming
+/// would turn the healthy URL into a double-slashed one that 404s.
 fn rewrite_scheme(url: &str, new_scheme: &str) -> Option<String> {
     reqwest::Url::parse(url).ok()?;
     // Split on the literal separator rather than stripping `Url::scheme()`
@@ -1684,13 +1688,13 @@ struct AddressDivergence {
 
 /// Judge `target`'s address as the client declares it — the scheme leg
 /// (does it match the target's `server.tls` state) and, on an ACME
-/// install, the host leg (#805 gap 2: the wildcard's only SAN is
-/// `*.<domain>`, so a loopback host fails hostname verification no
-/// matter the scheme). The host fix moves the client onto the target's
-/// public name `<svc>.<domain>`; an `acme.json` declaring the staging
-/// endpoint withholds that fix while still reporting the break — doctor
-/// never converges clients onto a publicly-untrusted certificate (D4 of
-/// docs/plans/archive/acme-flip.md).
+/// install, the host leg (the wildcard's only SAN is `*.<domain>`, so a
+/// loopback host fails hostname verification no matter the scheme). The
+/// host fix moves the client onto the target's public name
+/// `<svc>.<domain>`; an `acme.json` declaring the staging endpoint
+/// withholds that fix while still reporting the break — doctor never
+/// converges clients onto a publicly-untrusted certificate
+/// (docs/services/doctor.md §Client-target joins).
 ///
 /// `scheme`/`host` arrive pre-parsed from [`judge_client_target`], which
 /// already dropped any entry whose URL does not parse.
@@ -1898,38 +1902,27 @@ fn plan_client_auth_value(ctx: &Context) -> Option<serde_json::Value> {
 /// matching `auth.mismatch`'s severity — a wrong or missing credential
 /// 401s every request, but (as with that check) a *present* mismatched
 /// credential may be intentional, so only the absent case is fix-eligible.
-/// `auth_pointer` is `None` only for targets with no credential field to
-/// wire a fix into at all; every current caller (ui-htmx's targets, rp's
-/// plate-solver/guider clients since issue #620, sentinel's per-monitor
-/// `auth`) passes `Some`.
+/// `auth_pointer` is the client's credential field, where the fix writes.
 fn credential_check(
     ctx: &Context,
     client_service: &str,
     client_field: &str,
     target: &ServiceScan,
-    auth_pointer: Option<&str>,
+    auth_pointer: &str,
     current: Option<&ClientAuthView>,
 ) -> Option<Check> {
     let target_auth = target.server().and_then(|s| s.auth.as_ref())?;
     let credential = current.and_then(|c| Some((c.username.as_deref()?, c.password.as_deref()?)));
     match credential {
         None => {
-            let fixes = match (auth_pointer, plan_client_auth_value(ctx)) {
-                (Some(pointer), Some(value)) => vec![crate::report::FixOp::SetObject {
+            let fixes = plan_client_auth_value(ctx)
+                .map(|value| crate::report::FixOp::SetObject {
                     service: client_service.to_string(),
-                    pointer: pointer.to_string(),
+                    pointer: auth_pointer.to_string(),
                     value,
-                }],
-                _ => Vec::new(),
-            };
-            let suggestion = if auth_pointer.is_some() {
-                "run `doctor --fix` to wire the observatory credential".to_string()
-            } else {
-                format!(
-                    "{client_service} has no credential field for this target yet — \
-                     wiring one needs a config-schema change"
-                )
-            };
+                })
+                .into_iter()
+                .collect();
             Some(
                 Check::warn(
                     "joins.client-auth",
@@ -1939,7 +1932,7 @@ fn credential_check(
                          credential — every request will get 401",
                         target.entry.name
                     ),
-                    Some(suggestion),
+                    Some("run `doctor --fix` to wire the observatory credential".to_string()),
                 )
                 .with_fixes(fixes),
             )
@@ -1976,7 +1969,7 @@ fn client_target_joins(ctx: &Context) -> Vec<Check> {
 }
 
 /// The client-target registry: every URL/CA/auth pointer site the join
-/// family judges, in one table — ui-htmx's `rp`/`sentinel` targets, rp's
+/// family judges, in one table — ui-htmx's `rp` target, rp's
 /// plate-solver/guider clients plus the generic equipment roster and
 /// dialed plugin registrations, and sentinel's watchdog `rp_url` and
 /// Alpaca monitors (docs/services/doctor.md §Client-target joins).
@@ -2053,7 +2046,7 @@ fn judge_client_target(ctx: &Context, t: &ClientTarget) -> Vec<Check> {
             t.client,
             &auth.field,
             target,
-            Some(&auth.pointer),
+            &auth.pointer,
             auth.current.as_ref(),
         ));
     }
@@ -2102,12 +2095,11 @@ fn ui_htmx_targets(ctx: &Context) -> Vec<ClientTarget> {
 /// the URL of every plugin registration rp dials (an event plugin's
 /// `webhook_url`, a tool provider's `mcp_server_url`):
 /// `docs/services/doctor.md §Client-target joins`. CA trust is `rp`'s
-/// single top-level `ca_cert` field (issue #609 / PR #612), shared by
-/// every target, so the transport check is fully fix-eligible once that
-/// field or its provisioning material exists. Every target also carries
-/// its own `auth` field (issue #620: `plate_solver.auth`,
-/// `equipment.mount.guiding.auth`; issue #663: every
-/// `equipment.<kind>[].auth` / `equipment.mount.auth`; issue #800:
+/// single top-level `ca_cert` field, shared by every target, so the
+/// transport check is fully fix-eligible once that field or its
+/// provisioning material exists. Every target also carries its own
+/// `auth` field (`plate_solver.auth`, `equipment.mount.guiding.auth`,
+/// every `equipment.<kind>[].auth` / `equipment.mount.auth`, and
 /// `plugins[].auth`), so `joins.client-auth` is fully fix-eligible for
 /// all of them, the same "absent gets it, present is operator intent"
 /// contract as every other D6a client fix.
@@ -2167,8 +2159,8 @@ fn rp_targets(ctx: &Context) -> Vec<ClientTarget> {
 /// field's display name. Pointers are never derived from `field`: it is
 /// a dotted string for display only, and `.` → `/` naive substitution
 /// would mis-segment a pointer whenever a raw `/` or `~` appears inside
-/// a path component — the generic roster's [`RpClientTarget`] pointers
-/// arrive pre-escaped for the same reason.
+/// a path component — the generic roster's [`scan::RpClientTarget`]
+/// pointers arrive pre-escaped for the same reason.
 fn rp_target(
     field: &str,
     url: String,
@@ -2254,13 +2246,14 @@ fn sentinel_targets(ctx: &Context) -> Vec<ClientTarget> {
 // ---- The fake-mount hazard (planetarium-bridge.md § Doctor integration) ----
 
 /// `joins.fake-mount`, the static leg: rp's `equipment.mount.alpaca_url`
-/// resolves — by the same loopback-host + port join every client-target
-/// check uses — to the installed planetarium-bridge. The bridge is a
-/// virtual target-entry device: wiring it in as rp's real mount would
-/// defeat every motion safeguard rp believes it has (slews that "just
-/// succeed", a mount that is never parked, never at limits), so this is
-/// a hard failure, not a warning. The non-loopback case is the
-/// aggregation probe's `UniqueID` leg (`crate::aggregate`).
+/// resolves — by the same host + port join every client-target check
+/// uses ([`resolve_join_target`]) — to the installed planetarium-bridge.
+/// The bridge is a virtual target-entry device: wiring it in as rp's real
+/// mount would defeat every motion safeguard rp believes it has (slews
+/// that "just succeed", a mount that is never parked, never at limits),
+/// so this is a hard failure, not a warning. A host name that join does
+/// not resolve is the aggregation probe's `UniqueID` leg
+/// (`crate::aggregate`).
 fn fake_mount_join(ctx: &Context) -> Vec<Check> {
     let Some(rp) = ctx.scan("rp").and_then(|s| scan::view::<RpView>(s)?.ok()) else {
         return Vec::new();
@@ -2294,17 +2287,17 @@ fn fake_mount_join(ctx: &Context) -> Vec<Check> {
     )]
 }
 
-// ---- ACME convergence (docs/plans/archive/acme-flip.md — #805 gaps 1, 3, 4, 5, 6) ----
+// ---- ACME convergence (docs/services/doctor.md §ACME convergence) ----
 //
-// Once acme.json exists the install's declared state is ACME (D1): every
+// Once acme.json exists the install's declared state is ACME: every
 // service serves the shared wildcard pair, clients trust the platform
 // roots, sentinel probes and rp advertises public `<svc>.<domain>` names,
 // and those names resolve on the box. These checks grade what still
 // diverges from that state and plan fixes only where the divergent value
-// is provably doctor's own material (D2) — everything else is reported
-// with the derivable value and left to the operator.
+// is provably doctor's own material — everything else is reported with
+// the derivable value and left to the operator.
 
-/// The D4 downgrade, appended to a divergence detail when `acme.json`
+/// The staging downgrade, appended to a divergence detail when `acme.json`
 /// declares the staging endpoint: the break is still reported, but the
 /// check grades `warn` and plans no fix — doctor never converges a fleet
 /// onto a publicly-untrusted certificate.
@@ -2316,7 +2309,7 @@ const STAGING_CLAUSE: &str = "; acme.json declares the staging endpoint, so `doc
 const STAGING_SUGGESTION: &str =
     "reissue against the production endpoint, then re-run `doctor --fix`";
 
-/// Whether D4's staging withholding applies.
+/// Whether the staging withholding applies.
 ///
 /// True when the install declares the staging endpoint and nothing
 /// overrode it. The convergence and join checks consult this instead of
@@ -2382,7 +2375,7 @@ fn stale_selfsigned_pointers(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
             continue; // on the wildcard pair — the flip's end state
         }
         let name = scan.entry.name;
-        // Provenance (D2): doctor's own material is the exact path
+        // Provenance: doctor's own material is the exact path
         // strings it writes — `tls_block_value`'s absolute pair.
         let own = crate::provision::tls_block_value(&ctx.config_dir, name);
         let doctor_pair = own.get("cert").and_then(serde_json::Value::as_str)
@@ -2710,7 +2703,7 @@ fn rp_advertised_url(ctx: &Context, acme: &AcmeConfig) -> Vec<Check> {
     .with_fixes(fixes)]
 }
 
-/// `dns.unresolvable` (D5): every participating service's derived
+/// `dns.unresolvable`: every participating service's derived
 /// `<svc>.<domain>` name must resolve on this box — every client and
 /// probe dials those names once the fleet converges. Report-only:
 /// `/etc/hosts` is outside doctor's write surface, so the suggestion
@@ -2878,19 +2871,18 @@ fn resolve_all_on_host(names: Vec<String>) -> Vec<String> {
 
 // ---- rp platform defaults ----
 
-/// `rp.orchestrator-registration-removed`: the surface rp retired when
-/// orchestrators started their own runs (mcp-sessionless D6 / D11) — a
-/// `plugins[]` entry with `type: "orchestrator"`, or a
-/// `session.session_state_file` key. rp refuses to start over either,
-/// naming the same migration; doctor says so before the next night does
-/// and, like `config.retired-keys`, offers the deletion as the fix. The
-/// plugin ops are filed highest index first, since each removes an
-/// array element by position.
+/// `rp.orchestrator-registration-removed`: the surface rp retired, since
+/// orchestrators start their own runs — a `plugins[]` entry with
+/// `type: "orchestrator"`, or a `session.session_state_file` key. rp
+/// refuses to start over either, naming the same migration; doctor says
+/// so before the next night does and, like `config.retired-keys`, offers
+/// the deletion as the fix. The plugin ops are filed highest index first,
+/// since each removes an array element by position.
 fn rp_retired_orchestrator_surface(ctx: &Context) -> Vec<Check> {
     // Verbatim rp's `config::ORCHESTRATOR_REGISTRATION_REMOVED`, so the
     // remediation reads the same from rp's own refusal and from doctor.
     const MIGRATION: &str = "orchestrator registrations were removed; start runs at \
-                             session-runner — see docs/plans/archive/mcp-sessionless.md";
+                             session-runner — see docs/services/session-runner.md";
     let mut checks = Vec::new();
     let Some(rp_scan) = ctx.scan("rp") else {
         return checks;
@@ -3499,9 +3491,9 @@ mod tests {
     #[test]
     fn test_rewrite_scheme_preserves_the_url_verbatim_without_adding_a_trailing_slash() {
         // A parse-and-reserialize round trip would normalize
-        // "http://host:port" into "http://host:port/" — several client
-        // call sites concatenate a "/"-prefixed path onto the base URL
-        // without trimming, so a stray trailing slash would 404 them.
+        // "http://host:port" into "http://host:port/" — a client that
+        // concatenates a "/"-prefixed path onto the base URL without
+        // trimming would 404 on the stray trailing slash.
         assert_eq!(
             rewrite_scheme("http://127.0.0.1:11115", "https").unwrap(),
             "https://127.0.0.1:11115"
@@ -3546,7 +3538,7 @@ mod tests {
     }
 
     /// A parsed `acme.json` in the config root — the flip's declared
-    /// target state (D1 of docs/plans/archive/acme-flip.md).
+    /// target state.
     fn stage_acme(dir: &Path, domain: &str, staging: bool) {
         write_json(
             dir,
@@ -4375,16 +4367,16 @@ mod tests {
 
     #[test]
     fn test_rp_guider_auth_absent_is_flagged_and_fixed() {
-        // issue #620: `equipment.mount.guiding.auth` is now a real
-        // config field, so an absent credential is fully fix-eligible —
-        // same contract as ui-htmx's client targets.
+        // `equipment.mount.guiding.auth` is the guider target's own
+        // credential field, so an absent credential is fully
+        // fix-eligible — same contract as ui-htmx's client targets.
         let dir = tempfile::tempdir().unwrap();
         stage_pki(dir.path(), "s3cret-pw");
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
-            "phd2-guider.json",
-            serde_json::json!({ "server": { "port": 11130,
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4392,7 +4384,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 },
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11130" } } } }),
+                                           "guiding": { "url": "http://localhost:11114" } } } }),
         );
         let ctx = config_only_ctx(dir.path());
         let checks = client_target_joins(&ctx);
@@ -4428,8 +4420,8 @@ mod tests {
         let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
         write_json(
             dir.path(),
-            "phd2-guider.json",
-            serde_json::json!({ "server": { "port": 11130,
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4437,7 +4429,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 },
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11130",
+                                           "guiding": { "url": "http://localhost:11114",
                                                         "auth": { "username": "observatory", "password": "wrong-pw" } } } } }),
         );
         let ctx = config_only_ctx(dir.path());
@@ -4459,8 +4451,8 @@ mod tests {
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
-            "phd2-guider.json",
-            serde_json::json!({ "server": { "port": 11130,
+            "sentinel.json",
+            serde_json::json!({ "server": { "port": 11114,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4468,7 +4460,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11130",
+                                           "guiding": { "url": "http://localhost:11114",
                                                         "auth": { "username": "observatory", "password": "s3cret-pw" } } } } }),
         );
         let ctx = config_only_ctx(dir.path());
@@ -4568,8 +4560,8 @@ mod tests {
 
     #[test]
     fn test_rp_equipment_mount_scheme_and_auth_are_flagged_and_fixed() {
-        // issue #663: the mount's own alpaca_url (equipment.mount.alpaca_url,
-        // a singular object — distinct from equipment.mount.guiding.url)
+        // The mount's own alpaca_url (equipment.mount.alpaca_url, a
+        // singular object — distinct from equipment.mount.guiding.url)
         // gets the same scheme/auth join treatment as plate_solver/guiding.
         // The target's cert is named as the ACME wildcard pair so only the
         // scheme mismatch is in play here (no CA-trust gap), mirroring
@@ -4629,8 +4621,8 @@ mod tests {
 
     #[test]
     fn test_rp_equipment_camera_array_entries_are_flagged_and_fixed() {
-        // issue #663: every equipment.<kind>[].alpaca_url entry (cameras
-        // here) is joined the same way, indexed by its position. The
+        // Every equipment.<kind>[].alpaca_url entry (cameras here) is
+        // joined the same way, indexed by its position. The
         // target's cert is named as the ACME wildcard pair so only the
         // scheme mismatch is in play here (no CA-trust gap).
         let dir = tempfile::tempdir().unwrap();
@@ -4713,9 +4705,9 @@ mod tests {
 
     #[test]
     fn test_rp_equipment_kind_with_a_slash_gets_an_escaped_fix_pointer() {
-        // Regression for the JSON-pointer-escaping gap found in adversarial
-        // review of issue #663: `equipment` is opaque, so a stray '/' in a
-        // kind key must not mis-segment the fix pointer (RFC 6901).
+        // `equipment` is opaque, so a kind key may hold a '/': the fix
+        // pointer escapes it as `~1` (RFC 6901), where an unescaped one
+        // would mis-segment into `/equipment/weird/kind/0/alpaca_url`.
         let dir = tempfile::tempdir().unwrap();
         write_json(
             dir.path(),
@@ -4743,14 +4735,14 @@ mod tests {
         }
     }
 
-    // ---- rp's plugin registrations (issue #800) ----
+    // ---- rp's plugin registrations ----
     //
-    // The callback-URL join: until rp's webhook client gained CA trust
-    // and a credential, TLS- or auth-enabling an event plugin silently
-    // broke every delivery, and no check said so. These pin that the
-    // registration joins its target the way every other rp client
-    // target does — and that the retired orchestrator registration
-    // (mcp-sessionless D6) is not joined but reported for removal.
+    // The callback-URL join: without it, TLS- or auth-enabling an event
+    // plugin leaves rp's webhook client dialling it over `http://`
+    // without a credential, every delivery fails, and no check says so.
+    // These pin that the registration joins its target the way every
+    // other rp client target does — and that the retired orchestrator
+    // registration is not joined but reported for removal.
 
     // Only the registrations rp dials are walked: a registration of a
     // type rp does not dial keeps whatever URL-shaped key its author
@@ -4779,10 +4771,10 @@ mod tests {
         assert!(client_target_joins(&ctx).is_empty());
     }
 
-    // A tool provider's `mcp_server_url` is the registration rp dials
-    // (mcp-sessionless slice 8: rp discovers and proxies its tools
-    // through the standard client), so it joins like every other client
-    // target — the scheme and the credential are both fix-eligible.
+    // A tool provider's `mcp_server_url` is a registration rp dials (rp
+    // discovers and proxies its tools through the standard client), so
+    // it joins like every other client target — the scheme and the
+    // credential are both fix-eligible.
     #[test]
     fn test_rp_tool_provider_mcp_server_url_is_joined() {
         let dir = tempfile::tempdir().unwrap();
@@ -4844,10 +4836,10 @@ mod tests {
         }
     }
 
-    // An orchestrator registration is no longer dialed (rp rejects it at
-    // load, mcp-sessionless D11), so its `invoke_url` is not joined —
-    // doctor would otherwise offer to wire a credential into an entry rp
-    // refuses to read; the retired-surface check reports it instead.
+    // rp dials no orchestrator registration (it refuses one at load), so
+    // its `invoke_url` is not joined — doctor would otherwise offer to
+    // wire a credential into an entry rp refuses to read; the
+    // retired-surface check reports it instead.
     #[test]
     fn test_a_retired_orchestrator_registration_is_not_joined_but_flagged_for_removal() {
         let dir = tempfile::tempdir().unwrap();
@@ -4895,9 +4887,7 @@ mod tests {
             assert_eq!(check.service.as_deref(), Some("rp"));
             assert!(
                 check.detail.contains(&format!("plugins.{idx} ({name})"))
-                    && check
-                        .detail
-                        .contains("docs/plans/archive/mcp-sessionless.md"),
+                    && check.detail.contains("docs/services/session-runner.md"),
                 "{}",
                 check.detail
             );
@@ -4911,8 +4901,8 @@ mod tests {
         }
     }
 
-    // The other half of the retired surface: the state file the registry
-    // persisted to. Its removal is a plain object-key op.
+    // The other half of the retired surface, `session.session_state_file`:
+    // its removal is a plain object-key op.
     #[test]
     fn test_a_retired_session_state_file_key_is_flagged_for_removal() {
         let dir = tempfile::tempdir().unwrap();
@@ -4931,9 +4921,7 @@ mod tests {
         assert_eq!(check.status, Status::Fail);
         assert!(
             check.detail.contains("session.session_state_file")
-                && check
-                    .detail
-                    .contains("docs/plans/archive/mcp-sessionless.md"),
+                && check.detail.contains("docs/services/session-runner.md"),
             "{}",
             check.detail
         );
@@ -5005,8 +4993,9 @@ mod tests {
         );
     }
 
-    // star-adventurer-gti retired flip_range_hours; configs the service
-    // self-created before that still carry it and refuse to load.
+    // star-adventurer-gti's self-created config on an upgraded install
+    // carries the retired flip_range_hours, which the service refuses to
+    // load.
     #[test]
     fn test_gti_flip_range_hours_is_flagged_for_removal() {
         let dir = tempfile::tempdir().unwrap();
@@ -5039,8 +5028,8 @@ mod tests {
         }
     }
 
-    // zwo-camera's self-created config wrote max_adu_reporting; a value the
-    // service has since renamed refuses to load, and the fix renames it.
+    // zwo-camera's self-created config writes max_adu_reporting; a value
+    // under a former name refuses to load, and the check names it.
     fn zwo_camera_check_for(former: &str) -> Check {
         let dir = tempfile::tempdir().unwrap();
         write_json(
@@ -5235,8 +5224,7 @@ mod tests {
     // rp's deliverability rule: rp refuses to start on an event
     // registration carrying no `subscribes_to`, so an entry doctor meets
     // on a running rig is one rp dials. A second copy of that rule here
-    // could only drift from it — and did, before rp made the state
-    // impossible.
+    // could only drift from it.
     #[test]
     fn test_rp_event_plugin_is_joined_without_re_checking_deliverability() {
         let dir = tempfile::tempdir().unwrap();
@@ -5593,9 +5581,10 @@ mod tests {
 
     #[test]
     fn test_fake_mount_join_skips_a_non_loopback_mount_url() {
-        // The rig addresses services by host name — the static join is
-        // deliberately loopback-only (the UniqueID probe leg owns this
-        // case, crate::aggregate).
+        // A rig addresses services by host name, which the static join
+        // does not resolve (it takes loopback hosts and, on an ACME
+        // install, exact `<svc>.<domain>` names) — the UniqueID probe leg
+        // owns this case (crate::aggregate).
         let dir = tempfile::tempdir().unwrap();
         write_json(
             dir.path(),
@@ -5613,7 +5602,7 @@ mod tests {
         assert!(fake_mount_join(&ctx).is_empty());
     }
 
-    // ---- ACME convergence (#805 slice 3) ----
+    // ---- ACME convergence ----
 
     /// The wildcard pair on disk — the stale-material checks' gate.
     fn stage_wildcard_pair(dir: &Path) {

@@ -98,12 +98,8 @@ rust_test(
     # bdd-infra derives {PKG_UPPER_SNAKE}_BINARY from CARGO_PKG_NAME, so it must
     # be the service name (rules_rust would otherwise use the crate name "bdd").
     rustc_env = {"CARGO_PKG_NAME": "calibrator-flats"},
-    # `resources:omnisim:1`: see the longer note in services/rp/BUILD.bazel.
-    # Each OmniSim-spawning BDD action takes one token from the `omnisim`
-    # pool (.bazelrc, sized generously on every OS): the harness gives every
-    # test process a private OmniSim — --multi-instance + dynamic port +
-    # per-instance OMNISIM_SETTINGS_DIR — so the suites run in parallel; the
-    # pool is only a throttle to grab if that ever turns flaky.
+    # `resources:omnisim:1`: each OmniSim-spawning BDD action takes one token
+    # from the `omnisim` pool, which .bazelrc defines and explains.
     tags = [
         "bdd",
         "resources:omnisim:1",
@@ -123,5 +119,22 @@ rust_test(
 filegroup(
     name = "pkg",
     srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

@@ -2,10 +2,10 @@
 //!
 //! Provides a [`TransportFactory`] that hands out a [`FrameTransport`]
 //! backed by an in-memory state machine that mimics the Q-Focuser's
-//! JSON protocol. Persists state across reconnects so tests can
-//! disconnect/reconnect and still observe their prior writes (matches
-//! the behaviour of real hardware that doesn't lose its settings when an
-//! ASCOM client cycles `Connected`).
+//! JSON protocol. The state lives in the factory, so it survives a
+//! reopen of the transport — a reconnect, or a reacquire in a
+//! `LazyAcquire` unit test — as a real focuser keeps its settings when
+//! its port closes.
 
 // `#[cfg(any(feature = "mock", test))]`-gated test-helper infrastructure
 // that never ships in production builds. Excluded from coverage so the
@@ -88,8 +88,8 @@ impl MockState {
                 "board_version": self.device_state.board_version,
             }),
             2 => {
-                // RelativeMove — mock simulates an instant move so the
-                // legacy single-step BDD scenarios remain valid.
+                // RelativeMove — an instant move; the driver itself never
+                // sends it.
                 let dir = parsed
                     .get("dir")
                     .and_then(serde_json::Value::as_i64)
@@ -121,9 +121,9 @@ impl MockState {
                 "c_r": self.device_state.voltage_raw,
             }),
             5 => {
-                // GetPosition — same gradual-movement model as legacy
-                // mock so polling-based completion detection still
-                // works for the BDD suite.
+                // GetPosition — each read advances the move one tick of
+                // the gradual-movement model, so a scenario can see the
+                // focuser moving before polling sees it arrive.
                 self.step_toward_target();
                 serde_json::json!({"idx": 5, "pos": self.device_state.position})
             }

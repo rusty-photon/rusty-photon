@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::SafetyMonitor;
 use tracing::{debug, error};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
@@ -31,8 +32,9 @@ impl SafetyMonitorEntry {
 pub(super) async fn establish_safety_monitor(
     config: &config::SafetyMonitorConfig,
     ca_cert_path: Option<&std::path::Path>,
+    budget: ConnectBudget,
 ) -> Result<Arc<dyn SafetyMonitor>, EstablishError> {
-    establish_listed(config, ca_cert_path).await
+    establish_listed(config, ca_cert_path, budget).await
 }
 
 pub(super) async fn connect_safety_monitor(
@@ -41,7 +43,7 @@ pub(super) async fn connect_safety_monitor(
 ) -> SafetyMonitorEntry {
     debug!(sm_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to safety monitor");
 
-    match establish_safety_monitor(config, ca_cert_path).await {
+    match establish_safety_monitor(config, ca_cert_path, ConnectBudget::Full).await {
         Ok(sm) => {
             debug!(sm_id = %config.id, "safety monitor connected successfully");
             SafetyMonitorEntry {

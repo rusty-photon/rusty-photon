@@ -135,7 +135,7 @@ fn main() -> ServiceResult {
 
     // Setup tracing. In Windows SCM service mode logs go to the rolling file
     // under %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit
-    // so the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    // so the final lines flush on SCM Stop. Console mode logs to stderr.
     let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "gemini-powerbox-adv3-driver",
         args.log_level,
@@ -211,28 +211,20 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            let restart = shutdown.restart();
             loop {
                 let config = load_effective_config(&config_path, &overrides)?;
                 #[cfg(not(feature = "mock"))]
                 tracing::info!("Serial port: {}", config.serial.port);
                 tracing::info!("Server port: {}", config.server.port);
 
-                #[cfg(feature = "mock")]
-                let bound = {
-                    let factory = Arc::new(MockGeminiTransportFactory::default());
-                    ServerBuilder::new(config)
-                        .with_factory(factory)
-                        .with_config_source(config_path.clone(), overrides.clone())
-                        .with_reload_signal(reload.clone())
-                        .build()
-                        .await?
-                };
-                #[cfg(not(feature = "mock"))]
-                let bound = ServerBuilder::new(config)
+                let builder = ServerBuilder::new(config)
                     .with_config_source(config_path.clone(), overrides.clone())
                     .with_reload_signal(reload.clone())
-                    .build()
-                    .await?;
+                    .with_restart(restart.clone());
+                #[cfg(feature = "mock")]
+                let builder = builder.with_factory(Arc::new(MockGeminiTransportFactory::default()));
+                let bound = builder.build().await?;
 
                 let reloaded = Arc::new(AtomicBool::new(false));
                 let stop = {

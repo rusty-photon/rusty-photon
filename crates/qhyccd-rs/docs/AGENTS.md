@@ -1,6 +1,6 @@
 # Agents and human operators MUST follow the rules below
 
-1. You MUST read the design documentation before you start working on a task. The design doc is located at docs/qhyccd-rs.md.
+1. You MUST read the design documentation before you start working on a task. The design doc is [qhyccd-rs.md](qhyccd-rs.md), next to this file.
 
 2. You MUST ALWAYS update the appropriate README and / or the design document when you make a change and the change is impacting what is stated in these documents. If in doubt, re-read the docs to evaluate impact.
 

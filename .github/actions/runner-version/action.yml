@@ -1,0 +1,31 @@
+name: Pool runner version
+description: >-
+  Fails once the runner software in the self-hosted pool's templates, as
+  tools/ci/runner-guest/RUNNER_VERSION records it, has been behind a release of
+  actions/runner for `grace-days`. The pool's just-in-time runners cannot
+  update themselves, and GitHub stops queueing jobs to a runner that has not
+  taken an available update within 30 days of its release, so the failure
+  comes in time to rebuild the templates. Otherwise it leaves a notice saying
+  where the templates stand. docs/skills/proxmox-runner-pool.md §Runner
+  releases.
+inputs:
+  version-file:
+    description: The file that records the templates' runner version, one major.minor.patch line.
+    required: false
+    default: tools/ci/runner-guest/RUNNER_VERSION
+  grace-days:
+    description: >-
+      How many days after the first newer release the check fails, from 0 to
+      29, leaving the rest of GitHub's 30 days for the rebuild.
+    required: false
+    default: '14'
+  token:
+    description: A token that can read public repositories' releases.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  latest:
+    description: The newest release of actions/runner, or the recorded version when it is the newest.
+runs:
+  using: node24
+  main: index.mjs

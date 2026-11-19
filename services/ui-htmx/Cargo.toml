@@ -12,20 +12,14 @@ description = "Server-rendered web UI (BFF) for rusty-photon — HTMX expression
 workspace = true
 
 [features]
-# Test-only `/fixtures/*` routes for the @browser BDD layer (UI-testing plan §9
-# Tier 1). OFF by default, so it ships nothing in the real binary; the BDD suite
-# spawns a binary built WITH it (cargo `--all-features`; Bazel `:ui-htmx_fixtures`).
-# The fixtures module is `#[coverage(off)]`, so enabling it never perturbs the
-# coverage numbers (test-only code must not count toward product coverage).
+# Test-only `/fixtures/*` routes for the @browser BDD layer. OFF by default, so
+# the real binary ships none of them; the BDD suite spawns a binary built WITH it
+# (cargo `--all-features`; Bazel `:ui-htmx_fixtures`). The fixtures module is
+# `#[coverage(off)]`: test-only code does not count toward product coverage.
 test-fixtures = []
-# Test-only Server-Sent-Events fixture routes for the @browser SSE spike
-# (UI-testing plan §9 Tier 2). Same shape as `test-fixtures` — OFF by default,
-# `#[coverage(off)]`, spawned only by the BDD suite. It proves async
-# server-pushed DOM updates are browser-observable and that an open SSE stream
-# (which never closes on the shutdown signal — axum #2673) still allows a
-# graceful, coverage-flushing shutdown when the browser is quit first. (Its
-# `async-stream` dependency became unconditional when the production SSE proxy
-# landed in Phase 5, so this gate now only scopes the fixture routes.)
+# Test-only Server-Sent-Events fixture routes for the @browser `sse.feature`
+# scenarios, the same shape as `test-fixtures`: OFF by default,
+# `#[coverage(off)]`, spawned only by the BDD suite.
 test-sse = []
 
 [dependencies]
@@ -39,17 +33,15 @@ schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-# CancellationToken for ending open SSE proxy streams on shutdown (axum #2673),
-# mirroring rp's `sse_shutdown` pattern.
+# `CancellationToken`, which ends the open SSE proxy streams on shutdown.
 tokio-util = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 rp-auth = { workspace = true }
-# The targets inbox drives rp's MCP-only target tools through the standard
-# ADR-017 client (per-request sessions; see docs/services/ui-htmx.md
-# "Targets inbox").
+# The targets inbox drives rp's MCP-only target tools through the standard MCP
+# client, one session per request (docs/services/ui-htmx.md § Targets inbox).
 rp-mcp-client = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rusty-photon-config = { workspace = true }
@@ -58,8 +50,8 @@ rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-setup = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
-# Async stream construction for the production SSE proxy (`/stream/events`,
-# Phase 5) and the test-only SSE fixture endpoint.
+# The production SSE proxy (`/stream/events`) builds its stream with it, as does
+# the test-only SSE fixture endpoint, so it is not gated on `test-sse`.
 async-stream = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
@@ -140,15 +132,15 @@ mockall = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 cucumber = { workspace = true }
 tempfile = { workspace = true }
-# Layer A of the UI-testing plan (docs/plans/archive/ui-testing.md §4): the Servo
-# html5ever/selectors stack browsers ship, used for CSS-selector DOM assertions
-# in the BDD suite. Test-only — never compiled into the shipped binary.
+# Layer A (docs/services/ui-htmx.md § Three obligations, three layers): the Servo
+# html5ever/selectors stack browsers ship, for CSS-selector DOM assertions in the
+# BDD suite.
 scraper = { workspace = true }
-# Layer B (§5): byte-equivalence snapshots of the server's HTML output, the
+# Layer B: byte-equivalence snapshots of the server's HTML output, the
 # cross-OS-comparable artifact (P2). `filters` scrubs run/OS-varying tokens
-# before compare; `redactions` is pulled for completeness per the plan.
-insta = { version = "1.48", features = ["filters", "redactions"] }
-# Layer C (§6): a real WebDriver browser for behaviors only a browser can prove
+# before compare.
+insta = { version = "1.48", features = ["filters"] }
+# Layer C: a real WebDriver browser for behaviors only a browser can prove
 # (P3 — htmx actually executes the swap/poll). Pure Rust, no Node. The @browser
 # scenarios it drives are gated behind UI_BROWSER_TESTS=1 (see tests/bdd.rs), so
 # this always-compiled dev-dep never drags a browser into the default gate.
@@ -156,9 +148,9 @@ insta = { version = "1.48", features = ["filters", "redactions"] }
 # geckodriver themselves, and `manager` pulls in `zip` 8, whose extraction
 # code has security advisories fixed only in `zip` 9.
 thirtyfour = { version = "0.38", default-features = false, features = ["reqwest", "rustls", "component", "cdp"] }
-# Layer C Tier 0 step 4 (§9): the kill-the-tree reaper for the @browser worst-case
-# scenario — killpg of geckodriver's process group + a /proc orphan scan, both
-# unix-only (the @browser layer runs on Linux). Test-only.
+# The kill-the-tree reaper of the @browser worst-case scenario: killpg of
+# geckodriver's process group + a /proc orphan scan, both unix-only (the
+# @browser layer runs on Linux).
 libc = { workspace = true }
 
 [[test]]

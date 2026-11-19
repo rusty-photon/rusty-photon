@@ -6,11 +6,9 @@ installer on an imaging box. Architecture decisions live in
 model, LocalSystem, config/log locations) and
 [ADR-013](decisions/013-native-sdk-payload-policy.md) /
 [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md)
-(native camera-SDK
-payloads); the full design in
-[docs/plans/archive/windows-packaging.md](plans/archive/windows-packaging.md); the WiX
-source contract in [installer/README.md](../installer/README.md). The Linux
-guide is [docs/packaging.md](packaging.md).
+(native camera-SDK payloads); the WiX source contract in
+[installer/README.md](../installer/README.md). The Linux guide is
+[docs/packaging.md](packaging.md).
 
 ## What gets installed
 
@@ -27,12 +25,12 @@ the GitHub Releases page. The installer presents a feature tree:
 - **Drivers** (optional, off by default): one sub-feature per device
   driver.
 - **Automation** (optional): `rp`, `session-runner`, `plate-solver`,
-  `phd2-guider`, `calibrator-flats`, `polar-align`, `focus-model`.
+  `calibrator-flats`, `polar-align`, `focus-model`.
 
 Every selected service installs
 `%ProgramFiles%\rusty-photon\rusty-photon-<svc>.exe` and registers a
-Windows service named `rusty-photon-<svc>` (LocalSystem; auto-start,
-except the config-gated six, which install as *Manual* — see below)
+Windows service named `rusty-photon-<svc>` (LocalSystem; Automatic,
+started on install — the config-gated six too, see below)
 with restart-after-5s failure actions — the systemd
 `Restart=on-failure`/`RestartSec=5` parity the serial drivers' eager
 hardware validation depends on — plus an inbound firewall exception on
@@ -57,7 +55,6 @@ its port:
 | planetarium-bridge | 11126 | `PlanetariumBridge` | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | `Upbv2Driver` | serial (COM port) |
 | gemini-powerbox-adv3-driver | 11132 | `GeminiPowerboxAdv3Driver` | serial (COM port; Windows needs the vendor's CH341SER driver for the CH340 bridge) |
-| phd2-guider | 11130 | `Phd2Guider` | wraps PHD2 (installed separately); its opt-in camera facade adds 11128 on loopback only, which needs no firewall rule ([packaging.md](packaging.md#phd2-guider-the-camera-facade)) |
 | plate-solver | 11131 | `PlateSolver` | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | `CalibratorFlats` | config-gated |
 | session-runner | 11171 | `SessionRunner` | config-gated |
@@ -93,12 +90,15 @@ list). Azure Trusted Signing is the noted post-1.0 path.
 
 **Config-gated services** (`sky-survey-camera`, `plate-solver`,
 `calibrator-flats`, `session-runner`, `polar-align`, `focus-model`) have
-no sensible default config, so they install with start type *Manual* —
-the Windows translation of the Linux units' `ConditionPathExists=`
-gating. Write `%ProgramData%\rusty-photon\<svc>.json` by hand, then:
+no sensible default config. Each checks for its own when it starts, as
+the Linux units' `ConditionPathExists=` does: without
+`%ProgramData%\rusty-photon\<svc>.json` it stops at once with exit code 0,
+which the failure actions leave alone, and its log says the config does
+not exist.
+Services.msc shows it as Automatic and stopped. Write the config by
+hand, then start the service, or reboot:
 
 ```powershell
-sc.exe config rusty-photon-<svc> start= auto
 sc.exe start rusty-photon-<svc>
 ```
 
@@ -114,7 +114,7 @@ services serve with no hardware attached.
 
 ## First wiring: rusty-photon-doctor
 
-The installer puts bytes on disk; doctor wires the configs (ADR-016).
+The installer puts bytes on disk; doctor wires the configs.
 After installing — or later modifying — the feature set, run once from an
 elevated prompt:
 
@@ -134,7 +134,9 @@ Verify the task with `schtasks /Query /TN rusty-photon-renew`.
 
 Install the newer MSI — it performs a major upgrade: the old version is
 removed, feature selections carry over, and self-created configs and logs
-are untouched. Downgrades are blocked by the installer.
+are untouched. Downgrades are blocked by the installer. Each service is
+installed afresh, Automatic and started, so a start type set by hand does
+not survive an upgrade; a configured gated service comes back running.
 
 Pre-1.0, config schemas may change between versions with no in-service
 migration — a service handed a config key it has retired refuses to start
@@ -191,9 +193,9 @@ match it, the build refuses a mismatch.)
 
 The MSI ships no config files. Daemons self-create their config on first
 start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
-the Linux `/etc/rusty-photon` path). Exceptions: the config-gated five
-(above) never write one; the two cameras, `zwo-focuser`, and
-`phd2-guider` run on built-in defaults without writing a file until
+the Linux `/etc/rusty-photon` path). Exceptions: the config-gated six
+(above) never write one; the two cameras and `zwo-focuser` run on
+built-in defaults without writing a file until
 settings are saved on the service's setup page (`/setup`) or one is
 created by hand. To change settings:
 
@@ -214,13 +216,12 @@ hand-edits and page edits share the same file.
 **ui-htmx config**: self-created like every other service — the default
 (the required `rp` target on localhost) is correct for every install,
 since the device list lives in rp's equipment roster, not in ui-htmx
-config (#569). The former install-time driver-map seed action is gone
-with the map itself. **Upgrading an install whose config predates #569**
-(it was seeded with a `drivers` map): the new service refuses to start
-until the retired top-level `drivers` key is deleted from
+config ([ui-htmx.md § Configuration](services/ui-htmx.md#configuration)).
+**An install whose `ui-htmx.json` carries a top-level `drivers` map**
+(an earlier installer seeded one): the service refuses to start until
+that retired key is deleted from
 `%ProgramData%\rusty-photon\ui-htmx.json` — the pre-1.0 fail-loudly
-contract; doctor's `config.retired-keys` fix does the deletion where
-doctor is available.
+contract; doctor's `config.retired-keys` fix deletes it (§First wiring).
 
 ## Logs
 
@@ -229,10 +230,23 @@ Services log to rolling files
 files retained) — under the SCM there is no usable stderr. Console runs
 (`rusty-photon-<svc>.exe` from a terminal) log to stderr unchanged.
 
+## Start the services with every device powered
+
+Start, restart or reload the services, whether at install, upgrade or
+reboot, by hand, or by saving a setup page (which reloads its service),
+with every device powered, USB and 12 V. A start or a reload looks for each
+service's devices then. A camera that is off at that moment is not served
+until the service is restarted with the camera powered (a listed camera is
+a placeholder meanwhile): QHY's SDK on Windows reliably lists only the
+cameras that were present when the process first initialised it, so a
+reload does not find one. A serial device that is off fails its service's
+start, or ends its process on a reload, and the service restarts every 5 s
+until the device answers.
+
 ## Camera specifics
 
-**qhy-camera** — QHYCCD's SDK is proprietary and never redistributed
-(ADR-013). Install [QHY's All-in-One driver
+**qhy-camera** — QHYCCD's SDK is proprietary and never redistributed.
+Install [QHY's All-in-One driver
 pack](https://www.qhyccd.com/download/) first (needed for the signed
 camera driver anyway); it provides the `qhyccd.dll` the service
 delay-loads at startup. Without it the service logs an actionable
@@ -248,17 +262,17 @@ All-in-One installed, and the doctor makes that visible.
 
 **zwo-camera / zwo-focuser** — each feature bundles its own MIT-licensed
 SDK DLL (`ASICamera2.dll` / `EAF_focuser.dll`, license in the install
-dir), so nothing extra is needed for the *software* (ADR-014). ZWO
+dir), so nothing extra is needed for the *software*. ZWO
 cameras additionally need [ZWO's signed camera driver
 installer](https://www.zwoastro.com/downloads/); the EAF speaks inbox HID
 and needs no vendor driver.
 
-## plate-solver: ASTAP · phd2-guider: PHD2
+## plate-solver: ASTAP
 
-Both wrap external programs that are deliberately not bundled: install
-[ASTAP](https://www.hnsky.org/astap.htm) (plus a star database) and point
-`astap_binary_path` / `astap_db_directory` in `plate-solver.json` at it;
-install [PHD2](https://openphdguiding.org/) for phd2-guider.
+plate-solver wraps an external program that is deliberately not bundled:
+install [ASTAP](https://www.hnsky.org/astap.htm) (plus a star database)
+and point `astap_binary_path` / `astap_db_directory` in
+`plate-solver.json` at it.
 
 ## Removing
 
@@ -297,9 +311,7 @@ cargo ci verify-msi --msi dist\<fullversion>\rusty-photon-<fullversion>-x64.msi
 so the main install runs as an in-place upgrade over it, then runs the
 shipped doctor's `--fix` — the §Upgrading migration path — before the
 lifecycle asserts, which probe provisioned services over HTTPS with the
-observatory credential. The mode was suspended 2026-07-18 while doctor
-was not yet in the packages and re-enabled once D7 shipped it,
-[#582](https://github.com/rusty-photon/rusty-photon/issues/582).)
+observatory credential.)
 
 `cargo ci build-msi` stages the pinned native SDKs (QHYCCD import lib for
 the delay-load link; the ZWO MIT DLLs that become payloads, from the

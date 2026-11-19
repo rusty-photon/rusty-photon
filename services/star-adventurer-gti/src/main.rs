@@ -113,7 +113,7 @@ fn main() -> ServiceResult {
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
-    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    // the final lines flush on SCM Stop. Console mode logs to stderr.
     let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "star-adventurer-gti",
         args.log_level,
@@ -171,12 +171,13 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            let restart = shutdown.restart();
             // One mock mount for the life of the process, built outside
             // the loop on purpose. A reload rebuilds the *driver's*
             // transport; the device on the other end of it does not go
             // anywhere, and neither does what it was told. Rebuilding
-            // the factory per iteration gave each reload a mount with no
-            // memory of the previous lifecycle — and reset
+            // the factory per iteration would give each reload a mount
+            // with no memory of the previous lifecycle — and reset
             // `/debug/v1/mock-commands` underneath any BDD scenario that
             // reloads and then asserts on the wire.
             //
@@ -220,6 +221,7 @@ fn main() -> ServiceResult {
                     .with_config(config)
                     .with_config_file_path(Some(config_file_path.clone()))
                     .with_reload_signal(reload.clone())
+                    .with_restart(restart.clone())
                     .with_cli_overrides(overrides.clone())
                     .with_handover(handover);
 

@@ -25,7 +25,8 @@ use tracing::{debug, warn};
 
 use crate::report::{AppliedFix, FixOp};
 
-/// The one observatory username (ADR-016 decision 10(e)).
+/// The one observatory username (docs/services/doctor.md §The
+/// observatory credential).
 pub const CREDENTIAL_USERNAME: &str = "observatory";
 
 /// 32 alphanumeric characters ≈ 190 bits of entropy — comfortably past the
@@ -67,7 +68,7 @@ pub fn tls_block_value(config_dir: &Path, service: &str) -> serde_json::Value {
 /// gate renewal's ACME leg keys on.
 ///
 /// An ACME install's provisioning pass must hand out no self-signed
-/// material (issue #616): a client's single reqwest trust configuration
+/// material: a client's single reqwest trust configuration
 /// cannot verify self-signed and publicly-trusted targets at once, so one
 /// self-signed newcomer would be unreachable by every already-flipped
 /// client.
@@ -169,9 +170,9 @@ pub fn align_pki_ownership(config_dir: &Path) -> Result<(), String> {
 /// disable unattended renewal for good.
 ///
 /// `renew.env` is operator-authored (docs/services/doctor.md §Renewal) and
-/// not always present, so it is included best-effort: it is
-/// unconditionally added to `entries`, but a missing file simply fails the
-/// `symlink_metadata` lookup and is skipped like any other absent entry.
+/// not always present: it is always listed, a missing file fails the
+/// `symlink_metadata` lookup and is skipped like any other absent entry,
+/// and a present one is essential, since the renewal timer reads it.
 ///
 /// # Errors
 ///
@@ -486,9 +487,9 @@ pub fn mint_credential(config_dir: &Path) -> Result<String, String> {
 /// `service_auth` / `ca_cert` field pair, and where in its config that
 /// pair lives. `prefix` is a JSON-pointer prefix — empty for the
 /// top-level shape (sentinel's probe client, the session-runner /
-/// calibrator-flats / focus-model / polar-align MCP clients — ADR-017),
+/// calibrator-flats / focus-model / polar-align MCP clients),
 /// `"/rp"` for planetarium-bridge, whose client block nests under its `rp` key
-/// (planetarium-bridge.md § Configuration).
+/// (planetarium-bridge.md § Configuration (bridge)).
 struct ClientWiring {
     service: &'static str,
     /// `false` for services with only a `ca_cert` setting — no
@@ -1287,7 +1288,7 @@ mod tests {
     #[test]
     fn test_plan_client_wiring_wires_the_bridge_nested_rp_block() {
         // planetarium-bridge's client pair nests under its `rp` key
-        // (planetarium-bridge.md § Configuration), so its wiring ops
+        // (planetarium-bridge.md § Configuration (bridge)), so its wiring ops
         // carry the nested pointers — and are planned only when the
         // `rp` block exists, since fix ops never create parents.
         let dir = tempfile::tempdir().unwrap();
@@ -1330,8 +1331,8 @@ mod tests {
 
     #[test]
     fn test_plan_client_wiring_wires_rp_ca_cert_only_not_service_auth() {
-        // rp (issue #609) is CA-only: it has no shared-observatory-
-        // credential client role, so `--fix` must never propose a
+        // rp is CA-only: it has no shared-observatory-credential client
+        // role, so `--fix` must never propose a
         // `/service_auth` op for it even once the credential exists —
         // rp's `deny_unknown_fields` Config has no such field and would
         // reject the config on the next load.
@@ -1397,9 +1398,8 @@ mod tests {
     fn test_plan_client_wiring_skips_ca_cert_on_an_acme_install() {
         // Even with a self-signed CA left on disk from before the flip,
         // acme.json wins: the client verifies publicly-trusted targets
-        // through platform roots, and a written ca_cert would disable them
-        // (issue #616). The credential half is trust-model-agnostic and
-        // still wired.
+        // through platform roots, and a written ca_cert would disable them.
+        // The credential half is trust-model-agnostic and still wired.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("sentinel.json"),

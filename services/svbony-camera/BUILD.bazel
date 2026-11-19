@@ -12,34 +12,29 @@ exports_files(
 
 # svbony-camera links the native SVBony camera SDK transitively via
 # svbony-rs → libsvbony-sys (see docs/services/svbony-camera.md "Native
-# dependency & build gating" and the new ADR-018). libsvbony-sys's own
-# BUILD.bazel bakes SVBONY_SKIP_NATIVE_LINK=1 into its cargo_build_script
-# UNCONDITIONALLY — so the *library* targets (no final link) build with ZERO
-# SVBony SDK provisioning, but the REAL (non-simulation) `:svbony-camera`
-# binary CANNOT link (undefined `SVBOpenCamera`/`SVBCloseCamera`/… symbols —
-# verified locally: `bazel build //services/svbony-camera:svbony-camera`
-# fails with exactly these undefined symbols) until a real SDK is both
-# provisioned AND the skip is lifted. `:svbony-camera` is therefore tagged
-# `manual` below so `bazel build //...`/`bazel test //...` skip it by
+# dependency & build gating" and "Bazel links the simulation only").
+# libsvbony-sys's own BUILD.bazel bakes SVBONY_SKIP_NATIVE_LINK=1 into its
+# cargo_build_script UNCONDITIONALLY — so the *library* targets (no final
+# link) build with ZERO SVBony SDK provisioning, but the REAL
+# (non-simulation) `:svbony-camera` binary CANNOT link:
+# `bazel build //services/svbony-camera:svbony-camera` fails with undefined
+# `SVBOpenCamera`/`SVBCloseCamera`/… symbols. `:svbony-camera` is therefore
+# tagged `manual` below so `bazel build //...`/`bazel test //...` skip it by
 # default — unlike zwo-camera/qhy-camera, whose production binaries link
 # fine because CI provisions their SDKs first.
 #
-# Phase F (docs/plans/archive/svbony-camera.md) added `.github/actions/install-svbony-sdk`
-# and wired it into `conformu.yml` + `native.yml`, but deliberately did NOT
-# flip this tag: that action is a plain-Cargo, GitHub-Actions-only
-# provisioning mechanism (composite-action shell steps against `cargo build`),
-# not something this workspace's Bazel setup consumes — Bazel's `bazel build
-# //...`/`bazel test //...` gate has no equivalent SDK-fetch repository rule
-# and must keep working with zero SVBony SDK provisioning. Revisit (drop
-# `manual`, add a Bazel-side SDK-fetch rule, stop baking the skip in
-# libsvbony-sys/BUILD.bazel) at Phase G alongside real hardware validation;
-# see docs/plans/archive/svbony-camera.md's Status section.
+# `.github/actions/install-svbony-sdk` provisions the real SDK for the Cargo
+# workflows (`conformu.yml`, `native.yml`, …), but it is a GitHub-Actions
+# composite of shell steps, not something this workspace's Bazel setup
+# consumes, and no Bazel repository rule fetches the SDK. A Bazel-side
+# SDK-fetch rule would let the `manual` tag and libsvbony-sys/BUILD.bazel's
+# baked-in skip go (the design doc's Future Work).
 #
 # The BDD + ConformU suites RUN under Bazel (no `requires-cargo`): `bdd` via
 # the `bazel.yml` BDD step spawning the sim binary like every other service,
-# and `conformu_integration` (Phase F) via `bazel test --config=conformu`,
-# mirroring zwo-camera/qhy-camera's Bazel-side ConformU targets. One
-# DEVIATION from those two: because libsvbony-sys/BUILD.bazel bakes
+# and `conformu_integration` via `bazel test --config=conformu`, mirroring
+# zwo-camera/qhy-camera's Bazel-side ConformU targets. One DEVIATION from
+# those two: because libsvbony-sys/BUILD.bazel bakes
 # SVBONY_SKIP_NATIVE_LINK=1 unconditionally (see that file's header comment),
 # this target — like every other svbony-camera Bazel target — links the SIM
 # SDK variant with NO real SVBony SDK, so `bazel test --config=conformu
@@ -47,8 +42,8 @@ exports_files(
 # conformance against the simulation, never the real link (that real-link
 # proof is Cargo-only, via `conformu.yml`'s `install-svbony-sdk` step — see
 # `tests/conformu_integration.rs`). zwo-camera's/qhy-camera's Bazel ConformU
-# targets DO exercise their real SDKs, because those crates' BUILD.bazel
-# files provision the real SDK unconditionally instead of skipping it.
+# targets DO link their real SDKs, because those crates' sys BUILD.bazel
+# files link the real SDK instead of skipping it.
 #
 # NOTE on features: Bazel `crate_features` is LITERAL — it does NOT expand
 # Cargo's `mock = ["simulation"]`. svbony-camera gates its sim backend on
@@ -97,10 +92,9 @@ rust_library(
     deps = _INTRA_WORKSPACE_DEPS + ["//crates/svbony-rs"] + all_crate_deps(normal = True),
 )
 
-# `manual`: cannot link without the real SVBony SDK provisioned (see the
-# file-header comment) — no `install-svbony-sdk` action exists yet. Build
-# explicitly with `bazel build //services/svbony-camera:svbony-camera` once
-# the SDK is on the link path and the skip is lifted (Phase G).
+# `manual`: cannot link without the real SVBony SDK, which no Bazel rule
+# provisions and libsvbony-sys's build script is told to skip (see the
+# file-header comment).
 rust_binary(
     name = "svbony-camera",
     srcs = ["src/main.rs"],
@@ -277,5 +271,22 @@ rust_test(
 filegroup(
     name = "pkg",
     srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

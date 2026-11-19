@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The state of a monitored device.
 ///
@@ -18,13 +18,22 @@ pub enum MonitorState {
     Unknown,
 }
 
-/// A change in monitor state
-#[derive(Debug, Clone)]
+/// A change in a monitor's state, as transition rules see it.
+///
+/// `previous` is the monitor's last known reading, `Safe` or `Unsafe`, or
+/// `Unknown` when it has given none since sentinel started: polls that read
+/// `Unknown` do not move it. `current` is `Unknown` when the monitor has
+/// just become unreadable.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateChange {
     pub monitor_name: String,
     pub previous: MonitorState,
     pub current: MonitorState,
-    pub timestamp: Instant,
+    /// The first reading after the monitor became unreadable.
+    pub readable_again: bool,
+    /// When the poll that made the change returned, in milliseconds since
+    /// the Unix epoch.
+    pub timestamp_epoch_ms: u64,
 }
 
 /// Trait for polling a device's state

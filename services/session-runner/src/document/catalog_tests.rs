@@ -428,10 +428,10 @@ fn test_presence_one_of_fails_a_call_with_both_alternatives() {
 
 #[test]
 fn test_presence_one_of_with_a_multi_name_branch_requires_the_full_pair() {
-    // auto_focus publishes `camera_id + focuser_id` or `train_id`; a
-    // call carrying only half the explicit pair satisfies neither.
-    let auto_focus = spec(
-        "auto_focus",
+    // A tool publishing `camera_id + focuser_id` or `train_id`: a call
+    // carrying only half the explicit pair satisfies neither.
+    let sweep = spec(
+        "sweep_focuser",
         json!({
             "type": "object",
             "properties": {
@@ -447,14 +447,14 @@ fn test_presence_one_of_with_a_multi_name_branch_requires_the_full_pair() {
         }),
     );
     let document = doc_with_root(json!({
-        "tool": "auto_focus",
+        "tool": "sweep_focuser",
         "args": { "camera_id": "cam" }
     }));
     assert_eq!(
-        findings(&document, &[auto_focus]),
+        findings(&document, &[sweep]),
         vec![(
             "/root".to_owned(),
-            "tool `auto_focus` requires exactly one of: camera_id + focuser_id or train_id"
+            "tool `sweep_focuser` requires exactly one of: camera_id + focuser_id or train_id"
                 .to_owned()
         )]
     );

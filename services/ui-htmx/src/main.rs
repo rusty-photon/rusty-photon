@@ -97,7 +97,7 @@ fn main() -> ServiceResult {
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
-    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    // the final lines flush on SCM Stop. Console mode logs to stderr.
     let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "ui-htmx",
         args.log_level,
@@ -127,9 +127,10 @@ fn main() -> ServiceResult {
         .scm_mode(args.service)
         .run(move |shutdown| async move {
             // Open SSE proxy streams do not end on axum's graceful-shutdown signal
-            // alone (axum #2673): give the state a cancellation token and fire it
-            // the moment shutdown starts, so `/stream/events` streams close and
-            // axum's connection drain can complete promptly.
+            // alone (docs/services/ui-htmx.md § The SSE proxy): give the state a
+            // cancellation token and fire it the moment shutdown starts, so
+            // `/stream/events` streams close and axum's connection drain can
+            // complete promptly.
             let sse_token = tokio_util::sync::CancellationToken::new();
             let state = AppState::from_config(&config)?
                 .with_sse_shutdown(sse_token.clone())

@@ -1,6 +1,9 @@
 use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::{ReloadSignal, Shutdown};
+use crate::restart::exit_once;
+use crate::{ReloadSignal, Restart, Shutdown, RESTART_CLOSE_DEADLINE, RESTART_EXIT_CODE};
 
 /// Result type every service binary's `main` returns.
 ///
@@ -171,6 +174,7 @@ pub struct ServiceRunner {
     name: &'static str,
     reload: bool,
     scm_mode: bool,
+    condition: Option<PathBuf>,
 }
 
 impl ServiceRunner {
@@ -182,7 +186,27 @@ impl ServiceRunner {
             name,
             reload: false,
             scm_mode: false,
+            condition: None,
         }
+    }
+
+    /// Under the Windows SCM, start the service only if `path` exists: the
+    /// SCM's form of systemd's `ConditionPathExists=`, for a service whose
+    /// config has no default it could write. The installer starts such a
+    /// service at boot like any other, so the start type is the package's
+    /// and an upgrade, which installs the service afresh, keeps it.
+    ///
+    /// Without the file, the runner logs that the service did not start
+    /// and reports a clean stop, exit code 0, without running the closure.
+    /// The failure actions that restart a failed service then leave it
+    /// stopped until it is started again.
+    ///
+    /// A console run ignores the condition: the service meets the missing
+    /// file and fails, as it would without one.
+    #[must_use]
+    pub fn condition_path_exists(mut self, path: impl Into<PathBuf>) -> Self {
+        self.condition = Some(path.into());
+        self
     }
 
     /// Enable the reload signal. Required before [`Self::run_with_reload`].
@@ -212,6 +236,11 @@ impl ServiceRunner {
         self
     }
 
+    /// Whether the run goes to the SCM rather than to the console.
+    const fn dispatches_to_scm(&self) -> bool {
+        self.scm_mode && cfg!(all(windows, feature = "scm"))
+    }
+
     /// Build a multi-thread tokio runtime, install signal handlers (or
     /// dispatch SCM), and invoke `run_fn` with a [`Shutdown`] handle.
     /// Blocks until `run_fn`'s future resolves.
@@ -235,6 +264,15 @@ impl ServiceRunner {
         Fut: Future<Output = RunResult> + 'static,
     {
         install_error_reporting();
+
+        let (name, scm, condition) = (self.name, self.dispatches_to_scm(), self.condition.clone());
+        let run_fn = move |shutdown| async move {
+            if may_start(name, scm, condition.as_deref()) {
+                run_fn(shutdown).await
+            } else {
+                Ok(())
+            }
+        };
 
         #[cfg(all(windows, feature = "scm"))]
         if self.scm_mode {
@@ -270,6 +308,15 @@ impl ServiceRunner {
             ));
         }
 
+        let (name, scm, condition) = (self.name, self.dispatches_to_scm(), self.condition.clone());
+        let run_fn = move |shutdown, reload| async move {
+            if may_start(name, scm, condition.as_deref()) {
+                run_fn(shutdown, reload).await
+            } else {
+                Ok(())
+            }
+        };
+
         #[cfg(all(windows, feature = "scm"))]
         if self.scm_mode {
             return scm::dispatch(
@@ -280,6 +327,25 @@ impl ServiceRunner {
 
         run_console_with_reload(self.name, run_fn)
     }
+}
+
+/// Whether the service starts: always in a console run, and under the SCM
+/// when it has no condition or the condition's path exists.
+///
+/// A path that cannot be checked is not an absent one: the service starts
+/// and meets whatever stopped the check, in its own words.
+fn may_start(name: &str, scm: bool, condition: Option<&Path>) -> bool {
+    let Some(path) = condition.filter(|_| scm) else {
+        return true;
+    };
+    let absent = matches!(path.try_exists(), Ok(false));
+    if absent {
+        tracing::info!(
+            "{name}: not started: {} does not exist; write it, then start the service",
+            path.display()
+        );
+    }
+    !absent
 }
 
 fn build_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
@@ -295,12 +361,14 @@ where
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
-    let installed = spawn_shutdown_watcher(&rt, name, token.clone());
-    rt.block_on(async move {
+    let restart = console_restart(token.clone());
+    let shutdown = Shutdown::new(token.clone(), restart.clone());
+    let installed = spawn_shutdown_watcher(&rt, name, token);
+    let result = rt.block_on(async move {
         let _ = installed.await;
-        run_fn(Shutdown::from_token(token)).await
-    })
-    .map_err(report_from_boxed)
+        run_fn(shutdown).await
+    });
+    finish_console(name, &restart, result)
 }
 
 fn run_console_with_reload<F, Fut>(name: &'static str, run_fn: F) -> ServiceResult
@@ -310,15 +378,51 @@ where
 {
     let rt = build_runtime()?;
     let token = tokio_util::sync::CancellationToken::new();
+    let restart = console_restart(token.clone());
+    let shutdown = Shutdown::new(token.clone(), restart.clone());
     let reload = ReloadSignal::new();
-    let installed = spawn_shutdown_watcher(&rt, name, token.clone());
+    let installed = spawn_shutdown_watcher(&rt, name, token);
     #[cfg(unix)]
     rt.spawn(watch_reload_signal(reload.clone()));
-    rt.block_on(async move {
+    let result = rt.block_on(async move {
         let _ = installed.await;
-        run_fn(Shutdown::from_token(token), reload).await
-    })
-    .map_err(report_from_boxed)
+        run_fn(shutdown, reload).await
+    });
+    finish_console(name, &restart, result)
+}
+
+/// The console-mode restart: its exit ends the process with the restart
+/// code.
+///
+/// Its watchdog has logged that the close did not finish, so the exit says
+/// nothing more.
+fn console_restart(token: tokio_util::sync::CancellationToken) -> Restart {
+    Restart::with_exit(
+        token,
+        RESTART_CLOSE_DEADLINE,
+        Arc::new(|| exit_once(RESTART_EXIT_CODE)),
+    )
+}
+
+/// Return the closure's outcome to `main`, or, after a restart request,
+/// exit with the restart code without returning, so the runtime is never
+/// dropped and a blocking task a hung driver call holds cannot hold the
+/// exit.
+///
+/// The line it logs on the way out says the service closed in order, which
+/// an exit at the close deadline never logs: each driver's restart scenario
+/// tells the two apart by it.
+fn finish_console(name: &'static str, restart: &Restart, result: RunResult) -> ServiceResult {
+    if restart.is_requested() {
+        if let Err(e) = &result {
+            tracing::warn!("{name}: the run ended with an error while restarting: {e}");
+        }
+        tracing::info!(
+            "{name}: closed after the restart request; exiting with code {RESTART_EXIT_CODE}"
+        );
+        exit_once(RESTART_EXIT_CODE);
+    }
+    result.map_err(report_from_boxed)
 }
 
 /// The platform's "stop this process" event, for the shutdown log line.
@@ -496,16 +600,20 @@ mod scm {
     //! `Box<dyn FnOnce(...)>` and stashed in a `OnceLock` so the
     //! `extern "system" fn` SCM entry point can reach it.
     use super::{
-        report_from_boxed, Future, ReloadSignal, RunError, RunResult, ServiceResult, Shutdown,
+        report_from_boxed, Future, ReloadSignal, Restart, RunError, RunResult, ServiceResult,
+        Shutdown, RESTART_CLOSE_DEADLINE, RESTART_EXIT_CODE,
     };
+    use crate::restart::claim_exit_or_wait;
     use std::ffi::OsString;
     use std::pin::Pin;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
     use windows_service::service::{
         ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
         ServiceType,
     };
-    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+    use windows_service::service_control_handler::{
+        self, ServiceControlHandlerResult, ServiceStatusHandle,
+    };
 
     type PlainFn = Box<dyn FnOnce(Shutdown) -> Pin<Box<dyn Future<Output = RunResult>>> + Send>;
     type WithReloadFn =
@@ -626,11 +734,37 @@ mod scm {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?;
-        let shutdown = Shutdown::from_token(token);
+        let name = cfg.name;
+        // The deadline passed with the close still running: report the
+        // restart's stop and end the process from the watchdog's thread.
+        let restart = Restart::with_exit(
+            token.clone(),
+            RESTART_CLOSE_DEADLINE,
+            Arc::new(move || {
+                claim_exit_or_wait();
+                report_restart_stop(status_handle, name);
+                std::process::exit(RESTART_EXIT_CODE);
+            }),
+        );
+        let shutdown = Shutdown::new(token, restart.clone());
         let result = match run_fn {
             BoxedRunFn::Plain(f) => rt.block_on(f(shutdown)),
             BoxedRunFn::WithReload(f) => rt.block_on(f(shutdown, reload)),
         };
+
+        // A requested restart stops with the restart code, so the failure
+        // actions start the service again and the stop record names the
+        // cause. The runtime is shut down without waiting for its blocking
+        // tasks, which a hung driver call may hold.
+        if restart.is_requested() {
+            claim_exit_or_wait();
+            if let Err(e) = &result {
+                tracing::warn!("{name}: the run ended with an error while restarting: {e}");
+            }
+            rt.shutdown_background();
+            report_restart_stop(status_handle, name);
+            return Ok(());
+        }
 
         // Surface the closure's outcome to SCM. This is the failure-visibility
         // mechanism ADR-015 / windows-packaging W1 pins: on Err we still
@@ -674,6 +808,24 @@ mod scm {
             })? = Some(e);
         }
         Ok(())
+    }
+
+    /// Report `SERVICE_STOPPED` with the restart code as the service-specific
+    /// exit code.
+    fn report_restart_stop(status_handle: ServiceStatusHandle, name: &'static str) {
+        tracing::info!("{name}: stopping with code {RESTART_EXIT_CODE} to restart");
+        let stopped = status_handle.set_service_status(ServiceStatus {
+            service_type: ServiceType::OWN_PROCESS,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::ServiceSpecific(RESTART_EXIT_CODE.unsigned_abs()),
+            checkpoint: 0,
+            wait_hint: std::time::Duration::default(),
+            process_id: None,
+        });
+        if let Err(e) = stopped {
+            tracing::error!("{name}: could not report the restart's stop to the SCM: {e}");
+        }
     }
 }
 
@@ -809,6 +961,88 @@ mod tests {
             err.to_string().contains("with_reload"),
             "error should mention with_reload, got: {err}"
         );
+    }
+
+    #[test]
+    fn only_the_scm_holds_a_service_back_on_its_absent_condition() {
+        let dir = tempfile::tempdir().unwrap();
+        let present = dir.path().join("present.json");
+        std::fs::write(&present, "{}").unwrap();
+        let absent = dir.path().join("absent.json");
+
+        assert!(
+            !may_start("test-condition", true, Some(&absent)),
+            "the SCM started a service whose condition's path does not exist"
+        );
+        assert!(may_start("test-condition", true, Some(&present)));
+        assert!(may_start("test-condition", true, None));
+        assert!(
+            may_start("test-condition", false, Some(&absent)),
+            "a console run must meet the missing file itself"
+        );
+    }
+
+    /// A path whose parent is a file cannot be checked on Unix (`ENOTDIR`,
+    /// where Windows says `NotFound`): the service starts and meets it.
+    #[cfg(unix)]
+    #[test]
+    fn a_condition_that_cannot_be_checked_does_not_hold_the_service_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        assert!(may_start(
+            "test-condition",
+            true,
+            Some(&file.join("config.json"))
+        ));
+    }
+
+    /// Off Windows `--service` changes nothing, the condition included.
+    #[test]
+    fn only_a_windows_build_with_scm_dispatches_to_the_scm() {
+        let runner = ServiceRunner::new("test-dispatch");
+        assert!(!runner.dispatches_to_scm());
+        assert_eq!(
+            runner.scm_mode(true).dispatches_to_scm(),
+            cfg!(all(windows, feature = "scm"))
+        );
+    }
+
+    #[test]
+    fn a_console_run_ignores_the_condition_and_runs_the_closure() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_for_closure = Arc::clone(&calls);
+
+        let result = ServiceRunner::new("test-condition-console")
+            .condition_path_exists(dir.path().join("absent.json"))
+            .run(move |_shutdown| async move {
+                calls_for_closure.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+
+        result.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_console_run_with_reload_ignores_the_condition_too() {
+        let _guard = SIGNAL_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_for_closure = Arc::clone(&calls);
+
+        let result = ServiceRunner::new("test-condition-console-reload")
+            .with_reload()
+            .condition_path_exists(dir.path().join("absent.json"))
+            .run_with_reload(move |_shutdown, _reload| async move {
+                calls_for_closure.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            });
+
+        result.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[cfg(unix)]

@@ -1,6 +1,8 @@
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
 
+use crate::Restart;
+
 /// Cooperative shutdown handle.
 ///
 /// Backed by a [`CancellationToken`] so it composes with any code that
@@ -13,12 +15,18 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug)]
 pub struct Shutdown {
     token: CancellationToken,
+    restart: Restart,
 }
 
 impl Shutdown {
-    #[allow(dead_code)] // wired up by the runner in Phase 1 impl
-    pub(crate) const fn from_token(token: CancellationToken) -> Self {
-        Self { token }
+    /// `restart` must cancel `token` when requested.
+    pub(crate) const fn new(token: CancellationToken, restart: Restart) -> Self {
+        Self { token, restart }
+    }
+
+    #[cfg(test)]
+    fn from_token(token: CancellationToken) -> Self {
+        Self::new(token.clone(), Restart::new(token))
     }
 
     /// Clone of the underlying [`CancellationToken`] for handing to
@@ -46,6 +54,16 @@ impl Shutdown {
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
     }
+
+    /// The handle that asks the service to restart: a request cancels this
+    /// shutdown, and the runner exits with
+    /// [`RESTART_EXIT_CODE`](crate::RESTART_EXIT_CODE) once the run closure
+    /// returns (docs/crates/rusty-photon-service-lifecycle.md § Restart on
+    /// request).
+    #[must_use]
+    pub fn restart(&self) -> Restart {
+        self.restart.clone()
+    }
 }
 
 #[cfg(test)]
@@ -71,5 +89,13 @@ mod tests {
         let waiter = tokio::spawn(async move { shutdown.cancelled().await });
         cloned_token.cancel();
         waiter.await.unwrap();
+    }
+
+    #[test]
+    fn a_restart_request_cancels_the_shutdown() {
+        let shutdown = Shutdown::from_token(CancellationToken::new());
+        shutdown.restart().request();
+        assert!(shutdown.is_cancelled());
+        assert!(shutdown.restart().is_requested());
     }
 }

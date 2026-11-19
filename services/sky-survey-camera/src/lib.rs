@@ -60,7 +60,7 @@ pub use survey::SurveyClient;
 
 use ascom_alpaca::api::CargoServerInfo;
 use ascom_alpaca::Server;
-use rusty_photon_service_lifecycle::{ReloadSignal, Shutdown};
+use rusty_photon_service_lifecycle::{ReloadSignal, Restart, Shutdown};
 use std::future::Future;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -143,6 +143,7 @@ pub async fn run_reloadable(
         tracing::debug!(path = ?config_path, wrote = outcome.wrote, filled = ?outcome.filled, "materialized device identity");
     }
 
+    let restart = shutdown.restart();
     loop {
         let config = load_config(config_path).await?;
         let survey_client = build_survey_client(&config)?;
@@ -172,7 +173,14 @@ pub async fn run_reloadable(
                 }
             }
         };
-        run_with_client_pages(config, survey_client, Some(pages), stop).await?;
+        run_with_client_pages(
+            config,
+            survey_client,
+            Some(pages),
+            Some(restart.clone()),
+            stop,
+        )
+        .await?;
 
         if reloaded.load(Ordering::SeqCst) {
             tracing::debug!("reloading sky-survey-camera configuration");
@@ -194,14 +202,17 @@ pub async fn run_with_client(
     survey_client: Arc<dyn SurveyClient>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), SkySurveyCameraError> {
-    run_with_client_pages(config, survey_client, None, shutdown).await
+    run_with_client_pages(config, survey_client, None, None, shutdown).await
 }
 
-/// As [`run_with_client`], but serves the setup pages.
+/// As [`run_with_client`], but serves the setup pages and the restart
+/// routes.
 ///
 /// The server page behind `/setup` and the camera's page behind its device
 /// share the one handler. Without one, the server answers both with the
-/// crate's defaults.
+/// crate's defaults. `restart` is the runner's restart handle, which
+/// `POST /service/v1/restart` requests; without one the restart routes are
+/// not served.
 ///
 /// # Errors
 ///
@@ -211,6 +222,7 @@ pub async fn run_with_client_pages(
     config: Config,
     survey_client: Arc<dyn SurveyClient>,
     pages: Option<Arc<SetupPages<SkySurveyCameraDriver>>>,
+    restart: Option<Restart>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), SkySurveyCameraError> {
     let device = build_device(config.clone(), survey_client)?;
@@ -228,7 +240,9 @@ pub async fn run_with_client_pages(
     server.devices.register(device);
 
     let alpaca_service = server.into_service();
-    let app = routes::build_router(shared_state).fallback_service(alpaca_service);
+    let app = routes::build_router(shared_state)
+        .merge(rusty_photon_driver::restart::router(restart))
+        .fallback_service(alpaca_service);
     let app = match &config.server.auth {
         Some(auth) => {
             if config.server.tls.is_none() {

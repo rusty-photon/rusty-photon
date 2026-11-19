@@ -3,13 +3,12 @@
 `svbony-camera` runs on Windows and passes ASCOM ConformU against real
 hardware (see the
 [validation record](validation/2026-07-26-svbony-camera-sv605cc-windows/README.md)),
-but it is **not yet part of the Windows MSI suite** — SVBony gates both its
-SDK and its driver behind a captcha'd download page, so neither can be
+but the **Windows MSI does not install it** — SVBony gates both its SDK
+and its driver behind a captcha'd download page, so neither can be
 fetched automatically ([ADR-018](decisions/018-svbony-sdk-no-license-payload-policy.md))
-and both installs below are manual. Until
-[#720](https://github.com/rusty-photon/rusty-photon/issues/720) Part 2 lands
-an MSI story, install from source as follows. Everything else about
-Windows deployments (config locations, doctor, logs) matches the
+and both installs below are manual. Install from source as follows.
+Everything else about Windows deployments (config locations, doctor,
+logs) matches the
 [Windows packaging & deployment guide](packaging-windows.md).
 
 ## 1. Install the SVBony camera driver (required)
@@ -36,9 +35,12 @@ zero cameras.
 
 1. From the same downloads page, fetch the Windows SDK zip pinned by this
    workspace: **`windows-SVBCameraSDK-v1.13.4.zip`** (the SDK version must
-   match the pin — check `crates/svbony-rs/libsvbony-sys/build.rs` if in
-   doubt).
-2. Extract it somewhere stable, e.g. `C:\SVBONY`. The pieces that matter:
+   match the pin — `WINDOWS_SDK_VERSION`, beside the vendor zip's
+   `WINDOWS_SDK_SHA256`, in
+   `.github/actions/install-svbony-sdk/svbony-sdk.mjs`).
+2. Extract it into `C:\`. The zip holds one top-level `SVBONY\` folder, so
+   this gives `C:\SVBONY`, the path the steps below use; extracting into
+   `C:\SVBONY` itself gives `C:\SVBONY\SVBONY`. The pieces that matter:
    `C:\SVBONY\lib\x64\SVBCameraSDK.lib` (build-time link) and
    `C:\SVBONY\lib\x64\SVBCameraSDK.dll` (runtime).
 
@@ -113,11 +115,17 @@ target\release\svbony-camera.exe
 
 ## Notes
 
-- On connect, the SVBony SDK writes a per-model parameter file
-  (`<model>_Cfg_A.bin`, from the handshake's `SVBRestoreDefaultParam`) to
-  `%APPDATA%\CKConfig\`. This is SDK behavior, harmless, and safe to delete
-  when the camera is closed. (The driver turns the SDK's parameter auto-save
-  off at connect, so the `_Cfg_SAVE.bin` it used to write at close no longer
-  appears — see the design doc's "Working directory" section.)
+- On connect, the handshake's `SVBRestoreDefaultParam` writes a pair of
+  per-model parameter files to `%APPDATA%\CKConfig\`: `<model>_Cfg_A.bin`
+  and a byte-identical `<model>_Cfg_SAVE.bin`. Close rewrites neither. This
+  is SDK behavior, harmless, and both files are safe to delete when the
+  camera is closed. The pair and its behavior at close were observed on the
+  rig under Linux, where the SDK writes them to the working directory. The
+  driver turns the SDK's parameter auto-save off at connect, so the SDK
+  saves no session state there at close, and the restore starts every
+  session from the SDK's device defaults — see
+  [svbony-camera.md § Working directory](services/svbony-camera.md#working-directory-sdk-persisted-camera-config).
 - `svbony-camera.exe --help` lists the service flags (`--config`,
-  `--port`, `--log-level`, and the `doctor` subcommand's `--json`).
+  `--port`, `--log-level`) and the `doctor` subcommand, whose own `--help`
+  lists `--config`, `--json` and `--devices` (this driver's cameras on the
+  bus by USB port, with the `usb_devices` block to paste).

@@ -9,7 +9,7 @@ await run(async () => {
   const workspace = process.env.GITHUB_WORKSPACE;
   const temp = process.env.RUNNER_TEMP;
   if (!workspace || !temp) throw new Error('GITHUB_WORKSPACE and RUNNER_TEMP are not set: this runs only as a GitHub Actions step');
-  const { rotated, upstream } = await detect({
+  const { rotated, upstream, unavailable = false } = await detect({
     runner: getInput('runner', { required: true }),
     verify: getBooleanInput('verify'),
     here: runnerKey(),
@@ -18,5 +18,6 @@ await run(async () => {
     fixtures: path.join(workspace, FIXTURES),
   });
   setOutput('rotated', String(rotated));
-  setOutput('sha', upstream);
+  setOutput('unavailable', String(unavailable));
+  setOutput('sha', upstream ?? '');
 });

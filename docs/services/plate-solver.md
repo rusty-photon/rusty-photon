@@ -191,7 +191,12 @@ expiry is:
      The child is spawned with `CREATE_NEW_PROCESS_GROUP` so the event
      reaches it without affecting the wrapper. A wrapper with no
      console to send it through (one running as a Windows service)
-     cannot deliver it, and goes straight to the force-kill stage.
+     cannot deliver it, and goes straight to the force-kill stage. A
+     child still starting up handles the event only once its start-up
+     ends, so one that takes longer to start than deadline plus grace is
+     force-killed
+     ([crate doc](../crates/rusty-photon-process.md#stopping-escalates-and-stops-the-whole-tree));
+     at real solve deadlines ASTAP is long past start-up.
 
    ASTAP normally responds cleanly within ~100 ms.
 2. **t = deadline + 2 s (force-kill stage):** whatever is left of the
@@ -439,10 +444,13 @@ The service reads a single JSON config file. `--config` names it
 explicitly; when omitted, the path resolves to the platform default
 (`~/.config/rusty-photon/plate-solver.json` on Linux,
 `%PROGRAMDATA%\rusty-photon\plate-solver.json` on Windows) via
-`rusty-photon-config`. There is no built-in default config — the
-file must exist (`astap_binary_path` / `astap_db_directory` are
-mandatory), so the packaged systemd unit gates on it with
-`ConditionPathExists` instead of crash-looping on a fresh install.
+`rusty-photon-config`. There is no built-in default config — the file
+must exist (`astap_binary_path` / `astap_db_directory` are mandatory),
+so the packaged systemd unit gates on it with `ConditionPathExists`
+instead of crash-looping on a fresh install. Run by the Windows SCM
+without the file, the service stops at once with exit code 0, which the
+failure actions leave alone (`ServiceRunner::condition_path_exists`;
+[ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
 
 `plate-solver doctor [--config <file>] [--json]` diagnoses this service's
 own config read-only without starting it — see
@@ -489,8 +497,7 @@ for "where is ASTAP" — see [Configuration Validation](#configuration-validatio
 ## Subprocess Test Doubles
 
 The service ships an in-tree `mock_astap` `[[bin]]` that mimics the
-ASTAP CLI surface and is used in BDD and runner integration tests. The
-pattern mirrors `services/phd2-guider/src/bin/mock_phd2.rs`.
+ASTAP CLI surface and is used in BDD and runner integration tests.
 
 Behavior is selected via the `MOCK_ASTAP_MODE` environment variable
 the test sets before spawning the wrapper:
@@ -520,7 +527,10 @@ rather than race them, and reads the wrapper's own account of what it did.
 The solve handler logs at `debug` — `solve request queued behind a running
 solve` when the semaphore refuses a request, `starting the solve` with the
 timeout it hands the runner, and `solve finished` before the permit drops —
-and the BDD world runs the wrapper with `RUST_LOG=info,plate_solver=debug`.
+and the BDD world runs the wrapper with
+`RUST_LOG=info,plate_solver=debug,rusty_photon_process=debug`, the second
+part so that a failed supervision scenario's log says how each deadline
+stop went.
 The scenario releases the first solve only after its child has recorded
 its start and the wrapper has logged the second request queueing, then
 holds it 500 ms more, longer than the second request's 100 ms timeout.
@@ -537,8 +547,7 @@ discover it in this order: explicit `MOCK_ASTAP_BINARY` env var
 run under Cargo and Bazel without divergent code paths. Pure
 `env!()` is intentionally avoided because `CARGO_BIN_EXE_*` is
 unset under Bazel and unset for `#[cfg(test)] mod tests` inside
-`src/`. Same lookup `services/phd2-guider/tests/test_integration.rs`
-uses for `mock_phd2`.
+`src/`.
 
 ### Real-ASTAP Coverage Cadence
 
@@ -549,7 +558,7 @@ the env var is unset (the PR-required path). They fire when the env
 var is set, which is the dedicated nightly cross-platform smoke
 workflow's job. To fire them on a developer's machine,
 `bazel run //.github/actions:install -- astap` installs the CLI and
-the D05 database the smoke pins into `~/.local/opt/astap` and prints
+the D20 database the smoke pins into `~/.local/opt/astap` and prints
 the `ASTAP_BINARY` and `ASTAP_DB_DIR` to set; then run
 `cargo test -p plate-solver --all-features --test bdd`, as the smoke
 does. See `docs/plans/archive/plate-solver.md` §"Real-ASTAP
@@ -639,5 +648,3 @@ autonomous restart. The wrapper's graceful-shutdown semantics
 - rp design doc, §"Plate Solver" — `docs/services/rp.md`
 - rp design doc, §"Sentinel Watchdog Integration" — `docs/services/rp.md`
 - rp design doc, §"File Accessibility" — `docs/services/rp.md`
-- Reference service shape — `docs/services/phd2-guider.md`
-- Mock-binary precedent — `services/phd2-guider/src/bin/mock_phd2.rs`

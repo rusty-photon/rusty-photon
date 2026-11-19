@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::Focuser;
 use tracing::{debug, error};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{establish_listed, reported_name, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
@@ -151,8 +152,9 @@ fn step_size_read(focuser_id: &str, read: ascom_alpaca::ASCOMResult<f64>) -> Opt
 pub(super) async fn establish_focuser(
     config: &config::FocuserConfig,
     ca_cert_path: Option<&std::path::Path>,
+    budget: ConnectBudget,
 ) -> Result<(Arc<dyn Focuser>, FocuserInvariants), EstablishError> {
-    let foc = establish_listed(config, ca_cert_path).await?;
+    let foc = establish_listed(config, ca_cert_path, budget).await?;
 
     // The name, `StepSize` and `MaxStep` are invariant for the life of
     // the session: read once here, after `set_connected` (some drivers
@@ -174,7 +176,7 @@ pub(super) async fn connect_focuser(
 ) -> FocuserEntry {
     debug!(focuser_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to focuser");
 
-    match establish_focuser(config, ca_cert_path).await {
+    match establish_focuser(config, ca_cert_path, ConnectBudget::Full).await {
         Ok((foc, invariants)) => {
             debug!(
                 focuser_id = %config.id,

@@ -48,7 +48,7 @@ pub struct FilemonitorWorld {
     // TLS + auth test state (shared PKI fixture: CA, service cert, credentials)
     pub pki: Option<std::sync::Arc<bdd_infra::tls_auth::PkiFixture>>,
 
-    // The device's (now empty) action list
+    // The device's empty action list
     pub last_supported_actions: Option<Vec<String>>,
     pub last_ascom_error: Option<ascom_alpaca::ASCOMError>,
 
@@ -57,6 +57,7 @@ pub struct FilemonitorWorld {
     pub tls_auth: TlsAuthState,
     /// State for the shared setup-page steps (`setup_pages.feature`).
     pub setup_pages: SetupPagesState,
+    pub service_restart: bdd_infra::service_restart::ServiceRestartState,
 
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
@@ -76,6 +77,27 @@ pub struct FilemonitorWorld {
 impl SetupPagesWorld for FilemonitorWorld {
     fn setup_pages(&mut self) -> &mut SetupPagesState {
         &mut self.setup_pages
+    }
+}
+
+impl bdd_infra::service_restart::ServiceRestartWorld for FilemonitorWorld {
+    fn service_restart(&mut self) -> &mut bdd_infra::service_restart::ServiceRestartState {
+        &mut self.service_restart
+    }
+
+    fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
+        self.filemonitor
+            .as_mut()
+            .expect("the service was not started")
+    }
+
+    fn service_behind_auth(&self) -> (u16, &bdd_infra::tls_auth::PkiFixture) {
+        let port = self
+            .filemonitor
+            .as_ref()
+            .expect("the service was not started")
+            .port();
+        (port, self.pki.as_deref().expect("TLS certs not generated"))
     }
 }
 

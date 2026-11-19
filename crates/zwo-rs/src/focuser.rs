@@ -8,9 +8,10 @@
 //! feature a single fabricated `EAF-Simulated` focuser is presented and the SDK
 //! is never called.
 //!
-//! Note: like EFW, EAF status codes (`EAF_ERROR_CODE`) are a signed `c_int` (the
-//! header's `EAF_ERROR_END = -1` makes the enum signed), so the return value is
-//! fed to [`crate::eaf_check`] directly, with no `as i32` cast.
+//! Note: like EFW, EAF status codes (`EAF_ERROR_CODE`) are a signed `c_int` on
+//! every platform (the header's `EAF_ERROR_END = -1` makes the enum signed), so
+//! [`crate::eaf_check`] takes an `i32` and the return value is fed to it
+//! directly.
 
 #[cfg(not(feature = "simulation"))]
 use crate::ffi_util::{c_string_field, hex8};
@@ -304,7 +305,9 @@ impl Focuser {
     ///
     /// The SDK's `pbHandControl` out-parameter (whether the physical hand-paddle
     /// is driving the move) is read but discarded: no ASCOM `Focuser` property
-    /// maps to it (see `docs/services/zwo-focuser.md` "MVP scope").
+    /// maps to it (the `zwo-focuser` driver's [MVP scope][mvp-scope]).
+    ///
+    /// [mvp-scope]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-focuser.md#mvp-scope
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the SDK call fails.
@@ -330,9 +333,11 @@ impl Focuser {
     /// Move to absolute `position` (0-based step count, `0..=max_step`).
     ///
     /// The SDK itself does not document a bounds check for `EAFMove`; range
-    /// validation against `max_step` is the ASCOM device's responsibility (see
-    /// `docs/services/zwo-focuser.md` "ASCOM Focuser Mapping"). The `simulation`
-    /// backend enforces the same bound for test fidelity.
+    /// validation against `max_step` is the ASCOM device's responsibility (the
+    /// `zwo-focuser` driver's [ASCOM Focuser Mapping][mapping]). The
+    /// `simulation` backend enforces the same bound for test fidelity.
+    ///
+    /// [mapping]: https://github.com/rusty-photon/rusty-photon/blob/main/docs/services/zwo-focuser.md#ascom-focuser-mapping
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the focuser is already moving or the SDK call
@@ -425,8 +430,7 @@ impl Focuser {
     }
 
     /// Set the current position without moving (`EAFResetPostion`, the header's
-    /// own spelling). Kept for parity with `EFW`'s `calibrate`; not called by
-    /// the ASCOM device in v0.
+    /// own spelling). The `zwo-focuser` driver never calls it.
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the SDK call fails.
@@ -936,8 +940,10 @@ mod departure_tests {
         assert_eq!(focuser.reverse().unwrap_err(), removed);
         assert_eq!(focuser.serial().unwrap_err(), removed);
         assert_eq!(focuser.firmware_version().unwrap_err(), removed);
-        // The writes the probe did not send on hardware answer the same way:
-        // every call that needs the session does.
+        // The two writes are unmeasured (the SDK probe in
+        // docs/validation/2026-10-07-zwo-focuser-departure-linux/ sent
+        // neither); they answer the same way, as every call that needs the
+        // session does.
         assert_eq!(focuser.set_reverse(true).unwrap_err(), removed);
         assert_eq!(focuser.reset_position(42).unwrap_err(), removed);
         // The cached info needs no session, as `EAFGetProperty` needs none.

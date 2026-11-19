@@ -438,29 +438,31 @@ async fn abort_exposures(equipment: &EquipmentRegistry) {
 }
 
 /// Upper bound on how long the unsafe transition waits for stop-guiding
-/// to confirm before moving on to parking regardless. The guider
-/// service's own `stop_timeout` config defaults to 10 s
-/// (`phd2-guider.md` § "POST /api/v1/guiding/stop"), so this leaves
-/// margin for a normal confirmed stop to land without letting a wedged
-/// guider service (or an operator-configured `guider.timeout` far
-/// longer than the client call would otherwise honor) delay parking —
-/// the safety-critical step — for the client's full HTTP timeout.
+/// to confirm before moving on to parking regardless. The guider's own
+/// `stop_timeout` defaults to 10 s (guider.md § `POST
+/// /api/v1/guiding/stop`), so this leaves margin for a normal confirmed
+/// stop to land without letting a wedged guider (or a configured
+/// `timeout` far longer than that) delay parking — the safety-critical
+/// step — for the client's full HTTP timeout.
 const SAFETY_STOP_GUIDING_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Best-effort stop-guiding through the shared guider client — the
 /// guide loop must not keep dragging the mount while conditions are
 /// unsafe. Emits `guide_stopped` with `reason: "safety"` on a
-/// confirmed stop; a failure (service down, PHD2 gone) or a stop that
-/// doesn't confirm within [`SAFETY_STOP_GUIDING_TIMEOUT`] is logged and
-/// swallowed so the park below still runs promptly.
+/// confirmed stop; a failure (the guider down or refusing) or a stop
+/// that doesn't confirm within [`SAFETY_STOP_GUIDING_TIMEOUT`] is logged
+/// and swallowed so the park below still runs promptly.
 async fn stop_guiding(guider: Option<&Arc<dyn rp_guider::GuiderClient>>, event_bus: &EventBus) {
     let Some(client) = guider else {
         return;
     };
     match tokio::time::timeout(SAFETY_STOP_GUIDING_TIMEOUT, client.stop_guiding()).await {
-        Ok(Ok(())) => {
+        Ok(Ok(_)) => {
             debug!("guiding stopped on unsafe transition");
-            event_bus.emit("guide_stopped", serde_json::json!({ "reason": "safety" }));
+            event_bus.emit(
+                "guide_stopped",
+                serde_json::json!({ "reason": "safety", "stop_reason": null }),
+            );
         }
         Ok(Err(e)) => {
             debug!(error = %e, "stop_guiding failed during unsafe transition");
@@ -478,12 +480,23 @@ async fn stop_guiding(guider: Option<&Arc<dyn rp_guider::GuiderClient>>, event_b
 /// [`abort_exposures`]: the Alpaca `Park` is issued and logged, but
 /// the enforcer does not block on `AtPark` (Sentinel's watchdog owns
 /// escalation if the mount never gets there).
+///
+/// A mount held out through `disconnect_device` hands out no handle, so
+/// it is skipped with a warning: a workflow parks the mount before it
+/// holds it out (rp.md § Power Switching).
 async fn park_mount(equipment: &EquipmentRegistry) {
     let Some(mount) = &equipment.mount else {
         return;
     };
     let Some(device) = mount.device() else {
-        debug!("mount not connected; skipping park on unsafe transition");
+        if mount.session.is_held_out() {
+            warn!(
+                "the mount is held out of rp (disconnect_device), so the unsafe transition does \
+                 not park it"
+            );
+        } else {
+            debug!("mount not connected; skipping park on unsafe transition");
+        }
         return;
     };
     match device.park().await {
@@ -802,7 +815,9 @@ mod tests {
     async fn unsafe_transition_stops_guiding_and_emits_the_safety_stop_event() {
         let enforcer =
             enforcer_with_guider(vec![ScriptedProbe::new("sm", vec![Ok(false)])], |mock| {
-                mock.expect_stop_guiding().times(1).returning(|| Ok(()));
+                mock.expect_stop_guiding()
+                    .times(1)
+                    .returning(|| Ok(rp_guider::GuiderState::Idle));
             });
         let mut events = enforcer.event_bus.subscribe();
 
@@ -814,11 +829,12 @@ mod tests {
         let stopped = events.recv().await.unwrap();
         assert_eq!(stopped.event, "guide_stopped");
         assert_eq!(stopped.payload["reason"], "safety");
+        assert!(stopped.payload["stop_reason"].is_null());
     }
 
-    /// A guider that cannot be stopped (service down, PHD2 gone) must
-    /// not derail the rest of the unsafe handling — and must not
-    /// pretend guiding stopped by emitting the event.
+    /// A guider that cannot be stopped (the service is down) must not
+    /// derail the rest of the unsafe handling — and must not pretend
+    /// guiding stopped by emitting the event.
     #[tokio::test]
     async fn stop_guiding_failure_is_swallowed_without_an_event() {
         let enforcer =
@@ -863,9 +879,9 @@ mod tests {
     }
 
     /// A `GuiderClient` whose `stop_guiding` never resolves — stands in
-    /// for a wedged guider service (process hung, not just PHD2) to
-    /// prove `stop_guiding`'s timeout wrapper actually engages instead
-    /// of blocking the unsafe transition indefinitely.
+    /// for a wedged guider service to prove `stop_guiding`'s timeout
+    /// wrapper actually engages instead of blocking the unsafe
+    /// transition indefinitely.
     struct HangingGuiderClient;
 
     #[async_trait::async_trait]
@@ -877,15 +893,18 @@ mod tests {
             unreachable!("not exercised by this test")
         }
 
-        async fn stop_guiding(&self) -> Result<(), rp_guider::GuiderError> {
+        async fn stop_guiding(&self) -> Result<rp_guider::GuiderState, rp_guider::GuiderError> {
             std::future::pending().await
         }
 
-        async fn pause_guiding(&self, _full: bool) -> Result<(), rp_guider::GuiderError> {
+        async fn pause_guiding(
+            &self,
+            _full: bool,
+        ) -> Result<rp_guider::GuiderState, rp_guider::GuiderError> {
             unreachable!("not exercised by this test")
         }
 
-        async fn resume_guiding(&self) -> Result<(), rp_guider::GuiderError> {
+        async fn resume_guiding(&self) -> Result<rp_guider::GuiderState, rp_guider::GuiderError> {
             unreachable!("not exercised by this test")
         }
 
@@ -893,6 +912,10 @@ mod tests {
             &self,
             _request: rp_guider::DitherRequest,
         ) -> Result<rp_guider::SettledOutcome, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn abort_dither(&self) -> Result<bool, rp_guider::GuiderError> {
             unreachable!("not exercised by this test")
         }
 
@@ -906,17 +929,17 @@ mod tests {
             unreachable!("not exercised by this test")
         }
 
-        async fn current_equipment(
+        async fn devices(&self) -> Result<rp_guider::GuiderDevices, rp_guider::GuiderError> {
+            unreachable!("not exercised by this test")
+        }
+
+        async fn clear_calibration(
             &self,
-        ) -> Result<rp_guider::PhdEquipment, rp_guider::GuiderError> {
+        ) -> Result<rp_guider::GuiderState, rp_guider::GuiderError> {
             unreachable!("not exercised by this test")
         }
 
-        async fn clear_calibration(&self) -> Result<(), rp_guider::GuiderError> {
-            unreachable!("not exercised by this test")
-        }
-
-        async fn reselect_star(&self) -> Result<(), rp_guider::GuiderError> {
+        async fn reselect_star(&self) -> Result<rp_guider::GuiderState, rp_guider::GuiderError> {
             unreachable!("not exercised by this test")
         }
     }
@@ -1061,10 +1084,13 @@ mod tests {
         assert!(enforcer.is_none());
     }
 
-    /// The unsafe transition parks a connected mount: a registry with
-    /// a real (stubbed-Alpaca) mount must receive `PUT park`.
-    #[tokio::test]
-    async fn unsafe_transition_parks_the_connected_mount() {
+    /// A registry whose mount is a stubbed Alpaca telescope that connects,
+    /// the flag its `PUT park` sets, and the stub, which serves while held.
+    async fn registry_with_a_parkable_mount() -> (
+        Arc<EquipmentRegistry>,
+        Arc<AtomicBool>,
+        crate::equipment::test_support::AlpacaStub,
+    ) {
         use axum::routing::{get, put};
         use axum::{Json, Router};
 
@@ -1124,6 +1150,14 @@ mod tests {
                 .is_some_and(crate::equipment::MountEntry::is_connected),
             "test setup: the stubbed mount must connect"
         );
+        (equipment, park_called, stub)
+    }
+
+    /// The unsafe transition parks a connected mount: a registry with
+    /// a real (stubbed-Alpaca) mount must receive `PUT park`.
+    #[tokio::test]
+    async fn unsafe_transition_parks_the_connected_mount() {
+        let (equipment, park_called, _stub) = registry_with_a_parkable_mount().await;
 
         let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
         enforcer.equipment = equipment;
@@ -1134,6 +1168,32 @@ mod tests {
         assert!(
             park_called.load(Ordering::SeqCst),
             "the unsafe transition must command Park on the connected mount"
+        );
+    }
+
+    /// A mount held out through `disconnect_device` hands out no handle,
+    /// so the unsafe transition does not park it (rp.md § Power
+    /// Switching); the transition still gates.
+    #[tokio::test]
+    async fn unsafe_transition_skips_a_held_out_mount() {
+        let (equipment, park_called, _stub) = registry_with_a_parkable_mount().await;
+        equipment
+            .mount
+            .as_ref()
+            .expect("test setup: the mount is configured")
+            .session
+            .hold_out();
+
+        let mut enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        enforcer.equipment = equipment;
+
+        let mut state = HashMap::new();
+        enforcer.poll_once(&mut state, true).await;
+
+        assert!(!enforcer.status.is_safe());
+        assert!(
+            !park_called.load(Ordering::SeqCst),
+            "the unsafe transition must not park a held-out mount"
         );
     }
 

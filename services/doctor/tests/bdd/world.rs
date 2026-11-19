@@ -18,7 +18,8 @@ pub struct DoctorWorld {
     pub pem_paths: Vec<PathBuf>,
     /// The data directory staged by the rp session steps.
     pub data_dir: Option<PathBuf>,
-    /// Overrides the scenario's config dir for the exit-2 scenario.
+    /// Overrides the scenario's config dir, for the scenarios that point
+    /// doctor at a directory that does not exist or at a file.
     pub config_dir_override: Option<PathBuf>,
     pub output: Option<Output>,
     pub report: Option<serde_json::Value>,
@@ -217,9 +218,10 @@ impl DoctorWorld {
         self.snapshot_pki();
     }
 
-    /// Stage a representative (not field-complete) `acme.json` so the
-    /// provisioning pass sees an ACME install — doctor keys only on the
-    /// file's presence and never parses it.
+    /// Stage an `acme.json` for `domain`, so the run sees an ACME install.
+    /// The provisioning pass keys on the file's presence, but the joins and
+    /// the convergence checks parse it for its `domain` and `staging` flag,
+    /// so it carries every field `AcmeConfig` requires.
     pub fn stage_acme_config(&mut self, domain: &str) {
         let content = serde_json::json!({
             "email": format!("ops@{domain}"),

@@ -3,7 +3,7 @@
 First real-hardware validation of `svbony-camera` on Windows
 ([issue #720](https://github.com/rusty-photon/rusty-photon/issues/720) Part 1),
 mirroring the Linux SV605CC validation recorded in
-[docs/services/svbony-camera.md](../../services/svbony-camera.md)
+[docs/services/svbony-camera.md](../../plans/archive/svbony-camera-hardware-validation-2026.md#real-hardware-validation)
 ("Real-hardware validation").
 
 ## What was tested

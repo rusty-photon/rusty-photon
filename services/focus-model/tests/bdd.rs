@@ -49,14 +49,10 @@ bdd_infra::bdd_main! {
         .fail_on_skipped()
         .before(|_feature, _rule, _scenario, _world| {
             Box::pin(async move {
-                // Reset every OmniSim device class our scenarios touch
-                // (camera, filter wheel, focuser) to defaults before
-                // each scenario. OmniSim is a per-process singleton;
-                // without this, a scenario's focuser position and
-                // filter slot leak into the next one. Failures from
-                // the very first scenario's hook (before any Given
-                // step has called `OmniSimHandle::start()`) are the
-                // expected connection-refused case.
+                // The scenarios of this process share one OmniSim, so each
+                // starts with every device class restarted to its defaults.
+                // Until a step has started that OmniSim, the call sends
+                // nothing and returns Ok. See docs/skills/testing.md § 5.5.
                 if let Err(errors) =
                     bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
                 {
@@ -93,6 +89,12 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        .run_and_exit("tests/features")
+        // `@wip` scenarios are durable design artifacts for behavior that
+        // is not implemented yet (testing.md §2.7).
+        .filter_run_and_exit("tests/features", |feat, _rule, sc| {
+            let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
+                || sc.tags.iter().any(|t| t == "wip" || t == "@wip");
+            !is_wip
+        })
         .await;
 }

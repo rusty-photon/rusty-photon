@@ -1,0 +1,74 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+# The tests read a FITS frame through rp-fits.
+_INTRA_WORKSPACE_DEV_DEPS = [
+    "//crates/rp-fits:rp-fits",
+]
+
+rust_library(
+    name = "rp-image-analysis",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "rp_image_analysis",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rp-image-analysis_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    # `stars.rs`'s tests embed one of rp's real star-detection frames
+    # with `include_bytes!`; `compile_data` makes it visible to rustc
+    # inside Bazel's compilation sandbox.
+    compile_data = ["//services/rp:star_detection_fixtures"],
+    crate = ":rp-image-analysis",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEV_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# The operator-run kernel timing in examples/, built by `cargo build
+# --all-targets` and never executed in CI. Mirrored here for `bazel build
+# //...` parity; it needs only the lib and ndarray, a normal dep.
+rust_binary(
+    name = "kernel_timing",
+    srcs = ["examples/kernel_timing.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [":rp-image-analysis"] + all_crate_deps(normal = True),
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

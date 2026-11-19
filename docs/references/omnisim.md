@@ -2,7 +2,7 @@
 
 OmniSim is the [ASCOM Alpaca Simulators](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators) — a multi-device ASP.NET Core app that exposes simulated ASCOM hardware (telescope, camera, focuser, filter wheel, etc.) over the standard Alpaca HTTP API. We use it as the device under test in our BDD suites (`crates/bdd-infra/src/rp_harness/omnisim.rs`).
 
-The simulator is *faithful* to real hardware behavior in many ways that aren't immediately obvious from the ASCOM spec, and those behaviors have caused us several days of debugging. This doc captures what we've learned.
+The simulator is *faithful* to real hardware behavior in many ways that aren't immediately obvious from the ASCOM spec. This doc lists those behaviors and how the harness handles them.
 
 ## Single-instance enforcement — and our `--multi-instance` escape hatch
 
@@ -37,7 +37,7 @@ using (var mutex = new Mutex(false, mutexId, out bool createdNew))
 If you see `Timeout waiting for exclusive access` in OmniSim's stderr,
 another instance is already running.
 
-**Our fork lifts this** (issue #467): `ivonnyssen/ASCOM.Alpaca.Simulators`
+**Our fork lifts this**: `ivonnyssen/ASCOM.Alpaca.Simulators`
 release `v0.5.0-467.1` adds a `--multi-instance` flag that skips the mutex
 and the named-pipe server for that process, and `v0.5.0-467.2` adds the
 `OMNISIM_SETTINGS_DIR` environment variable, which re-roots the profile
@@ -46,7 +46,7 @@ instances: the settings write-back is unsynchronised, and the default
 store location is not redirectable per-process on Windows
 (`%USERPROFILE%\.ASCOM` via SHGetKnownFolderPath) or macOS
 (`~/Library/Application Support` via NSSearchPath — .NET honors
-`XDG_CONFIG_HOME` on other Unixes only; a shared store on macOS CI leaked
+`XDG_CONFIG_HOME` on other Unixes only; a store shared on macOS leaks
 one suite's persisted telescope site into another's scenarios). Without
 the flag and variable, behavior is exactly upstream's.
 `bdd_infra::rp_harness::OmniSimHandle` always spawns with both, plus
@@ -54,6 +54,30 @@ the flag and variable, behavior is exactly upstream's.
 every Bazel shard of `rp:bdd`) a private simulator. The `@serial` feature
 tag still serializes scenarios *within* one test process, which share that
 process's instance.
+
+### The Windows tray icon is machine-global too
+
+On Windows 10 and later, OmniSim puts an icon in the notification area
+through H.NotifyIcon 2.3.1. The library keys a tray icon's identity on a
+hash of the process path (`TrayIcon.CreateUniqueGuidForProcessPath`), so
+every OmniSim started from one binary shares one icon GUID, as
+machine-wide as the mutex. Each instance's startup runs
+`TrayIcon.Create()`, which deletes any icon with that GUID, adds its own
+and then sets its version. Two instances starting together interleave
+those calls, and the loser throws `System.InvalidOperationException:
+TryCreate failed.` or `TrySetMostRecentVersion failed.`
+`TrayIconWithContextMenu.Create()` runs that on a thread of its own, so
+OmniSim's try/catch around the call never sees the exception: the process
+dies with exit code `0xe0434352` (an unhandled .NET exception) before it
+serves anything. A process with no desktop (session 0, where services and
+SSH logins run) fails `TryCreate` every time.
+
+The fork's `--multi-instance` skips the icon from `v0.5.0-467.3`, so the
+harness's instances start in any session, and any number of them can
+start at once. On a Windows 11 guest over SSH, `467.2` exits `0xe0434352`
+with `TryCreate failed`, and twelve `467.3` instances started together all
+serve. An OmniSim started without the flag still builds the icon, and
+needs a desktop session.
 
 ## Binding port
 
@@ -84,17 +108,17 @@ every service binary here follows with its `bound_addr=` line. The
 listener holds its port from the moment it exists, so no other process
 can be answering there.
 
-The harness used to probe a port free instead (bind `127.0.0.1:0`, read
-the port, release it) and hand the number to OmniSim. Two OmniSims
+A port probed free instead (bind `127.0.0.1:0`, read the port, release
+it, hand the number to OmniSim) is held by no one between the release
+and OmniSim's bind. Two OmniSims
 cannot listen on one address — the second exits with `Failed to bind to
 address http://127.0.0.1:<port>: address already in use` — but another
-test process could draw the same port in the gap and bind it first, and
-until the losing child exited, the winner answered its readiness probe
-like any healthy OmniSim. In
-[#1499](https://github.com/rusty-photon/rusty-photon/issues/1499), two
-`rp:bdd` shards ran against one instance this way: one shard's
-per-scenario device resets put the filter wheel back on slot 0 and
-disconnected it in the middle of the other's `set_filter` moves.
+test process can draw the same port in the gap and bind it first, and
+until the losing child exits, the winner answers its readiness probe
+like any healthy OmniSim. Two `rp:bdd` shards then run against one
+instance: one shard's per-scenario device resets put the filter wheel
+back on slot 0 and disconnect it in the middle of the other's
+`set_filter` moves.
 
 ## State persistence
 
@@ -132,9 +156,9 @@ a `UniqueID`**. That field is required by `ascom-alpaca`'s
 `get_devices`, which deserialises the roster all-or-nothing, so one bad
 entry fails rp's discovery for **every** device on the instance and the
 BDD suites fail on symptoms several layers downstream ("mount not
-connected", missing `exposure_complete` events, suite timeouts) —
-issue #918, found on an `en_FR` macOS host. GitHub-hosted runners are
-`en_US`, which is the only reason it never showed in CI.
+connected", missing `exposure_complete` events, suite timeouts). An
+`en_FR` macOS host is enough; GitHub-hosted runners are `en_US`, so CI
+never shows it.
 
 `bdd_infra::rp_harness` defends against this twice:
 
@@ -155,8 +179,7 @@ issue #918, found on an `en_FR` macOS host. GitHub-hosted runners are
   deterministic), so a broken seed or a broken host surfaces as one
   named panic in the first scenario instead of a wall of downstream
   assertion failures. The same gate catches the `null` roster entry
-  OmniSim can serialise when its device list is mutated concurrently
-  (#171).
+  OmniSim can serialise when its device list is mutated concurrently.
 
 ## CLI flags
 
@@ -169,7 +192,7 @@ From `readme.md`:
 | `--local-address` | Print the URL of the running instance (when invoked as a second instance) |
 | `--show-browser` | Open the web UI in a browser (when invoked as a second instance) |
 | `--urls <url>` | ASP.NET Core convention; override the bind URL |
-| `--multi-instance` | **Fork-only** (`v0.5.0-467.1+`): skip the single-instance mutex + named-pipe server so several OmniSims can run concurrently (pair with distinct `--urls` and settings stores) |
+| `--multi-instance` | **Fork-only** (`v0.5.0-467.1+`): skip the single-instance mutex + named-pipe server, and from `v0.5.0-467.3` the Windows tray icon, so several OmniSims can run concurrently (pair with distinct `--urls` and settings stores) |
 | `OMNISIM_SETTINGS_DIR` (env var) | **Fork-only** (`v0.5.0-467.2+`): re-root the profile store to the given directory (XMLProfile layout underneath), on every platform |
 
 `--reset` only takes effect at startup. To reset state in a *running* instance, use the OmniSim-only HTTP API.
@@ -190,7 +213,7 @@ Reloads the device with its current persisted settings (`DriverManager.LoadX(0)`
 
 "~ms" is the healthy case, not a bound you can rely on. On a loaded runner the same PUT can take seconds: a cache-cold Windows CI job, where every BDD suite re-executes at once because a dependency bump invalidated the graph, produced a `before` hook in which nine device restarts answered in milliseconds and the tenth ran past a single-digit-second client deadline — a live simulator, just a slow one. The harness therefore sends each restart with a deliberately generous `RESET_ATTEMPT_TIMEOUT`.
 
-**Idempotent is not the same as replayable.** `restart` reloads the device from its persisted profile, so *a* second call is harmless — but a second call that arrives while the first is still inside `DriverManager.LoadX(0)` is the concurrent-restart overlap that corrupts OmniSim's device list (#171) and has deadlocked it outright (#431). So the harness retries only a **connect** failure, where the TCP connection never established and the request provably never reached the application. A timeout is *not* retried: it means only that the client stopped waiting, while the server may still be mid-reload. A non-success HTTP status is not retried either — it is deterministic.
+**Idempotent is not the same as replayable.** `restart` reloads the device from its persisted profile, so *a* second call is harmless — but a second call that arrives while the first is still inside `DriverManager.LoadX(0)` is the concurrent-restart overlap that corrupts OmniSim's device list and can deadlock it outright. So the harness retries only a **connect** failure, where the TCP connection never established and the request provably never reached the application. A timeout is *not* retried: it means only that the client stopped waiting, while the server may still be mid-reload. A non-success HTTP status is not retried either — it is deterministic.
 
 When a restart does fail, the harness prints reqwest's full `source()` chain, not just its top-level `Display`. That matters more than it looks: on its own the error reads `error sending request for url (...)` whether the port refused the connection or the request outran its deadline, and those are different faults — a refusal means the process is gone, a timeout means it is alive but stalled.
 
@@ -211,11 +234,11 @@ Response format mirrors the standard Alpaca pattern (`ClientTransactionID`, `Ser
 
 ## Behaviors that mirror real hardware
 
-These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave, and OmniSim faithfully simulates them. They have all bitten us at some point.
+These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave, and OmniSim faithfully simulates them.
 
 ### Telescope
 
-- **`Slewing` (`IsSlewing`) is over-conservative.** It returns `true` if *any* of these are true: `SlewState != SlewNone`, an internal `slewing` flag, or `rateMoveAxes.LengthSquared != 0`. A prior `MoveAxis` call that left non-zero rate state will keep `Slewing` true even after a subsequent slew completes. **Conclusion:** poll `AtPark` (the canonical post-park signal) rather than `Slewing` to detect park completion. See `services/rp/src/mcp.rs::do_park_blocking`.
+- **`Slewing` (`IsSlewing`) is over-conservative.** It returns `true` if *any* of these are true: `SlewState != SlewNone`, an internal `slewing` flag, or `rateMoveAxes.LengthSquared != 0`. A prior `MoveAxis` call that left non-zero rate state will keep `Slewing` true even after a subsequent slew completes. **Conclusion:** poll `AtPark` (the canonical post-park signal) rather than `Slewing` to detect park completion. See `services/rp/src/mcp/internals.rs::do_park_blocking`.
 
 - **`AtPark` is the single source of truth for park completion.** It transitions to `true` in exactly one code path — the `SlewType.SlewPark` completion handler in OmniSim's slew loop.
 
@@ -243,9 +266,9 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
   against OmniSim v0.5.0 (`PUT /api/v1/focuser/0/move` from the
   default position).
 - **Implication for BDD scenarios:** with the per-scenario reset
-  wired into `before(scenario)` (issue #149), the focuser is set
+  in `before(scenario)`, the focuser is set
   back to 25000 before every scenario. Test target positions in
-  `services/rp/tests/features/{focuser,auto_focus}.feature` are
+  `services/rp/tests/features/focuser.feature` are
   anchored near 25000 (typically `25000`, `24500`, `25500`, plus
   bounds like `24900..25100`) so each `move_focuser` call slews ≤
   ~500 steps and completes in ~1 s. Without that anchoring the rp
@@ -255,14 +278,15 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
   is that the position changes in response to a tool call, lies
   within the configured bounds, and round-trips through
   `get_focuser_position`. Picking targets near 25000 satisfies all
-  of that without paying the slew cost. Both feature files carry an
+  of that without paying the slew cost. `focuser.feature` carries an
   inline comment to that effect.
 
 ### Filter wheel
 
-- **Default position is 0.** Restart resets to slot 0. Slew between
-  adjacent slots is ~500 ms; full traversal (slot 0 → 4) is ~2 s.
-  Cheap enough that resetting between scenarios is free.
+- **Default position is 0.** Restart resets to slot 0. The wheel has
+  six slots and turns one slot a second, the shorter way round: slot
+  0 → 4 passes slot 5 and takes ~2 s, and the farthest move (three
+  slots) ~3 s. Cheap enough that resetting between scenarios is free.
 
 ### Cover calibrator
 
@@ -301,7 +325,7 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
   comma-decimal host.
 - **Pair the XML override with rp's `poll_interval`.** rp polls
   cover/calibrator state every 3 s by default
-  (`services/rp/src/config.rs::default_cover_calibrator_poll_interval`).
+  (`services/rp/src/config/cover_calibrator.rs::default_cover_calibrator_poll_interval`).
   Without overriding it, even a 0.6-second OmniSim transition
   ends up bounded by rp's 3-second poll.
   `bdd_infra::rp_harness::CoverCalibratorConfig` exposes a
@@ -327,7 +351,7 @@ These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave,
 
 ## Cucumber-rs `@serial` tag
 
-The `@serial` tag is natively recognized by cucumber-rs (`cucumber-0.22.1/src/runner/basic.rs:429`):
+The `@serial` tag is natively recognized by cucumber-rs (`Basic::default` in `src/runner/basic.rs`):
 
 ```rust
 let which_scenario: WhichScenarioFn = |feature, rule, scenario| {
@@ -339,29 +363,27 @@ let which_scenario: WhichScenarioFn = |feature, rule, scenario| {
 };
 ```
 
-Scenarios with `@serial` (on scenario, rule, or feature level) run sequentially. Untagged scenarios run concurrent (up to 64 by default). All BDD feature files in this repo that touch OmniSim are tagged `@serial` because OmniSim itself is single-instance.
+Scenarios with `@serial` (on scenario, rule, or feature level) run sequentially. Untagged scenarios run concurrent (up to 64 by default). All BDD feature files in this repo that touch OmniSim are tagged `@serial`, because the scenarios of one test process share its instance and every scenario's `before` hook restarts its devices (§ Integration in this repo).
 
 ## Integration in this repo
 
 - `crates/bdd-infra/src/rp_harness/omnisim.rs` — process management.
-  `OmniSimHandle::start` is a singleton-spawning shim;
-  `OmniSimHandle::reset_telescope` / `reset_camera` /
-  `reset_filter_wheel` / `reset_focuser` /
-  `reset_cover_calibrator` each wrap the matching
-  `/simulator/v1/{class}/0/restart` endpoint, and
-  `reset_all_devices` issues them sequentially. Every restart PUT
-  additionally takes a process-wide mutex, so at most one restart is
-  in flight per test process regardless of how many scenario hooks
-  run concurrently — OmniSim's restart handler mutates
-  unsynchronised static state, and concurrent restarts have both
-  corrupted its device list (#171) and deadlocked the simulator
-  outright (#431, the end-of-run burst of non-`@serial` scenarios
-  on the Pi nightly).
+  `OmniSimHandle::start` spawns the test process's private instance on
+  its first call and shares it after; `OmniSimHandle::reset_telescope`,
+  `reset_camera`, `reset_filter_wheel` and the rest, one per device
+  class, each wrap the matching `/simulator/v1/{class}/0/restart`
+  endpoint, and `reset_all_devices` issues all ten sequentially. Every
+  restart PUT additionally takes a process-wide mutex, so at most one
+  restart is in flight per test process regardless of how many
+  scenario hooks run concurrently — OmniSim's restart handler mutates
+  unsynchronised static state, and concurrent restarts corrupt its
+  device list and can deadlock the simulator outright: the untagged
+  scenarios cucumber draws together once the `@serial` queue drains
+  are enough.
 
-- `services/rp/tests/bdd.rs` and
-  `services/calibrator-flats/tests/bdd.rs` — the cucumber
-  `before(scenario)` hook calls `reset_all_devices` to give every
-  scenario a clean default state.
+- The `tests/bdd.rs` of every OmniSim suite (the Bazel targets tagged
+  `resources:omnisim:1`) — the cucumber `before(scenario)` hook calls
+  `reset_all_devices` to give every scenario a clean default state.
 
 - All BDD feature files that touch OmniSim are tagged `@serial`
   (file-level) so the per-scenario reset can't disconnect a device

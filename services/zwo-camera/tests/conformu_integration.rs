@@ -47,8 +47,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
 
     let temp_dir = bdd_infra::scratch::new_dir("conformu-zwo-camera-")?;
     let config_path = temp_dir.path().join("zwo-camera.json");
-    // Camera only: EFW filter wheels belong to a future separate service
-    // (ADR-014). Port 0 → OS-assigned.
+    // Port 0 → OS-assigned.
     let config = serde_json::json!({
         "devices": {},
         "server": { "port": 0 },

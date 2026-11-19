@@ -14,7 +14,10 @@ Feature: Focus tools served through rp
   with the hyperbolic defocus curve, a train's min_fit_r_squared (unset
   by default) failing a fit below it as poor_fit, and every run — the
   ones that fail included — is recorded with its curve points, its
-  prediction and its outcome. A record measured through another
+  prediction and its outcome. Each attempt takes a reference frame at
+  its centre and measures the stars it lists, and only those, at every
+  frame of its walk; a sample with fewer than two of them measured is
+  sparse, one with none starless. A record measured through another
   camera, focuser, filter set, optics or temperature sensor is stale
   and predicts nothing; an optical fact either side does not know is
   no change. A train's temperature_sensor names another focuser whose
@@ -211,9 +214,12 @@ Feature: Focus tools served through rp
 
   # A starless sweep says nothing about which side focus lies on, so the
   # retry walks the same grid. The attempts log names, for each attempt
-  # that failed to fit, why, where its grid was centred, what the gate
-  # left of it and what the sweep did next, and each entry's points
-  # count splits the run's curve points by attempt.
+  # that failed to fit, why, where its grid was centred, how many stars
+  # its reference frame listed, what the gate left of it and what the
+  # sweep did next, and each entry's points count splits the run's curve
+  # points by attempt. A reference frame that lists no star leaves its
+  # attempt nothing to measure: the walk still records each frame,
+  # every point starless.
   Scenario: A repeated sweep records why each attempt failed and what came next
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
@@ -231,6 +237,7 @@ Feature: Focus tools served through rp
     And the tool result at "/runs/0/attempts_log/0/attempt" should be the JSON 1
     And the tool result at "/runs/0/attempts_log/0/outcome" should be the JSON "not_enough_stars"
     And the tool result at "/runs/0/attempts_log/0/centre" should be the JSON 25000
+    And the tool result at "/runs/0/attempts_log/0/listed" should be the JSON 0
     And the tool result at "/runs/0/attempts_log/0/points" should be the JSON 7
     And the tool result at "/runs/0/attempts_log/0/accepted" should be the JSON 0
     And the tool result at "/runs/0/attempts_log/0/sparse" should be the JSON 0
@@ -240,6 +247,8 @@ Feature: Focus tools served through rp
     And the tool result at "/runs/0/attempts_log/1/attempt" should be the JSON 2
     And the tool result at "/runs/0/attempts_log/1/retry" should be the JSON "no_attempts_left"
     And the tool result at "/runs/0/attempts_log/1/next_centre" should be the JSON null
+    And the tool result at "/runs/0/reference/position" should be the JSON 25000
+    And the tool result at "/runs/0/reference/listed" should be the JSON 0
 
   # rp brackets a focus tool named in the registration's focus_tools
   # map with the same event triple it emits around its own sweeps, so a
@@ -482,11 +491,13 @@ Feature: Focus tools served through rp
     And the error message should contain "filter 'OIII' is not on train 'main'"
 
   # One round across a two-filter wheel, measured against a simulator
-  # with no stars in it. Both sweeps run and both are recorded — the
-  # history is the account of the attempt — but an offset differences
-  # two confirmed positions, and there are none, so nothing is written
-  # and the error says how many sweeps came up short. The wheel and the
-  # focuser go back to where the call found them.
+  # with no stars in it: the reference, the other filter, and the
+  # reference again to close the round. All three sweeps run and all
+  # three are recorded — the history is the account of the attempt —
+  # but an offset differences confirmed positions, and there are none,
+  # so nothing is written and the error says how many sweeps came up
+  # short. The wheel and the focuser go back to where the call found
+  # them.
   Scenario: A procedure whose sweeps never confirm writes no offset and says so
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
@@ -496,14 +507,15 @@ Feature: Focus tools served through rp
     And the focuser is at position 25000
     When the MCP client calls "determine_filter_offsets" with {"train_id": "main", "rounds": 1}
     Then the tool call should return an error
-    And the error message should contain "no filter was measured against 'Luminance': 2 of 2 sweeps did not confirm"
+    And the error message should contain "no filter was measured against 'Luminance': 3 of 3 sweeps did not confirm"
     And the simulator's filter wheel should be at position 0
     And the focuser should be back at position 25000 within 60 seconds
     When the MCP client calls "get_focus_runs" with {"train_id": "main"}
     Then the tool call should succeed
-    And the tool result at "/total" should be the JSON 2
-    And the tool result at "/runs/0/filter" should be the JSON "Ha"
-    And the tool result at "/runs/1/filter" should be the JSON "Luminance"
+    And the tool result at "/total" should be the JSON 3
+    And the tool result at "/runs/0/filter" should be the JSON "Luminance"
+    And the tool result at "/runs/1/filter" should be the JSON "Ha"
+    And the tool result at "/runs/2/filter" should be the JSON "Luminance"
     When the MCP client calls "get_focus_model" with {"train_id": "main"}
     Then the tool call should succeed
     And the tool result at "/reference_filter" should be the JSON null
@@ -645,7 +657,7 @@ Feature: Focus tools served through rp
   Scenario: A guide-coupled sweep pauses and resumes guiding
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
-    And a stub guider returning canned guiding stats
+    And a stub guider in state "guiding"
     And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider
     And an MCP client connected to rp
@@ -657,7 +669,7 @@ Feature: Focus tools served through rp
   Scenario: The handshake is skipped when the guider reports no active loop
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
-    And a stub guider reporting guiding inactive
+    And a stub guider in state "idle"
     And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider
     And an MCP client connected to rp
@@ -671,7 +683,7 @@ Feature: Focus tools served through rp
   Scenario: A shared walk stops at the failing step
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
-    And a stub guider returning canned guiding stats
+    And a stub guider in state "guiding"
     And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider
     And an MCP client connected to rp
@@ -687,7 +699,7 @@ Feature: Focus tools served through rp
   Scenario: A shared walk on a guiding train with no focuser of its own sweeps through the imaging camera
     Given rp's data_directory is pinned to a fresh tempdir
     And a running Alpaca simulator
-    And a stub guider returning canned guiding stats
+    And a stub guider in state "guiding"
     And the focus provider is configured for train "main" with max_attempts "1"
     And rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider
     And an MCP client connected to rp
@@ -697,17 +709,3 @@ Feature: Focus tools served through rp
     And the error message should contain "not enough stars"
     And the focuser should be back at position 25000 within 60 seconds
 
-  # main-focuser is upstream in both trains and terminal in neither, so
-  # rp plans it through the main camera, while a sweep of train main
-  # moves main-helical, the focuser that train ends in.
-  Scenario: A shared walk refuses a plan step whose focuser its run train does not end in
-    Given a running Alpaca simulator
-    And a stub guider returning canned guiding stats
-    And rp is running with a shared focuser terminal in no train and focus-model registered as a tool provider
-    And an MCP client connected to rp
-    And the focuser is at position 25000
-    When the MCP client calls "focus_train" with {"train_id": "guide", "shared": true}
-    Then the tool call should return an error
-    And the error message should contain "train 'guide' has a plan step this provider cannot sweep: focuser 'main-focuser' in train 'main', whose sweep moves 'main-helical'"
-    And the stub guider should not have received a pause request
-    And the focuser should still be at position 25000

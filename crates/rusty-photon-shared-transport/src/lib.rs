@@ -1,12 +1,13 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Refcounted multi-client lifecycle scaffolding for duplex transports.
 //!
-//! This crate factors out the connect-handshake-share-teardown pattern that
-//! every ASCOM service in this workspace had grown independently
-//! (`qhy-focuser`, `ppba-driver`, `pa-falcon-rotator`,
-//! `star-adventurer-gti`). It dissolves three bug classes structurally:
-//! the `set_connected` lock-holding race, the refcount leak on
-//! partial-connect failure, and the polling-task teardown leak.
+//! Every serial and UDP Alpaca driver in this workspace talks to its
+//! device through this crate. It opens the conduit, shares it between the
+//! driver's ASCOM devices and its poll task, puts one exchange on the wire
+//! at a time, keeps the device stopped while no client is attached, and
+//! recovers a link that drops. What a driver supplies, and why each part
+//! is as it is, is in
+//! [the crate's design doc](../../../docs/crates/rusty-photon-shared-transport.md).
 //!
 //! # The shape
 //!
@@ -25,6 +26,12 @@
 //! the device latched uses [`Session::request_timed`], which also
 //! returns when the exchange crossed the host's side of the wire
 //! ([`WireTiming`]).
+//!
+//! A caller stores what its request brought back after its turn on the
+//! wire ends, so stores can land out of wire order — a poll's after a
+//! write's. A cache that more than one task writes keeps each value with
+//! the instant it was read and refuses an older one: [`Stamped`], and
+//! under it [`ReadStamp`].
 //!
 //! There are two lifecycles. In `LazyAcquire` the conduit follows the
 //! clients: the first `acquire` opens it and runs the handshake, the
@@ -76,6 +83,7 @@
 pub mod codec;
 pub mod connection;
 pub mod error;
+pub mod read_stamp;
 pub mod session;
 pub mod shared;
 pub mod transport;
@@ -83,6 +91,7 @@ pub mod transport;
 pub use codec::Codec;
 pub use connection::{Connection, WireTiming};
 pub use error::{SessionError, TransportError};
+pub use read_stamp::{ReadStamp, Stamped};
 pub use session::{Hooks, Session, StateAssertion, WhileOpen};
 pub use shared::SharedTransport;
 pub use transport::{

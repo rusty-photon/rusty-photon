@@ -2,9 +2,8 @@
 //!
 //! Implements the ASCOM Alpaca `Device` + `Switch` traits over the 39-switch
 //! table in `docs/services/upbv2-driver.md`. Connection state is the device's
-//! `Session<Upbv2Codec>` slot — when it's `Some`, we hold a live handle to the
-//! shared transport; when it's `None`, we don't. There is no second
-//! "requested" bool that could diverge from the transport's refcount.
+//! `Session<Upbv2Codec>` slot, and no flag beside it can disagree
+//! ([§ The device side](../../../docs/crates/rusty-photon-shared-transport.md#the-device-side)).
 //!
 //! Two things separate this device from `ppba-driver`'s:
 //!
@@ -88,8 +87,7 @@ fn element<T: Copy>(array: &[T], index: usize, id: usize) -> Result<T> {
 #[derive(derive_more::Debug)]
 pub struct Upbv2SwitchDevice {
     config: SwitchConfig,
-    /// `Some` between successful connect and explicit disconnect. The
-    /// session existing is the truth — no second-source bool to desync.
+    /// `Some` between a successful connect and an explicit disconnect.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<Upbv2Codec>>>>,
     #[debug(skip)]
@@ -131,10 +129,10 @@ impl Upbv2SwitchDevice {
         let switch_id = SwitchId::from_id(id).ok_or(Upbv2Error::InvalidSwitchId(id))?;
         let cached = self.manager.get_cached_state().await;
         // `Option<&T>` is `Copy`, so each arm takes the slot it needs without
-        // re-borrowing the snapshot or repeating the `as_ref()`.
-        let status = cached.status.as_ref();
-        let power = cached.power.as_ref();
-        let boot_state = cached.boot_state.as_ref();
+        // re-borrowing the snapshot or repeating the `get()`.
+        let status = cached.status.get();
+        let power = cached.power.get();
+        let boot_state = cached.boot_state.get();
 
         match switch_id {
             // ---- Controllable, read back from `PA` ----
@@ -223,7 +221,7 @@ impl Upbv2SwitchDevice {
         if let SwitchId::DewHeater(channel) = switch_id {
             self.manager.refresh_status(session).await?;
             let cached = self.manager.get_cached_state().await;
-            if let Some(status) = &cached.status {
+            if let Some(status) = cached.status.get() {
                 if status.auto_dew.controls(channel) {
                     debug!(
                         id,
@@ -289,7 +287,7 @@ impl Upbv2SwitchDevice {
     /// populated yet.
     async fn dew_heater_writable(&self, channel: DewChannel) -> ASCOMResult<bool> {
         let cached = self.manager.get_cached_state().await;
-        if let Some(status) = &cached.status {
+        if let Some(status) = cached.status.get() {
             return Ok(!status.auto_dew.controls(channel));
         }
 
@@ -303,7 +301,7 @@ impl Upbv2SwitchDevice {
         let cached = self.manager.get_cached_state().await;
         Ok(cached
             .status
-            .as_ref()
+            .get()
             .is_none_or(|status| !status.auto_dew.controls(channel)))
     }
 }
@@ -331,14 +329,10 @@ impl Device for Upbv2SwitchDevice {
         reason = "the write lock deliberately spans the whole check-and-modify so two concurrent connects cannot both observe an empty slot and double-acquire"
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // The write lock spans the whole check-and-modify so two concurrent
-        // `Connected=true` requests can't both observe `None` and both call
-        // `acquire()`. With the session slot replacing a separate `requested`
-        // bool, the flag and the resource are the same value — there is no
-        // second source to desync.
-        //
-        // Connecting actuates nothing: the handshake behind `acquire()` is
-        // `P#` / `PV` / `PA` / `PC` / `PS`, every one of them a read (tenet 3).
+        // Connecting actuates nothing (tenet 3): `acquire()` joins the
+        // conduit `start()` opened and handshook, or, on a transport nothing
+        // started, runs that read-only handshake (`P#` / `PV` / `PA` / `PC` /
+        // `PS`).
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
@@ -577,10 +571,11 @@ mod tests {
     //! are tested once in `rusty-photon-shared-transport`'s `tests/race.rs`
     //! and `tests/rollback.rs`; they are not duplicated per service.
     //!
-    //! The simulator below is local to this file per testing.md §6.5. It is
-    //! deliberately *not* `crate::mock`'s: these tests need the auto-dew mask
-    //! set to an arbitrary value before connect, which no command in
-    //! [`Upbv2Command`] can do — the driver never sends `PD:`.
+    //! The simulator below is local to this file per testing.md §6.5 rather
+    //! than `crate::mock`'s: its default frame trips an overcurrent flag in
+    //! each family, and `MockUpbv2Factory::device_volts` reads the setpoint
+    //! the device holds, past the driver's cache — the proof that a rejected
+    //! write never reached the wire.
 
     use super::*;
     use crate::config::Config;
@@ -629,7 +624,7 @@ mod tests {
                 // Output 3 and dew C tripped.
                 overcurrent: [false, false, true, false, false, false, true],
                 variable_volts: 5,
-                // Auto-dew off by default, matching the ConformU precondition.
+                // Auto-dew off by default, so every dew channel is writable.
                 auto_dew: 0,
             }
         }

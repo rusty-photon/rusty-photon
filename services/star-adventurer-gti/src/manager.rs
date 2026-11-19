@@ -6,8 +6,8 @@
 //! and poll-task lifetime all live in
 //! [`rusty_photon_shared_transport::SharedTransport`]. What stays here:
 //!
-//! * The Sky-Watcher handshake (`:F` × 2, `:a` × 2, `:b`, `:g` × 2,
-//!   `:e`, `:j` × 2) and the parameter cache it populates.
+//! * The Sky-Watcher handshake (`:e`, `:f` × 2, `:F` × 2, `:a` × 2,
+//!   `:b`, `:g` × 2, `:j` × 2) and the parameter cache it populates.
 //! * The background poll loop body that refreshes `:f` + `:j` on both
 //!   axes into the snapshot.
 //! * The [`PollPauseGuard`] mechanism the slew/park watchers use to
@@ -17,8 +17,9 @@
 //!   after `Sync` don't see the pre-sync position).
 //! * The per-axis record of the last `:I` step period the driver sent,
 //!   and [`MountManager::snapshot_now`], which projects the poll sample
-//!   forward to the read instant at that commanded rate (issue #1334).
+//!   forward to the read instant at that commanded rate.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +39,8 @@ use crate::codec::{decode_frame_for, SkywatcherCodec, SkywatcherCodecError};
 use crate::config::{Config, TransportConfig};
 use crate::coordinates::sidereal_step_period;
 use crate::error::{Result, StarAdvError};
+use crate::mount_state::MountStateStore;
+use crate::power::{position_to_restore, PowerWatch, MAX_TRUSTED_OUTAGE};
 use crate::units::{sat_round_i32, Cpr};
 
 /// Snapshot of the values the mount reports during the init handshake.
@@ -84,15 +87,15 @@ impl MountParameters {
 /// sidereal time taken *now* must first bring the sample to the read
 /// instant with [`Self::projected_to`] (via
 /// [`MountManager::snapshot_now`]); pairing a stale encoder with a live
-/// LST reads a tracking mount off by the sample's age (issue #1334).
+/// LST reads a tracking mount off by the sample's age.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AxisSnapshot {
     pub position_ticks: i32,
     /// When the `:j` request that produced `position_ticks` went out —
     /// its [`WireTiming::sent_at`] — or, for a `seed_*_position`, when
     /// the `:E` that wrote it did. The firmware latches the count as
-    /// the command arrives; the reply can reach a busy host much later
-    /// (issue #1371). `None` until the first sample.
+    /// the command arrives; the reply can reach a busy host much later.
+    /// `None` until the first sample.
     pub sampled_at: Option<Instant>,
     /// The axis' last `:f` status reply, as decoded. `None` until the
     /// first status poll (the handshake reads positions only), which
@@ -135,11 +138,11 @@ impl AxisSnapshot {
         )
     }
 
-    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
-    /// reports `Blocked` when the motor is stepping but the encoder
-    /// isn't advancing — typically because the axis is against a
-    /// mechanical stop or stalled. The slew watcher uses this to
-    /// abort a runaway goto before the gearbox is damaged.
+    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): `Blocked`, the
+    /// firmware's report that the motor cannot follow its steps. The
+    /// slew and park watchers abort on it. It is not a stall detector;
+    /// see the design doc's
+    /// [§"Motion-mode and status bytes"](../../../docs/services/star-adventurer-gti.md#motion-mode-and-status-bytes).
     #[must_use]
     pub const fn blocked(&self) -> bool {
         match self.status {
@@ -183,8 +186,9 @@ impl AxisSnapshot {
     /// `0`, which is exact. A goto is also `0` — its accelerating
     /// profile has no single rate, and nothing precision-critical reads
     /// the encoder mid-goto (the pickup loop reads after both axes stop).
-    /// A blocked axis is `0` too: the firmware is stepping, but the
-    /// encoder is not advancing.
+    /// A blocked axis is `0` too: the firmware reports that the motor
+    /// is not following its steps, so the commanded rate is not the
+    /// axis's rate.
     #[must_use]
     pub fn rate_ticks_per_sec(&self, tmr_freq: u32, high_speed_ratio: u32) -> f64 {
         if !self.running() || self.goto() || self.blocked() || self.step_period == 0 {
@@ -456,23 +460,38 @@ pub struct MountManager {
     snapshot: Arc<RwLock<MountSnapshot>>,
     step_periods: Arc<CommandedStepPeriods>,
     poll_pause_depth: Arc<AtomicU32>,
+    power: Arc<PowerWatch>,
     polling_interval: Duration,
     command_timeout: Duration,
 }
 
 impl MountManager {
     pub fn new(config: &Config, factory: Arc<dyn TransportFactory>) -> Arc<Self> {
+        Self::with_config_file_path(config, factory, None)
+    }
+
+    /// Construct with an optional config-file path. `Some(path)` keeps the
+    /// mount state record beside it (design doc §The mount state record);
+    /// `None` keeps no record.
+    pub fn with_config_file_path(
+        config: &Config,
+        factory: Arc<dyn TransportFactory>,
+        config_file_path: Option<&Path>,
+    ) -> Arc<Self> {
         let parameters = Arc::new(RwLock::new(None));
         let snapshot = Arc::new(RwLock::new(MountSnapshot::default()));
         let step_periods = Arc::new(CommandedStepPeriods::default());
         let poll_pause_depth = Arc::new(AtomicU32::new(0));
+        let power = Arc::new(PowerWatch::with_record(
+            config_file_path.map(MountStateStore::beside),
+        ));
         let (polling_interval, command_timeout) = match &config.transport {
             TransportConfig::Usb(usb) => (usb.polling_interval, usb.command_timeout),
             TransportConfig::Udp(udp) => (udp.polling_interval, udp.command_timeout),
         };
         // Capture once; the handshake hook quotes this in the
         // [`StarAdvError::WrongDevice`] diagnostic when the `:e1` identity
-        // probe rejects the device on the other end of the wire (issue #254).
+        // probe rejects the device on the other end of the wire.
         let port_label: Arc<str> = Arc::from(config.transport.port_label());
 
         let hooks = build_hooks(
@@ -480,6 +499,7 @@ impl MountManager {
             &snapshot,
             &step_periods,
             &poll_pause_depth,
+            &power,
             polling_interval,
             &port_label,
         );
@@ -491,6 +511,7 @@ impl MountManager {
             snapshot,
             step_periods,
             poll_pause_depth,
+            power,
             polling_interval,
             command_timeout,
         })
@@ -500,6 +521,13 @@ impl MountManager {
     #[must_use]
     pub const fn transport(&self) -> &Arc<SharedTransport<SkywatcherCodec>> {
         &self.transport
+    }
+
+    /// The controller's power state: restarts found while serving, and
+    /// whether the mount's position is lost.
+    #[must_use]
+    pub fn power(&self) -> &PowerWatch {
+        &self.power
     }
 
     /// Cheap, non-blocking snapshot — true between handshake completion
@@ -529,9 +557,8 @@ impl MountManager {
     /// while tracking, the RA encoder keeps moving after the poll
     /// sampled it, and `LST(now) − HA(sample)` reads the sky off by the
     /// sample's age — up to a poll interval of RA, with a random sign
-    /// between reads (issue #1334). A stopped axis is returned as
-    /// sampled. Before the handshake has cached the parameters the raw
-    /// snapshot is returned.
+    /// between reads. A stopped axis is returned as sampled. Before the
+    /// handshake has cached the parameters the raw snapshot is returned.
     pub async fn snapshot_now(&self) -> MountSnapshot {
         let snap = self.snapshot().await;
         self.parameters()
@@ -689,10 +716,20 @@ impl MountManager {
         command: Command,
     ) -> Result<(Response, WireTiming)> {
         validate_command_args(&command)?;
-        let (bytes, timing) = session
-            .request_timed(command.clone())
-            .await
-            .map_err(StarAdvError::from)?;
+        // Whichever request meets a dead link first dates it, a client's
+        // or a watcher's as much as the poll's: the reconnect it signals
+        // can stop the poll loop before the poll fails.
+        let attempt = Instant::now();
+        let (bytes, timing) = match session.request_timed(command.clone()).await {
+            Ok(exchange) => {
+                self.power.note_request_succeeded();
+                exchange
+            }
+            Err(e) => {
+                self.power.note_request_failed(attempt);
+                return Err(StarAdvError::from(e));
+            }
+        };
         let response = decode_frame_for(&command, &bytes).map_err(StarAdvError::from)?;
         Ok((response, timing))
     }
@@ -842,9 +879,13 @@ fn build_hooks(
     snapshot: &Arc<RwLock<MountSnapshot>>,
     step_periods: &Arc<CommandedStepPeriods>,
     poll_pause_depth: &Arc<AtomicU32>,
+    power: &Arc<PowerWatch>,
     polling_interval: Duration,
     port_label: &Arc<str>,
 ) -> Hooks<SkywatcherCodec> {
+    let power_hs = Arc::clone(power);
+    let power_poll = Arc::clone(power);
+    let max_age = polling_interval.saturating_mul(MAX_PROJECTION_POLLS);
     let p_hs = Arc::clone(parameters);
     let s_hs = Arc::clone(snapshot);
     let s_poll = Arc::clone(snapshot);
@@ -861,11 +902,16 @@ fn build_hooks(
             let snapshot = Arc::clone(&s_hs);
             let step_periods = Arc::clone(&periods_hs);
             let port_label = Arc::clone(&port_hs);
+            let power = Arc::clone(&power_hs);
             Box::pin(handshake(
                 conn,
-                parameters,
-                snapshot,
-                step_periods,
+                HandshakeState {
+                    parameters,
+                    snapshot,
+                    step_periods,
+                    power,
+                    max_age,
+                },
                 port_label,
             ))
         }),
@@ -891,8 +937,8 @@ fn build_hooks(
                 verdict
             })
         }),
-        // Phase 1: run the same `:L1, :L2, :K1` safety sequence at
-        // service shutdown that runs at every last-client-disconnect.
+        // Run the same `:L1, :L2, :K1` safety sequence at service
+        // shutdown that runs at every last-client-disconnect.
         // The mount may be in any state (e.g. the supervisor was
         // mid-reconnect, a client crashed and never disconnected, the
         // last client did disconnect but a stray request landed in
@@ -909,11 +955,13 @@ fn build_hooks(
             let snapshot = Arc::clone(&s_poll);
             let step_periods = Arc::clone(&periods_poll);
             let depth = Arc::clone(&depth_poll);
+            let power = Arc::clone(&power_poll);
             Box::pin(poll_loop(
                 ctx,
                 snapshot,
                 step_periods,
                 depth,
+                power,
                 polling_interval,
             ))
         })),
@@ -930,21 +978,30 @@ fn build_hooks(
 /// foreign USB-CDC peripheral, wrong UDP host, etc.), the handshake
 /// aborts after sending exactly one frame (`:e1\r`) and surfaces
 /// [`SkywatcherCodecError::WrongDevice`] carrying the port label and a
-/// human-readable reason. See [issue #254][issue] for the hardware session
-/// that motivated this and the operator-facing diagnostic shape.
+/// human-readable reason. The probe rejects a reply that does not
+/// decode as a motor-board version, a `!` error reply, and a mount
+/// code (the high byte of the decoded value) outside the whitelist;
+/// see [§"Initialisation sequence"](../../../docs/services/star-adventurer-gti.md#initialisation-sequence)
+/// for why `:e1` goes first.
 ///
 /// On success, the rest of the handshake follows the documented order:
-/// initialise both axes, query parameters, seed the snapshot with the
-/// initial encoder positions.
-///
-/// [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
+/// read both axes' init flags, initialise both axes, query parameters,
+/// seed the snapshot with the initial encoder positions. When the flags
+/// say the controller restarted while the driver was serving it, the
+/// mount's last known position is written back first; see
+/// [`position_to_restore`] and the design doc's §Power cut while serving.
 async fn handshake(
     conn: &Connection<SkywatcherCodec>,
-    parameters: Arc<RwLock<Option<MountParameters>>>,
-    snapshot: Arc<RwLock<MountSnapshot>>,
-    step_periods: Arc<CommandedStepPeriods>,
+    state: HandshakeState,
     port_label: Arc<str>,
 ) -> std::result::Result<(), SkywatcherCodecError> {
+    let HandshakeState {
+        parameters,
+        snapshot,
+        step_periods,
+        power,
+        max_age,
+    } = state;
     // Step 1: identify the device. `:e1` is the first (and, on a
     // wrong-device handshake, the *only*) frame on the wire.
     //
@@ -990,23 +1047,36 @@ async fn handshake(
         "motor-board version validated"
     );
 
-    // Step 2–3: now safe to issue mount-specific init. Initialise both
-    // axes.
+    // Step 2: each axis' init flag, read before `:F` sets it. Either
+    // flag clear means the controller restarted since it was last
+    // initialised: a power cut, when the driver was serving it.
+    let ra_status = expect_status(request_typed(conn, Command::InquireStatus(Axis::Ra)).await?)?;
+    let dec_status = expect_status(request_typed(conn, Command::InquireStatus(Axis::Dec)).await?)?;
+    // A restart an earlier attempt saw is still owed: that attempt's `:F`
+    // set the flags before it failed.
+    let flags_clear = !ra_status.init.initialized || !dec_status.init.initialized;
+    if flags_clear {
+        power.set_restart_pending(true);
+    }
+    let restarted = flags_clear || power.restart_pending();
+    debug!(flags_clear, restarted, "axis init flags read");
+
+    // Step 3–4: initialise both axes.
     for axis in [Axis::Ra, Axis::Dec] {
         expect_ack(request_typed(conn, Command::Initialize(axis)).await?)?;
     }
 
-    // Step 4–5: per-axis CPR.
+    // Step 5–6: per-axis CPR.
     let cpr_ra = expect_u24(request_typed(conn, Command::InquireCpr(Axis::Ra)).await?)?;
     let cpr_dec = expect_u24(request_typed(conn, Command::InquireCpr(Axis::Dec)).await?)?;
-    // Step 6: TMR_Freq.
+    // Step 7: TMR_Freq.
     let tmr_freq = expect_u24(request_typed(conn, Command::InquireTmrFreq).await?)?;
-    // Step 7–8: high-speed ratio per axis.
+    // Step 8–9: high-speed ratio per axis.
     let hsr_ra = expect_u24(request_typed(conn, Command::InquireHighSpeedRatio(Axis::Ra)).await?)?;
     let hsr_dec =
         expect_u24(request_typed(conn, Command::InquireHighSpeedRatio(Axis::Dec)).await?)?;
 
-    // Step 9–10: initial encoder positions seed the snapshot, dated
+    // Step 10: initial encoder positions seed the snapshot, dated
     // like every other sample at the send of their `:j`.
     let (pos_ra, ra_timing) = request_typed_timed(conn, Command::InquirePosition(Axis::Ra)).await?;
     let pos_ra = expect_position(pos_ra)?;
@@ -1014,7 +1084,7 @@ async fn handshake(
         request_typed_timed(conn, Command::InquirePosition(Axis::Dec)).await?;
     let pos_dec = expect_position(pos_dec)?;
 
-    *parameters.write().await = Some(MountParameters {
+    let params = MountParameters {
         cpr_ra,
         cpr_dec,
         tmr_freq,
@@ -1023,7 +1093,18 @@ async fn handshake(
         motor_board_version: board,
         ra_at_handshake_ticks: pos_ra,
         dec_at_handshake_ticks: pos_dec,
-    });
+    };
+    *parameters.write().await = Some(params);
+
+    // Step 11: a controller that restarted while the driver served it
+    // reads power-up encoders; write the mount's last known position back.
+    let read = ((pos_ra, ra_timing.sent_at), (pos_dec, dec_timing.sent_at));
+    let ((ra_ticks, ra_at), (dec_ticks, dec_at)) = if restarted {
+        let previous = *snapshot.read().await;
+        restore_after_restart(conn, &previous, &params, &power, max_age, read).await?
+    } else {
+        read
+    };
     // A fresh conduit may be a power-cycled mount: whatever `:I` the
     // driver sent the old one says nothing about this firmware's period,
     // so forget it until the driver commands a rate again.
@@ -1033,33 +1114,150 @@ async fn handshake(
     // fills it in.
     *snapshot.write().await = MountSnapshot {
         ra: AxisSnapshot {
-            position_ticks: pos_ra,
-            sampled_at: Some(ra_timing.sent_at),
+            position_ticks: ra_ticks,
+            sampled_at: Some(ra_at),
             ..AxisSnapshot::default()
         },
         dec: AxisSnapshot {
-            position_ticks: pos_dec,
-            sampled_at: Some(dec_timing.sent_at),
+            position_ticks: dec_ticks,
+            sampled_at: Some(dec_at),
             ..AxisSnapshot::default()
         },
     };
+    power.set_restart_pending(false);
     Ok(())
+}
+
+/// What the handshake reads and writes besides the wire.
+struct HandshakeState {
+    parameters: Arc<RwLock<Option<MountParameters>>>,
+    snapshot: Arc<RwLock<MountSnapshot>>,
+    step_periods: Arc<CommandedStepPeriods>,
+    power: Arc<PowerWatch>,
+    /// How far a tracking sample may be carried forward when a restart's
+    /// position is written back.
+    max_age: Duration,
+}
+
+/// One axis' encoder ticks, and the instant they were read or written.
+type AxisSample = (i32, Instant);
+
+/// The handshake's step 11, on a controller that restarted: write the
+/// mount's last known position back before the transport serves again,
+/// so no client reads the reset encoders. An encoder write moves
+/// nothing, and the restarted firmware holds both axes still. Answers the
+/// samples to seed the snapshot with: the written ones, or `read` when
+/// there is no earlier sample to carry over.
+///
+/// A sample [`position_to_restore`] does not trust loses the position,
+/// whatever the outage. A trusted one is kept only after an outage of at
+/// most [`MAX_TRUSTED_OUTAGE`] since the first failed request. After a
+/// longer one, or one nothing dates, someone may have moved the mount by
+/// hand: the estimate is still written back, so a sync reads the pier side
+/// from it, but the position awaits the power-up check against the mount
+/// state record, or is lost at once when the record already decides that
+/// check. Either way the record says so before the transport serves again,
+/// whether or not a client is connected.
+async fn restore_after_restart(
+    conn: &Connection<SkywatcherCodec>,
+    previous: &MountSnapshot,
+    params: &MountParameters,
+    power: &PowerWatch,
+    max_age: Duration,
+    read: (AxisSample, AxisSample),
+) -> std::result::Result<(AxisSample, AxisSample), SkywatcherCodecError> {
+    let first_failed = power.first_failed_request();
+    let Some(restore) = position_to_restore(previous, params, first_failed, max_age) else {
+        return Ok(read);
+    };
+    // Written back on every path, as the best estimate there is: even
+    // when it is not trusted, its pier side reads true for a sync.
+    let ra = write_position(conn, Axis::Ra, restore.ra_ticks).await?;
+    let dec = write_position(conn, Axis::Dec, restore.dec_ticks).await?;
+    let ((read_ra, _), (read_dec, _)) = read;
+    let outage = first_failed.map(|failed| Instant::now().saturating_duration_since(failed));
+    // A mount the last sample shows moving too fast is lost whatever the
+    // outage: no record written before that motion can say where it
+    // stopped. Only a trusted sample goes on to the outage test.
+    if restore.lost {
+        power.lose_position_after_restart().await;
+        warn!(
+            ?outage,
+            read_ra_ticks = read_ra,
+            read_dec_ticks = read_dec,
+            written_ra_ticks = ra.0,
+            written_dec_ticks = dec.0,
+            "the mount's controller restarted while the mount moved: its last \
+             position is written back as an estimate, and the position is lost \
+             until a plate-solve sync or the recovery from a named park on the \
+             mount's setup page"
+        );
+    } else if outage.is_none_or(|outage| outage > MAX_TRUSTED_OUTAGE) {
+        match power.await_check_after_long_cut().await {
+            Ok(()) => info!(
+                ?outage,
+                read_ra_ticks = read_ra,
+                read_dec_ticks = read_dec,
+                written_ra_ticks = ra.0,
+                written_dec_ticks = dec.0,
+                "the mount's controller restarted after a cut too long to trust its last \
+                 position: that position is written back as an estimate, and the mount \
+                 state record decides whether the power-up pose is seeded"
+            ),
+            Err(reason) => warn!(
+                ?outage,
+                %reason,
+                read_ra_ticks = read_ra,
+                read_dec_ticks = read_dec,
+                written_ra_ticks = ra.0,
+                written_dec_ticks = dec.0,
+                "the mount's controller restarted after a cut too long to trust its last \
+                 position, and the mount state record does not place the mount at rest: \
+                 that position is written back as an estimate, and the position is lost \
+                 until a plate-solve sync or the recovery from a named park on the \
+                 mount's setup page"
+            ),
+        }
+    } else {
+        info!(
+            read_ra_ticks = read_ra,
+            read_dec_ticks = read_dec,
+            written_ra_ticks = ra.0,
+            written_dec_ticks = dec.0,
+            "the mount's controller restarted: its last known position is written \
+             back; tracking is off until a client turns it on"
+        );
+    }
+    power.record_restart();
+    Ok((ra, dec))
+}
+
+/// `:E<axis>` from the handshake: write `ticks` and answer them with when
+/// the write went out, the instant the encoder took the value.
+async fn write_position(
+    conn: &Connection<SkywatcherCodec>,
+    axis: Axis,
+    ticks: i32,
+) -> std::result::Result<AxisSample, SkywatcherCodecError> {
+    let (reply, timing) = request_typed_timed(conn, Command::SetPosition { axis, ticks }).await?;
+    expect_ack(reply)?;
+    Ok((ticks, timing.sent_at))
 }
 
 /// Halt on both axes (`:L1`, `:L2`, `:K1`), and say whether it took.
 /// Used by both the `on_last_disconnect` hook (every `1→0` transition,
 /// and every fresh conduit) and by `shutdown_teardown`.
 ///
-/// Still log-and-continue per the hooks' infallible contract — a failed
+/// Log-and-continue per the hooks' infallible contract — a failed
 /// command never propagates and never stops the rest of the sequence —
-/// but the outcome is no longer thrown away. The shared crate watches
+/// but the outcome is returned. The shared crate watches
 /// [`Connection::request`] for commands that never reached the wire,
 /// which is blind to the case this function is the only witness to: the
 /// mount answered `!XX` and refused. `SkywatcherCodec` returns raw
 /// frames, so an error reply decodes as a perfectly good `Ok` response
 /// one layer down, and only the typed decode in [`request_typed`] sees
-/// it. Returning the verdict is what carries that out to the caller —
-/// see [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+/// it. Returning the verdict is what carries that out to the caller;
+/// see [§"Safety stop at startup"](../../../docs/services/star-adventurer-gti.md#safety-stop-at-startup).
 ///
 /// Any failure means [`StateAssertion::NotAsserted`]: a stop that the
 /// mount refused, or that never reached it, leaves axes that may still
@@ -1074,7 +1272,7 @@ async fn handshake(
 ///
 /// It also does not try to read the mount's error code and decide
 /// which failures are benign. By the time this runs the handshake has
-/// just had ten commands answered, so a mount that now cannot be
+/// just had twelve commands answered, so a mount that now cannot be
 /// halted is a mount that is broken or is not the device we think it
 /// is — the two cases where guessing "that one's probably fine" is
 /// exactly wrong.
@@ -1109,13 +1307,13 @@ async fn safety_stop(conn: &Connection<SkywatcherCodec>) -> StateAssertion {
     //
     // `info!` rather than `debug!`, against the usual preference for
     // `debug!`: the packaged units ship `RUST_LOG=info`, so `debug!`
-    // would leave this invisible on every stock installation and the
-    // operator no better off than before. This is the record that a
-    // safety action affecting a moving telescope either did or did not
-    // reach the hardware — the one class of event where "you had to
-    // know to turn it on" is the wrong default. It fires once per start
-    // and once per last-client disconnect, so it is bounded by session
-    // count rather than by traffic.
+    // would leave this invisible on every stock installation. This is
+    // the record that a safety action affecting a moving telescope
+    // either did or did not reach the hardware — the one class of
+    // event where "you had to know to turn it on" is the wrong
+    // default. It fires once per start and once per last-client
+    // disconnect, so it is bounded by session count rather than by
+    // traffic.
     info!(verdict = ?verdict, "safety stop complete");
     verdict
 }
@@ -1134,7 +1332,7 @@ async fn shutdown_teardown(
         // is the whole of the report, and it is worth an `error!`. The
         // mount may be left moving with no driver attached; the next
         // cold start asserts the state again and refuses to serve if
-        // it cannot (see #1251), but nothing happens in between.
+        // it cannot, but nothing happens in between.
         error!(
             "the shutdown safety stop was not asserted \
              (see the warning above for the failing command); \
@@ -1151,6 +1349,7 @@ async fn poll_loop(
     snapshot: Arc<RwLock<MountSnapshot>>,
     step_periods: Arc<CommandedStepPeriods>,
     poll_pause_depth: Arc<AtomicU32>,
+    power: Arc<PowerWatch>,
     polling_interval: Duration,
 ) {
     let mut ticker = interval(polling_interval);
@@ -1172,15 +1371,21 @@ async fn poll_loop(
             // slew so ASCOM readers still see fresh data.
             continue;
         }
+        // A failed poll dates the latest the link can have gone, which
+        // bounds how far a tracking axis moved before a power cut.
+        let attempt = Instant::now();
         let mut snap = MountSnapshot::default();
         if let Err(e) = poll_axis_via_ctx(&ctx, &step_periods, Axis::Ra, &mut snap.ra).await {
             debug!("polling RA failed: {e}");
+            power.note_request_failed(attempt);
             continue;
         }
         if let Err(e) = poll_axis_via_ctx(&ctx, &step_periods, Axis::Dec, &mut snap.dec).await {
             debug!("polling Dec failed: {e}");
+            power.note_request_failed(attempt);
             continue;
         }
+        power.note_request_succeeded();
         snapshot.write().await.merge_newer(&snap);
     }
 }
@@ -1196,7 +1401,7 @@ async fn poll_loop(
 /// `From<SessionError<SkywatcherCodecError>> for StarAdvError` then
 /// routes the inner [`TransportError`] through the canonical
 /// `From<TransportError> for StarAdvError` impl a top-level
-/// `SessionError::Transport(_)` uses, so a connect-time timeout gets
+/// `SessionError::Transport(_)` uses, so a handshake timeout gets
 /// classified as `StarAdvError::Timeout` instead of collapsing to
 /// `Protocol(FrameError("transport timeout after 5s"))` and surfacing
 /// as the generic `INVALID_OPERATION`.
@@ -1271,10 +1476,11 @@ async fn poll_axis_via_session(
 /// The firmware latches the count as the command arrives, so the send
 /// is the end of the round trip to date it by. Receipt is not: a busy
 /// host can notice the reply tens of milliseconds late — 40–61 ms on
-/// the rig in issue #1371, which made a tracking `RightAscension` read
-/// about 0.042 s high — while anything that holds up the write after
-/// the stamp can only make it early. The midpoint would carry half of
-/// every such stall. See [`WireTiming`] for what each stamp guarantees.
+/// the rig with `ConformU` issuing requests on the same Pi, which would
+/// make a tracking `RightAscension` read about 0.042 s high — while
+/// anything that holds up the write after the stamp can only make it
+/// early. The midpoint would carry half of every such stall. See
+/// [`WireTiming`] for what each stamp guarantees.
 const fn record_position(out: &mut AxisSnapshot, ticks: i32, timing: WireTiming) {
     out.position_ticks = ticks;
     out.sampled_at = Some(timing.sent_at);
@@ -1342,6 +1548,17 @@ fn expect_position(r: Response) -> std::result::Result<i32, SkywatcherCodecError
     }
 }
 
+fn expect_status(r: Response) -> std::result::Result<AxisStatus, SkywatcherCodecError> {
+    match r {
+        Response::Status(s) => Ok(s),
+        other => Err(SkywatcherCodecError::Protocol(
+            skywatcher_motor_protocol::ProtocolError::FrameError(format!(
+                "expected Status, got {other:?}"
+            )),
+        )),
+    }
+}
+
 fn expect_position_runtime(r: Response) -> Result<i32> {
     match r {
         Response::Position(v) => Ok(v),
@@ -1397,14 +1614,16 @@ mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
     //! transport factory. Race / refcount / rollback invariants are
     //! tested once for everyone in `rusty-photon-shared-transport` —
-    //! they don't get re-tested here per the migration plan.
+    //! they are not re-tested here.
 
     use super::*;
     use skywatcher_motor_protocol::{InitFlags, MotionFlags, MotionMode};
     use tokio::sync::Mutex;
     use tokio::time::Instant;
 
-    use crate::transport::mock::{CapturingMockFactory, MockMountState, MockTransportFactory};
+    use crate::transport::mock::{
+        CapturingMockFactory, Fault, MockMountState, MockTransportFactory, ScriptedFault,
+    };
 
     fn manager() -> Arc<MountManager> {
         MountManager::new(&Config::default(), Arc::new(MockTransportFactory))
@@ -1729,8 +1948,7 @@ mod tests {
     #[tokio::test]
     async fn pause_background_polling_stops_wire_traffic_and_resumes_on_drop() {
         // Hold a guard, watch for `:j`/`:f` traffic across a window
-        // during the hold, resume after drop. Mirrors the legacy
-        // `transport_manager.rs` test.
+        // during the hold, resume after drop.
         let (m, state) = fast_polling_manager();
         let session = m.transport().acquire().await.unwrap();
 
@@ -1938,11 +2156,10 @@ mod tests {
     // Handshake transport-error classification: a TransportError surfaced
     // through the handshake hook (which returns Result<_, SkywatcherCodecError>)
     // must reach the device layer with its variant preserved, so a
-    // connect-time timeout / EOF / open failure maps to the structured
+    // handshake timeout / EOF / open failure maps to the structured
     // StarAdvError::Timeout / ConnectionFailed instead of collapsing to
     // Protocol(FrameError("transport timeout after …")) and being routed
-    // through the generic INVALID_OPERATION arm. See PR #280 for the
-    // bug class.
+    // through the generic INVALID_OPERATION arm.
     // ========================================================================
 
     use async_trait::async_trait;
@@ -2002,10 +2219,9 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_timeout_surfaces_as_staradv_timeout_not_protocol() {
-        // A read timeout during the first handshake command (`:F1`)
-        // must propagate as `StarAdvError::Timeout`, not the generic
-        // `Protocol(FrameError("transport timeout after …"))` the
-        // pre-PR-280 string-collapse would produce.
+        // A read timeout during the first handshake command (`:e1`)
+        // must propagate as `StarAdvError::Timeout`, not as a generic
+        // `Protocol(FrameError("transport timeout after …"))`.
         let manager = make_manager_with_failing_recv(TransportError::Timeout(
             std::time::Duration::from_secs(5),
         ));
@@ -2051,8 +2267,8 @@ mod tests {
     // Pre-encode validation: SetPosition / SetGotoTarget commands whose
     // `ticks` falls outside the signed-24-bit encoder range must be rejected
     // at `MountManager::send` with a structured `InvalidValue` error, *not*
-    // reach the codec's `encode` (where the prior `.expect(...)` would have
-    // panicked). See PR #285 Copilot review on codec.rs.
+    // reach the codec's `encode` (which can only log the failure and return
+    // an empty frame).
     // ========================================================================
 
     use skywatcher_motor_protocol::codec::{POSITION_MAX, POSITION_MIN};
@@ -2148,7 +2364,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Issue #254: `:e1` runs first and gates the rest of the handshake.
+    // `:e1` runs first and gates the rest of the handshake.
     //
     // On a wrong-device handshake the driver must send exactly one frame
     // (`:e1\r`), then bail out with a structured `StarAdvError::WrongDevice`
@@ -2174,8 +2390,8 @@ mod tests {
             "first wire frame must be `:e1`; got {:?}",
             std::str::from_utf8(&log[0]).unwrap_or("<non-utf8>")
         );
-        // Sanity: the rest of the handshake still ran (`:F1` shows up
-        // somewhere after `:e1`), so reordering didn't drop commands.
+        // Sanity: the rest of the handshake ran (`:F1` shows up
+        // somewhere after `:e1`).
         assert!(
             log.iter().any(|f| f == b":F1\r"),
             "`:F1` missing from handshake log: {log:?}"
@@ -2302,9 +2518,8 @@ mod tests {
                 // u24 payload, got 3 bytes"))` for the `=100\r` reply,
                 // which `wrong_device_for_e1` reclassifies as
                 // `WrongDevice` with reason `"unexpected `:e1` reply:
-                // payload error: ..."`. There is no "non-U24 success
-                // reply" branch — that path was structurally
-                // unreachable and was removed in the 5ccfcd1 refactor.
+                // payload error: ..."`. A "non-U24 success reply" is
+                // structurally unreachable.
                 assert!(
                     reason.contains("unexpected") && reason.contains("payload error"),
                     "reason should describe the PayloadError → WrongDevice path; got {reason:?}"
@@ -2449,8 +2664,7 @@ mod tests {
     }
 
     /// A mount that answers the startup halt with `!XX` must stop the
-    /// driver coming up — the case behind
-    /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+    /// driver coming up.
     ///
     /// The refusal is invisible below this layer: `SkywatcherCodec`
     /// hands back the `!0\r` frame as a perfectly good response, so
@@ -2506,7 +2720,7 @@ mod tests {
     /// A mount that refuses the *shutdown* halt gets the loud log and
     /// nothing else: the lifecycle is ending, `Hooks::shutdown` has no
     /// verdict to return, and the teardown still has to finish. The
-    /// next cold start is what re-asserts the state (#1251).
+    /// next cold start is what re-asserts the state.
     ///
     /// Clearing the parameter cache is the observable proof the
     /// teardown ran past the refusal rather than bailing at it.
@@ -2551,7 +2765,7 @@ mod tests {
         );
     }
 
-    // ---------- Projecting a poll sample to the read instant (issue #1334) ----------
+    // ---------- Projecting a poll sample to the read instant ----------
 
     /// `GTi` timer frequency and a step period that divides it evenly, so
     /// the expected rates are exact: 16 MHz / 400 000 = 40 steps/s.
@@ -2747,6 +2961,180 @@ mod tests {
         session.close().await.unwrap();
     }
 
+    /// A manager on a mock whose state the test holds, its controller
+    /// initialised by a first handshake and both axes polled stopped at
+    /// RA 1000, Dec 2000 ticks. The transport is closed again
+    /// (`LazyAcquire`), so the next acquire runs a fresh handshake.
+    async fn manager_polled_at_rest() -> (Arc<MountManager>, Arc<Mutex<MockMountState>>) {
+        let factory = CapturingMockFactory::new();
+        let mock = Arc::clone(&factory.state);
+        {
+            let mut s = mock.lock().await;
+            s.ra.position_ticks = 1_000;
+            s.dec.position_ticks = 2_000;
+        }
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
+        let session = m.transport().acquire().await.unwrap();
+        m.poll_axes_now(&session).await.unwrap();
+        session.close().await.unwrap();
+        (m, mock)
+    }
+
+    #[tokio::test]
+    async fn a_short_cut_writes_the_last_position_back() {
+        let (m, mock) = manager_polled_at_rest().await;
+        {
+            let mut s = mock.lock().await;
+            s.power_off();
+            s.power_on();
+        }
+        m.power().note_request_failed(Instant::now());
+        let session = m.transport().acquire().await.unwrap();
+        let s = mock.lock().await;
+        assert_eq!((s.ra.position_ticks, s.dec.position_ticks), (1_000, 2_000));
+        drop(s);
+        assert!(m.power().position_known());
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_restart_survives_a_handshake_that_fails_after_its_init() {
+        let (m, mock) = manager_polled_at_rest().await;
+        {
+            let mut s = mock.lock().await;
+            s.power_off();
+            s.power_on();
+            // The next attempt fails on `:a1`, after its `:F1`/`:F2` have
+            // set the init flags again.
+            s.fault_script.push_back(ScriptedFault {
+                letter: b'a',
+                fault: Fault::MountError(0),
+            });
+        }
+        m.power().note_request_failed(Instant::now());
+        assert!(
+            m.transport().acquire().await.is_err(),
+            "precondition: the first attempt fails after its :F"
+        );
+        let session = m.transport().acquire().await.unwrap();
+        let s = mock.lock().await;
+        assert_eq!(
+            (s.ra.position_ticks, s.dec.position_ticks),
+            (1_000, 2_000),
+            "the retry still writes the last position back"
+        );
+        drop(s);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_cut_no_failure_dates_awaits_the_power_up_check_with_the_estimate_written_back() {
+        let (m, mock) = manager_polled_at_rest().await;
+        {
+            let mut s = mock.lock().await;
+            s.power_off();
+            s.power_on();
+        }
+        let session = m.transport().acquire().await.unwrap();
+        let s = mock.lock().await;
+        assert_eq!((s.ra.position_ticks, s.dec.position_ticks), (1_000, 2_000));
+        drop(s);
+        assert_eq!(m.power().position(), crate::power::Position::AwaitingCheck);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cut_longer_than_the_trusted_outage_awaits_the_power_up_check() {
+        let (m, mock) = manager_polled_at_rest().await;
+        {
+            let mut s = mock.lock().await;
+            s.power_off();
+            s.power_on();
+        }
+        m.power().note_request_failed(Instant::now());
+        tokio::time::advance(MAX_TRUSTED_OUTAGE + Duration::from_secs(1)).await;
+        let session = m.transport().acquire().await.unwrap();
+        let s = mock.lock().await;
+        assert_eq!((s.ra.position_ticks, s.dec.position_ticks), (1_000, 2_000));
+        drop(s);
+        assert_eq!(m.power().position(), crate::power::Position::AwaitingCheck);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_long_cut_of_a_moving_mount_loses_the_position_whatever_the_record() {
+        use crate::mount_state::{MountStateRecord, ReadRecord};
+
+        let factory = CapturingMockFactory::new();
+        let mock = Arc::clone(&factory.state);
+        let dir = tempfile::tempdir().unwrap();
+        let m = MountManager::with_config_file_path(
+            &Config::default(),
+            Arc::new(factory),
+            Some(&dir.path().join("config.json")),
+        );
+        let record = m.power().record().unwrap();
+        record
+            .lock()
+            .await
+            .write(MountStateRecord::AtRest {
+                ra_ticks: 0,
+                dec_ticks: 0,
+            })
+            .await
+            .unwrap();
+        let session = m.transport().acquire().await.unwrap();
+        {
+            // A goto in flight: the poll sees RA running in goto mode.
+            let mut s = mock.lock().await;
+            s.ra.running = true;
+            s.ra.mode = ModeKind::Goto;
+            s.ra.goto_target_ticks = 1_000_000;
+        }
+        let snap = m.poll_axes_now(&session).await.unwrap();
+        assert!(
+            snap.ra.goto() && snap.ra.running(),
+            "precondition: a goto polled"
+        );
+        session.close().await.unwrap();
+        {
+            let mut s = mock.lock().await;
+            s.power_off();
+            s.power_on();
+        }
+        m.power().note_request_failed(Instant::now());
+        tokio::time::advance(MAX_TRUSTED_OUTAGE + Duration::from_secs(1)).await;
+        let session = m.transport().acquire().await.unwrap();
+        assert_eq!(m.power().position(), crate::power::Position::Lost);
+        assert_eq!(
+            record.lock().await.read().await,
+            ReadRecord::Record(MountStateRecord::Lost),
+            "the restore says lost in the record before the transport serves again"
+        );
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_session_request_dates_the_link_failure() {
+        let factory = CapturingMockFactory::new();
+        let mock = Arc::clone(&factory.state);
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
+        let session = m.transport().acquire().await.unwrap();
+        mock.lock().await.power_off();
+        assert!(m.power().first_failed_request().is_none());
+        let before = Instant::now();
+        assert!(m
+            .send(&session, Command::InquireStatus(Axis::Ra))
+            .await
+            .is_err());
+        let failed = m
+            .power()
+            .first_failed_request()
+            .expect("the failure is dated");
+        assert!(failed >= before);
+        drop(session);
+    }
+
     #[tokio::test]
     async fn a_fresh_handshake_forgets_the_commanded_step_periods() {
         let m = manager();
@@ -2805,11 +3193,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Dating a sample at the send of its `:j` (issue #1371)
+    // Dating a sample at the send of its `:j`
     // -----------------------------------------------------------------
 
-    /// How long the mock holds each reply back in the dating tests — the
-    /// 41 ms a busy host took to notice a reply on the rig in #1371.
+    /// How long the mock holds each reply back in the dating tests —
+    /// 41 ms, in the 40–61 ms a busy host takes to notice a reply on
+    /// the rig.
     const REPLY_DELAY: Duration = Duration::from_millis(41);
 
     /// When the mock last received `frame` — the instant it latched

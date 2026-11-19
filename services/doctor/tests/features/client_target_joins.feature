@@ -1,10 +1,11 @@
-Feature: Client-target joins (#607)
+Feature: Client-target joins
   A service's config can point a URL at another catalog service —
   ui-htmx's rp target, rp's plate-solver/guider clients, every
   rp equipment.<kind>[].alpaca_url entry including the singular
-  equipment.mount.alpaca_url (#663), sentinel's Alpaca monitors, and
-  sentinel's operation-watchdog rp_url. These checks join that URL
-  against the *named* service's own
+  equipment.mount.alpaca_url, the plugin registrations rp dials (an
+  event plugin's webhook_url, a tool provider's mcp_server_url),
+  sentinel's Alpaca monitors, and sentinel's operation-watchdog rp_url.
+  These checks join that URL against the *named* service's own
   server.tls/server.auth: a scheme mismatch, or a self-signed target the
   client has no CA-trust field for — ui-htmx's per-target ca_cert_path,
   rp's and sentinel's single top-level ca_cert — breaks every request
@@ -13,8 +14,8 @@ Feature: Client-target joins (#607)
   (joins.client-auth, warn). The join only resolves for a loopback host —
   doctor diagnoses one config directory, so a different host names a
   service in a config file doctor cannot see. On an ACME install the
-  target's public name <svc>.<domain> joins too (#805), a target serving
-  the ACME wildcard fails hostname verification for any loopback client
+  target's public name <svc>.<domain> joins too, a target serving the
+  ACME wildcard fails hostname verification for any loopback client
   host (the wildcard's only SAN is *.<domain>), and --fix moves such a
   host onto the public name — scheme and host rewrites composing into a
   single written URL — unless acme.json declares the staging endpoint,
@@ -88,19 +89,21 @@ Feature: Client-target joins (#607)
     And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
     And the config file "rp.json" has the string "observatory" at "/plate_solver/auth/username"
 
+  # The guider is not in doctor's catalog: sentinel, a catalog service with a
+  # config of its own, stands at the guiding pointer's port in its place.
   Scenario: --fix rewrites rp's guider scheme, CA trust, and credential once the target is provisioned
-    Given a config file "phd2-guider.json" containing:
+    Given a config file "sentinel.json" containing:
       """
-      { "server": { "port": 11130, "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      { "server": { "port": 11114, "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
       """
     And a config file "rp.json" containing:
       """
       { "server": { "port": 11115 },
         "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                   "guiding": { "url": "http://localhost:11130" } } } }
+                                   "guiding": { "url": "http://localhost:11114" } } } }
       """
     When I run doctor with --fix and --json
-    Then the config file "rp.json" has the string "https://localhost:11130" at "/equipment/mount/guiding/url"
+    Then the config file "rp.json" has the string "https://localhost:11114" at "/equipment/mount/guiding/url"
     And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
     And the config file "rp.json" has the string "observatory" at "/equipment/mount/guiding/auth/username"
 

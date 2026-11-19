@@ -1,6 +1,3 @@
-[submodule "external/phd2"]
-	path = external/phd2
-	url = https://github.com/OpenPHDGuiding/phd2.git
 [submodule "external/homebrew-rusty-photon"]
 	path = external/homebrew-rusty-photon
 	url = https://github.com/ivonnyssen/homebrew-rusty-photon.git

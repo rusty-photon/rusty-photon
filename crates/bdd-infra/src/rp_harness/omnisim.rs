@@ -11,20 +11,28 @@
 //! of BDD test processes — parallel Bazel targets, shards of one target, or a
 //! stray dev instance on the default port — can run concurrently without
 //! contending for one simulator. This is what lets Bazel run the
-//! OmniSim-backed suites in parallel and shard `rp:bdd` (issue #467).
+//! OmniSim-backed suites in parallel and split the slow ones into shards.
+//!
+//! The flag also skips the Windows tray icon (fork release `v0.5.0-467.3`,
+//! the version floor), whose identity is just as machine-global: the icon
+//! library keys it on the binary's path, and each instance's startup
+//! deletes, re-adds and re-versions that one icon. Two instances starting
+//! together interleave those calls, and the loser dies of an unhandled .NET
+//! exception (exit code `0xe0434352`) before it serves anything.
 //!
 //! The settings dir is passed via `OMNISIM_SETTINGS_DIR` (fork release
-//! `v0.5.0-467.2`, the version floor), NOT `XDG_CONFIG_HOME`: .NET honors
-//! XDG only on non-macOS Unix, so on macOS `OmniSim`'s profile store defaults
-//! to the shared `~/Library/Application Support` (and on Windows to
+//! `v0.5.0-467.2`), NOT `XDG_CONFIG_HOME`: .NET honors XDG only on
+//! non-macOS Unix, so on macOS `OmniSim`'s profile store defaults to the
+//! shared `~/Library/Application Support` (and on Windows to
 //! `%USERPROFILE%\.ASCOM`), neither redirectable by any environment
-//! variable. Concurrent instances sharing one profile store race their
-//! startup write-backs and leak persisted *settings* across suites — on
-//! macOS CI, session-runner's computed telescope site leaked into rp's
-//! shards through per-scenario `restart` (which reloads from the profile)
-//! and rp refused to start on mount-site validation. The fork's env var
-//! bypasses the platform lookup entirely, so isolation is deterministic on
-//! every OS and the Bazel `omnisim` pool runs parallel everywhere.
+//! variable. Concurrent instances sharing one profile store would race
+//! their startup write-backs and leak persisted *settings* across suites —
+//! on macOS, a telescope site session-runner computes would reach rp's
+//! shards through the per-scenario `restart` (which reloads from the
+//! profile), and rp would refuse to start on mount-site validation. The
+//! fork's env var bypasses the platform lookup entirely, so isolation is
+//! deterministic on every OS and the Bazel `omnisim` pool runs parallel
+//! everywhere.
 //!
 //! The port follows the pick-and-print pattern every service binary here
 //! uses with its `bound_addr=` line: `OmniSim` binds port 0
@@ -33,9 +41,9 @@
 //! `Now listening on:` line Kestrel prints on the child's stdout (see
 //! [`OmniSimProcess::tee_stdout`]). A port the harness probed free and
 //! released instead could be drawn by another test process in the gap,
-//! whose `OmniSim` then answered at this spawn's URL until the child
-//! failed its bind and exited — and a harness that took that answer ran
-//! its scenarios against a simulator another process resets and moves
+//! whose `OmniSim` would then answer at this spawn's URL until the child
+//! failed its bind and exited — and a harness that took that answer would
+//! run its scenarios against a simulator another process resets and moves
 //! under them.
 //!
 //! Two more spawn-time defences keep a host's environment from turning
@@ -111,21 +119,19 @@ static OMNISIM: OnceCell<OmniSimProcess> = OnceCell::const_new();
 /// Process-wide serialization of `/restart` PUTs. `OmniSim`'s restart
 /// handler (`DriverManager.Load{Class}(n)`) mutates unsynchronised
 /// process-wide static state, so concurrent restarts race inside the
-/// simulator. `reset_all_devices` already issues its per-device PUTs
-/// sequentially (#171), but that only serialises *within* one hook —
+/// simulator. `reset_all_devices` issues its per-device PUTs
+/// sequentially, but that only serialises *within* one hook —
 /// cucumber runs untagged scenarios concurrently, and every
-/// concurrently-drawn scenario runs its own before-hook. In the
-/// pi-nightly failure behind #431 the 11 non-`@serial` rp scenarios
-/// were all drawn at once after the `@serial` queue drained, their 11
-/// hooks issued ~11 concurrent restarts per device class, and `OmniSim`
-/// deadlocked mid-wave (log torn then silent, no stderr, subsequent
-/// PUTs timing out) — failing the remaining hooks loud. Holding this
+/// concurrently-drawn scenario runs its own before-hook. Once the
+/// `@serial` queue drains, cucumber draws the untagged scenarios
+/// together and their hooks fire as one burst, each restarting every
+/// device class. A burst of concurrent restarts deadlocks `OmniSim`
+/// mid-wave — its log torn, then silent, no stderr, the later PUTs
+/// timing out — and fails the remaining hooks loud. Holding this
 /// mutex across each PUT caps in-flight restarts at one per test
-/// process. A process-wide mutex is also *sufficient* now: every test
-/// process owns a private `OmniSim` instance (`--multi-instance` +
-/// dynamic port), so no other process can send restarts to ours — the
-/// old cross-process caveat about two Bazel actions sharing one
-/// `OmniSim` on port 32323 no longer applies.
+/// process. A process-wide mutex is also *sufficient*: every test
+/// process owns a private `OmniSim` instance (`--multi-instance` + a
+/// port of its own), so no other process sends restarts to ours.
 static RESTART_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 impl OmniSimHandle {
@@ -138,8 +144,8 @@ impl OmniSimHandle {
     /// share it. A pre-existing `OmniSim` — a dev instance on the default port,
     /// or another test process's instance — is never reused: private
     /// instances are what allow OmniSim-backed suites and shards to run
-    /// concurrently, and what stopped cross-session dev instances from
-    /// contending with test runs.
+    /// concurrently, and what keep a dev instance from contending with a
+    /// test run.
     ///
     /// Binary discovery order:
     /// 1. `OMNISIM_PATH` env var — full path to the binary
@@ -147,11 +153,12 @@ impl OmniSimHandle {
     /// 3. `ascom.alpaca.simulators` on `PATH`
     ///
     /// The binary must support `--multi-instance` and `OMNISIM_SETTINGS_DIR`
-    /// (fork release `v0.5.0-467.2` or newer). An older binary either exits
+    /// (fork release `v0.5.0-467.3` or newer). An older binary either exits
     /// immediately when another instance is running (pre-467.1, surfaces
-    /// here as a spawn failure naming the flag) or silently ignores the
+    /// here as a spawn failure naming the flag), silently ignores the
     /// settings-dir override and shares the platform-default profile store
-    /// with every other instance (467.1 on macOS/Windows).
+    /// with every other instance (467.1 on macOS/Windows), or builds the
+    /// Windows tray icon that concurrent instances crash on (467.2).
     pub async fn start() -> Self {
         let process = OMNISIM
             .get_or_init(|| async { OmniSimProcess::get_or_spawn().await })
@@ -211,8 +218,9 @@ impl OmniSimHandle {
     /// Reset the safety-monitor simulator device 0 to its `OmniSim` default
     /// state. `restart` reloads the device from its persisted profile, and
     /// [`Self::set_safety_monitor_is_safe`] writes only the in-memory
-    /// setting — so this restores the profile's `IsSafe` (true in our
-    /// seeded config) after a safety scenario flipped it.
+    /// setting — so this restores the profile's `IsSafe` (`OmniSim`'s own
+    /// default: the seed tree carries no safety-monitor profile) after a
+    /// safety scenario flipped it.
     ///
     /// # Errors
     ///
@@ -258,39 +266,36 @@ impl OmniSimHandle {
         Self::restart_device("dome", 0).await
     }
 
-    /// Reset every device class our BDD suites currently exercise
-    /// (telescope, camera, filter wheel, focuser, cover calibrator,
-    /// safety monitor, switch, rotator, observing conditions, dome) to
-    /// `OmniSim` defaults. Issued **sequentially** — one PUT at a time.
+    /// Reset every device class `OmniSim` serves (telescope, camera,
+    /// filter wheel, focuser, cover calibrator, safety monitor, switch,
+    /// rotator, observing conditions, dome) to `OmniSim` defaults.
+    /// Issued **sequentially** — one PUT at a time.
     ///
     /// Why not parallel? `OmniSim`'s `DriverManager.Load{Class}(n)`
     /// mutates a process-wide `static List<AlpacaConfiguredDevice>
     /// AlpacaDevices` via unsynchronised `List.Remove(...)` +
-    /// `List.Add(...)`. When two of our PUTs landed on different
-    /// Kestrel threads they raced inside that list, leaving a `null`
-    /// entry that the management endpoint then serialised verbatim
-    /// into `configureddevices` responses. rp's deserialiser hit
-    /// `invalid type: null, expected struct ConfiguredDevice` and
-    /// silently registered the device as disconnected — which is the
-    /// camera/calibrator/focuser "not connected" cascade in #171.
-    /// Sequential PUTs eliminate that race *within* one hook; the
-    /// process-wide [`RESTART_SERIALIZER`] taken inside each PUT
-    /// eliminates it *across* concurrently-running hooks too — the
-    /// end-of-run burst of non-`@serial` scenarios deadlocked `OmniSim`
-    /// on the Pi nightly (#431).
+    /// `List.Add(...)`. Two PUTs that land on different Kestrel threads
+    /// race inside that list and can leave a `null` entry, which the
+    /// management endpoint serialises verbatim into `configureddevices`
+    /// responses. rp's discovery fails on it (`invalid type: null,
+    /// expected struct ConfiguredDevice`), and the suites fail on a
+    /// camera/calibrator/focuser "not connected" cascade. Sequential
+    /// PUTs rule that race out *within* one hook; the process-wide
+    /// [`RESTART_SERIALIZER`] taken inside each PUT rules it out
+    /// *across* concurrently-running hooks too, where a burst of
+    /// restarts can also deadlock `OmniSim`.
     ///
-    /// The wall-time cost is small: 6 localhost round-trips serialised
-    /// is ~10-30 ms per scenario depending on runner.
+    /// The wall-time cost is ten localhost round-trips per scenario,
+    /// milliseconds each on a healthy runner.
     ///
     /// When the shared `OMNISIM` singleton has not been initialised yet
     /// (no scenario has gone through `OmniSimHandle::start()`), this is
-    /// a no-op: there is no instance to reset, and the one `start()`
-    /// will eventually spawn is fresh by construction. (The pre-#467
-    /// behaviour of firing best-effort PUTs at the default port to
-    /// scrub a reusable dev instance is gone along with reuse itself.)
-    /// Once the suite has called `OmniSimHandle::start()`, every reset
-    /// failure is fatal — that's the loud-reset behaviour from #172
-    /// that catches state leakage between scenarios.
+    /// a no-op that sends nothing: there is no instance to reset, and
+    /// the one `start()` will eventually spawn is fresh by construction.
+    /// Once the suite has called `OmniSimHandle::start()`, every failed
+    /// restart is returned, and the suites' `before(scenario)` hooks
+    /// panic on it: a restart that failed quietly would let one
+    /// scenario's device state leak into the next.
     ///
     /// # Errors
     ///
@@ -347,8 +352,9 @@ impl OmniSimHandle {
     /// status. The endpoint is OmniSim-only (not part of standard
     /// Alpaca), so older or alternative simulators may 404 — those are
     /// surfaced as errors; we run only against `OmniSim` and want to know
-    /// if that ever changes. They used to be silently swallowed here,
-    /// which masked intermittent macOS failures.
+    /// if that ever changes. A swallowed failure would leave the device
+    /// in the previous scenario's state and surface as an intermittent
+    /// failure somewhere downstream.
     pub async fn restart_device(class: &str, n: u32) -> Result<(), String> {
         let base_url = Self::singleton_base_url().await;
         Self::restart_device_at(&base_url, class, n).await
@@ -538,14 +544,13 @@ impl OmniSimHandle {
     /// **The write outlives the scenario.** `OmniSim` treats the site as
     /// a profile *setting*, not runtime state: the per-scenario
     /// `restart` does NOT restore the default (unlike tracking or the
-    /// mount position), and on platforms without `PR_SET_PDEATHSIG`
-    /// (macOS, Windows) the `OmniSim` process itself outlives the test
-    /// binary, so a leaked site poisons the *next* suite that reuses
-    /// the instance — rp's planner scenarios pin their config to
-    /// `OmniSim`'s default site and fail mount-site validation against a
-    /// leftover computed one. Scenarios that call this must capture
-    /// the prior site via [`Self::get_telescope_site`] and restore it
-    /// when they finish.
+    /// mount position), so the site stays on this process's instance
+    /// for every scenario that follows, and a later scenario that
+    /// configures rp with `OmniSim`'s default site fails mount-site
+    /// validation against it. (It does not reach another test process:
+    /// each spawns its own instance on a freshly seeded settings dir.)
+    /// Scenarios that call this must capture the prior site via
+    /// [`Self::get_telescope_site`] and restore it when they finish.
     ///
     /// # Errors
     ///
@@ -830,11 +835,10 @@ impl OmniSimHandle {
     }
 
     /// The shared singleton's base URL, starting this process's `OmniSim`
-    /// first if no scenario has done so yet. There is no fixed fallback
-    /// port anymore — with per-process instances on dynamic ports, "the"
-    /// `OmniSim` is always the one this process owns, so the state-arranging
-    /// helpers (`restart_device`, the telescope-site/tracking/sync setters,
-    /// the safety-monitor override) simply ensure it exists.
+    /// first if no scenario has done so yet. There is no fixed port to
+    /// fall back on: "the" `OmniSim` is always the one this process owns,
+    /// on the port it picked, so every helper that talks to the simulator
+    /// simply ensures it exists.
     async fn singleton_base_url() -> String {
         Self::start().await.base_url
     }
@@ -899,7 +903,7 @@ impl OmniSimHandle {
     /// Every attempt is issued under [`RESTART_SERIALIZER`], so at most
     /// one restart is in flight per test process no matter how many
     /// scenario hooks run concurrently — see the mutex docs for the
-    /// `OmniSim` deadlock (#431) this prevents. The lock is taken once,
+    /// `OmniSim` deadlock this prevents. The lock is taken once,
     /// before the attempt loop, and held across the retries and their
     /// backoff: an attempt that failed on the wire tells us nothing
     /// about whether another hook may now safely restart the same
@@ -969,10 +973,10 @@ impl OmniSimHandle {
 /// Every other transport failure is ambiguous. A timeout, or a
 /// connection dropped after the request went out, leaves the request
 /// possibly received and possibly still executing; replaying it would
-/// stack a second restart on the first, which has corrupted `OmniSim`'s
-/// device list (#171) and deadlocked it outright (#431). Ambiguity
-/// resolves to "do not retry" — the failure is reported instead, with
-/// the cause chain that says which case it was.
+/// stack a second restart on the first, which can corrupt `OmniSim`'s
+/// device list or deadlock it outright (see [`RESTART_SERIALIZER`]).
+/// Ambiguity resolves to "do not retry" — the failure is reported
+/// instead, with the cause chain that says which case it was.
 fn is_retryable(e: &reqwest::Error) -> bool {
     e.is_connect()
 }
@@ -1042,9 +1046,11 @@ impl OmniSimProcess {
             "failed to start OmniSim binary '{binary}' after {SPAWN_ATTEMPTS} attempts: {last_failure}. \
              Note: bdd-infra spawns OmniSim with --multi-instance and \
              OMNISIM_SETTINGS_DIR, which need the patched fork \
-             (ivonnyssen/ASCOM.Alpaca.Simulators release v0.5.0-467.2 or \
+             (ivonnyssen/ASCOM.Alpaca.Simulators release v0.5.0-467.3 or \
              newer) — an older binary exits at startup when any other \
-             OmniSim instance is running on the host. `bazel run \
+             OmniSim instance is running on the host, or on Windows can \
+             crash building its tray icon when another instance starts \
+             at the same time. `bazel run \
              //.github/actions:install -- omnisim` installs the release CI \
              pins."
         );
@@ -1061,12 +1067,10 @@ impl OmniSimProcess {
         static SPAWNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let spawn = SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // Capture OmniSim's stdout/stderr to per-run log files under the
-        // cargo target tree. The previous `Stdio::null()` dropped every
-        // line OmniSim emitted, which left CI failures with no insight
-        // into what the simulator was doing — see #171 for the
-        // diagnostic gap. A log that can't be opened is skipped, so a
-        // log-write problem can't stop the test suite from running.
+        // Capture OmniSim's output (`open_log_files` says where): without
+        // it a CI failure says nothing about what the simulator was
+        // doing. A log that can't be opened is skipped, so a log-write
+        // problem can't stop the test suite from running.
         let (stdout_log, stderr_target) = Self::open_log_files(spawn);
 
         let mut cmd = Self::command(binary, Self::prepare_settings_dir());
@@ -1130,8 +1134,8 @@ impl OmniSimProcess {
     /// [`Self::prepare_settings_dir`], which panics rather than degrade to
     /// the shared platform default). The fork's `OMNISIM_SETTINGS_DIR`
     /// (467.2) re-roots the profile store on every platform —
-    /// `XDG_CONFIG_HOME` would cover Linux only (.NET ignores it on macOS,
-    /// and Windows never honored it).
+    /// `XDG_CONFIG_HOME` would cover Linux only (.NET ignores it on macOS
+    /// and Windows).
     fn command(binary: &str, settings_dir: PathBuf) -> std::process::Command {
         let mut cmd = std::process::Command::new(binary);
         cmd.arg("--multi-instance")
@@ -1393,11 +1397,9 @@ impl OmniSimProcess {
     ///    `<runfiles>/_main/<package>`; the seed tree rides along as
     ///    `data` on the `bdd-infra_rp_harness` target).
     ///
-    /// Returns `None` when neither resolves. Note that before #467 the
-    /// Bazel path never resolved (branch 1 was dead and the tree wasn't in
-    /// the runfiles), so Bazel-run suites always used upstream defaults;
-    /// branch 2 closes that gap and brings the tuned timings (shorter
-    /// cover-calibrator open/close) to Bazel runs too.
+    /// Returns `None` when neither resolves. Without branch 2 a Bazel-run
+    /// suite finds no seed and runs on upstream defaults, without the
+    /// seed's tuned timings (shorter cover-calibrator open/close).
     fn seed_config_source() -> Option<PathBuf> {
         Self::seed_config_source_from(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("omnisim-config"),
@@ -1449,7 +1451,8 @@ impl OmniSimProcess {
     }
 
     /// Resolve the log directory for `OmniSim`'s captured stdout/stderr.
-    /// Lives at `<CARGO_TARGET_DIR>/bdd-infra-omnisim-logs/` (or
+    /// Lives at `<TEST_UNDECLARED_OUTPUTS_DIR>/omnisim-logs/` under Bazel,
+    /// else at `<CARGO_TARGET_DIR>/bdd-infra-omnisim-logs/` (or
     /// `<workspace>/target/bdd-infra-omnisim-logs/` if unset). Kept
     /// outside the seeded settings dir so `prepare_settings_dir`'s
     /// `remove_dir_all` can't sweep the previous run's logs.
@@ -1460,8 +1463,7 @@ impl OmniSimProcess {
         // Under Bazel there is no cargo target tree and `CARGO_MANIFEST_DIR` is a
         // compile-time sandbox path, so the cargo branch below resolves to a
         // directory that can't be created at test runtime — OmniSim's logs would
-        // silently go to `Stdio::null` and a CI crash would leave no trace (the
-        // #171 diagnostic gap, recurring under Bazel). Bazel sets
+        // silently go to `Stdio::null` and a CI crash would leave no trace. Bazel sets
         // `TEST_UNDECLARED_OUTPUTS_DIR` for test actions; files written there are
         // collected under `bazel-testlogs/.../test.outputs`. Prefer it.
         if let Some(undeclared) = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR") {
@@ -1525,12 +1527,11 @@ impl OmniSimProcess {
         let stdout = dir
             .as_ref()
             .and_then(|d| std::fs::File::create(Self::stdout_log_path_in(d, spawn)).ok());
-        // Under Bazel, inherit OmniSim's stderr into the test process so a
-        // crash / unhandled exception (the cause of the rp:bdd / calibrator-flats
-        // OmniSim cascades) shows up in the failed test output (`--test_output=errors`)
-        // in the CI job log — the TEST_UNDECLARED_OUTPUTS_DIR files aren't uploaded
-        // by the bazel workflow today, and the flake doesn't reproduce locally.
-        // stdout stays filed: OmniSim's per-request logging is too chatty to inherit.
+        // Under Bazel, inherit OmniSim's stderr into the test process, so a
+        // crash or an unhandled .NET exception lands in the test's own log
+        // (`test.log`), which CI prints and uploads — the TEST_UNDECLARED_OUTPUTS_DIR
+        // files are not among its uploads. stdout stays filed: OmniSim's
+        // per-request logging is too chatty to inherit.
         let stderr = if std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR").is_some() {
             Stdio::inherit()
         } else {
@@ -1631,6 +1632,10 @@ impl OmniSimProcess {
     /// pre-`--multi-instance` binary deferring to another running
     /// instance, a startup crash) fails fast with its exit status instead
     /// of burning the full 30-second health window.
+    ///
+    /// The exit status alone does not tell those apart, so the failure
+    /// points at the child's stderr (see [`Self::open_log_files`]), where
+    /// a crash leaves its exception and stack trace.
     async fn wait_healthy(
         child: &mut std::process::Child,
         bound_port: std::sync::mpsc::Receiver<u16>,
@@ -1640,8 +1645,9 @@ impl OmniSimProcess {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(format!(
-                    "OmniSim exited during startup ({status}) — the binary may not \
-                     support --multi-instance"
+                    "OmniSim exited during startup ({status}) — its stderr names the \
+                     cause; an unhandled .NET exception (exit code 0xe0434352 on \
+                     Windows) prints its stack trace there"
                 ));
             }
             if port.is_none() {
@@ -1737,7 +1743,7 @@ mod tests {
         // Port 1 (tcpmux) sits outside every OS's dynamic port range and is
         // privileged on Unix, so no test process can occupy it and nothing
         // on a CI or dev host listens there — the connect reliably refuses.
-        // A bind-then-drop ephemeral port raced the rest of the suite —
+        // A bind-then-drop ephemeral port would race the rest of the suite —
         // another test could re-bind it in the window and answer the probe.
         assert!(!OmniSimProcess::is_healthy("http://127.0.0.1:1").await);
     }
@@ -2030,7 +2036,7 @@ mod tests {
         // flight at the same time. Each handler bumps an in-flight
         // counter, holds the request open briefly, then decrements —
         // without RESTART_SERIALIZER, 16 concurrent PUTs overlap here
-        // reliably (this test failed before the mutex was added).
+        // reliably and the test fails.
         let in_flight = Arc::new(AtomicI32::new(0));
         let overlapped = Arc::new(AtomicI32::new(0));
         let (in_flight_h, overlapped_h) = (in_flight.clone(), overlapped.clone());
@@ -2390,7 +2396,7 @@ mod tests {
     #[tokio::test]
     async fn wait_healthy_fails_fast_when_the_child_exits() {
         // Portable quick-exit child: the health wait must report the exit
-        // (with the --multi-instance hint) instead of burning the full
+        // (pointing at the child's stderr) instead of burning the full
         // 30-second window waiting for a port it will never report.
         let mut child = if cfg!(windows) {
             std::process::Command::new("cmd")
@@ -2408,7 +2414,7 @@ mod tests {
             .await
             .expect_err("an exited child must fail the health wait");
         assert!(err.contains("exited during startup"), "{err}");
-        assert!(err.contains("--multi-instance"), "{err}");
+        assert!(err.contains("its stderr names the cause"), "{err}");
     }
 
     /// A child that stays alive for about `seconds`, then exits: the
@@ -2867,7 +2873,7 @@ mod tests {
             message.contains(&format!("after {SPAWN_ATTEMPTS} attempts")),
             "{message}"
         );
-        assert!(message.contains("v0.5.0-467.2"), "{message}");
+        assert!(message.contains("v0.5.0-467.3"), "{message}");
     }
 
     #[test]

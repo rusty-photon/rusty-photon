@@ -21,7 +21,6 @@ claims = [
     "ascom-alpaca/camera",
     "dep:async-trait",
     "dep:tokio-util",
-    "dep:rusty-photon-service-lifecycle",
 ]
 
 [lints]
@@ -50,9 +49,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 rusty-photon-config = { workspace = true }
-# The reload signal the claims' serve loop rebuilds the server on (the
-# `claims` feature).
-rusty-photon-service-lifecycle = { workspace = true, optional = true }
+# The restart handle the `restart` routes request through, and the reload
+# signal the claims' serve loop rebuilds the server on.
+rusty-photon-service-lifecycle = { workspace = true }
+# The `restart` routes every driver merges into its router.
+axum = { workspace = true }
+serde = { workspace = true }
 rusty-photon-setup = { workspace = true }
 # The header vocabulary the setup glue reads (`Content-Type`); the same
 # crate the pinned ascom-alpaca speaks.
@@ -60,9 +62,12 @@ http = { workspace = true }
 rusty-photon-shared-transport = { workspace = true }
 
 [dev-dependencies]
-serde = { workspace = true }
 schemars = { workspace = true }
 tempfile = { workspace = true }
 # test-util: unlocks paused tokio time (`start_paused`), which the re-scan's
 # schedule tests run on.
 tokio = { workspace = true, features = ["test-util"] }
+# `ServiceExt::oneshot`, which drives the `restart` routes in process.
+tower = { workspace = true, features = ["util"] }
+# The token a test's `Restart` cancels.
+tokio-util = { workspace = true }

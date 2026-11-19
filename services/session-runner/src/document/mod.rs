@@ -3,9 +3,9 @@
 //! The normative contract is `docs/services/session-runner.md`
 //! (§ Workflow Documents, § Validation); the published external contract
 //! is `schema/workflow-v1.schema.json`. This module implements
-//! validation **layer 1** (document shape) and **layer 3** (invocation
-//! parameters); layer 2 (catalog validation against `rp`'s `tools/list`)
-//! arrives with the MCP client.
+//! validation **layer 1** (document shape), **layer 2** (catalog
+//! validation against `rp`'s `tools/list`, in `catalog.rs`) and
+//! **layer 3** (invocation parameters).
 //!
 //! Entry points:
 //!

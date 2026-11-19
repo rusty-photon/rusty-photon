@@ -7,7 +7,8 @@
 //! execute, pause on a safety stop or an `rp` outage, wait the pause
 //! out *in this process*, re-execute from the root, and record the
 //! outcome where the run started. Nothing exits to await a
-//! re-invocation, because nothing re-invokes (mcp-sessionless D6/D9).
+//! re-invocation: `rp` supervises no orchestrators, so nothing
+//! re-invokes.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

@@ -27,7 +27,8 @@
 //!    When one of these env vars is set we look *only* there — falling through
 //!    to the ancestor walk below could silently pick up a stale, non-instrumented
 //!    binary and skip coverage data collection.
-//! 3. Walking up from the current directory looking for `target/debug/<pkg>`.
+//! 3. Walking up from the current directory looking for `target/debug/<pkg>`,
+//!    stopping at the enclosing cargo workspace root.
 //!    `cargo test -p <pkg>` runs tests with the cwd at the package dir, so
 //!    the workspace `target/` is typically one level up.
 //!
@@ -199,8 +200,8 @@ const DEFAULT_BDD_LOG: &str = "warn,rusty_photon_tls=debug";
 /// `RUST_LOG` overrides [`DEFAULT_BDD_LOG`] as usual, which is how you turn a
 /// suite up while reproducing a failure locally; an unset *or unparseable*
 /// one falls back to the default rather than taking the suite down over an
-/// environment variable (the convention `rusty-photon-service-lifecycle`'s
-/// `build_env_filter` set). ANSI is off: this writes into a Bazel test log,
+/// environment variable, as `rusty-photon-service-lifecycle`'s
+/// `build_env_filter` does. ANSI is off: this writes into a Bazel test log,
 /// not a terminal.
 pub fn init_test_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -222,8 +223,8 @@ pub fn __bdd_bazel_chdir() {
     // `*_BINARY` discovery vars, and (under `bazel coverage`) `COVERAGE_DIR`,
     // from which spawned children derive their `LLVM_PROFILE_FILE` at spawn time
     // — by then the cwd is `BDD_PACKAGE_DIR`, so a relative `COVERAGE_DIR` would
-    // resolve wrong. Bazel sets it absolute today; this keeps us correct if it
-    // ever doesn't. See [`child_coverage_profile_var`].
+    // resolve wrong. Bazel sets it absolute, so this guards only a runner
+    // that does not. See [`child_coverage_profile_var`].
     let to_absolutize: Vec<(String, String)> = std::env::vars()
         .filter(|(k, v)| {
             (k.ends_with("_BINARY") || k == "COVERAGE_DIR") && std::path::Path::new(v).is_relative()
@@ -257,10 +258,13 @@ pub mod tls_auth;
 #[cfg(feature = "setup-pages")]
 pub mod setup_pages;
 
+#[cfg(feature = "setup-pages")]
+pub mod service_restart;
+
 /// The band [`reserved_test_port`] draws from: below every platform's
 /// ephemeral floor (32768 on Linux, 49152 on Windows and macOS) so the
 /// OS can never assign one of these to a `bind(0)` caller, and clear of
-/// the services' own fixed ports (11112-11173).
+/// the services' own fixed ports (11111-11173).
 const RESERVED_PORT_BAND_START: u16 = 20_000;
 const RESERVED_PORT_BAND_LEN: u16 = 12_000;
 
@@ -279,11 +283,9 @@ const RESERVED_PORT_TRIES: u16 = 64;
 /// instant and outlives the close until that child execs, so a bind
 /// probe can hand back a port that still answers. A refused connect
 /// carries the same "nobody is there" answer and leaves nothing behind.
-/// The same shape as `reserved_test_port` in phd2-guider's integration
-/// tests, shared here for the suites built on this crate.
 ///
 /// The probe is a synchronous `connect()`, and a refused connect is not
-/// instant everywhere: on the Windows CI runner each one cost about 2 s.
+/// instant everywhere: on the Windows CI runner each one takes about 2 s.
 /// So it runs on the blocking pool ([`off_loop`]), and the step that
 /// needs the port yields instead of stalling every scenario in flight.
 /// There is no synchronous form outside this crate.
@@ -538,9 +540,8 @@ fn binary_env_var(package_name: &str) -> String {
 /// "plate-solver") can be alive at once, each a separate child process. Every
 /// child's `tracing` output goes to stderr, which — absent this label —
 /// merges into one shared, unattributed stream with no way to tell which
-/// lines belong to which instance (see issue #578, where this ambiguity made
-/// a CI flake look like a single continuously-unhealthy service when it was
-/// most likely several concurrent instances' logs interleaved).
+/// lines belong to which instance: several concurrent instances' logs,
+/// interleaved, read as one service that never stops being unhealthy.
 static SPAWN_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn next_spawn_label(package_name: &str) -> String {
@@ -559,8 +560,7 @@ fn next_spawn_label(package_name: &str) -> String {
 /// at its own online-merge pool inside `COVERAGE_DIR` (`<pkg>-%8m.profraw`) so
 /// Bazel's lcov merger — which globs that directory — folds the child's coverage
 /// into the combined report, while the `%Nm` pool keeps the raw-profile count
-/// (and the bytes Bazel must stage after the test) bounded. This is the
-/// child-process-coverage contingency from `docs/plans/archive/bazel-migration.md`.
+/// (and the bytes Bazel must stage after the test) bounded.
 ///
 /// Returns `None` when `COVERAGE_DIR` is unset: under plain `bazel test`, and
 /// under `cargo`/`cargo-llvm-cov` (which sets `LLVM_PROFILE_FILE`, not
@@ -577,15 +577,15 @@ fn child_coverage_profile_var(package_name: &str) -> Option<(&'static str, std::
 /// [`child_coverage_profile_var`] so the path construction is unit-testable
 /// without mutating process env.
 ///
-/// `%8m` (binary signature with an 8-file online-merge POOL), NOT `%p-%m`. The
-/// `%p` (pid) made a SEPARATE file per child PROCESS: across `rp:bdd`'s ~265
-/// scenarios each spawning `rp` + `sky-survey-camera`, that is hundreds of
+/// `%8m` (binary signature with an 8-file online-merge POOL), NOT `%p-%m`.
+/// `%p` (pid) would make a SEPARATE file per child PROCESS: `rp:bdd`'s
+/// scenarios each spawn `rp` + `sky-survey-camera`, so that is hundreds of
 /// ~6 MB `.profraw` (~1.5 GB) that Bazel's sandbox must stage/tear down after
 /// the test — the dominant cost of the post-`[Summary]` coverage phase. `%Nm`
 /// instead has the LLVM runtime merge each process's counters on exit into a
-/// bounded pool of N files per binary signature (file-locked), so the same ~265
-/// processes collapse to <=8 files (~50 MB). Verified empirically: 20 runs of an
-/// instrumented binary => 20 files with `%p-%m`, 8 files with `%8m`. The
+/// bounded pool of N files per binary signature (file-locked), so the same
+/// processes collapse to <=8 files (~50 MB): 20 runs of an instrumented
+/// binary leave 20 files with `%p-%m` and 8 with `%8m`. The
 /// `<pkg>-` prefix keeps each service's pool distinct from the others and from
 /// the test binary's own profraw.
 fn child_coverage_profile_path(
@@ -867,21 +867,39 @@ impl ServiceHandle {
         // both pipes' write ends now closed, the tasks observe EOF and finish
         // on their own, so we join them rather than aborting them.
         //
-        // Aborting a drain *before* the child exits (the previous behaviour,
-        // for stdout) closed the read end of that pipe while the child was
-        // still running its SIGTERM shutdown path. Every shutdown-path log
-        // line the child then wrote hit a broken pipe (EPIPE); because the
-        // services build their subscriber with `tracing_subscriber::fmt()`
-        // (whose builder defaults `log_internal_errors = true`),
-        // tracing-subscriber echoed each failure as
-        // "[tracing-subscriber] Unable to write an event ... Broken pipe
-        // (os error 32)" to stderr, polluting the BDD/CI logs.
+        // Aborting a drain *before* the child exits would close the read end
+        // of that pipe while the child still runs its SIGTERM shutdown path.
+        // Every shutdown-path log line the child then writes hits a broken
+        // pipe (EPIPE); because the services build their subscriber with
+        // `tracing_subscriber::fmt()` (whose builder defaults
+        // `log_internal_errors = true`), tracing-subscriber echoes each
+        // failure as "[tracing-subscriber] Unable to write an event ...
+        // Broken pipe (os error 32)" to stderr, polluting the BDD/CI logs.
         if let Some(handle) = self.stdout_drain.take() {
             join_or_abort(handle).await;
         }
         if let Some(handle) = self.stderr_forward.take() {
             join_or_abort(handle).await;
         }
+    }
+
+    /// Wait up to `timeout` for the service to exit by itself, and return
+    /// its exit status; `None` while it still runs. Once it has exited the
+    /// handle is spent: [`stop`](Self::stop) only joins the drains.
+    pub async fn wait_exit(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
+        let child = self.child.as_mut()?;
+        let status = tokio::time::timeout(timeout, child.wait())
+            .await
+            .ok()?
+            .ok()?;
+        self.child = None;
+        if let Some(handle) = self.stdout_drain.take() {
+            join_or_abort(handle).await;
+        }
+        if let Some(handle) = self.stderr_forward.take() {
+            join_or_abort(handle).await;
+        }
+        Some(status)
     }
 
     /// Kill the service immediately and forcibly (SIGKILL on Unix,
@@ -1025,8 +1043,8 @@ pub async fn off_loop<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 /// other process creation, and against the probes that bind a port only to
 /// hand it to a child ([`ephemeral_ports`]).
 ///
-/// [`off_loop`] runs spawns in parallel on blocking-pool threads, where the
-/// single poll loop used to run them one at a time. On targets without
+/// [`off_loop`] runs spawns in parallel on blocking-pool threads, not one
+/// at a time on the single poll loop. On targets without
 /// `pipe2` and `SOCK_CLOEXEC` (macOS among them) std makes a descriptor in
 /// two steps, creating it and only then marking it close-on-exec, for a
 /// child's stdio pipes and for every socket alike. A fork that lands
@@ -1241,10 +1259,10 @@ fn find_binary(package_name: &str) -> Option<String> {
 ///
 /// The ancestor walk stops here so a checkout nested inside another cannot
 /// resolve a binary built from the **outer** one. A git worktree under
-/// `<repo>/.claude/worktrees/<name>` is the case that motivates it: with no
-/// binary built inside the worktree, the walk used to climb out and spawn
+/// `<repo>/.claude/worktrees/<name>` is the case: with no binary built
+/// inside the worktree, a walk that did not stop would climb out and spawn
 /// the main checkout's `target/debug/<pkg>`, which is stale by however long
-/// ago that checkout was last built. The suite then passes green while
+/// ago that checkout was last built. The suite would then pass green while
 /// exercising a binary built from another branch entirely — the failure mode
 /// a test run cannot report, because nothing errors. Stopping here turns it
 /// into [`require_binary`]'s panic, which names the build command to run.
@@ -1335,8 +1353,8 @@ async fn spawn_service(
 /// attribution. Under cucumber's default concurrency, many same-named
 /// service instances (spawned by different concurrently-running scenarios)
 /// can be alive at once, so their lines interleave indistinguishably in
-/// captured BDD/CI output (issue #578). The label lets a reader (or a `grep`)
-/// isolate one instance's lines from the merged stream.
+/// captured BDD/CI output. The label lets a reader (or a `grep`) isolate
+/// one instance's lines from the merged stream.
 ///
 /// Lines are passed through verbatim — this only adds a prefix, it never
 /// reformats or interprets the child's own (already fully-formatted, often
@@ -1570,10 +1588,12 @@ mod tests {
     use super::*;
     use std::process::Stdio;
 
-    /// Guard for tests that call `set_current_dir`. cargo-nextest runs each
-    /// test in its own process so this is a no-op there, but `cargo test`
-    /// (used by the coverage job) runs tests as threads in a single process.
-    /// The mutex serializes cwd-changing tests so they don't stomp each other.
+    /// Guard for tests that call `set_current_dir` or change the env vars
+    /// binary discovery and child coverage read. cargo-nextest runs each
+    /// test in its own process so this is a no-op there, but plain
+    /// `cargo test` and Bazel's `rust_test` (the coverage job's included)
+    /// run a binary's tests as threads in a single process. The mutex
+    /// serializes those tests so they don't stomp each other.
     static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Spawn `program` with `args`, stdout and stderr piped, under the spawn
@@ -1726,9 +1746,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // next_spawn_label / spawn_stderr_forwarder tests (issue #578: label
-    // every spawned child so concurrently-running same-named instances'
-    // stderr can be told apart in merged BDD/CI output)
+    // next_spawn_label / spawn_stderr_forwarder tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1792,7 +1810,8 @@ mod tests {
     // __bdd_bazel_chdir tests
     //
     // All tests that call set_current_dir hold CWD_LOCK to prevent
-    // interference when `cargo test` runs them as threads (coverage job).
+    // interference when `cargo test` or Bazel's `rust_test` runs them as
+    // threads.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2082,7 +2101,7 @@ mod tests {
         fn test_find_binary_in_target_dir_with_triple() {
             // CARGO_BUILD_TARGET is process-global; serialize with other tests
             // that mutate cwd/env via CWD_LOCK so concurrent test threads don't
-            // stomp each other under `cargo test` (coverage job).
+            // stomp each other under `cargo test` or Bazel's `rust_test`.
             let _lock = CWD_LOCK.lock().unwrap();
 
             let dir = tempfile::tempdir().unwrap();
@@ -2180,11 +2199,11 @@ mod tests {
         }
 
         /// A checkout nested inside another must not resolve the **outer**
-        /// checkout's binary. The motivating layout is a git worktree at
-        /// `<repo>/.claude/worktrees/<name>`: before the workspace-root stop, a
-        /// worktree with nothing built inside it spawned the main checkout's
-        /// `target/debug/<pkg>` — a binary from another branch, arbitrarily
-        /// stale — and the suite passed green against it.
+        /// checkout's binary. The layout is a git worktree at
+        /// `<repo>/.claude/worktrees/<name>`: without the workspace-root stop,
+        /// a worktree with nothing built inside it would spawn the main
+        /// checkout's `target/debug/<pkg>` — a binary from another branch,
+        /// arbitrarily stale — and the suite would pass green against it.
         #[test]
         fn test_find_binary_does_not_escape_into_an_enclosing_checkout() {
             let _lock = CWD_LOCK.lock().unwrap();
@@ -2418,7 +2437,7 @@ mod tests {
     }
 
     /// [`ensure_rp_binary`]'s twin for the doctor binary, which owns the
-    /// one-shot provisioning commands since doctor-plan D6a.
+    /// one-shot provisioning commands.
     fn ensure_doctor_binary() {
         let _lock = CWD_LOCK.lock().unwrap();
         if std::env::var_os("DOCTOR_BINARY").is_some() {

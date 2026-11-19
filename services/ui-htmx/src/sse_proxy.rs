@@ -18,9 +18,9 @@
 //!   the browser's `EventSource` auto-reconnects with its cursor.
 //! - Frames are `:keep-alive`d every 15 s, and every proxy stream ends promptly
 //!   when the service-wide shutdown token on [`AppState`](crate::AppState)
-//!   fires (axum's graceful shutdown does not end open SSE responses on its
-//!   own — axum #2673, the hazard the `test-sse` spike pinned; rp's own SSE
-//!   endpoint uses the same `sse_shutdown` pattern).
+//!   fires: axum's graceful shutdown does not end open SSE responses on its
+//!   own (`docs/services/ui-htmx.md` § The SSE proxy), and rp's own SSE
+//!   endpoint uses the same `sse_shutdown` pattern.
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(frames[0].event.as_deref(), Some("x"));
     }
 
-    // --- proxy-level tests against an in-test axum stub (ADR-004) --------------
+    // --- proxy-level tests against an in-test axum stub ------------------------
 
     /// rp-target state pointed at an in-test stub base URL.
     fn state_for(stub_base_url: &str) -> AppState {
@@ -636,7 +636,7 @@ mod tests {
         );
     }
 
-    /// (a) The browser's cursor reaches the stub: absent → 0, present →
+    /// The browser's cursor reaches the stub: absent → 0, present →
     /// forwarded, garbage → 0.
     #[tokio::test]
     async fn proxy_forwards_the_browser_cursor_to_rp() {
@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(captured.lock().unwrap().as_deref(), Some("0"));
     }
 
-    /// (c) A refused connection yields the operation-slot frame then stream end.
+    /// A refused connection yields the operation-slot frame then stream end.
     #[tokio::test]
     async fn proxy_reports_a_refused_rp_and_ends_the_stream() {
         // Bind and drop a listener so the port is (momentarily) refusing.
@@ -688,7 +688,7 @@ mod tests {
         assert!(blocks[0].contains("rp unreachable"), "{collected}");
     }
 
-    /// (d) The eviction-shaped `stream_gap` becomes an id-less feed divider.
+    /// The eviction-shaped `stream_gap` becomes an id-less feed divider.
     #[tokio::test]
     async fn proxy_translates_an_eviction_gap_without_an_id() {
         let body = "event: stream_gap\ndata: {\"event\":\"stream_gap\",\"requested_after\":5,\"oldest_available\":9}\n\n".to_string();
@@ -721,8 +721,8 @@ mod tests {
         assert!(blocks[0].contains("rp unreachable"), "{collected}");
     }
 
-    /// The shutdown token ends an open proxy stream (axum #2673: graceful
-    /// shutdown alone would not) — the wiring `main` relies on.
+    /// The shutdown token ends an open proxy stream, which axum's graceful
+    /// shutdown alone would not — the wiring `main` relies on.
     #[tokio::test]
     async fn shutdown_token_ends_an_open_proxy_stream() {
         // A stub that pushes one envelope and then holds the stream open.

@@ -70,7 +70,7 @@ Feature: Safety enforcement
   Scenario: An unsafe transition stops guiding and parks the mount
     Given a running Alpaca simulator
     And a safety monitor on the simulator
-    And a stub guider returning canned guiding stats
+    And a stub guider in state "guiding"
     And a test webhook receiver subscribed to "guide_stopped"
     And rp is running with a camera and a mount on the simulator
     And an MCP client connected to rp
@@ -175,7 +175,7 @@ Feature: Safety enforcement
       | open_cover | {"calibrator_id": "flat-panel"} |
     And each of these gated tools should be refused with SafetyUnsafe code -32010 naming monitor "weather-watcher":
       | tool       | arguments                                                                                             |
-      | auto_focus | {"camera_id": "main-cam", "focuser_id": "main-focuser", "duration": "100ms", "step_size": 100, "half_width": 2} |
+      | auto_focus | {"train_id": "guide", "step_size": 100, "half_width": 200} |
 
   # A rusty-photon safety monitor's reload keeps its clients
   # (rusty-photon-setup.md § A reload that keeps its clients): rp polls

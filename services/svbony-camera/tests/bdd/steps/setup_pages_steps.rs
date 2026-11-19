@@ -1,7 +1,7 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
 //! `bdd-infra` — the pages' and the camera drivers' Cameras section — plus
 //! the Given that starts this service behind TLS and auth, and the steps on
-//! its (now empty) action list.
+//! its empty action list.
 
 use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{given, then, when};

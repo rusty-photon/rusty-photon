@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::Dome;
 use tracing::{debug, error};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
@@ -32,8 +33,9 @@ impl DomeEntry {
 pub(super) async fn establish_dome(
     config: &config::DomeConfig,
     ca_cert_path: Option<&std::path::Path>,
+    budget: ConnectBudget,
 ) -> Result<Arc<dyn Dome>, EstablishError> {
-    establish_listed(config, ca_cert_path).await
+    establish_listed(config, ca_cert_path, budget).await
 }
 
 pub(super) async fn connect_dome(
@@ -42,7 +44,7 @@ pub(super) async fn connect_dome(
 ) -> DomeEntry {
     debug!(dome_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to dome");
 
-    match establish_dome(config, ca_cert_path).await {
+    match establish_dome(config, ca_cert_path, ConnectBudget::Full).await {
         Ok(dome) => {
             debug!(dome_id = %config.id, "dome connected successfully");
             DomeEntry {

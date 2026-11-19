@@ -128,7 +128,7 @@ impl Device for DsdFp2Device {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// No custom action: the configuration moved to the setup pages, and the
+    /// No custom action: the device is configured on its setup pages, and the
     /// specification's answer to an unknown action name is
     /// `ActionNotImplemented`, not the generic `NotImplemented` the crate
     /// defaults to.
@@ -168,7 +168,10 @@ impl CoverCalibrator for DsdFp2Device {
         }
         let snap = self.manager.snapshot();
         let state = snap.read().await.clone();
-        Ok(derive_cover_state(state.motor_running, state.cover_raw))
+        Ok(derive_cover_state(
+            state.motor_running.value(),
+            state.cover_raw.value(),
+        ))
     }
 
     async fn calibrator_state(&self) -> ASCOMResult<CalibratorStatus> {
@@ -177,7 +180,7 @@ impl CoverCalibrator for DsdFp2Device {
         }
         let snap = self.manager.snapshot();
         let state = snap.read().await.clone();
-        Ok(derive_calibrator_state(state.light_on))
+        Ok(derive_calibrator_state(state.light_on.value()))
     }
 
     async fn brightness(&self) -> ASCOMResult<u32> {
@@ -186,7 +189,7 @@ impl CoverCalibrator for DsdFp2Device {
         }
         let snap = self.manager.snapshot();
         let state = snap.read().await.clone();
-        Ok(u32::from(state.brightness.unwrap_or(0)))
+        Ok(u32::from(state.brightness.value().unwrap_or(0)))
     }
 
     async fn max_brightness(&self) -> ASCOMResult<u32> {
@@ -208,13 +211,11 @@ impl CoverCalibrator for DsdFp2Device {
     /// <https://ascom-standards.org/newdocs/covercalibrator.html>. We
     /// honour that here.
     ///
-    /// **Known `ConformU` divergence.** `ConformU` 4.3 flags this as an
-    /// "issue" anyway because `CoverCalibratorTester.TestHaltCover` does
-    /// not distinguish `MethodNotImplementedException` from other
-    /// exceptions in its async-cover branch (it treats every exception
-    /// as `Required.MustBeImplemented`). See
-    /// `docs/services/dsd-fp2.md` "Known limitations" for the upstream
-    /// bug report; the driver is intentionally spec-compliant.
+    /// `ConformU` 4.3 reports this answer as an issue, because
+    /// `CoverCalibratorTester.TestHaltCover` treats every exception in its
+    /// async-cover branch as `Required.MustBeImplemented`; from 4.4.0 it
+    /// logs `HaltCover` as OK (`docs/services/dsd-fp2.md` § Known
+    /// Limitations).
     async fn halt_cover(&self) -> ASCOMResult<()> {
         Err(ASCOMError::new(
             ASCOMErrorCode::NOT_IMPLEMENTED,
@@ -272,22 +273,24 @@ impl CoverCalibrator for DsdFp2Device {
         let slot = self.session.read().await;
         let session = slot.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
 
-        session
-            .request(Command::SetBrightness(value))
+        let (reply, brightness_timing) = session
+            .request_timed(Command::SetBrightness(value))
             .await
-            .map_err(DsdFp2Error::from)?
-            .parse_ok()?;
-        session
-            .request(Command::SetLight(true))
+            .map_err(DsdFp2Error::from)?;
+        reply.parse_ok()?;
+        let (reply, light_timing) = session
+            .request_timed(Command::SetLight(true))
             .await
-            .map_err(DsdFp2Error::from)?
-            .parse_ok()?;
+            .map_err(DsdFp2Error::from)?;
+        reply.parse_ok()?;
         drop(slot);
 
+        // Dated by the panel's answers, so a poll that read the old values
+        // before these commands cannot store them over the new ones.
         let snap = self.manager.snapshot();
         let mut state = snap.write().await;
-        state.brightness = Some(value);
-        state.light_on = Some(true);
+        state.store_brightness(value, brightness_timing.received_at);
+        state.store_light_on(true, light_timing.received_at);
         drop(state);
         Ok(())
     }
@@ -295,16 +298,14 @@ impl CoverCalibrator for DsdFp2Device {
     async fn calibrator_off(&self) -> ASCOMResult<()> {
         let slot = self.session.read().await;
         let session = slot.as_ref().ok_or(ASCOMError::NOT_CONNECTED)?;
-        session
-            .request(Command::SetLight(false))
+        let (reply, timing) = session
+            .request_timed(Command::SetLight(false))
             .await
-            .map_err(DsdFp2Error::from)?
-            .parse_ok()?;
+            .map_err(DsdFp2Error::from)?;
+        reply.parse_ok()?;
         drop(slot);
         let snap = self.manager.snapshot();
-        let mut state = snap.write().await;
-        state.light_on = Some(false);
-        drop(state);
+        snap.write().await.store_light_on(false, timing.received_at);
         Ok(())
     }
 }
@@ -319,17 +320,21 @@ async fn execute_move(device: &DsdFp2Device, angle: u16) -> ASCOMResult<()> {
         .await
         .map_err(DsdFp2Error::from)?
         .parse_ok()?;
-    session
-        .request(Command::StartMove)
+    let (reply, timing) = session
+        .request_timed(Command::StartMove)
         .await
-        .map_err(DsdFp2Error::from)?
-        .parse_ok()?;
+        .map_err(DsdFp2Error::from)?;
+    reply.parse_ok()?;
     drop(slot);
 
     // Mark motor as running locally so `cover_state` reports `Moving`
-    // immediately, before the next poll observes it.
+    // immediately, before the next poll observes it. Dated by the panel's
+    // answer, so a poll that read the motor idle before the move cannot
+    // store that over it.
     let snap = device.manager.snapshot();
-    snap.write().await.motor_running = Some(true);
+    snap.write()
+        .await
+        .store_motor_running(true, timing.received_at);
     Ok(())
 }
 
@@ -417,7 +422,7 @@ mod mock_tests {
         }
     }
 
-    /// `CoverCalibratorConfig::default()` now has an empty `unique_id` (minted on
+    /// `CoverCalibratorConfig::default()` has an empty `unique_id` (minted on
     /// first run by `materialize_identity`), which `setup::validate`
     /// rejects. Tests model a post-materialization config with a populated id.
     fn test_cover_calibrator() -> CoverCalibratorConfig {
@@ -544,8 +549,8 @@ mod mock_tests {
         // Some(true). The mock reports the motor running for exactly one
         // `[GMOV]` poll after `[SMOV]` before settling (mock.rs), so the
         // cache stays consistent with the optimistic write across the
-        // next poll cycle. For now we just verify the call succeeded and
-        // exercise the open path too.
+        // next poll cycle. The test asserts only that both calls succeed
+        // on the wire; `cover_control.feature` pins the states they reach.
         device.open_cover().await.unwrap();
         device.set_connected(false).await.unwrap();
     }

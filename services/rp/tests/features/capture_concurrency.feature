@@ -3,9 +3,9 @@ Feature: Captures through one camera run one at a time
   Every camera has a capture slot. A capture holds it from its first
   frame-geometry write until its image is downloaded, so the binning
   it wrote, the exposure it started and the frame it reads back are
-  all its own. A `capture`, or an internal capture of `auto_focus`,
-  `refocus_train` or `center_on_target`, through a camera whose slot
-  is held waits its turn rather than failing, and waiters take the
+  all its own. A `capture`, or an internal capture of
+  `center_on_target`, through a camera whose slot is held waits its
+  turn rather than failing, and waiters take the
   slot in arrival order. Captures through different cameras never wait
   for each other.
 

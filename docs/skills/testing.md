@@ -277,10 +277,11 @@ for `.filter_run_and_exit("tests/features", filter_fn)`:
 return the cucumber summary and let the test binary exit 0 even when
 scenarios fail. Because BDD tests use `harness = false`, `cargo test --test
 bdd` only fails when the binary exits non-zero, so plain `filter_run` makes
-scenario failures silently green in CI. See issue #171 for the precedent
-where 81 failed rp scenarios passed CI for months. The `_and_exit` variants
-have identical signatures plus the side effect of `process::exit(1)` on
-failure — there is no reason to prefer the bare form.
+scenario failures silently green in CI, for as long as nobody reads the
+log. The `_and_exit` variants have identical signatures plus the side
+effect of panicking with the failure summary when the run fails, which
+`bdd_main!` turns into a non-zero exit — there is no reason to prefer the
+bare form.
 
 Use `@wip` only for not-yet-implemented behavior. A scenario that fails
 intermittently belongs in an issue, not behind `@wip`. A scenario that
@@ -316,8 +317,10 @@ and **passes**: the scenario ends there, the remaining steps never run,
 and the suite exits 0. A scenario can therefore lose its `When`/`Then`
 -- to a renamed step, a `{string}` row that cannot match (§2.8), a
 deleted step definition -- and stay green forever while reporting itself
-as a scenario. Three of four rows of rp's retired-config-keys outline sat
-like that; so did seven of nine rows of its sibling.
+as a scenario. Through a `{string}` step, three of the four rows of rp's
+outline `Retired pre-train config keys are rejected as unknown fields`
+would pass that way: its JSON object and its two `"main-cam"` values cannot
+match (§2.8).
 
 Every `bdd.rs` therefore calls `.fail_on_skipped()` on the `Cucumber`
 builder, which turns a skipped step into a failed one:
@@ -532,23 +535,21 @@ body never reaches; the runs whose leftovers matter are exactly the ones that
 failed. The root matters as much as the name: Bazel re-points `TEST_TMPDIR`
 only and leaves `TMPDIR`/`TMP`/`TEMP` pointing at the machine-wide temp
 directory, so a path built from `temp_dir()` escapes the per-action tmpdir
-Bazel wipes between runs and accumulates on the machine instead. Issue #1009
-was this collision in the BDD harness's session-state file; #1189 was the same
-shape across ten ConformU integration tests.
+Bazel wipes between runs and accumulates on the machine instead.
 
 **Labeled stderr forwarding.** Every spawned child's stderr (where every
 service's `tracing` output goes) is captured and re-printed line-by-line,
 prefixed with a `<package>#<seq>` label unique to that spawn — e.g.
-`[sentinel#12] ...`. Cucumber runs up to 64 scenarios concurrently by default,
+`[sentinel#3] ...`, the number counting the test process's `ServiceHandle`
+spawns. Cucumber runs up to 64 scenarios concurrently by default,
 and most feature files aren't tagged `@serial`, so many same-named service
 instances (several scenarios each discovering a stub as, say,
 "plate-solver") can be alive at once, each its own child process. Without a
 label, their stderr lines merge into one shared, unattributed stream and a
-reader (or an agent) cannot tell which lines belong to which instance — this
-made a real CI flake (issue #578) misread as one continuously-unhealthy
-service when it was most likely several concurrent instances' logs
-interleaved. When debugging BDD/CI output, `grep` for one instance's label to
-isolate its full lifecycle from the merged stream.
+reader (or an agent) cannot tell which lines belong to which instance:
+several concurrent instances' logs, interleaved, read as one service that
+never stops being unhealthy. When debugging BDD/CI output, `grep` for one
+instance's label to isolate its full lifecycle from the merged stream.
 
 **Optional `rp-harness` feature** — adds the higher-level helpers needed when a
 test spawns `rp` alongside OmniSim and/or an event plugin:
@@ -568,13 +569,13 @@ test spawns `rp` alongside OmniSim and/or an event plugin:
   the device roster once OmniSim is healthy: an entry without a `UniqueID`
   fails the spawn with a panic that names the device and quotes OmniSim's
   startup exception, instead of letting rp's discovery fail for every
-  device and the suite fail on downstream symptoms (#918). See
+  device and the suite fail on downstream symptoms. See
   `docs/references/omnisim.md` § "Profile values are parsed with the
   current culture".
 - `RpConfigBuilder` + `CameraConfig` / `FilterWheelConfig` /
   `CoverCalibratorConfig` — fluent builder that emits rp's JSON config.
-- `start_rp`, `wait_for_rp_healthy`, `write_temp_config_file`,
-  `sibling_service_dir` — launch helpers.
+- `start_rp`, `wait_for_rp_healthy`, `write_temp_config_file` — launch
+  helpers.
 - Everything the harness writes to disk — the configs those helpers write,
   and the default `session.data_directory` the builder mints when a
   scenario does not pin its own — lands in **one
@@ -592,12 +593,11 @@ test spawns `rp` alongside OmniSim and/or an event plugin:
 - `WebhookReceiver` — the in-process event-plugin stand-in.
 - `McpTestClient` — persistent rmcp client for calling rp's MCP tools. Each
   `call_tool` / `list_tools` request is bounded by `MCP_CALL_TIMEOUT` (360 s):
-  rmcp has no built-in client timeout, so if an rp tool handler hangs the
-  `await` would otherwise block forever. (A `do_capture` loop that span
-  indefinitely on a failed `sky-survey-camera` exposure burned a full 6 h per
-  CI job this way before it was fixed at the source.) The bound is a backstop
-  so any future handler hang fails the scenario fast rather than running the
-  job to its `timeout-minutes` cap.
+  rmcp has no built-in client timeout, so if an rp tool handler hangs — a
+  `do_capture` loop spinning on a failed `sky-survey-camera` exposure, say —
+  the `await` would otherwise block forever and hold the CI job until its
+  `timeout-minutes` cap. The bound is a backstop that fails such a scenario
+  fast instead.
 
 Turn the feature on **only** for tests that actually spawn rp. Services whose
 BDD tests only need `ServiceHandle` (filemonitor, qhy-focuser, ppba-driver,
@@ -619,8 +619,10 @@ fixture behind every service's `auth.feature`:
   suite in a box. The World embeds a `TlsAuthState`, implements the trait
   (base config JSON, launch mechanism, and — for non-Alpaca services — a
   `PROBE_PATH` override, usually `/health`), and invokes the macro in its
-  `auth_steps.rs`; the feature file is the byte-identical service-neutral
-  `auth.feature` (copy dsd-fp2's). Deep TLS/auth suites (ppba-driver,
+  `auth_steps.rs`; the feature file is the service-neutral `auth.feature`
+  (copy dsd-fp2's). Its second scenario, the restart routes' refusal, uses
+  the steps `service_restart_steps!` generates, so a service that is not an
+  ASCOM driver leaves it out. Deep TLS/auth suites (ppba-driver,
   ui-htmx, …) keep their own scenario sets but build on `PkiFixture` and
   `wait_until_ready` instead of hand-rolled cert plumbing.
 - `wait_until_ready` — the readiness probe: polls a URL until it answers
@@ -639,7 +641,7 @@ fixture behind every service's `auth.feature`:
 
 **Doctor smoke (always available, no feature)** — the shared fixture behind
 every service's `doctor.feature`
-([doctor.md §Per-service doctors](../services/doctor.md)):
+([doctor.md § The per-service subcommand](../services/doctor.md#the-per-service-subcommand)):
 `DoctorSmokeState` + `DoctorSmokeWorld` + `doctor_smoke_steps!` in
 `bdd_infra::doctor_smoke`. The World embeds the state, implements the trait
 (`valid_config()` — a config JSON the service's own `deny_unknown_fields`
@@ -675,6 +677,27 @@ the reload), and the moves and dropped names a confirmation lists;
 submitted and read as a browser would (`dom::textarea`), so a driver whose
 page edits a list of lines — `qhy-camera`'s wheel pages, its filter names —
 drives it with its own steps on the same submit.
+
+**Restart on request (the `setup-pages` feature too)** — the shared steps
+behind every ASCOM driver's `restart.feature`
+([rusty-photon-service-lifecycle.md § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)):
+`ServiceRestartState` + `ServiceRestartWorld` + `service_restart_steps!` in
+`bdd_infra::service_restart`. The World embeds the state, implements the
+trait (the state, the running service's `ServiceHandle`, and the port and
+`PkiFixture` of the service as its auth scenarios start it), and invokes
+the macro in its `restart_steps.rs`; the feature starts the service with the
+suite's own steps, asks it to restart, and checks the `202` naming its own
+process and the exit with code 75, read through
+`ServiceHandle::wait_exit`. The close deadline's exit has the same code, so
+the step also requires the line the runner logs only when the service has
+closed in order. No service manager runs under test, so nothing starts the
+service again. The macro also generates the steps of one scenario in the
+suite's `auth.feature`: started with TLS and auth, the service refuses
+both routes without the credentials, and the restart route with a wrong
+password, with `401`, and once stopped its log shows no restart request.
+The restart scenario requires that log line, so its text cannot change
+without failing there. `ppba-driver`'s suite is the reference.
 
 Under Bazel, BDD targets link the matching crate variant:
 `//crates/bdd-infra:bdd-infra_tls_auth` (which carries `setup-pages` too), or
@@ -745,16 +768,16 @@ never binds would hang the test until the Bazel timeout.
 If none match, the call panics with a diagnostic pointing at the fix.
 
 **Why the walk stops at the workspace root.** A checkout nested inside
-another — a git worktree at `<repo>/.claude/worktrees/<name>` — used to
-climb out and spawn the *outer* checkout's binary when nothing was built
-inside the worktree. That binary is stale by however long ago the main
-checkout was last built, so a `cargo`-run suite passed green while
+another — a git worktree at `<repo>/.claude/worktrees/<name>` — would
+otherwise climb out and spawn the *outer* checkout's binary when nothing is
+built inside the worktree. That binary is stale by however long ago the main
+checkout was last built, so a `cargo`-run suite would pass green while
 exercising another branch's code: no error, no warning, and goldens
-regenerated from it are silently wrong. Stopping at the workspace root turns
-that into the pre-build panic below. `bazel test` was never affected — it
-sets `<PKG>_BINARY` (step 1) — so this is a `cargo`-run-from-a-worktree
-hazard specifically. If a cargo BDD run in a fresh worktree now panics for a
-binary you did not expect to need, that is the fix working: build it there.
+regenerated from it silently wrong. Stopping at the workspace root turns
+that into the pre-build panic below. `bazel test` is not exposed — it sets
+`<PKG>_BINARY` (step 1) — so this is a `cargo`-run-from-a-worktree hazard
+specifically. A cargo BDD run in a fresh worktree that panics for a binary
+you did not expect to need is the walk doing its job: build the binary there.
 
 **Pre-build requirement.** BDD tests do not compile the service binary
 themselves. Under `bazel test` the binary is built automatically as a BDD-target
@@ -794,23 +817,19 @@ is the shared helper for suites built on `bdd-infra` (calibrator-flats' suite
 pins rp's port with it so the provider's config can name rp before rp
 starts). It probes on the blocking pool, and has no synchronous form outside
 the crate, because a probe is a wait
-([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop));
-`reserved_test_port()` in `services/phd2-guider/tests/test_integration.rs` is
-the original, self-contained implementation.
+([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)).
 
 Do **not** probe by binding `:0` and releasing it. Two things go wrong:
 
 - The port comes from the range the OS hands to every other `bind(0)` in the
   process, so a server started concurrently can be given that port between the
-  probe and its use. This was issue #745: the losing test's `Phd2ProcessManager`
-  found the winner's mock on "its" port, reported success without spawning
-  anything, then shut that mock down over RPC — failing whichever unrelated test
-  owned it.
+  probe and its use.
 - The probe's own listener is duplicated into any child a sibling thread forks in
   that instant, and survives the probe's close until that child execs. So the
-  probe can hand back a port that still answers — measured at ~6% of probes at
-  that suite's spawn rate. **Probe by connecting instead**: a refused connect is
-  the same "nobody is there" answer and leaves nothing behind.
+  probe can hand back a port that still answers — measured at ~6% of probes in
+  an integration suite whose tests each spawned a mock server child. **Probe by
+  connecting instead**: a refused connect is the same "nobody is there" answer
+  and leaves nothing behind.
 
 Where a bind-and-release probe does survive, it is
 `bdd_infra::ephemeral_ports::<N>()`, for a child that cannot bind port 0 and
@@ -861,8 +880,8 @@ The `bdd.rs` entry point uses `#[path = "..."]` imports because test crate roots
 `bdd_infra::bdd_main!` macro instead of a hand-written `#[tokio::main] async fn main()`.
 The macro expands to an empty `fn main() {}` under Miri, because Miri does not
 support the `pidfd_spawnp` FFI that tokio uses for process spawning on Linux.
-BDD tests that are purely in-process (e.g. qhy-focuser with mock serial ports)
-do not need the macro.
+A suite that runs purely in-process does not need the macro for Miri's sake;
+every `tests/bdd.rs` in the tree uses it.
 
 ```rust
 #[path = "bdd/world.rs"]
@@ -960,12 +979,22 @@ rp), not in the BDD test process. Those harnesses just stop the plugin
 first, then rp — when the plugin shuts down it closes its own MCP client
 gracefully, freeing rp's connection.
 
-**How to spot a regression of this issue:** `mcp.rs` (or any tool-dispatch
-module) shows much higher coverage from unit tests than from BDD — e.g. a
-big gap between BDD-only coverage and combined coverage. Confirm by
-temporarily replacing `debug!("did not exit after SIGTERM, sending SIGKILL", ...)`
-in `bdd-infra` with `eprintln!` and re-running BDD with stderr captured. A
-SIGKILL count > 0 means the lifecycle ordering is wrong somewhere.
+**How to spot a regression of this issue:** rp's `mcp` module (or any
+tool-dispatch module) shows much higher coverage from unit tests than from
+BDD — e.g. a big gap between BDD-only coverage and combined coverage.
+Confirm by re-running BDD with `bdd_infra=debug` added to the log filter
+and stderr captured — `RUST_LOG=info,rusty_photon_tls=debug,bdd_infra=debug`
+for a `cargo test` run, and the same value through
+`--test_env=RUST_LOG=…` under Bazel, whose test actions see only the
+variables `.bazelrc` or the command line forwards, besides Bazel's own.
+The base level is `info`, not the suite default's `warn`, because the
+services under test inherit `RUST_LOG`: `info` is the level they start
+at without it, so a scenario that waits for one of their `info!` lines
+(the restart scenarios' `restart requested:`) still sees it.
+`ServiceHandle::stop` logs `<service> did not exit after SIGTERM, forcing
+it down with SIGKILL` at `debug!` for every forced stop (`CTRL_BREAK_EVENT`
+and `TerminateProcess` on Windows). A count > 0 means the lifecycle
+ordering is wrong somewhere.
 
 #### 5.5 Reset OmniSim devices in the `before(scenario)` hook
 
@@ -973,24 +1002,27 @@ SIGKILL count > 0 means the lifecycle ordering is wrong somewhere.
 scenario shares the same simulator instance, so device state (mount
 position, AtPark/Tracking, cover position, calibrator brightness, filter
 slot, focuser position, camera config) leaks from scenario N into
-scenario N+1. The mount-state leak that hung `mount.feature::park` in
-issue #143 is the specific case we already hit; the fix generalises to
-every device class.
+scenario N+1. A mount one scenario leaves synced into a position it cannot
+slew out of hangs the next scenario's park (`mount.feature`): OmniSim never
+drives through a forbidden zone, so `AtPark` never flips
+([omnisim.md § Telescope](../references/omnisim.md#telescope)). Every
+device class leaks the same way.
 
 The pattern is to call `OmniSimHandle::reset_all_devices()` from a
 cucumber `before(scenario)` hook. The helper issues sequential
 `PUT /simulator/v1/{class}/{n}/restart` requests to OmniSim's private
-restart endpoint for every class our suites touch (`telescope`,
-`camera`, `filterwheel`, `focuser`, `covercalibrator`); see
+restart endpoint for each of the ten device classes OmniSim serves
+(`telescope`, `camera`, `filterwheel`, `focuser`, `covercalibrator`,
+`safetymonitor`, `switch`, `rotator`, `observingconditions`, `dome`); see
 `crates/bdd-infra/src/rp_harness/omnisim.rs`. Each PUT also takes a
 process-wide mutex, so hooks of concurrently-running scenarios never
 have more than one restart in flight — OmniSim's restart handler
-mutates unsynchronised static state, and concurrent restarts have
-corrupted its device list (#171) and deadlocked it outright (#431).
-Total per-scenario overhead is five localhost round-trips
-(~10-25 ms) when the runner is healthy. That is the typical case, not a
-bound: when a dependency bump invalidates the graph and every BDD suite
-re-executes cache-cold at once, individual restarts have taken seconds
+mutates unsynchronised static state, and concurrent restarts corrupt
+its device list (a `null` entry in `configureddevices`) or deadlock it
+outright. Total per-scenario overhead is ten localhost round-trips, each
+a matter of milliseconds when the runner is healthy. That is the typical
+case, not a bound: when a dependency bump invalidates the graph and every
+BDD suite re-executes cache-cold at once, individual restarts take seconds
 on a Windows runner. Each PUT is therefore sent with a deliberately
 generous `RESET_ATTEMPT_TIMEOUT`, and only a **connect** failure — where
 the request provably never reached the simulator — is retried. A timeout
@@ -1009,17 +1041,19 @@ is safe to wire up unconditionally.
 MyWorld::cucumber()
     .before(|_feature, _rule, _scenario, _world| {
         Box::pin(async move {
-            bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
+            if let Err(errors) =
+                bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
+            {
+                panic!("OmniSim device reset failed: {}", errors.join("; "));
+            }
         })
     })
     .after(/* ... */)
 ```
 
-`OmniSimHandle::reset_all_devices` already covers every device class our
-BDD suites exercise today: telescope, camera, filter wheel, focuser, cover
-calibrator, safety monitor, switch, rotator, observing conditions, and dome.
-If a future device class exposes the same `/restart` endpoint shape, add its
-`reset_X` helper call there too so contributors get the isolation for free.
+A device class OmniSim adds with the same `/restart` endpoint shape gets
+its `reset_X` helper call in `reset_all_devices` too, so contributors get
+the isolation for free.
 
 **Why scenarios that touch OmniSim must serialize.** A `before(scenario)`
 reset that disconnects the shared simulator's devices is unsafe to
@@ -1041,16 +1075,18 @@ dirs and never touch OmniSim devices. Note cucumber refuses to
 drain Concurrent scenarios while `@serial` ones are queued, so all
 untagged scenarios launch simultaneously once the serial queue
 empties — their before-hooks fire as one burst, which is why the
-restart PUTs are serialized process-wide; see #431.)
+restart PUTs are serialized process-wide.)
 
 **Parallelism comes from processes, not from dropping `@serial`.**
-Since #467 every BDD test process owns a private OmniSim
+Every BDD test process owns a private OmniSim
 (`--multi-instance` + a port it picks itself + per-instance settings dir), so
 the wall-clock lever is more processes, each with its own simulator:
-the four OmniSim suites run concurrently under Bazel on Linux/macOS,
-and `rp:bdd` is additionally split into parallel shard processes via
-Bazel `shard_count`. To shard a suite: (1) set `shard_count` on its
-`rust_test` target, and (2) route its cucumber filter through
+the OmniSim suites (every target tagged `resources:omnisim:1`) run
+concurrently under Bazel, and a suite whose `rust_test` target sets
+Bazel's `shard_count` is split further, into that many shard
+processes. To shard a suite:
+(1) set `shard_count` on its `rust_test` target, and (2) route its
+cucumber filter through
 `bdd_infra::sharding::scenario_in_current_shard(feat.path.as_deref(),
 &feat.name, sc.position.line)` — `bdd_main!` already advertises
 sharding support to Bazel. Skipping step 2 silently makes every shard
@@ -1146,17 +1182,17 @@ the suite skips the `@pebble` scenarios and prints a loud
 `skipping N @pebble scenarios` notice — the rest of doctor's suite runs
 normally, so a box without Pebble stays green while never *silently*
 under-testing. Pebble backs six scenarios in one suite, so making it a
-hard prerequisite for all 95 targets would cost more than it buys.
+hard prerequisite of every local `bazel test //...` would cost more than it
+buys.
 
 **In CI that skip is a failure.** `.bazelrc` sets
 `test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1`, and the suite's entry
 point turns missing locators into a panic naming how many scenarios the
 run would have dropped. Every workflow that runs doctor's suite provisions
-the binaries today (`.github/actions/install-pebble`, pinned +
-SHA-verified like install-omnisim), so the guard is inert — until an
-install step breaks, a workflow forgets it, or a new runner can't fetch
-the release, which is exactly when a skip notice in a green log would go
-unread.
+the binaries (`.github/actions/install-pebble`, pinned + SHA-verified like
+install-omnisim), so the guard fires only when an install step breaks, a
+workflow forgets it, or a new runner can't fetch the release, which is
+exactly when a skip notice in a green log would go unread.
 
 To run them locally: **`bazel run //.github/actions:install -- pebble`**
 downloads and SHA-verifies the same pinned release into `~/.local/opt/pebble`
@@ -1185,9 +1221,9 @@ process — cost far more than the step it sits in. While it runs:
   wrong on either side;
 - the suite loses its concurrency: wall time becomes the *sum* of every
   blocking wait. Doctor's suite spends most of its steps running the
-  doctor binary — moving those waits off the poll loop took it from 20.6 s
-  to 3.9 s locally, and from 160.8 s to 5.7 s with each spawn slowed to
-  900 ms to emulate a contended 4-vCPU Windows runner.
+  doctor binary: measured with those waits on the poll loop it takes
+  20.6 s locally against 3.9 s off it, and 160.8 s against 5.7 s with each
+  spawn slowed to 900 ms to emulate a contended 4-vCPU Windows runner.
 
 So: **`bdd_infra::run_once_async` in a step, never `run_once`** (the
 synchronous form is for plain `#[test]`s, which have no runtime to yield
@@ -1200,12 +1236,12 @@ worker.
 
 A wait does not have to look like one. A port probe is a loopback
 `connect()` that is meant to be refused, and on the Windows CI runner each
-refusal took about 2 s: phd2-guider's camera-facade scenarios, which each
-probed once from a step, started their services 2.00 s apart, while its
-scenarios that probed nothing started theirs milliseconds apart. The poll
-loop stood still for each of those 2 s. Every other scenario's health wait
-then ran out with its service up and connected, and 48 of 58 scenarios
-failed on a service that had done nothing wrong.
+refusal takes about 2 s. Probing once from a step on the loop, a suite's
+scenarios that probe a port start their services 2.00 s apart, while its
+scenarios that probe nothing start theirs milliseconds apart. The
+poll loop stands still for each of those 2 s, and every other scenario's
+health wait runs out with its service up and connected: in the measured
+run, 48 of 58 scenarios failed on a service that had done nothing wrong.
 
 So synchronous work a scenario does goes through `off_loop`: steps take a
 port from **`bdd_infra::reserved_test_port_async`** (or keep one with
@@ -1216,8 +1252,8 @@ makes slow), a binary run to its exit goes through `run_once_async`, and
 doctor's Pebble harness mints its certificates and spawns its pair there
 for every `@pebble` scenario.
 
-Off the loop, spawns run in parallel on pool threads where the loop used
-to run them one at a time, so every process creation in a test process
+Off the loop, spawns run in parallel on pool threads, where the loop
+would run them one at a time, so every process creation in a test process
 takes one lock: **`bdd_infra::with_spawn_lock(|| cmd.spawn())`** in
 synchronous code (a closure under `off_loop`, a plain `#[test]`), and
 **`bdd_infra::with_spawn_lock_async(|| cmd.spawn()).await`** in async code,
@@ -1231,8 +1267,8 @@ listener keeps its port bound after the probe let it go. So the lock
 orders process creation against other process creation and against
 `ephemeral_ports`, which takes it itself. The lock covers the spawn or the
 probe alone, never the child's life, a wait or a binary lookup.
-`ServiceHandle`, `run_once`, phd2-guider's mock, doctor's Pebble pair,
-OmniSim, ConformU, geckodriver and bdd-infra's own unit tests all take it.
+`ServiceHandle`, `run_once`, doctor's Pebble pair, OmniSim, ConformU,
+geckodriver and bdd-infra's own unit tests all take it.
 
 That is all it orders. A socket made anywhere else at the instant of a fork
 (a step's stub listener, a reqwest connection, on the poll loop or a runtime
@@ -1243,7 +1279,7 @@ bdd-infra closes that window.
 Three spawns stay on the loop, each rare, taking the lock's async form:
 OmniSim's `spawn_once` (once per test process), ConformU (run by plain
 `#[tokio::test]`s, not by cucumber), and ui-htmx's geckodriver (once per
-`@browser` scenario, in an opt-in suite of four). OmniSim must stay: it is spawned with Linux's
+`@browser` scenario, in an opt-in suite). OmniSim must stay: it is spawned with Linux's
 `PR_SET_PDEATHSIG`, which ties the child to the *thread* that forked it,
 and a blocking-pool thread retires once it has sat idle, taking the child
 with it mid-scenario. Anything spawned that way does not go through
@@ -1322,7 +1358,8 @@ endpoint, a health probe, a status poll):
    client per poll rebuilds a connection pool and pays a fresh TCP
    connect every iteration, which is exactly the cost that blows the
    deadline. `services/star-adventurer-gti/tests/bdd/world.rs`
-   (`wait_for_command_log`) and `services/phd2-guider/tests/bdd/world.rs`
+   (`wait_for_command_log`) and
+   `services/gemini-powerbox-adv3-driver/tests/bdd/world.rs`
    (`http_client`) are the reference shapes.
 
    Size the deadline against the *poll loop*, not against any call it
@@ -1333,8 +1370,8 @@ endpoint, a health probe, a status poll):
    is indistinguishable from a dead server. On the sanitizer leg that loop
    has been measured unpolled for ~10 s at a stretch (planetarium-bridge:
    10 s between the harness parsing the bound-port line and the very next
-   statement taking `Instant::now()`), which is why a 10 s deadline there
-   burned a 30 s budget in three spurious timeouts. Clear the worst
+   statement taking `Instant::now()`), so a 10 s deadline there burns a
+   30 s budget in three spurious timeouts. Clear the worst
    observed stretch by a comfortable multiple, and keep the deadline a
    small fraction of the budget so a wait still gets several real attempts.
 3. **Make the budget a wall clock, not a poll count.** `for _ in 0..240 {
@@ -1344,9 +1381,10 @@ endpoint, a health probe, a status poll):
    sounds forgiving but means the number in the panic message is a lie
    and the real budget is unknowable from the source. Worse, the same
    shape used against work whose cost scales with the request gives
-   every case the same nap count regardless: the three camera suites'
-   old `wait_image_ready` allowed one 6.5-megapixel frame exactly what
-   it allowed a 64×64 one. Take `Instant::now()` before the loop and
+   every case the same nap count regardless: a poll-count
+   `wait_image_ready` in the three camera suites would allow a
+   6.5-megapixel frame exactly what it allows a 64×64 one. Take
+   `Instant::now()` before the loop and
    compare `start.elapsed()` against a named budget each pass, then
    report *that measurement* in the panic alongside the budget — when
    the budget turns out to be the thing that was wrong, the elapsed
@@ -1387,13 +1425,14 @@ endpoint, a health probe, a status poll):
    suite waits before reporting a hang. What it does buy is a
    per-scenario constant nobody can justify a month later, and the
    tightest of them going red first on the slowest leg.
-   planetarium-bridge's three slew waits were 10 s, 3 s and 5 s over
-   simulated slews of 1 s, 1 s and 2 s; the 3× one failed on the coverage
-   leg while its 10× sibling — same 1 s slew, same poll, same run — never
-   has (issue #1105). Prefer one named budget per suite, generous enough
-   that the slowest leg never reaches it, with the target's own `size` as
-   the outer bound. A generous budget cannot weaken an assertion it does
-   not make; it only makes a genuine hang slower to report, and cucumber
+   With planetarium-bridge's three slew waits at 10 s, 3 s and 5 s over
+   simulated slews of 1 s, 1 s and 2 s, the 3× one fails on the
+   coverage leg while its 10× sibling — same 1 s slew, same poll, same
+   run — does not. Prefer one named budget per suite (that suite's
+   `WAIT_BUDGET`), generous enough that the slowest leg never reaches it,
+   with the target's own `size` as the outer bound. A generous budget
+   cannot weaken an assertion it does not make; it only makes a genuine
+   hang slower to report, and cucumber
    runs scenarios concurrently, so that cost is paid once by the suite
    rather than once per scenario. When a scenario really does need to pin
    how long something takes, assert *that*, and put the number in the
@@ -1416,12 +1455,12 @@ the stop took therefore passes most loudly in exactly the case it was
 meant to catch.
 
 That is not hypothetical: `bdd-infra` stops services with the platform's
-graceful signal, and on Windows `CTRL_BREAK_EVENT` went unregistered for
-as long as the runner only handled Ctrl+C. Windows' default handler
-terminated every service instead — promptly, with a normal-looking exit
-and no error anywhere. The timing guard
-(`test_stop_completes_via_graceful_signal`) was green throughout. The
-only visible trace was an *absence*: the runner's shutdown log line
+graceful signal, `CTRL_BREAK_EVENT` on Windows, and a runner that handles
+only Ctrl+C leaves that event unregistered. Windows' default handler then
+terminates every service — promptly, with a normal-looking exit and no
+error anywhere — and the timing guard
+(`test_stop_completes_via_graceful_signal`) stays green. The only visible
+trace is an *absence*: in one measurement the runner's shutdown log line
 appeared 67 times in a local Linux run of one suite and 0 times across a
 27k-line Windows CI job.
 
@@ -1436,12 +1475,12 @@ which events the runner registered.
 
 The same rule catches a subtler shape: a wall-clock *ceiling* standing in
 for an outcome the wire already reports. plate-solver's supervision
-escalates from a graceful signal to a force-kill after a 2 s grace, and
-the BDD scenario for the graceful path bounded the response at 2500 ms —
-400 ms *above* the force-kill path's own ~2100 ms floor. It therefore
-separated neither outcome from the other, while a contended Windows
-runner pushed a ~100 ms request to 3.8 s and failed the leg (issue #845).
-Two questions retire that whole class:
+escalates from a graceful signal to a force-kill after a 2 s grace. With
+a 100 ms timeout, a ceiling of 2500 ms on the graceful path's response sits
+400 ms *above* the force-kill path's own ~2100 ms floor, so it separates
+neither outcome from the other — while a contended Windows runner can push
+a ~100 ms request to 3.8 s and fail the leg. Two questions retire that
+whole class:
 
 - *Does the ceiling sit between the outcomes it claims to tell apart?*
   If it sits above both, it asserts nothing and only measures load. Check
@@ -1451,12 +1490,13 @@ Two questions retire that whole class:
   beats timing it. Here both outcomes share the frozen `solve_timeout`
   error code, but the envelope's `message` says `(terminated)` or
   `(killed)` — so the scenarios assert that instead, which is both
-  load-proof and a strictly stronger check than the ceiling ever was.
+  load-proof and strictly stronger than any ceiling.
 
 Note the asymmetry with a *floor*, which stays sound: contention can only
-make a request take longer, so `at least 2000 milliseconds` still proves
-the grace period elapsed. Do not add a ceiling back for symmetry. And a
-ceiling never was the hang bound people assume it is — it is evaluated
+make a request take longer, so a floor of timeout plus grace (`at least
+7000 milliseconds` against the scenario's 5 s timeout) still proves the
+grace period elapsed. Do not add a ceiling beside it for symmetry. And a
+ceiling is not the hang bound people assume it is — it is evaluated
 only once the response has arrived, which is precisely the case where
 nothing hung. What bounds a hang is a timeout on the shared client
 (§5.9 r2), sized above the slowest response the service can legitimately
@@ -1526,9 +1566,9 @@ never consulted, no fallback happens (the connect *succeeded*), and the
 scenario asserts against a stranger's answer: a non-HTTP one surfaces as
 a transport error, an HTTP one as the wrong status.
 
-Issue #1182 was this in doctor's aggregation suite. The scenario that
-stages a management endpoint answering unparseable JSON got
-`invalid HTTP version parsed` instead — bytes that were not HTTP at all,
+With an IPv4-only stub, the scenario in doctor's aggregation suite that
+stages a management endpoint answering unparseable JSON gets
+`invalid HTTP version parsed` instead — bytes that are not HTTP at all,
 from a listener the suite never started.
 
 The rule has two halves:
@@ -1569,24 +1609,24 @@ from the address. Swapping it in changes nothing.
 
 A client that dials a bound `SocketAddr` rather than a name is not
 exposed — there is only one address to reach, and it is the stub's. The
-hot-reload server in doctor's `tls_renew_steps.rs` stays as it is for
-that reason, and `pebble.rs` dials Pebble at `127.0.0.1` with a comment
-saying so. The mirror case, where the *service under test* owns one
+hot-reload server in doctor's `tls_renew_steps.rs` binds `127.0.0.1`
+alone for that reason, and `pebble.rs` dials Pebble at `127.0.0.1` with a
+comment saying so. The mirror case, where the *service under test* owns one
 family and the test's client dials it, is
 [§5.15](#515-a-test-dials-the-service-under-test-at-the-address-it-bound-not-localhost).
 
-This is the third variant of one family. [#745](https://github.com/rusty-photon/rusty-photon/issues/745)
-and [#852](https://github.com/rusty-photon/rusty-photon/issues/852) were
-the *dead-port* shape — bind `:0`, read the port, drop the listener, and
-race a foreign server into the freed port. Here the listener is never
-released; what is unguarded is the other address family.
+This is one variant of a family. The *dead-port* shape (§5.1) binds `:0`,
+reads the port, drops the listener, and races a foreign server into the
+freed port. Here the listener is never released; what is unguarded is the
+other address family.
 
-A fourth variant needs no stub: a harness that hands a child it spawns a
+A third variant needs no stub: a harness that hands a child it spawns a
 port drawn the dead-port way. Another process's server of the same kind
 can take the port first, and a readiness probe that asks only "is
 something healthy there?" adopts it before the child fails its bind and
-exits. [#1499](https://github.com/rusty-photon/rusty-photon/issues/1499)
-ran two `rp:bdd` shards against one OmniSim this way. The cure is the
+exits. An OmniSim harness built that way can run two `rp:bdd` shards
+against one simulator, one shard's per-scenario resets moving the other's
+filter wheel in the middle of its scenario. The cure is the
 pattern every service binary here already follows: the child binds port
 0 and prints the port it got, and the harness reads it back —
 `bound_addr=` for our services, Kestrel's `Now listening on:` line for
@@ -1622,19 +1662,19 @@ stars, and at the exposures the suites use that is a coin flip:
   milliseconds.
 - So a runner that overshoots the request by a few milliseconds hands
   the sweep stars, a fit and a *successful* `focus_train`. A 3-core
-  macOS CI runner carrying several BDD suites at once does exactly that,
-  which is how `//services/focus-model:bdd` went red on `bazel /
-  macos-latest` while Linux and Windows stayed green — two or three of
-  its `should return an error` steps per run, a different set each time
-  (run
-  [34698611958](https://github.com/rusty-photon/rusty-photon/actions/runs/34698611958)).
+  macOS CI runner carrying several BDD suites at once does exactly that:
+  with the threshold left at its default, `//services/focus-model:bdd`
+  fails two or three of its `should return an error` steps per run on
+  `bazel / macos-latest`, a different set each time, while Linux and
+  Windows stay green.
 
 **The rule.** A capture sweep that wants starless frames says so, with
 `threshold_sigma` pinned to `bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA`
 — a threshold no frame can clear, so the premise holds on every platform
-and at any timing. Pin it wherever the sweep's parameters are set: the
-train's `auto_focus` block (`TrainAutoFocusConfig::threshold_sigma`), the
-`auto_focus` tool call's arguments, or focus-model's per-train block.
+and at any timing. Pin it where the sweep's parameters are set,
+focus-model's per-train block
+(`bdd_infra::rp_harness::starless_focus_train()` builds one, and
+session-runner's deep-sky scenarios register the provider with it).
 Never leave it to the default and hope.
 
 Two limits are worth knowing. rp **refuses** `threshold_sigma` on a
@@ -1652,8 +1692,8 @@ RA you asked for, and the size of the miss is a wall-clock artefact of
 the runner. A scenario that syncs to an RA and then asserts the mount
 reports that same RA back is asserting on how fast the machine is.
 
-The mechanism, measured against the pinned OmniSim release
-(`v0.5.0-467.2`):
+The mechanism, measured against the fork's `v0.5.0-467.2` release (the
+pinned `467.3` carries its telescope code unchanged):
 
 - `MountFunctions.ConvertRaDecToAxes` builds the mount axis from the
   **cached** `TelescopeHardware.SiderealTime`, which is refreshed only
@@ -1680,14 +1720,12 @@ quantity, and it is not small: measured with bare Alpaca calls, a sync
 issued right after a restart keeps +0.0002…+0.0003° for the rest of the
 scenario; a real `rp:bdd` run on an idle container landed +0.0012° out;
 and with the simulator process stalled for 3 s across the restart, one
-trial in six kept **+0.0128°** — 46 arcsec, which is how
-`//services/rp:bdd` went red on `bazel / windows-latest`
-(issue [#1252](https://github.com/rusty-photon/rusty-photon/issues/1252),
-run
-[34675918330](https://github.com/rusty-photon/rusty-photon/actions/runs/34675918330)).
+trial in six kept **+0.0128°** — 46 arcsec, enough to fail a
+`//services/rp:bdd` scenario that asserts against the synced literal on
+`bazel / windows-latest`.
 There is no bound to quote: the offset is however long the simulator's
 timer was stalled. The same effect at its ordinary magnitude — one timer
-interval — is what `mount.feature`'s `SLEW_ECHO_TOLERANCE` absorbs; it
+interval — is what `SLEW_ECHO_TOLERANCE` in rp's `mount_steps.rs` absorbs; it
 is a stale clock, not float drift in a coordinate transform.
 
 *How far two reads of the same tracking mount disagree* is the other
@@ -1724,10 +1762,9 @@ that is any other suite's listener, running beside this one with no
 sandbox between them. The connect succeeds, so nothing falls back to
 IPv4. The stranger answers every poll for as long as it holds the port,
 and the readiness probe gives up while the service it waited for sits
-healthy and idle. Issue
-[#1488](https://github.com/rusty-photon/rusty-photon/issues/1488) was
-this in session-runner and ui-htmx: 60 fast failures against a service
-that had logged its bind.
+healthy and idle: a session-runner or ui-htmx suite dialling `localhost`
+this way records 60 fast failures against a service that has logged its
+bind.
 
 The rule:
 
@@ -1819,12 +1856,12 @@ async fn test_focuser_position_not_connected() {
 #### 6.4 Test File Organization
 
 - `src/<module>.rs` `#[cfg(test)] mod tests` -- Unit and mock-based component tests (inline with source)
-- `test_integration.rs` / `test_lib.rs` -- Server, run-loop, and CLI integration tests. Aim to keep these in one binary per service when practical so cargo links fewer integration targets; some services (phd2-guider, plate-solver) still split by concern where the categories don't share helpers.
+- `test_integration.rs` / `test_lib.rs` -- Server, run-loop, and CLI integration tests. Aim to keep these in one binary per service when practical so cargo links fewer integration targets; some services split by concern where the categories share no helpers.
 - `conformu_integration.rs` -- ASCOM conformance (self-skips without `CONFORMU_PATH`; see §1.4)
 
 #### 6.5 Mock Infrastructure Lives in Test Files
 
-Hand-written mocks (`MockSerialReader`, `MockSerialWriter`, `MockSerialPortFactory`) are defined in the test files that use them. They are NOT feature-gated. The `#[cfg(feature = "mock")]` flag is reserved for the feature-gated `MockSerialPortFactory` in `src/` used by ConformU and server tests.
+Hand-written test doubles (ppba-driver's `FailingPpbaTransportFactory`, upbv2-driver's `PpbaPingFactory`) are defined in the `#[cfg(test)]` modules that use them. They are NOT feature-gated. A double the unit tests of several drivers share lives in the `transport-doubles` crate, a dev-dependency: `HoldingFactory` (§6.14), and `FailingFactory`, which fails the next frame sent so a test reaches a driver's wire-failure branches. The `mock` feature is reserved for the device simulators in `src/mock.rs` (`MockPpbaTransportFactory`, `MockQhyTransportFactory`), which stand in for the serial port in ConformU, server and BDD tests.
 
 #### 6.6 Serialize Tests That Share Process-Global State
 
@@ -1874,7 +1911,7 @@ fn open_succeeds() {
 isolates each test in its own process and hides this — but plain
 `cargo test` runs them as threads. That includes the nightly **safety**
 sanitizer workflow and a developer running `cargo test -p qhyccd-rs`, both
-of which abort without the guard. See issue #384 for the original failure.
+of which abort without the guard.
 
 **Tests that start child processes, when any of them writes an executable
 and runs it.** The process's descriptor table is the shared state. A test
@@ -1905,14 +1942,15 @@ state across multiple calls. These mocks simulate hardware behavior: they proces
 commands, maintain device state (temperature, position, voltage), and return
 responses from a queue. mockall cannot express this kind of stateful simulation.
 
-Examples: `MockSerialPortFactory` in ppba-driver and qhy-focuser, which simulate
-serial port communication with response queues and device state machines.
+Examples: `MockPpbaTransportFactory` and `MockQhyTransportFactory` in
+ppba-driver's and qhy-focuser's `src/mock.rs`, which simulate serial port
+communication with response queues and device state machines.
 
 **mockall (`#[automock]`)** — Use for service-boundary traits where you need simple
 "expect this call, return this value" behavior. These are thin abstractions over
 external APIs (HTTP clients, DNS providers, ACME protocol) where the mock just
 needs to return canned responses or verify call arguments. **This is the default
-for HTTP-client error-path tests** — see ADR-004.
+for HTTP-client error-path tests**.
 
 Examples: `HttpClient` trait in sentinel (mocks reqwest for `AlpacaSafetyMonitor`
 and `PushoverNotifier`), `DnsProvider` trait in doctor's provisioning module
@@ -1927,14 +1965,14 @@ at the large end (76-method `ascom_alpaca::Camera`), it is not.
 
 Spawn an axum server on `127.0.0.1:0` inside the test, configure routes that
 return canned wire-format responses, point the production code at the bound
-address. The existing `spawn_stub` helper plus extracted helpers with names
-like `devices_body`, `ascom_body`, and `assert_disconnected` /
-`assert_connected` (to be added when the pattern grows) keep per-test bodies
-short.
+address. rp's `spawn_stub` (`services/rp/src/equipment/test_support.rs`)
+does the spawning; a wire-format body or an assertion that repeats across
+tests becomes a helper of its own, so per-test bodies stay short.
 
-Examples: `services/rp/src/equipment.rs::connect_*` (failure-branch tests
-against the ascom-alpaca client); `services/sky-survey-camera/tests/bdd/world.rs`
-(stateful behaviour switching for survey responses).
+Examples: the `connect_camera_*` tests in `services/rp/src/equipment/camera.rs`
+(failure-branch tests against the ascom-alpaca client);
+`services/sky-survey-camera/tests/bdd/world.rs` (stateful behaviour switching
+for survey responses).
 
 **How to use mockall with async traits:**
 
@@ -1971,9 +2009,9 @@ Otherwise: dependency surface ≤ ~10 methods?
           for repeated wire format; assert on the production-side outcome.
 ```
 
-`httpmock` was evaluated and rejected — see ADR-004 for the empirical
-comparison and the specific failure modes (silent `Content-Type`
-omission, behaviour-switching regression, forced async propagation).
+`httpmock` is not used, for the failure modes the comparison linked above
+measured: a silently omitted `Content-Type`, a behaviour-switching
+regression, and forced async propagation.
 
 #### 6.8 Do Not Assert on Captured Tracing Events
 
@@ -1997,8 +2035,7 @@ So a test asserting "exactly one warn" fails with `left: 0` whenever some
 *other* test in the same binary happens to touch the same callsite first
 while carrying no subscriber. The failure is undercount-only,
 platform-independent, load-sensitive, and hits just one of the asserting
-tests per run. This was issue #949 (flake #946); the deterministic
-reproduction is:
+tests per run. The deterministic reproduction is:
 
 ```rust
 fn emit() { tracing::warn!("shared callsite"); }
@@ -2029,7 +2066,7 @@ See `services/pa-falcon-rotator/src/manager.rs` (`edge_rule_tests` for the
 rule, `read_status_records_each_limit_detect_observation` for the wiring).
 
 Installing a process-global floor subscriber once per binary also suppresses
-the flake, but it was **rejected**: it narrows the window rather than closing
+the flake, and is **not** the fix: it narrows the window rather than closing
 it (`set_global_default` publishes `GLOBAL_INIT = INITIALIZED` only *after*
 `Dispatch::new`'s interest rebuild, so a callsite first touched inside that
 gap still caches `never`), it burns the binary's single `set_global_default`,
@@ -2083,10 +2120,10 @@ about *which* state was observed, not about a bare equality.
 Prove such a test earns its name: reintroduce the defect it targets and watch
 it fail. For a nap-based test, also delay the code under test (a temporary
 `sleep` right before it) to model a loaded runner — with the bug present and
-its commit delayed 200 ms, the nap version of
+its commit delayed 200 ms, a nap version of
 `a_superseded_capture_does_not_release_the_new_exposures_slot`
-(`services/zwo-camera/src/camera.rs`) passed, which is what prompted the
-rewrite above.
+(`services/zwo-camera/src/camera.rs`) passes, which is why that test watches
+a window.
 
 Where the thing you want to wait on *can* be made observable instead, prefer
 that over any timing: a simulation-only, read-only counter on the fake
@@ -2138,12 +2175,11 @@ actually means the experiment never ran.
 This stretches the code under test *across* the sample point, which is the
 condition a loaded runner produces and an idle one never does. Then sweep the
 latency rather than picking one value — the interesting failures cluster in a
-band, and a single guess usually misses it. On
+band, and a single guess usually misses it. On a nap version of
 `pause_background_polling_stops_wire_traffic_and_resumes_on_drop`
-(`services/star-adventurer-gti/src/manager.rs`, issue #875) the sweep turned
-one unreproducible CI sighting into a table: clean at 0 ms and 3 ms, then
-failing at 5, 10 and 20 ms with the exact error CI had reported once, three
-weeks earlier.
+(`services/star-adventurer-gti/src/manager.rs`), the sweep turns one
+unreproducible CI sighting into a table: clean at 0 ms and 3 ms, then
+failing at 5, 10 and 20 ms with the exact error of the CI failure.
 
 Keep the knob while you verify the rewrite, because it is what proves the new
 test is load-independent rather than merely differently-timed: the window
@@ -2195,8 +2231,9 @@ Mind which side of the fake's action an injected sleep sits on. The `RP_WIRE_MS`
 example above puts it before `process_command`, so the command itself acts late — a
 slow *send*. A host that is slow to *notice* a reply is the other case: the
 device acted on time and only the reply is read late, so the sleep belongs in
-`recv_frame`, after the action. Timing bugs live in exactly that difference
-(issue #1371 was a sample dated on receipt). That case is not scratch:
+`recv_frame`, after the action. Timing bugs live in exactly that difference:
+a sample dated on receipt carries however late the reply was read into
+every value derived from it. That case is not scratch:
 star-adventurer-gti's mock keeps a permanent `reply_delay` knob for it — a
 struct field a test sets, like the mock's other fault knobs, never an
 environment variable.
@@ -2264,11 +2301,11 @@ budget), a test that exercises it on real time bets that the host never
 stalls for longer than the test's slack. A pool VM loses that bet. When the
 host deschedules the VM, every guest thread stops at once, the test's sleep
 and the code's deadline come due together, and whichever task the runtime
-polls first decides the verdict. rp-auth's gate tests queued two requests
-behind a 200 ms gate wait, then gave the request ahead of them 100–150 ms of
-real time to finish. On a Windows pool VM under host contention the wait
-expired first, and the test got a correct `Busy` it did not expect
-(`crates/rp-auth/src/verifier.rs`).
+polls first decides the verdict. On real time, rp-auth's gate tests
+(`crates/rp-auth/src/verifier.rs`) would queue two requests behind a 200 ms
+gate wait, then give the request ahead of them 100–150 ms of real time to
+finish; on a Windows pool VM under host contention the wait expires first,
+and the test gets a correct `Busy` it does not expect.
 
 Put the deadline on tokio's clock and the test on paused time:
 
@@ -2290,6 +2327,20 @@ Put the deadline on tokio's clock and the test on paused time:
   a "queued request never joins the in-flight check" bug reintroduced, the
   rp-auth test caught it in 63 of 100 runs without the yield and in 100 of
   100 with it.
+- **Keep real sockets out of a paused-time test whose verdict needs their
+  replies.** When the runtime parks, the paused clock polls I/O once
+  without waiting. If nothing is ready it jumps to the next timer, so a
+  loopback reply the kernel has not reported yet loses to whatever timeout
+  is pending. Linux has usually reported it by then; the macOS runners
+  often have not. Run `wait_until_ready`'s loop on paused time against a
+  canned 503 on loopback, and it makes 60 attempts on Linux but between 4
+  and 22 on macOS, the rest lost to its 10 s attempt timeout in virtual
+  time. A peer that answers 2 ms late from another thread gives the same
+  loss on Linux: 3 attempts. Split the timed loop from the I/O, test the
+  loop against a probe that opens no socket (`retry_until_ready` in
+  `crates/bdd-infra/src/tls_auth.rs`), and test the I/O on real time. A
+  paused-time test whose peer is meant to stay silent is fine: there the
+  jump to the timeout is the behaviour under test.
 
 A CPU hog does not reproduce this class of flake, because the scheduler still
 runs a waking thread promptly: forty busy loops on the test's CPU gave 0
@@ -2305,8 +2356,8 @@ done
 wait "$pid"
 ```
 
-With 150 ms freezes every 60 ms, the real-time gate tests failed 8 of 100
-runs. The paused-time rewrite passed 100 of 100, and 40 of 40 with 500 ms
+With 150 ms freezes every 60 ms, the gate tests on real time failed 8 of 100
+runs; on paused time they passed 100 of 100, and 40 of 40 with 500 ms
 freezes.
 
 #### 6.13 A Test-Only API Is a `test-util` Feature
@@ -2338,6 +2389,62 @@ The evidence that the gate holds is negative:
   analysis;
 - `cargo build -v -p <a dependent>` shows the crate compiled without
   `--cfg feature="test-util"`.
+
+#### 6.14 A Store-Order Race Is Built With `HoldingFactory`
+
+A driver stores what a request brought back after its turn on the wire
+ends, so a poll that read the device before a command can store after the
+command's value. The driver refuses the poll's older value ([Values that
+carry their time](../workspace.md#values-that-carry-their-time)). The unit
+test that proves it has to put the two stores in that order every run, not
+wait for a loaded host to do it. `transport-doubles`'s `HoldingFactory` does
+that. It wraps the driver's mock factory, holds back the reply to one
+request, says when the reply is held, and lets it go when the test says.
+The `manager.rs` test modules of the six polling serial drivers have such
+tests; `services/dsd-fp2/src/manager.rs` has the shortest one:
+
+```rust
+let factory = Arc::new(HoldingFactory::new(MockTransportFactory::default()));
+// ... a manager on `factory`, polling every 20 ms, and a session ...
+
+// A poll's request is on the wire. The device has it, so its reply is decided.
+factory.hold_next_reply_to(Fp2Codec.encode(&Command::GetLight));
+factory.reply_held().await;
+
+// With the cache held, the poll reads its reply and waits on the lock. The
+// command goes on the wire behind it and stores first.
+let mut cache = snap.write().await;
+factory.release_reply();
+let (reply, timing) = session.request_timed(Command::SetLight(true)).await.unwrap();
+reply.parse_ok().unwrap();
+cache.store_light_on(true, timing.received_at);
+
+// The poll stores next. Its next request shows it has stored.
+factory.hold_next_reply_to(Fp2Codec.encode(&Command::GetMotorState));
+drop(cache);
+factory.reply_held().await;
+assert_eq!(snap.read().await.light_on.value(), Some(true));
+factory.release_reply();
+```
+
+- **Arm with the frame's leading bytes.** `hold_next_reply_to` takes bytes:
+  a literal such as `b"PA"`, or the driver's codec encoding the command
+  (`Codec::encode`). A frame that starts otherwise passes and leaves the arm
+  set, so a command sent between polls does not take it.
+  `hold_next_reply` holds the next reply read, whatever frame went out
+  before it. It is for a device that sends frames unasked, which
+  `gemini-powerbox-adv3-driver`'s hub does.
+- **The hold sits before the reply is read.** The device has the request,
+  so the mock's answer is the one it gives at that moment. Arming again
+  while a reply is held arms the next match, so a test can arm the poll's
+  next request before it lets the held one go, as `pa-scops-oag`'s do.
+- **The next request is the sign.** Once the poll sends its next armed
+  request, its store is done. The test waits on that event, not on a sleep
+  (§6.9). `reply_held` fails with "no request reached its reply in 10s"
+  (`HOLD_DEADLINE`) when no request comes. That is a failure deadline, not a
+  duration.
+- **Prove the test can fail.** Remove the driver's order check, making the
+  store unconditional, and the test must fail.
 
 ---
 
@@ -2395,10 +2502,9 @@ When adding a new feature to a service:
 ### 10. UI / Browser-Facing Service Testing (server-rendered HTMX apps)
 
 **Applies to:** `ui-htmx` and any future server-rendered, HTMX-based
-browser-facing service. The full design rationale (the Playwright evaluation,
-the cross-cutting gotchas, the anticipatory-spike history) lives in the
-archived [ui-htmx UI-testing plan](../plans/archive/ui-testing.md); this
-section is the durable how-to.
+browser-facing service. The evidence behind the options §10.6 rejects —
+the Playwright evaluation among them — is in the archived plan
+[`docs/plans/archive/ui-testing.md`](../plans/archive/ui-testing.md).
 
 #### 10.1 The model: three proof obligations, one BDD suite
 
@@ -2513,13 +2619,14 @@ teardown doesn't zero out coverage).
   silently lost** (the same hazard as §5.4, but the browser removes the
   in-process escape hatch: `driver.quit()` is the only lever). This is
   especially sharp for SSE/streaming endpoints, which never close on a
-  shutdown signal (axum issue #2673) — an open SSE connection can block
+  shutdown signal ([axum issue 2673](https://github.com/tokio-rs/axum/issues/2673))
+  — an open SSE connection can block
   graceful shutdown for seconds where a plain request blocks for ~0.1s.
 - **Poll, never snapshot-once.** Set the WebDriver implicit wait to zero and
   poll explicitly (bounded retries, no wall-clock `sleep` beyond the poll
   interval) for every assertion that depends on an async htmx swap or SSE
   push — a single point-in-time read races the swap. See `wait_present` /
-  `wait_enabled` / `wait_text_contains` in `browser.rs`.
+  `wait_text_contains` / `wait_url_contains` in `browser.rs`.
 - **No async `Drop`.** `thirtyfour`'s `WebDriver` has none — always
   `driver.quit().await` explicitly; relying on `Drop` can deadlock the async
   executor mid-teardown.
@@ -2570,4 +2677,3 @@ teardown doesn't zero out coverage).
 - [AGENTS.md](../AGENTS.md) -- Rule 7 (prefer `unwrap()`) and Rule 8 (test smallest functionality)
 - [Pre-push skill](pre-push.md) -- Running the full CI quality-gate suite before pushing
 - [ASCOM Alpaca reference](../references/ascom-alpaca.md) -- Protocol details for ASCOM device tests
-- [ui-htmx UI-testing plan (archived)](../plans/archive/ui-testing.md) -- Full design rationale behind Section 10: the three-obligation model, the Playwright evaluation, the anticipatory-spike history

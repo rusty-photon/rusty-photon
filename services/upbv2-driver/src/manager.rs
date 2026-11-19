@@ -10,6 +10,12 @@
 //! * The cached state both devices share (status, power counters, boot
 //!   state, sensor sliding-window means).
 //!
+//! Each frame is stored with the instant it was read off the wire, and the
+//! cache keeps the frame read last ([`Stamped`]). Requests take turns on
+//! the wire, but each stores its frame after its turn ends, so a poll's
+//! store can land after the refresh that follows a write; the poll's frame
+//! is then the older one and is dropped.
+//!
 //! Both the handshake and the poll loop are **read-only by construction**:
 //! the only [`Upbv2Command`] variants either one sends are the five query
 //! commands. That is what tenet 3 (no actuation on connect) demands of a box
@@ -27,11 +33,11 @@ use std::time::Duration;
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportFactory,
-    WhileOpen,
+    Connection, Hooks, Session, SessionError, SharedTransport, Stamped, StateAssertion,
+    TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
-use tokio::time::interval;
+use tokio::time::{interval, Instant};
 use tracing::{debug, warn};
 
 use crate::codec::{Upbv2Codec, Upbv2CodecError, Upbv2Response};
@@ -44,19 +50,19 @@ use crate::protocol::{
 /// Cached device state shared between the switch device and the
 /// observing-conditions device.
 ///
-/// The three frames stay `None` until the handshake seeds them, so a read
+/// The three frames stay empty until the handshake seeds them, so a read
 /// that arrives before the first successful poll can be answered
 /// `NOT_CONNECTED` rather than with a fabricated zero.
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
     /// Last `PA` frame: outputs, USB ports, dew duties, sensors, per-channel
     /// currents, overcurrent flags and the auto-dew mask.
-    pub status: Option<Upbv2Status>,
+    pub status: Stamped<Upbv2Status>,
     /// Last `PC` frame: the cumulative power counters.
-    pub power: Option<Upbv2PowerConsumption>,
+    pub power: Stamped<Upbv2PowerConsumption>,
     /// Last `PS` frame. Read for one field only — the variable-output
     /// setpoint, which `PA` does not carry.
-    pub boot_state: Option<Upbv2BootState>,
+    pub boot_state: Stamped<Upbv2BootState>,
     pub temp_mean: SensorMean,
     pub humidity_mean: SensorMean,
     pub dewpoint_mean: SensorMean,
@@ -94,9 +100,9 @@ impl Upbv2Manager {
         let mut state = CachedState::default();
         let period_hours = config.observingconditions.averaging_period.as_secs_f64() / 3600.0;
         let window = effective_window(period_hours, poll_interval);
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        state.temp_mean = SensorMean::new(window);
+        state.humidity_mean = SensorMean::new(window);
+        state.dewpoint_mean = SensorMean::new(window);
         state.average_period_hours = period_hours;
         let cached_state = Arc::new(RwLock::new(state));
 
@@ -152,9 +158,10 @@ impl Upbv2Manager {
         }
         let window = effective_window(period_hours, self.poll_interval);
         let mut state = self.cached_state.write().await;
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        let now = Instant::now().into_std();
+        state.temp_mean.set_window(window, now);
+        state.humidity_mean.set_window(window, now);
+        state.dewpoint_mean.set_window(window, now);
         state.average_period_hours = period_hours;
         drop(state);
         debug!(period_hours, ?window, "sensor averaging period updated");
@@ -181,8 +188,7 @@ impl Upbv2Manager {
     ///
     /// Devices use this on demand — after a successful set command, so the
     /// very next read reflects the write instead of waiting out a poll
-    /// interval. The poll loop does the same thing internally while a
-    /// session is alive.
+    /// interval. The poll loop refreshes it too, on its own cadence.
     ///
     /// # Errors
     ///
@@ -192,8 +198,8 @@ impl Upbv2Manager {
     /// frame of the wrong variant is consumed by the skip budget rather than
     /// returned. The cache is left untouched on failure.
     pub async fn refresh_status(&self, session: &Session<Upbv2Codec>) -> Result<()> {
-        let resp = session
-            .request(Upbv2Command::Status)
+        let (resp, timing) = session
+            .request_timed(Upbv2Command::Status)
             .await
             .map_err(Upbv2Error::from)?;
         let Upbv2Response::Status(status) = resp else {
@@ -202,7 +208,7 @@ impl Upbv2Manager {
             ));
         };
         let mut state = self.cached_state.write().await;
-        apply_status(&mut state, &status);
+        apply_status(&mut state, &status, timing.received_at);
         drop(state);
         Ok(())
     }
@@ -220,8 +226,8 @@ impl Upbv2Manager {
     /// The same failure set as [`refresh_status`](Self::refresh_status),
     /// against the `PS` frame. The cache is left untouched on failure.
     pub async fn refresh_boot_state(&self, session: &Session<Upbv2Codec>) -> Result<()> {
-        let resp = session
-            .request(Upbv2Command::BootState)
+        let (resp, timing) = session
+            .request_timed(Upbv2Command::BootState)
             .await
             .map_err(Upbv2Error::from)?;
         let Upbv2Response::BootState(boot_state) = resp else {
@@ -230,7 +236,7 @@ impl Upbv2Manager {
             ));
         };
         let mut state = self.cached_state.write().await;
-        state.boot_state = Some(boot_state);
+        apply_boot_state(&mut state, boot_state, timing.received_at);
         drop(state);
         Ok(())
     }
@@ -248,8 +254,8 @@ fn build_hooks(
             Box::pin(handshake(conn, cs))
         }),
         on_last_disconnect: Box::new(|_| {
-            // Nothing to assert: this service holds no state that must
-            // survive a no-client gap, so the answer is trivially yes.
+            // Nothing to assert: no device state has to hold while no
+            // client is attached, so the answer is trivially yes.
             Box::pin(async { StateAssertion::Asserted })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -263,8 +269,8 @@ fn build_hooks(
 /// Read-only connect sequence: identify the box, log its firmware, and seed
 /// the cache from the three query frames.
 ///
-/// Runs on every transition into `Open`, reconnects included. Nothing here
-/// may write device state.
+/// Runs on every open of the port, each reconnect attempt included. Nothing
+/// here may write device state.
 async fn handshake(
     conn: &Connection<Upbv2Codec>,
     cached_state: Arc<RwLock<CachedState>>,
@@ -289,21 +295,21 @@ async fn handshake(
     };
     debug!(firmware, "upbv2 firmware version");
 
-    let status_resp = conn.request(Upbv2Command::Status).await?;
+    let (status_resp, status_timing) = conn.request_timed(Upbv2Command::Status).await?;
     let Upbv2Response::Status(status) = status_resp else {
         return Err(Upbv2CodecError::InvalidResponse(
             "handshake PA returned non-status frame".to_string(),
         ));
     };
 
-    let power_resp = conn.request(Upbv2Command::PowerConsumption).await?;
+    let (power_resp, power_timing) = conn.request_timed(Upbv2Command::PowerConsumption).await?;
     let Upbv2Response::PowerConsumption(power) = power_resp else {
         return Err(Upbv2CodecError::InvalidResponse(
             "handshake PC returned non-power-consumption frame".to_string(),
         ));
     };
 
-    let boot_resp = conn.request(Upbv2Command::BootState).await?;
+    let (boot_resp, boot_timing) = conn.request_timed(Upbv2Command::BootState).await?;
     let Upbv2Response::BootState(boot_state) = boot_resp else {
         return Err(Upbv2CodecError::InvalidResponse(
             "handshake PS returned non-boot-state frame".to_string(),
@@ -311,9 +317,9 @@ async fn handshake(
     };
 
     let mut state = cached_state.write().await;
-    apply_status(&mut state, &status);
-    state.power = Some(power);
-    state.boot_state = Some(boot_state);
+    apply_status(&mut state, &status, status_timing.received_at);
+    apply_power(&mut state, power, power_timing.received_at);
+    apply_boot_state(&mut state, boot_state, boot_timing.received_at);
     drop(state);
     debug!("upbv2 handshake complete");
     Ok(())
@@ -354,21 +360,21 @@ async fn poll_loop(
             }
         }
 
-        match ctx.request(Upbv2Command::Status).await {
-            Ok(Upbv2Response::Status(status)) => {
+        match ctx.request_timed(Upbv2Command::Status).await {
+            Ok((Upbv2Response::Status(status), timing)) => {
                 let mut state = cached_state.write().await;
-                apply_status(&mut state, &status);
+                apply_status(&mut state, &status, timing.received_at);
             }
-            Ok(other) => warn!("upbv2 poll: PA returned unexpected frame variant: {other:?}"),
+            Ok((other, _)) => warn!("upbv2 poll: PA returned unexpected frame variant: {other:?}"),
             Err(e) => session_err_to_warn("PA", &e),
         }
 
-        match ctx.request(Upbv2Command::PowerConsumption).await {
-            Ok(Upbv2Response::PowerConsumption(power)) => {
+        match ctx.request_timed(Upbv2Command::PowerConsumption).await {
+            Ok((Upbv2Response::PowerConsumption(power), timing)) => {
                 let mut state = cached_state.write().await;
-                state.power = Some(power);
+                apply_power(&mut state, power, timing.received_at);
             }
-            Ok(other) => warn!("upbv2 poll: PC returned unexpected frame variant: {other:?}"),
+            Ok((other, _)) => warn!("upbv2 poll: PC returned unexpected frame variant: {other:?}"),
             Err(e) => session_err_to_warn("PC", &e),
         }
 
@@ -376,12 +382,12 @@ async fn poll_loop(
         // fields is exposed: the variable-output setpoint is writable from
         // the Pegasus software too, so polling it is how the driver notices
         // a change it did not make.
-        match ctx.request(Upbv2Command::BootState).await {
-            Ok(Upbv2Response::BootState(boot_state)) => {
+        match ctx.request_timed(Upbv2Command::BootState).await {
+            Ok((Upbv2Response::BootState(boot_state), timing)) => {
                 let mut state = cached_state.write().await;
-                state.boot_state = Some(boot_state);
+                apply_boot_state(&mut state, boot_state, timing.received_at);
             }
-            Ok(other) => warn!("upbv2 poll: PS returned unexpected frame variant: {other:?}"),
+            Ok((other, _)) => warn!("upbv2 poll: PS returned unexpected frame variant: {other:?}"),
             Err(e) => session_err_to_warn("PS", &e),
         }
     }
@@ -391,20 +397,47 @@ fn session_err_to_warn(op: &str, err: &SessionError<Upbv2CodecError>) {
     warn!(op, error = %err, "upbv2 poll request failed");
 }
 
-fn apply_status(state: &mut CachedState, status: &Upbv2Status) {
-    state.status = Some(status.clone());
-    state.temp_mean.add_sample(status.temperature);
-    state.humidity_mean.add_sample(status.humidity);
-    state.dewpoint_mean.add_sample(status.dewpoint);
+/// Store a `PA` frame read at `read_at` and feed the sensor windows a
+/// sample each, dated `read_at`, unless the cache holds one read after it:
+/// that one is newer, and stored, this one would put an output the box has
+/// since switched back to its old state.
+///
+/// The read instant dates the samples, so `TimeSinceLastUpdate` counts from
+/// the moment the frame came off the wire, not from this write.
+fn apply_status(state: &mut CachedState, status: &Upbv2Status, read_at: Instant) {
+    if !state.status.offer(status.clone(), read_at) {
+        debug!("dropping a PA frame read before the cached one");
+        return;
+    }
+    let at = read_at.into_std();
+    state.temp_mean.add_sample(status.temperature, at);
+    state.humidity_mean.add_sample(status.humidity, at);
+    state.dewpoint_mean.add_sample(status.dewpoint, at);
+}
+
+/// Store a `PC` frame read at `read_at`, unless the cache holds one read
+/// after it.
+fn apply_power(state: &mut CachedState, power: Upbv2PowerConsumption, read_at: Instant) {
+    if !state.power.offer(power, read_at) {
+        debug!("dropping a PC frame read before the cached one");
+    }
+}
+
+/// Store a `PS` frame read at `read_at`, unless the cache holds one read
+/// after it: stored, an older one would put the variable-output setpoint
+/// back to its value before a `P8:` write.
+fn apply_boot_state(state: &mut CachedState, boot_state: Upbv2BootState, read_at: Instant) {
+    if !state.boot_state.offer(boot_state, read_at) {
+        debug!("dropping a PS frame read before the cached one");
+    }
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
-    //! transport factory. Race / refcount / rollback invariants are
-    //! tested once for everyone in `rusty-photon-shared-transport` —
-    //! they don't get re-tested here per the migration plan.
+    //! transport factory. Race, refcount and rollback invariants are tested
+    //! once, in `rusty-photon-shared-transport`, and not again here.
 
     use super::*;
     use crate::mock::MockUpbv2TransportFactory;
@@ -457,11 +490,17 @@ mod tests {
         assert!(manager.is_available());
 
         let state = manager.get_cached_state().await;
-        let status = state.status.expect("status seeded by handshake");
+        let status = state.status.get().expect("status seeded by handshake");
         assert!((status.temperature - 25.0).abs() < f64::EPSILON);
-        let power = state.power.expect("power counters seeded by handshake");
+        let power = state
+            .power
+            .get()
+            .expect("power counters seeded by handshake");
         assert!((power.average_amps - 1.85).abs() < f64::EPSILON);
-        let boot_state = state.boot_state.expect("boot state seeded by handshake");
+        let boot_state = state
+            .boot_state
+            .get()
+            .expect("boot state seeded by handshake");
         assert_eq!(boot_state.variable_volts, 12);
 
         session.close().await.unwrap();
@@ -475,11 +514,8 @@ mod tests {
         let manager = make_manager();
         let session = manager.transport().acquire().await.unwrap();
 
-        let status = manager
-            .get_cached_state()
-            .await
-            .status
-            .expect("status seeded by handshake");
+        let state = manager.get_cached_state().await;
+        let status = state.status.get().expect("status seeded by handshake");
         assert!((status.dew_current[DewChannel::C.index()] - 0.5).abs() < f64::EPSILON);
 
         session.close().await.unwrap();
@@ -532,11 +568,11 @@ mod tests {
         let state = wait_for_cache(&manager, "the polled writes", |state| {
             let output_on = state
                 .status
-                .as_ref()
+                .get()
                 .is_some_and(|status| status.outputs[output.index()]);
             let volts_seen = state
                 .boot_state
-                .as_ref()
+                .get()
                 .is_some_and(|boot| boot.variable_volts == 5);
             output_on && volts_seen
         })
@@ -545,7 +581,7 @@ mod tests {
         // The wait above proved the status arm ran — the output's state
         // moved off the handshake's seed — and the PC frame rides the same
         // tick.
-        assert!(state.power.is_some(), "poll loop should refresh PC");
+        assert!(state.power.get().is_some(), "poll loop should refresh PC");
 
         session.close().await.unwrap();
     }
@@ -572,7 +608,7 @@ mod tests {
         manager.refresh_status(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert_eq!(state.status.unwrap().dew_duty[channel.index()], 200);
+        assert_eq!(state.status.get().unwrap().dew_duty[channel.index()], 200);
 
         session.close().await.unwrap();
     }
@@ -592,7 +628,7 @@ mod tests {
         manager.refresh_status(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert!(state.status.unwrap().usb_ports[port.index()]);
+        assert!(state.status.get().unwrap().usb_ports[port.index()]);
 
         session.close().await.unwrap();
     }
@@ -614,7 +650,7 @@ mod tests {
         manager.refresh_boot_state(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert_eq!(state.boot_state.unwrap().variable_volts, 9);
+        assert_eq!(state.boot_state.get().unwrap().variable_volts, 9);
 
         session.close().await.unwrap();
     }
@@ -713,16 +749,13 @@ mod tests {
     }
 
     // ========================================================================
-    // Test transports: a PPBA impostor for the model guard, and an
-    // injectable wire failure for the error branches. Mirrors the
-    // InjectableFactory pattern used in qhy-focuser; the canonical race /
-    // refcount / rollback invariants remain tested once in
-    // rusty-photon-shared-transport.
+    // Test transports: a PPBA impostor for the model guard, and a
+    // `FailingFactory` for the error branches.
     // ========================================================================
 
     use async_trait::async_trait;
     use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use transport_doubles::FailingFactory;
 
     /// Answers every command with `PPBA_OK` — the reply a Pocket Powerbox
     /// Advance gives to `P#`. Only the ping is ever reached: the handshake
@@ -754,72 +787,223 @@ mod tests {
         }
     }
 
-    /// Wraps the canonical mock factory but gates `send_frame` behind a
-    /// shared atomic — flipping it makes the very next send return EOF.
-    /// Used to inject a wire-level failure after handshake has succeeded
-    /// (or, by arming the flag *before* acquire, during handshake).
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockUpbv2TransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    impl InjectableFactory {
-        fn fail_next_send(&self) -> Arc<AtomicBool> {
-            Arc::clone(&self.fail_next_send)
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-    }
-
-    /// Manager built with the `InjectableFactory` and a long poll interval
+    /// Manager built with a `FailingFactory` and a long poll interval
     /// (5 minutes) so the poll loop can't consume the armed failure before
     /// the test's foreground request does.
-    fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<Upbv2Manager> {
+    fn make_manager_with_factory(
+        factory: Arc<FailingFactory<MockUpbv2TransportFactory>>,
+    ) -> Arc<Upbv2Manager> {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
         Upbv2Manager::new(&config, factory)
     }
 
+    // ---- a poll against a write -----------------------------------------
+
+    use transport_doubles::HoldingFactory;
+
+    fn make_manager_polling_fast(
+        factory: &Arc<HoldingFactory<MockUpbv2TransportFactory>>,
+    ) -> Arc<Upbv2Manager> {
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_millis(20);
+        Upbv2Manager::new(&config, Arc::clone(factory) as Arc<dyn TransportFactory>)
+    }
+
+    #[tokio::test]
+    async fn a_poll_read_before_a_write_does_not_replace_the_refreshed_status() {
+        let factory = Arc::new(HoldingFactory::new(MockUpbv2TransportFactory::default()));
+        let manager = make_manager_polling_fast(&factory);
+        let session = manager.transport().acquire().await.unwrap();
+        let output = OutputId::new(1).unwrap();
+
+        // A poll's PA is on the wire: the box has it, output 1 still on.
+        factory.hold_next_reply_to(b"PA");
+        factory.reply_held().await;
+
+        // With the cache held, the poll reads its frame and cannot store
+        // it; the write and its refresh go on the wire behind it, and the
+        // refreshed frame lands first — what a poll task slow to run again
+        // on a loaded host does.
+        let mut cache = manager.cached_state.write().await;
+        factory.release_reply();
+        manager
+            .send_command(&session, Upbv2Command::SetOutput(output, false))
+            .await
+            .unwrap();
+        let (refreshed, timing) = session.request_timed(Upbv2Command::Status).await.unwrap();
+        let Upbv2Response::Status(refreshed) = refreshed else {
+            panic!("PA answered by {refreshed:?}");
+        };
+        assert!(!refreshed.outputs[output.index()], "the write took");
+        apply_status(&mut cache, &refreshed, timing.received_at);
+
+        // The poll stores next, and its next PA is the sign it has.
+        factory.hold_next_reply_to(b"PA");
+        drop(cache);
+        factory.reply_held().await;
+
+        let state = manager.get_cached_state().await;
+        assert!(
+            !state.status.get().unwrap().outputs[output.index()],
+            "a poll's frame read before the write replaced the refreshed one"
+        );
+
+        factory.release_reply();
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_poll_read_before_a_setpoint_write_does_not_replace_the_refreshed_boot_state() {
+        let factory = Arc::new(HoldingFactory::new(MockUpbv2TransportFactory::default()));
+        let manager = make_manager_polling_fast(&factory);
+        let session = manager.transport().acquire().await.unwrap();
+
+        // A poll's PS is on the wire: the box has it, the setpoint at 12 V.
+        factory.hold_next_reply_to(b"PS");
+        factory.reply_held().await;
+
+        let mut cache = manager.cached_state.write().await;
+        factory.release_reply();
+        manager
+            .send_command(
+                &session,
+                Upbv2Command::SetVariableVoltage(VariableVolts::new(5).unwrap()),
+            )
+            .await
+            .unwrap();
+        let (refreshed, timing) = session
+            .request_timed(Upbv2Command::BootState)
+            .await
+            .unwrap();
+        let Upbv2Response::BootState(refreshed) = refreshed else {
+            panic!("PS answered by {refreshed:?}");
+        };
+        assert_eq!(refreshed.variable_volts, 5, "the write took");
+        apply_boot_state(&mut cache, refreshed, timing.received_at);
+
+        factory.hold_next_reply_to(b"PS");
+        drop(cache);
+        factory.reply_held().await;
+
+        let state = manager.get_cached_state().await;
+        assert_eq!(
+            state.boot_state.get().unwrap().variable_volts,
+            5,
+            "a poll's PS read before the write replaced the refreshed one"
+        );
+
+        factory.release_reply();
+        session.close().await.unwrap();
+    }
+
+    /// Two instants a millisecond apart, the earlier one first.
+    fn two_read_instants() -> (tokio::time::Instant, tokio::time::Instant) {
+        let earlier = tokio::time::Instant::now();
+        (earlier, earlier + Duration::from_millis(1))
+    }
+
+    #[test]
+    fn a_pa_frame_read_before_the_cached_one_is_dropped_samples_and_all() {
+        let mut state = CachedState::default();
+        let (earlier, later) = two_read_instants();
+        let first_output = |on| Upbv2Status {
+            outputs: [on, false, false, false],
+            ..Upbv2Status::default()
+        };
+
+        apply_status(&mut state, &first_output(false), later);
+        apply_status(&mut state, &first_output(true), earlier);
+
+        assert_eq!(
+            state.status.get(),
+            Some(&first_output(false)),
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.status.read_at(), Some(later));
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.sample_count(),
+                1,
+                "the older frame fed the {sensor} window"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pa_frame_dates_its_samples_by_its_read_instant() {
+        // An hour from the clock's own reading, so a sample dated by a
+        // clock read cannot pass for one dated by the frame.
+        let mut state = CachedState::default();
+        let read_at = tokio::time::Instant::now() + Duration::from_hours(1);
+        let asked_at = (read_at + Duration::from_secs(7)).into_std();
+
+        apply_status(&mut state, &Upbv2Status::default(), read_at);
+
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.time_since_last_update(asked_at),
+                Some(Duration::from_secs(7)),
+                "the {sensor} sample is not dated by the frame's read instant"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pc_frame_read_before_the_cached_one_is_dropped() {
+        let mut state = CachedState::default();
+        let (earlier, later) = two_read_instants();
+        let up_for = |uptime| Upbv2PowerConsumption {
+            uptime,
+            ..Upbv2PowerConsumption::default()
+        };
+
+        apply_power(&mut state, up_for(Duration::from_secs(2)), later);
+        apply_power(&mut state, up_for(Duration::from_secs(1)), earlier);
+
+        assert_eq!(
+            state.power.get(),
+            Some(&up_for(Duration::from_secs(2))),
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.power.read_at(), Some(later));
+    }
+
+    #[test]
+    fn a_ps_frame_read_before_the_cached_one_is_dropped() {
+        let mut state = CachedState::default();
+        let (earlier, later) = two_read_instants();
+        let set_to = |variable_volts| Upbv2BootState {
+            variable_volts,
+            ..Upbv2BootState::default()
+        };
+
+        apply_boot_state(&mut state, set_to(5), later);
+        apply_boot_state(&mut state, set_to(12), earlier);
+
+        assert_eq!(
+            state.boot_state.get(),
+            Some(&set_to(5)),
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.boot_state.read_at(), Some(later));
+    }
+
     #[tokio::test]
     async fn send_command_propagates_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockUpbv2TransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .send_command(
                 &session,
@@ -839,12 +1023,11 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_status_propagates_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockUpbv2TransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .refresh_status(&session)
             .await
@@ -859,12 +1042,11 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_boot_state_propagates_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockUpbv2TransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .refresh_boot_state(&session)
             .await
@@ -884,11 +1066,10 @@ mod tests {
         // - leave is_available() == false (the RollbackGuard fired),
         // - leave the cache untouched (no PA / PC / PS seeded from a partial
         //   handshake).
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockUpbv2TransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .transport()
             .acquire()
@@ -907,15 +1088,15 @@ mod tests {
 
         let state = manager.get_cached_state().await;
         assert!(
-            state.status.is_none(),
+            state.status.get().is_none(),
             "handshake should not have seeded status"
         );
         assert!(
-            state.power.is_none(),
+            state.power.get().is_none(),
             "handshake should not have seeded power counters"
         );
         assert!(
-            state.boot_state.is_none(),
+            state.boot_state.get().is_none(),
             "handshake should not have seeded boot state"
         );
     }

@@ -3,10 +3,10 @@
 //!
 //! Each packaged service's `pkg/doctor.toml` is embedded at build time and
 //! parsed once on first access. The embed list below is the one hand-typed
-//! encoding of the service set inside doctor; it is kept honest by the
-//! `catalog_matches_the_packaging_tree` test (Cargo runs, walks
-//! `services/*/pkg`) and by each service's own parity test against its
-//! config defaults.
+//! encoding of the service set inside doctor; it is kept honest by
+//! `tests/tree_parity.rs`'s `test_catalog_matches_the_packaging_tree`
+//! (Cargo runs it; it walks `services/*/pkg`) and by each service's own
+//! parity test against its config defaults.
 
 use std::sync::LazyLock;
 
@@ -31,7 +31,11 @@ pub struct CatalogEntry {
     /// serves plain HTTP the way a self-defaulting service would
     /// (docs/services/doctor.md §TLS and auth).
     pub config_gated: bool,
-    /// Where the config keeps its serial device path, for the six serial
+    /// A file the service writes beside its config, holding runtime state
+    /// rather than configuration: `inventory.unknown-config` counts it as
+    /// the service's own (docs/services/doctor.md §The derived catalog).
+    pub state_file: Option<String>,
+    /// Where the config keeps its serial device path, for the serial
     /// drivers (docs/services/doctor.md §Hardware).
     pub serial: Option<SerialMeta>,
     /// The USB identity the device reports on the bus.
@@ -79,10 +83,6 @@ static RAW: &[(&str, &str)] = &[
     (
         "pa-scops-oag",
         include_str!("../../pa-scops-oag/pkg/doctor.toml"),
-    ),
-    (
-        "phd2-guider",
-        include_str!("../../phd2-guider/pkg/doctor.toml"),
     ),
     (
         "planetarium-bridge",
@@ -154,6 +154,7 @@ static CATALOG: LazyLock<Vec<CatalogEntry>> = LazyLock::new(|| {
                 class: meta.class,
                 default_port: meta.port,
                 config_gated: meta.config_gated,
+                state_file: meta.state_file,
                 serial: meta.serial,
                 usb: meta.usb,
             })
@@ -259,6 +260,23 @@ mod tests {
         assert_eq!(entry("sentinel").unwrap().class, ServerClass::Core);
         assert_eq!(entry("rp").unwrap().class, ServerClass::Advertising);
         assert_eq!(entry("qhy-focuser").unwrap().default_port, 11113);
+    }
+
+    /// Only `star-adventurer-gti` keeps a state file beside its config:
+    /// its mount state record. The name is not measured from anywhere, so a
+    /// plain assertion pins the declarations against edits.
+    #[test]
+    fn test_state_files_match_the_known_set() {
+        for entry in catalog() {
+            let expected = (entry.name == "star-adventurer-gti")
+                .then_some("star-adventurer-gti.mount-state.json");
+            assert_eq!(
+                entry.state_file.as_deref(),
+                expected,
+                "{}: state_file",
+                entry.name
+            );
+        }
     }
 
     /// The six services with no sensible default config (docs/packaging.md

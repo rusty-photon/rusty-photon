@@ -1,0 +1,43 @@
+{
+    "run":  "C",
+    "frame":  "1x1 start 0,0 size 3856x2180",
+    "exposure_s":  2,
+    "first_frame_utc":  "2026-11-18T05:09:54.604Z",
+    "elapsed_s":  601.9,
+    "frames":  236,
+    "failures":  0,
+    "frames_per_hour":  1411.5,
+    "bytes":  "16812204",
+    "latency_ms":  {
+                       "median":  546,
+                       "p95":  585.6,
+                       "max":  621.1,
+                       "min":  500.3
+                   },
+    "ready_after_end_ms":  {
+                               "median":  462.3,
+                               "p95":  489.1,
+                               "max":  494.4,
+                               "min":  424.3
+                           },
+    "download_ms":  {
+                        "median":  78.9,
+                        "p95":  120.3,
+                        "max":  140.1,
+                        "min":  58.4
+                    },
+    "cycle_ms":  {
+                     "median":  2546,
+                     "p95":  2585.6,
+                     "max":  2621.1,
+                     "min":  2500.3
+                 },
+    "start_call_ms":  {
+                          "median":  36.1,
+                          "p95":  36.7,
+                          "max":  36.9,
+                          "min":  34.3
+                      },
+    "latency_over_500ms":  "236 of 236 (100 %)",
+    "latency_over_1000ms":  "0 of 236 (0 %)"
+}

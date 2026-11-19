@@ -1,5 +1,6 @@
 //! BDD step definitions for the rotator MCP tools (`move_rotator`,
-//! `get_rotator_position`) — `rotator.feature`.
+//! `get_rotator_position`) — `rotator.feature`, and the guiding-train
+//! rig of `rotate_while_guiding.feature`.
 //!
 //! Shared steps live in `tool_steps.rs` (tool listing, error
 //! assertions, MCP client) and `event_steps.rs` (webhook receiver).
@@ -12,7 +13,7 @@ use serde_json::{Map, Value};
 
 use bdd_infra::rp_harness::{CameraConfig, OpticalTrainConfig, RotatorConfig};
 
-use crate::steps::tool_steps::{ensure_mcp_client, ensure_omnisim, start_rp};
+use crate::steps::tool_steps::{add_camera, ensure_mcp_client, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
 
 // --- Given steps: equipment compositions ----------------------------
@@ -34,6 +35,31 @@ async fn rp_with_rotator_in_train(world: &mut RpWorld, train_id: String) {
         &train_id,
         vec!["main-rotator".to_string(), "main-cam".to_string()],
     );
+    start_rp(world).await;
+}
+
+/// The simulator's rotator and camera in one guiding train, the
+/// guiding block left to a prior `Given a stub guider ...` step. The
+/// camera is the roster's `main-cam`, the simulator's camera 0.
+#[given(
+    expr = "rp is running with a rotator and a camera on the simulator inside guiding train {string}"
+)]
+async fn rp_with_rotator_and_camera_in_guiding_train(world: &mut RpWorld, train_id: String) {
+    assert!(
+        world.guider.is_some(),
+        "this step expects a prior 'Given a stub guider ...' step"
+    );
+    ensure_omnisim(world).await;
+    add_sim_rotator(world);
+    add_camera(world);
+    push_train(
+        world,
+        &train_id,
+        vec!["main-rotator".to_string(), "main-cam".to_string()],
+    );
+    if let Some(train) = world.optical_trains.last_mut() {
+        train.purpose = Some("guiding".to_string());
+    }
     start_rp(world).await;
 }
 
@@ -68,7 +94,7 @@ async fn rp_with_two_offline_rotators_in_train(world: &mut RpWorld, train_id: St
 
 /// A roster with one offline camera in a camera-only train "main" —
 /// the train-without-a-rotator / train-without-a-focuser composition
-/// shared with `auto_focus.feature` and `refocus_train.feature`.
+/// shared with `optical_trains.feature`.
 #[given("rp is running with an offline camera-only train")]
 async fn rp_with_camera_only_train(world: &mut RpWorld) {
     add_offline_camera(world, "main-cam");
@@ -195,7 +221,7 @@ fn rotator_result_moved_train(world: &mut RpWorld, train_id: String) {
 
 // --- Helpers --------------------------------------------------------
 
-fn add_sim_rotator(world: &mut RpWorld) {
+pub fn add_sim_rotator(world: &mut RpWorld) {
     let url = world.omnisim_url();
     world.rotators.push(RotatorConfig {
         id: "main-rotator".to_string(),
@@ -245,7 +271,7 @@ async fn call_rotator_tool(world: &mut RpWorld, tool: &str, args: Map<String, Va
     world.last_tool_result = Some(result);
 }
 
-const fn last_rotator_result(world: &RpWorld) -> &Value {
+pub const fn last_rotator_result(world: &RpWorld) -> &Value {
     world
         .last_rotator_result
         .as_ref()

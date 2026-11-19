@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download the HD-depth star layer for `catalog.bin` (issue #767).
+"""Download the HD-depth star layer for `catalog.bin`.
 
 Source: VizieR IV/25 `tyc2_hd` (Fabricius+ 2002), the Tycho-2/HD
 cross-index — every HD/HDE/HDEC designation with a Tycho-2 counterpart

@@ -36,7 +36,7 @@
 //! ```text
 //! cargo run --release -p star-adventurer-gti --example probe_live_step_period -- \
 //!     --port /dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_<id>-if00 \
-//!     --out ~/probe-1299
+//!     --out ~/probe-live-step-period
 //! ```
 //!
 //! A logic-only dry run against the in-repo mock (circular by
@@ -468,7 +468,7 @@ fn offset_at(samples: &[Sample], from: f64, to: f64, rate: f64) -> Option<f64> {
         sum += rate.mul_add(-s.t, f64::from(s.ticks));
         n += 1.0;
     }
-    (n >= 20.0).then(|| sum / n)
+    (n >= 20.0).then_some(sum / n)
 }
 
 /// Least-squares slope (ticks per second) over the samples in `[from, to]`.
@@ -489,7 +489,7 @@ fn slope_in(samples: &[Sample], from: f64, to: f64) -> Option<f64> {
         sxy = dt.mul_add(f64::from(s.ticks) - mean_y, sxy);
         sxx = dt.mul_add(dt, sxx);
     }
-    (sxx > 0.0).then(|| sxy / sxx)
+    (sxx > 0.0).then_some(sxy / sxx)
 }
 
 fn within(value: Option<f64>, target: f64, tolerance: f64) -> bool {
@@ -501,7 +501,7 @@ fn crossing(a0: Option<f64>, r0: f64, a1: Option<f64>, r1: f64, t_ref: f64) -> O
     Some((a1? - a0?) / (r0 - r1) - t_ref)
 }
 
-/// Pre-registered pass criteria. Posted on the issue before the rig run.
+/// Pass criteria, fixed before a rig run.
 #[derive(Debug, Clone, Copy, Serialize)]
 struct Thresholds {
     /// A measured rate must be within this fraction of the commanded one.

@@ -3,10 +3,9 @@
 //! This module provides simulated camera and filter wheel support, allowing
 //! library users to develop and test applications without physical QHYCCD hardware.
 //!
-//! Folded into a single file (was a `simulation/` subtree) as part of the
-//! zwo/svbony convention alignment: the simulated device state is held directly
-//! by a [`Camera`](crate::Camera) under `#[cfg(feature = "simulation")]`, not via
-//! a runtime backend enum.
+//! The simulated device state is held directly by a [`Camera`](crate::Camera)
+//! under `#[cfg(feature = "simulation")]`, as in the sibling `zwo-rs` /
+//! `svbony-rs` crates.
 //!
 //! # Example
 //!
@@ -29,7 +28,6 @@ use crate::{
     BayerPattern, CCDChipArea, CCDChipInfo, CfwStatus, ControlType, QHYError, Result, StreamMode,
 };
 use rand::{Rng, RngExt};
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -98,6 +96,10 @@ pub struct SimulatedCameraConfig {
     /// answers the first query. Set with
     /// [`with_cfw_plug_misses`](SimulatedCameraConfig::with_cfw_plug_misses).
     pub cfw_plug_misses: u32,
+    /// A file whose content, while it exists, is what a `CurTemp` read
+    /// answers — **default `None`**, the reading tracks the cooler. Set with
+    /// [`with_temperature_file`](SimulatedCameraConfig::with_temperature_file).
+    pub temperature_file: Option<PathBuf>,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -160,7 +162,7 @@ impl Default for SimulatedCameraConfig {
             },
             // A small overscan strip distinct from the effective imaging area —
             // real `GetQHYCCDOverScanArea` reports a separate calibration region,
-            // not the full frame (audit fidelity fix).
+            // not the full frame.
             overscan_area: CCDChipArea {
                 start_x: 0,
                 start_y: 0,
@@ -179,6 +181,7 @@ impl Default for SimulatedCameraConfig {
             departure_file: None,
             close_failure_file: None,
             cfw_plug_misses: 0,
+            temperature_file: None,
         }
     }
 }
@@ -212,8 +215,7 @@ impl SimulatedCameraConfig {
     }
 
     /// Adds filter wheel support with the specified number of slots, capped at
-    /// the sixteen a `CONTROL_CFWPORT` value can address
-    /// ([`CFW_MAX_SLOTS`](crate::camera::CFW_MAX_SLOTS)).
+    /// the sixteen a `CONTROL_CFWPORT` value can address (`CFW_MAX_SLOTS`).
     ///
     /// The cap keeps the simulated wheel internally consistent. Without it a
     /// larger count would be advertised through `CfwSlotsNum` and `CfwPort`'s
@@ -372,6 +374,19 @@ impl SimulatedCameraConfig {
         self.cfw_plug_misses = misses;
         self
     }
+
+    /// Makes a [`CurTemp`](ControlType::CurTemp) read answer the number
+    /// written in `path` whenever that file exists, the way a real camera's
+    /// reading can go bad: for a camera whose readout has wedged, the SDK
+    /// reports a temperature no sensor can have, as a success. A file that holds
+    /// no number makes the read fail. Without the file the reading tracks the
+    /// cooler as usual. Checked on every read, like the departure file, so a
+    /// test can change the reading from another process.
+    #[must_use]
+    pub fn with_temperature_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.temperature_file = Some(path.into());
+        self
+    }
 }
 
 // ===== Runtime state for a simulated camera =====
@@ -525,6 +540,21 @@ impl SimulatedCameraState {
             .is_some_and(|path| path.exists())
     }
 
+    /// The reading the temperature file holds while it exists, or `None` when
+    /// the reading tracks the cooler (see
+    /// [`with_temperature_file`](SimulatedCameraConfig::with_temperature_file)).
+    pub fn scripted_temperature(&self) -> Option<Result<f64>> {
+        let path = self.config.temperature_file.as_ref()?;
+        let text = std::fs::read_to_string(path).ok()?;
+        Some(
+            text.trim()
+                .parse::<f64>()
+                .map_err(|_| QHYError::GetParameter {
+                    control: ControlType::CurTemp,
+                }),
+        )
+    }
+
     /// Whether a close fails right now (see
     /// [`with_close_failure_file`](SimulatedCameraConfig::with_close_failure_file)).
     pub fn close_fails(&self) -> bool {
@@ -590,12 +620,12 @@ impl SimulatedCameraState {
                 // The SDK reports the remainder in `u32` microseconds,
                 // which runs out at ~71 minutes — a ceiling of the vendor
                 // API's shape, not this narrowing. Saturating pins there and
-                // says "still plenty left"; narrowing wrapped a long
+                // says "still plenty left"; narrowing would wrap a long
                 // exposure round to a small number, so a caller polling this
-                // as its authority would have believed the frame was nearly
-                // done. `qhy-camera` is not such a caller (it times the
-                // exposure host-side and only asks for confirmation), which
-                // bounds the blast radius to this crate's API contract.
+                // as its authority would believe the frame nearly done.
+                // `qhy-camera` is not such a caller (it times the exposure
+                // host-side and asks this only to confirm), so the ceiling
+                // binds this crate's API contract rather than that driver.
                 u32::try_from(self.exposure_duration_us.saturating_sub(elapsed_us))
                     .unwrap_or(u32::MAX)
             }
@@ -799,9 +829,8 @@ impl PixelNoise {
     /// keeping the high word is the same distribution a modulo gives, to within
     /// the same negligible bias at the spans used here (a few thousand out of
     /// 2^32) — for one multiply instead of a divide. That is worth naming: at a
-    /// megapixel per frame the divide was most of the cost of generating one,
-    /// and it dominated the loop badly enough to make an indexed write look
-    /// faster than walking the buffer.
+    /// megapixel per frame a divide here is most of the cost of generating one,
+    /// enough to make an indexed write look faster than walking the buffer.
     #[expect(
         clippy::arithmetic_side_effects,
         clippy::as_conversions,
@@ -813,17 +842,6 @@ impl PixelNoise {
         let scaled = (u64::from(self.next_u32()) * self.span) >> 32;
         (scaled as i64 - self.range) as i32
     }
-}
-
-/// Row-distinct seed so rayon rows (and serial frames reusing a seed)
-/// don't repeat the same noise sequence.
-#[expect(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    reason = "`row` indexes the rows of a frame whose height is a `u32`, so the truncation is unreachable; `usize` has no total conversion to `u32`, and every fallible spelling would add an arm that cannot be taken and whose fallback would alias row 0's seed. A seed needs only to differ between rows, which folding preserves either way"
-)]
-const fn row_seed(frame_seed: u32, row: usize) -> u32 {
-    frame_seed ^ (row as u32).wrapping_mul(0x9E37_79B9)
 }
 
 /// Whole microseconds as `u64`. `Duration` has no `u64` accessor for them —
@@ -886,7 +904,7 @@ impl Frame {
     /// `None` for a frame with no bytes in it, and for one too large to address
     /// on this target — both mean the same thing to every caller here: nothing
     /// to fill. Excluding the empty frame also keeps every stride below
-    /// non-zero, which is what `chunks_exact_mut` and `par_chunks_mut` require.
+    /// non-zero, which is what `chunks_exact_mut` requires.
     fn new(width: u32, height: u32, channels: u32, sample_bytes: u32) -> Option<Self> {
         let sample_bytes = usize::try_from(sample_bytes).ok()?;
         let pixel_bytes = usize::try_from(channels).ok()?.checked_mul(sample_bytes)?;
@@ -920,8 +938,8 @@ impl Frame {
 /// column short and leaves the remainder zero — a black line along the bottom
 /// or right edge of the picture, and a zero in every statistic taken over the
 /// frame. Nothing in the SDK says so: the frame arrives with the shape that
-/// was asked for, which is what made the shortfall a puzzle in the pictures
-/// rather than an error at the driver. The simulated camera carries it so a
+/// was asked for, so the shortfall shows as a puzzle in the pictures rather
+/// than as an error at the driver. The simulated camera carries it so a
 /// driver that asks for an odd extent gets its black line here instead of on
 /// a night at the telescope.
 ///
@@ -1068,27 +1086,24 @@ impl ImageGenerator {
 
     fn generate_gradient_16bit(&self, data: &mut [u8], frame: Frame, frame_seed: u32) {
         let noise_range = quantize::to_i32(65535.0 * self.noise_level);
-        let base_level = self.base_level;
+        let mut noise_source = PixelNoise::new(frame_seed, noise_range);
 
-        // Process rows in parallel; each row gets its own noise stream.
-        data.par_chunks_mut(frame.row_bytes)
-            .enumerate()
-            .for_each(|(y, row)| {
-                let mut noise_source = PixelNoise::new(row_seed(frame_seed, y), noise_range);
+        // On the calling thread, as the 8-bit fill is: a parallel fill takes
+        // every core, and the simulated cameras run beside other processes in
+        // CI.
+        for row in data.chunks_exact_mut(frame.row_bytes) {
+            for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
+                let gradient = quantize::to_u16((f64::from(x) / f64::from(frame.width)) * 50000.0);
+                let noise = noise_source.next_signed();
+                let value = sample_u16(
+                    i32::from(self.base_level)
+                        .saturating_add(i32::from(gradient))
+                        .saturating_add(noise),
+                );
 
-                for (x, pixel) in (0u32..).zip(row.chunks_exact_mut(frame.pixel_bytes)) {
-                    let gradient =
-                        quantize::to_u16((f64::from(x) / f64::from(frame.width)) * 50000.0);
-                    let noise = noise_source.next_signed();
-                    let value = sample_u16(
-                        i32::from(base_level)
-                            .saturating_add(i32::from(gradient))
-                            .saturating_add(noise),
-                    );
-
-                    write_sample(pixel, value);
-                }
-            });
+                write_sample(pixel, value);
+            }
+        }
     }
 
     fn generate_starfield_8bit<R: Rng>(
@@ -1486,11 +1501,6 @@ mod image_generator_tests {
     }
 
     #[test]
-    fn row_seed_differs_between_rows() {
-        assert_ne!(row_seed(1234, 0), row_seed(1234, 1));
-    }
-
-    #[test]
     fn gradient_8bit_brightens_left_to_right() {
         let data = ImageGenerator::new(ImagePattern::Gradient).generate_8bit(W, H, 1);
         assert_eq!(data.len(), (W * H) as usize);
@@ -1596,8 +1606,8 @@ mod image_generator_tests {
     #[test]
     fn every_pattern_replicates_a_pixel_across_its_channels() {
         // One noise draw per pixel, not per byte: a colour frame whose channels
-        // diverge is speckle, and the 16-bit generators have always drawn per
-        // pixel. The 8-bit starfield background was the one that did not.
+        // diverge is speckle. Every pattern, at either depth, draws once per
+        // pixel and replicates the value across its channels.
         for pattern in [
             ImagePattern::Gradient,
             ImagePattern::StarField,
@@ -1948,9 +1958,9 @@ mod state_tests {
     fn an_exposure_past_the_sdk_word_reports_a_saturated_remainder() {
         // The SDK reports the remainder in `u32` microseconds, which runs out at
         // ~71 minutes; nothing clamps the Exposure parameter to its own control
-        // range on the way in. Narrowing wrapped a two-hour exposure round to
-        // 2.9e9 µs, so it read as *falling* and then jumping — a caller that
-        // trusted it would have committed to the readout early.
+        // range on the way in. Narrowing would wrap a two-hour exposure round to
+        // 2.9e9 µs, so it would read as *falling* and then jumping — a caller
+        // that trusted it would commit to the readout early.
         let mut state = SimulatedCameraState::new(SimulatedCameraConfig::default());
         state
             .parameters

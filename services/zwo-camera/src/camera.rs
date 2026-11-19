@@ -188,7 +188,7 @@ struct DeviceState {
     /// and taken by whichever of the capture task's drain or a reconnect's
     /// `reset_exposure_state` gets there first. Because the cell belongs to one
     /// capture, a new exposure cannot erase an older capture's abort the way a
-    /// handle-wide signal let it (see [`StopSignal`]).
+    /// handle-wide signal would let it (see [`StopSignal`]).
     ///
     /// Claim and cell are deliberately one piece of state rather than an
     /// `AtomicBool` beside an `Option`. Held apart they can disagree for as
@@ -747,8 +747,8 @@ impl ZwoCamera {
     /// `NOT_CONNECTED`, whatever code `f` gave it: a disconnect closed the
     /// camera under the call (C3), or another call found it removed (C6).
     /// That is the disconnect it is, rather than the `INVALID_OPERATION` or
-    /// `UNSPECIFIED_ERROR` the call site would spell a failure as. A call the
-    /// SDK itself answered `CAMERA_REMOVED` has already said so through
+    /// `UNSPECIFIED_ERROR` the call site would spell a failure as. A call
+    /// whose own failure is a departure has already said so through
     /// [`sdk_failure`], from its own error. That verdict cannot be lost to a
     /// reconnect clearing the session's mark before this looks. A call that
     /// succeeded answers for itself.
@@ -787,11 +787,12 @@ const fn transition_for(session: SessionState, requested: bool) -> ConnectedTran
     )
 }
 
-/// What a failed SDK call answers a client: `NOT_CONNECTED` when the SDK
-/// reported the camera removed (C6), and the call site's own `otherwise` for
-/// any other failure. Decided from the call's own error, never from the
-/// session's mark, which a reconnect may have cleared by the time
-/// [`ZwoCamera::on_handle`] looks.
+/// What a failed SDK call answers a client: `NOT_CONNECTED` when the failure
+/// is a departure — the SDK's own `CAMERA_REMOVED`, or one the handle's
+/// presence check found to mean the camera has left the bus (C6) — and the
+/// call site's own `otherwise` for any other failure. Decided from the call's
+/// own error, never from the session's mark, which a reconnect may have
+/// cleared by the time [`ZwoCamera::on_handle`] looks.
 fn sdk_failure(e: &BackendError, otherwise: ASCOMError) -> ASCOMError {
     if e.is_departed() {
         ASCOMError::NOT_CONNECTED
@@ -882,8 +883,8 @@ fn store_setting(cell: &Mutex<Option<ControlSetting>>, what: &str, value: i32) -
 /// container by *left-shifting* it, so the ceiling belongs to the container,
 /// not the ADC. Measured on a physical 12-bit ASI120MC-S: every
 /// pixel's low 4 bits are zero and a saturated full frame tops out at exactly
-/// `4095 << 4 = 65520` — sixteen times the 4095 this driver used to report, so
-/// a client normalising by `MaxADU` mis-scaled everything above 1/16 of range.
+/// `4095 << 4 = 65520` — sixteen times the 4095 that `2^BitDepth - 1` gives, so
+/// a client normalising by that would mis-scale everything above 1/16 of range.
 /// (`svbony-camera` reached the same conclusion on its SV605CC, by rescale
 /// rather than shift; ST3 there.)
 ///
@@ -891,8 +892,8 @@ fn store_setting(cell: &Mutex<Option<ControlSetting>>, what: &str, value: i32) -
 /// code: a physical 14-bit ASI178MM clips at `16382 << 2 = 65528`, one count
 /// short of the `16383 << 2 = 65532` the shift alone predicts, at every gain
 /// and bin. ASCOM defines this property as the maximum value the camera *can
-/// produce*, and a client that tests saturation as `pixel >= MaxADU`, as rp
-/// does, finds no saturated pixel under an unreachable ceiling: reporting one
+/// produce*, and a client that tests saturation as `pixel >= MaxADU` finds
+/// no saturated pixel under an unreachable ceiling: reporting one
 /// does not merely round badly, it can make saturation undetectable, which is
 /// the whole point of the property for autofocus star selection and
 /// flat-panel exposure targeting.
@@ -1169,7 +1170,7 @@ impl Device for ZwoCamera {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// No custom action: the configuration moved to the setup pages.
+    /// No custom action: the device is configured on its setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
         Ok(Vec::new())
     }
@@ -1748,8 +1749,8 @@ impl Camera for ZwoCamera {
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
-        // E11: the idle branch below answers from cached state alone, so the
-        // check belongs here rather than at the SDK read further down.
+        // E11: every branch below answers from cached state, so nothing
+        // further down would refuse a disconnected device.
         self.ensure_connected()?;
         if !self.state.exposure_in_flight() {
             // Idle: 100 once ready, 0 in the Error state.
@@ -2403,8 +2404,8 @@ mod tests {
         assert_eq!(array[(0, 0, 0)], 0x1234_i32);
     }
 
-    /// The Raw8 unpack reads one byte per pixel — before this, an 8-bit frame
-    /// was rejected as "buffer too small" because the transform assumed 16-bit.
+    /// The Raw8 unpack reads one byte per pixel: a transform that assumed
+    /// 16-bit would reject an 8-bit frame as "buffer too small".
     #[test]
     fn to_image_array_8bit_has_width_major_axes_from_one_byte_per_pixel() {
         let bytes: Vec<u8> = (0..64 * 48).map(|i| (i % 251) as u8).collect();
@@ -2426,10 +2427,10 @@ mod tests {
 
     #[test]
     fn to_image_array_names_an_unsupported_format_before_the_length() {
-        // Each arm now owns its own length check, so a format the driver
-        // cannot unpack is reported as such even when the buffer is also
-        // short — the length it would be measured against is derived from
-        // that same unusable format, so leading with it would misdirect.
+        // The format is resolved before the length is checked, so a format
+        // the driver cannot unpack is reported as such even when the buffer
+        // is also short — the length it would be measured against is derived
+        // from that same unusable format, so leading with it would misdirect.
         let err = to_image_array(vec![0u8; 10], 64, 48, ImageType::Rgb24).unwrap_err();
         assert!(err.contains("unsupported download format"), "{err}");
     }
@@ -2448,9 +2449,9 @@ mod tests {
     async fn connect_caches_geometry_and_limits() {
         let device = connected_device(MockCameraHandle::default());
         // CameraXSize is the raw 6248 reduced to 6240 so the binned full frame
-        // (CameraXSize/bin) stays a valid ASI ROI at every bin (see
-        // `reports_sensor_size_aligned_for_binned_full_frames`); height is
-        // already aligned.
+        // (CameraXSize/bin) stays a valid ASI ROI at every bin (R4, and
+        // `binned_full_frame_passes_geometry_at_high_bins`); height is already
+        // aligned.
         assert_eq!(device.camera_x_size().await.unwrap(), 6240);
         assert_eq!(device.camera_y_size().await.unwrap(), 4176);
         assert_eq!(device.max_adu().await.unwrap(), 65_535);
@@ -2465,7 +2466,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_without_an_exposure_control_is_rejected() {
-        // The exposure control is mandatory (GO1): a camera that does not
+        // The exposure control is mandatory (C1): a camera that does not
         // advertise it fails the post-open handshake and is left *disconnected*
         // (C2), not opened-but-unusable.
         let device = ZwoCamera::new(
@@ -3242,9 +3243,9 @@ mod tests {
         wait_image_ready(&device).await;
     }
 
-    /// The gap issue #881 filed: a camera without Raw16 must not be handed
-    /// Raw16 anyway. It offers only the 8-bit mode, and `MaxADU` follows the
-    /// format actually delivered (RM2).
+    /// RM1/RM2: a camera that advertises no Raw16 is never handed Raw16. It
+    /// offers only the 8-bit mode, and `MaxADU` follows the format actually
+    /// delivered.
     #[tokio::test]
     async fn a_camera_without_raw16_offers_only_the_8_bit_mode() {
         let device =
@@ -3356,7 +3357,7 @@ mod tests {
     async fn ccd_temperature_reported_on_uncooled_model_with_sensor() {
         // ...but `CCDTemperature` is decoupled: an uncooled camera that still
         // advertises the sensor-temperature control reports a reading (the ASI178
-        // hardware behaviour), rather than the old `NOT_IMPLEMENTED` placeholder.
+        // hardware behaviour), rather than `NOT_IMPLEMENTED`.
         let device = connected_device(MockCameraHandle::default().without_cooler());
         assert!(device.ccd_temperature().await.unwrap().is_finite());
     }
@@ -3393,8 +3394,9 @@ mod tests {
     async fn binned_full_frame_passes_geometry_at_high_bins() {
         // ConformU takes the full frame at every bin via NumX = CameraXSize/bin.
         // With the aligned reported size these are valid ASI ROIs even at the
-        // bins where the raw sensor size would not divide cleanly (this is the
-        // bug that produced the 3 ConformU StartExposure issues).
+        // bins where the raw sensor size would not divide cleanly: from the raw
+        // 6248, the full frames at bins 2, 3 and 4 all break the %8 rule, and
+        // ConformU's StartExposure fails at each.
         for bin in [2u8, 3, 4] {
             let device = connected_device(MockCameraHandle::default());
             let w = device.camera_x_size().await.unwrap() / u32::from(bin);
@@ -3861,8 +3863,8 @@ mod tests {
     /// (`reset_exposure_state`) while the aborted capture is still draining, so
     /// the next `StartExposure` runs alongside it. The disconnect's abort has to
     /// survive that: with one stop signal shared by the handle, the second
-    /// capture reset it, and the first ran on to completion against the camera
-    /// the reconnect had just reopened — the *new* exposure's camera.
+    /// capture would reset it, and the first would run on to completion against
+    /// the camera the reconnect had just reopened — the *new* exposure's camera.
     #[tokio::test]
     async fn a_reconnect_does_not_erase_a_superseded_captures_abort() {
         let handle = Arc::new(MockCameraHandle::default());

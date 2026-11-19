@@ -154,7 +154,7 @@ round comments and rates it as a repeat, and its outcome links the
 earlier round. Expect the review after a fix to find fallout from that
 fix; it is rated like any other finding. Fixing only what rates **fix**
 keeps that fallout small: on the record, fixing noise was what kept the
-rounds coming (code-review.md §What the record shows).
+rounds coming (code-review.md §The record).
 
 Four reviews is the budget, not counting the re-run of a review that
 errored. Nothing the fourth review raises is fixed without the owner's

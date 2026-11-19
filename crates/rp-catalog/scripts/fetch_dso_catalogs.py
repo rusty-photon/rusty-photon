@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch the astrophoto DSO catalogs (issue #767) into the per-catalog
+"""Fetch the astrophoto DSO catalogs into the per-catalog
 CSVs committed under `crates/rp-catalog/src/data/`.
 
 Sources (see ../src/data/LICENSE-DATA):
 
 - SIMBAD TAP (https://simbad.cds.unistra.fr/simbad/sim-tap) for every
-  identifier-list catalog: Sharpless (curated positions satisfy the
-  "corrected coordinates, not raw VII/20" requirement from #767),
+  identifier-list catalog: Sharpless (SIMBAD's curated positions, not the
+  raw VII/20 coordinates),
   Barnard, LDN, LBN, RCW, Gum, Cederblad, Abell planetaries, Arp,
   Hickson, Collinder, Melotte, Stock, Trumpler. Common-name aliases
   come from SIMBAD `NAME` cross-identifiers.

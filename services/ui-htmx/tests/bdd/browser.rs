@@ -1,5 +1,5 @@
-//! Real headless-browser session for the `@browser` BDD scenarios — Layer C of
-//! the UI-testing plan ([`docs/plans/archive/ui-testing.md`] §6/§9, obligation P3).
+//! Real headless-browser session for the `@browser` BDD scenarios — Layer C,
+//! obligation P3 (`docs/services/ui-htmx.md` § Three obligations, three layers).
 //!
 //! geckodriver is treated as an external **system tool** (like OmniSim/ConformU):
 //! discovered via `GECKODRIVER_BINARY`, else `geckodriver` on `PATH`. It is
@@ -10,22 +10,21 @@
 //! Firefox is connected through [`thirtyfour`]. Firefox is likewise discovered via
 //! `FIREFOX_BINARY` when set, else geckodriver auto-detects the system browser.
 //!
-//! The process group is load-bearing for teardown (plan §9 Tier 0 step 4 / §10):
-//! geckodriver leads the group, Firefox (and its content processes) inherit it,
-//! so the whole tree can be reaped with one `killpg` and an orphan check can be
-//! scoped to *that group* — it can never match a developer's own Firefox. On
-//! Firefox <152 geckodriver's own exit does not reliably tear Firefox down
-//! (bugzilla 1430064), so [`BrowserSession::quit`] sweeps the group after the
-//! graceful `WebDriver` close, and [`BrowserSession::reap`] is the worst-case
-//! kill-the-tree path used when geckodriver has already died.
+//! The process group is load-bearing for teardown: geckodriver leads the group,
+//! Firefox (and its content processes) inherit it, so the whole tree can be
+//! reaped with one `killpg` and an orphan check can be scoped to *that group* —
+//! it can never match a developer's own Firefox. On Firefox <152 geckodriver's
+//! own exit does not reliably tear Firefox down
+//! (<https://bugzilla.mozilla.org/show_bug.cgi?id=1430064>), so
+//! [`BrowserSession::quit`] sweeps the group after the graceful `WebDriver`
+//! close, and [`BrowserSession::reap_tree`] is the worst-case kill-the-tree path
+//! used when geckodriver has already died.
 //!
-//! Teardown ordering is also load-bearing (plan §10): [`BrowserSession::quit`]
-//! closes the `WebDriver` session — so geckodriver tears Firefox down — and it
-//! **must run before** the BFF/driver are stopped (a live session holds
-//! connections to the BFF open, which would block the BFF's graceful shutdown and
-//! cost it its `.profraw` coverage flush — see `docs/skills/testing.md` §5.4).
-//!
-//! [`docs/plans/archive/ui-testing.md`]: ../../../../docs/plans/archive/ui-testing.md
+//! Teardown ordering is also load-bearing: [`BrowserSession::quit`] closes the
+//! `WebDriver` session — so geckodriver tears Firefox down — and it **must run
+//! before** the BFF/driver are stopped (a live session holds connections to the
+//! BFF open, which would block the BFF's graceful shutdown and cost it its
+//! `.profraw` coverage flush — see `docs/skills/testing.md` §5.4).
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -74,7 +73,7 @@ impl BrowserSession {
             .kill_on_drop(true);
         // Lead a new process group (pgid == geckodriver's pid): Firefox and its
         // content processes inherit it, so the whole tree is reapable as a unit
-        // and the orphan check is scoped to this group (plan §9 step 4 / §10).
+        // and the orphan check is scoped to this group.
         #[cfg(unix)]
         command.process_group(0);
         // Under the lock every spawn in this test process takes.
@@ -149,7 +148,7 @@ impl BrowserSession {
             .await
             .expect("connect WebDriver to geckodriver");
         // Implicit wait 0: every browser assertion polls explicitly (a
-        // snapshot-once read races the async htmx swap — plan §10).
+        // snapshot-once read races the async htmx swap).
         driver
             .set_implicit_wait_timeout(Duration::ZERO)
             .await
@@ -247,8 +246,8 @@ impl BrowserSession {
     /// Capture failure-triage artifacts — a PNG screenshot and the live page
     /// source — into `dir` as `<stem>.png` / `<stem>.html`, returning their
     /// **absolute** paths. Call **before** any reap/quit, while the session is
-    /// live (plan §9 step 4: "artifact-before-quit"). `dir` must be absolute so
-    /// the paths survive the Bazel package-dir chdir — see [`artifact_dir`].
+    /// live. `dir` must be absolute so the paths survive the Bazel package-dir
+    /// chdir — see [`artifact_dir`].
     pub async fn save_failure_artifacts(
         &self,
         dir: &Path,
@@ -276,8 +275,8 @@ impl BrowserSession {
     /// Test-only worst-case trigger: SIGKILL **only** the geckodriver process
     /// (not its group), so it cannot tell Firefox to quit — Firefox is orphaned,
     /// reproducing the non-graceful exit (a panic/timeout, or the Firefox<152
-    /// SIGTERM bug, bugzilla 1430064) the reaper must survive. Follow with
-    /// [`reap`](Self::reap) to clean up the orphan.
+    /// SIGTERM bug the module docs cite) the reaper must survive. Follow with
+    /// [`reap_tree`](Self::reap_tree) to clean up the orphan.
     #[cfg_attr(
         windows,
         expect(
@@ -298,7 +297,7 @@ impl BrowserSession {
 
     /// Graceful teardown: close the `WebDriver` session (geckodriver quits Firefox),
     /// sweep the process group as a safety net, then reap geckodriver. Call
-    /// **before** stopping the BFF/driver (plan §10).
+    /// **before** stopping the BFF/driver (`docs/skills/testing.md` §5.4).
     pub async fn quit(self) {
         let Self {
             driver,
@@ -310,15 +309,15 @@ impl BrowserSession {
         // Kill-the-tree safety net: sweep any Firefox/content process still in the
         // group BEFORE reaping geckodriver, so its pid (== the pgid) is still held
         // and can't be recycled mid-kill. Harmless if the graceful quit already
-        // closed them; load-bearing on Firefox <152 (bugzilla 1430064).
+        // closed them; load-bearing on Firefox <152 (see the module docs).
         reap_group(geckodriver_pid);
         let _ = geckodriver.start_kill();
         let _ = geckodriver.wait().await;
     }
 
-    /// Worst-case kill-the-tree reaper (the plan §9 step 4 / §10 requires it). Used
-    /// when geckodriver has already died (the simulated-crash path), so the
-    /// `WebDriver` client is simply abandoned — a round-trip would only hang.
+    /// Worst-case kill-the-tree reaper, used when geckodriver has already died
+    /// (the simulated-crash path), so the `WebDriver` client is simply
+    /// abandoned — a round-trip would only hang.
     ///
     /// SIGKILLs the whole process group (geckodriver leads it) **and** every
     /// still-tracked pid in `also_kill`. The group kill is the normal path; the
@@ -351,8 +350,8 @@ fn reap_group(pgid: u32) {
 #[expect(
     clippy::unimplemented,
     reason = "deliberate compile-only stub: the @browser layer runs on unix \
-              (Linux CI + dev); macOS/Windows support is UI-testing plan §9 \
-              step 5, and a silent no-op would mask a porting error"
+              (Linux CI + dev) by design, and a silent no-op would mask a \
+              porting error"
 )]
 fn reap_group(_pgid: u32) {
     unimplemented!("process-group reaping is unix-only");
@@ -421,8 +420,7 @@ pub fn live_pids_in_group(pgid: u32) -> Vec<u32> {
 #[expect(
     clippy::unimplemented,
     reason = "deliberate compile-only stub: the /proc-based orphan scan is \
-              Linux-only (the @browser spike runs on Linux/ubuntu); \
-              macOS/Windows browser support is UI-testing plan §9 step 5"
+              Linux-only, as the @browser layer is by design"
 )]
 pub fn live_pids_in_group(_pgid: u32) -> Vec<u32> {
     unimplemented!("process-group orphan scan is implemented for Linux only");
@@ -445,7 +443,7 @@ pub async fn wait_until_group_drains(pgid: u32, max_iters: usize) -> Vec<u32> {
 /// The absolute directory failure artifacts are written to. Prefers Bazel's
 /// `TEST_UNDECLARED_OUTPUTS_DIR` (an absolute path Bazel sets for test actions
 /// and collects into the test outputs), else the OS temp dir — both absolute, so
-/// they survive the Bazel package-dir chdir (plan §10), unlike a path relative to
+/// they survive the Bazel package-dir chdir, unlike a path relative to
 /// the original cwd.
 pub fn artifact_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR") {

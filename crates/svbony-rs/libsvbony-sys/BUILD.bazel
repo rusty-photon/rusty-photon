@@ -12,30 +12,27 @@ exports_files(
 # vendored/bindgen'd here, only hand-transcribed — see lib.rs's crate docs).
 #
 # `build.rs` emits the per-OS native link directives (dylib=SVBCameraSDK +
-# dylib=usb-1.0 on Linux/macOS; no Windows branch — indi-3rdparty declares
-# Windows unsupported). `links = "SVBCameraSDK"` lets Bazel coordinate the
-# native link the same way the Cargo `links` key does.
+# dylib=usb-1.0 on Linux/macOS; dylib=SVBCameraSDK alone on Windows, whose
+# DLL drives the camera through the in-box WinUSB). `links = "SVBCameraSDK"`
+# lets Bazel coordinate the native link the same way the Cargo `links` key
+# does.
 #
 # DEVIATION from libqhyccd-sys/libzwo-sys's BUILD.bazel: those bake in a real
 # link against the system-installed SDK (this workspace's Bazel CI/dev hosts
 # have QHYCCD/ZWO pre-provisioned).
 #
-# Phase F (docs/plans/archive/svbony-camera.md) added `.github/actions/install-svbony-sdk`
-# and wired it into `conformu.yml` + `native.yml` — but that is a plain-Cargo,
-# GitHub-Actions-only provisioning mechanism (a composite action that
-# downloads the SDK and installs it with `ldconfig`), not something Bazel's
-# hermetic build graph consumes; Bazel would need its own repository rule (e.g. an
-# `http_file` fetch + a non-`cargo_build_script` link step) to provision the
-# same SDK, which nothing in this workspace's `WORKSPACE`/`MODULE.bazel` does
-# today, unlike QHYCCD/ZWO which land on Bazel CI/dev hosts pre-provisioned by
-# other means. So `build_script_env` below still bakes
-# `SVBONY_SKIP_NATIVE_LINK=1` into the build script unconditionally — the
-# default Bazel build (and `svbony-rs_unit_test`, which needs a real final
-# link) works with zero SVBony SDK provisioning, exactly as before Phase F.
-# Revisit (drop the env, or split a second non-skipping build_script variant,
-# plus a Bazel-side SDK-fetch rule) at Phase G alongside real hardware
-# validation — see docs/services/svbony-camera.md "Native dependency & build
-# gating" for the parallel `:svbony-camera` binary decision.
+# The Cargo workflows provision the real SDK with
+# `.github/actions/install-svbony-sdk`, a GitHub Actions action that Bazel's
+# hermetic build graph does not consume; Bazel would need its own repository
+# rule (e.g. an `http_file` fetch + a non-skipping build-script variant) to
+# provision the same SDK, and nothing in `MODULE.bazel` does. So
+# `build_script_env` below bakes `SVBONY_SKIP_NATIVE_LINK=1` into the build
+# script unconditionally: the default Bazel build (and `svbony-rs_unit_test`,
+# which needs a real final link) works with zero SVBony SDK provisioning, and
+# no Bazel target links the real SDK — which is why the real
+# `:svbony-camera` binary is tagged `manual` (docs/services/svbony-camera.md
+# "Bazel links the simulation only"). A Bazel-side SDK-fetch rule would let
+# the env go.
 cargo_build_script(
     name = "build_script",
     srcs = ["build.rs"],
@@ -55,4 +52,21 @@ rust_library(
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [":build_script"],
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

@@ -108,6 +108,7 @@ fn configure_on_simulator(world: &mut RpWorld, kind: &Kind) {
             id,
             alpaca_url: url,
             device_number: 0,
+            outputs: Vec::new(),
         }),
         "rotators" => world.rotators.push(RotatorConfig {
             id,
@@ -137,7 +138,7 @@ fn configure_on_simulator(world: &mut RpWorld, kind: &Kind) {
 
 /// The `UniqueID` the simulator lists for its first device of
 /// `device_type` — device 0, the one rp binds.
-async fn simulator_unique_id(world: &RpWorld, device_type: &str) -> String {
+pub async fn simulator_unique_id(world: &RpWorld, device_type: &str) -> String {
     let url = format!("{}/management/v1/configureddevices", world.omnisim_url());
     let body: Value = reqwest::get(&url)
         .await
@@ -296,6 +297,7 @@ async fn pinned_device_refused(world: &mut RpWorld, name: String) {
         .unwrap_or_else(|| panic!("{} {} missing from GET /api/equipment", kind.key, kind.id));
     let mut expected = serde_json::json!({
         "connected": false,
+        "held_out": false,
         "device_name": null,
         "unique_id": null,
     });

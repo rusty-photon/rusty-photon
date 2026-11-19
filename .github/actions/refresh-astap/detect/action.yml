@@ -20,8 +20,12 @@ inputs:
 outputs:
   rotated:
     description: "'true' when upstream's archive is not the pinned one, and the result is in `results`."
+  unavailable:
+    description: >-
+      'true' when `verify` is 'false' and the archive could not be downloaded:
+      the result in `results` keeps the runner's pin.
   sha:
-    description: The SHA-256 of the archive upstream serves.
+    description: The SHA-256 of the archive upstream serves, empty when it could not be downloaded.
 runs:
   using: node24
   main: index.mjs

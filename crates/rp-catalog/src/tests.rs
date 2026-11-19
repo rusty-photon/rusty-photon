@@ -18,7 +18,7 @@ fn coord(ra_hours: f64, dec_degrees: f64) -> IcrsCoord {
 #[test]
 fn loads_with_expected_size() {
     let c = cat();
-    // ~18.8k DSO rows (M + NGC + IC + the #767 astrophoto catalogs)
+    // ~18.8k DSO rows (M + NGC + IC + the astrophoto catalogs)
     // plus ~353k HD stars.
     assert!(
         c.len() > 370_000,
@@ -236,7 +236,7 @@ fn common_name_alias_resolves_to_canonical_ngc() {
     assert_eq!(andromeda.name, "NGC 224");
     let crab = cat().resolve("Crab Nebula").expect("alias must resolve");
     assert_eq!(crab.name, "NGC 1952");
-    // A #767 alias pointing at a new-catalog canonical.
+    // A curated alias pointing at a Sharpless canonical.
     let tulip = cat().resolve("Tulip Nebula").expect("alias must resolve");
     assert_eq!(tulip.name, "Sh2-101");
 }

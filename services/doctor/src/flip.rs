@@ -6,8 +6,8 @@
 //! the client-side host rewrites are only plannable once the target's
 //! staged `server.tls` points at the wildcard pair — against **staged
 //! in-memory copies** of the configs, so a planning failure costs zero
-//! writes (D6 of docs/plans/archive/acme-flip.md). Only then are the changed
-//! files written, one `rusty_photon_config::save` each.
+//! config writes. Only then are the changed files written, one
+//! `rusty_photon_config::save` each.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -37,7 +37,8 @@ pub struct FlipPlan {
 ///
 /// `converge_staging` is `--allow-staging`'s planning mode: the staged
 /// contexts treat a staging `acme.json` as convergeable (the one
-/// deliberate exception to D4's withholding).
+/// deliberate exception to the staging withholding of
+/// docs/services/doctor.md §ACME convergence).
 ///
 /// # Errors
 ///
@@ -127,7 +128,8 @@ pub fn plan(
 /// POSIX offers no multi-file atomicity: an unwritable file mid-sequence
 /// leaves the earlier files rewritten, so the message names exactly which
 /// files were and were not written — re-running the command, or plain
-/// `doctor --fix` (D1's backstop), converges the remainder.
+/// `doctor --fix`, whose convergence checks judge a partly flipped install,
+/// converges the remainder.
 pub fn write_staged(config_dir: &Path, staged: &[(String, Value)]) -> Result<(), String> {
     let mut written: Vec<String> = Vec::new();
     for (index, (service, value)) in staged.iter().enumerate() {
@@ -307,9 +309,8 @@ mod tests {
             ("rp".to_string(), serde_json::json!({ "a": 1 })),
             ("missing-dir".to_string(), serde_json::json!({ "b": 2 })),
         ];
-        // The second write targets a config dir entry whose parent write
-        // path is fine — force a failure via an unwritable directory
-        // component instead: a *file* standing where the config must go.
+        // The second write fails: a directory stands where its config file
+        // must go.
         let blocked = dir.path().join("missing-dir.json");
         std::fs::create_dir(&blocked).unwrap();
         let err = write_staged(dir.path(), &staged).unwrap_err();

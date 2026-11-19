@@ -12,10 +12,10 @@ Feature: Sensor geometry, type, and signal
   satisfy at bin 3; same mechanism as zwo-camera's R4. SensorType is RGGB when the camera is a colour (OSC) model and
   Monochrome otherwise, derived at runtime from IsColorCam / BayerPattern --
   never hardcoded to the SV605CC's own pattern -- with BayerOffsetX /
-  BayerOffsetY following the reported pattern (ST1, exact mapping a Phase E
-  decision). Unlike zwo-camera, SVB_CAMERA_PROPERTY carries no native
-  electrons-per-ADU field, so ElectronsPerADU is a NOT_IMPLEMENTED
-  placeholder (ST2) rather than a native value -- confirmed against real
+  BayerOffsetY following the reported pattern (ST1). Unlike zwo-camera,
+  SVB_CAMERA_PROPERTY carries no native electrons-per-ADU field, so
+  ElectronsPerADU is a NOT_IMPLEMENTED placeholder (ST2) rather than a
+  native value -- confirmed against real
   hardware: no gain-dependent conversion factor is exposed anywhere in the
   SDK. MaxADU is the selected readout format's full scale, not
   (2^MaxBitDepth) - 1 = 16383 (ST3): in the default Raw16 mode it is

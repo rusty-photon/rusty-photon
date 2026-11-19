@@ -154,7 +154,7 @@ fn main() -> ServiceResult {
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
-    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    // the final lines flush on SCM Stop. Console mode logs to stderr.
     let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "zwo-camera",
         args.log_level,
@@ -192,6 +192,7 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            let restart = shutdown.restart();
             serve_and_rebuild(
                 shutdown.token(),
                 reload.clone(),
@@ -200,7 +201,8 @@ fn main() -> ServiceResult {
                     let builder = ServerBuilder::new()
                         .with_config(config)
                         .with_config_source(config_path.clone(), overrides.clone())
-                        .with_reload_signal(reload.clone());
+                        .with_reload_signal(reload.clone())
+                        .with_restart(restart.clone());
                     #[cfg(feature = "simulation")]
                     let builder = builder
                         .with_empty(simulation_empty)

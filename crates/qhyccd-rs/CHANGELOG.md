@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   queries after each open answer `false`, as a real plug query occasionally
   misses a wheel. A new `cfw_plug_misses` field, with the same struct literal
   note as `departure_file`. Simulation only.
+- `SimulatedCameraConfig::with_temperature_file(path)`: while `path` exists, a
+  `CurTemp` read answers the number written in it, as a real camera's reading
+  can go bad, and fails with `QHYError::GetParameter` when the file holds no
+  number. Checked on every read, like the departure file. A new
+  `temperature_file` field, with the same struct literal note as
+  `departure_file`. Simulation only.
 - `examples/enumerate.rs`, a hand-run probe that prints each camera's id and
   model without opening one (`GetQHYCCDModel` takes the id, so no
   `OpenQHYCCD` precedes it).
@@ -129,6 +135,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the SDK manual draws them; before, the strip lay inside the effective area.
   `with_chip_info` places the effective area after the strip the same way.
   Simulation only.
+- **Breaking:** the `simulation` feature no longer depends on `rayon`, so its
+  implicit `rayon` feature is gone. The 16-bit gradient frame is generated on
+  the calling thread, as the 8-bit one is, from one noise stream per frame: a
+  parallel fill takes every core, and a simulated camera runs beside other
+  processes in CI. Simulation only.
 
 ### Fixed
 
@@ -342,7 +353,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   camera services). Lock acquisition is now infallible, so the poison-handling
   paths and the `LockPoisoned` error variant are gone. Adds a `parking_lot`
   dependency.
-- Upgraded `rand` to 0.10 (the `Rng`/`RngExt` trait split). `rand`, `rayon`,
+- Upgraded `rand` to 0.10 (the `Rng`/`RngExt` trait split). `rand`,
   `thiserror`, and `tracing` now inherit the workspace dependency pins.
 - Moved the demo programs from `src/bin/` to `examples/` and made
   `tracing-subscriber` a dev-dependency, so library consumers no longer pull it.

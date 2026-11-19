@@ -11,9 +11,9 @@
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig, GuiderConfig,
-    GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub,
-    RpConfigBuilder, SafetyMonitorConfig, SseClient,
+    AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig,
+    GuiderConfig, GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlateSolverConfig,
+    PlateSolverStub, RpConfigBuilder, SafetyMonitorConfig, SseClient,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -26,6 +26,10 @@ pub struct SessionRunnerWorld {
     // --- Infrastructure handles ---
     pub omnisim: Option<bdd_infra::rp_harness::OmniSimHandle>,
     pub rp: Option<ServiceHandle>,
+    /// The real focus-model, started before rp for the deep-sky
+    /// document, which names `focus_train` (bdd-infra's
+    /// `FocusModelProvider`).
+    pub focus_model: Option<ServiceHandle>,
     pub session_runner: Option<ServiceHandle>,
     /// A test-side subscriber to rp's SSE stream, for seq-ordered
     /// assertions on what the engine's triggers did.
@@ -52,6 +56,9 @@ pub struct SessionRunnerWorld {
     /// (`equipment.mount.guiding`), plus the stub handle itself.
     pub guider: Option<GuiderConfig>,
     pub guider_stub: Option<GuiderStub>,
+    /// The Alpaca server of a guiding train's camera, which the stub
+    /// guider names as its own camera.
+    pub guide_camera_stub: Option<AlpacaDeviceStub>,
     /// Safety monitors gating the session (recovery.feature's safety
     /// interruption scenario).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
@@ -63,19 +70,16 @@ pub struct SessionRunnerWorld {
     pub site: Option<(f64, f64)>,
     /// `add_target` argument objects (computed coordinates, optional
     /// altitude floor, optional goals) seeded into rp's redb store
-    /// post-boot by `start_rp_service` — the legacy `targets[]` config
-    /// array was retired, so planner targets are added via the MCP tool.
+    /// post-boot by `start_rp_service`: planner targets are added via the
+    /// MCP tool.
     pub pending_store_targets: Vec<Value>,
     /// The computed target coordinates behind `pending_store_targets`,
     /// kept for the mount-sync and plate-solver-echo steps.
     pub night_targets: Vec<IcrsCoord>,
     /// `OmniSim`'s telescope site as it was before a scenario overwrote
     /// it. The site is a profile *setting* the per-scenario device
-    /// restart does not reset, and on platforms without
-    /// `PR_SET_PDEATHSIG` the `OmniSim` process outlives this test
-    /// binary — so the after-hook must put the site back or the next
-    /// suite reusing the instance (rp's planner scenarios pin their
-    /// config to `OmniSim`'s default site) fails mount-site validation.
+    /// restart does not reset, so the after-hook puts it back for the
+    /// later scenarios on this process's `OmniSim`.
     pub original_telescope_site: Option<(f64, f64)>,
     /// The scenario's plate-solver stub (kept alive for its lifetime)
     /// and the rp config block pointing at it.

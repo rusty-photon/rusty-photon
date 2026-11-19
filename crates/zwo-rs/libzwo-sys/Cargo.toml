@@ -5,8 +5,10 @@ edition = "2021"
 rust-version.workspace = true
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
-# Canonical development home is the rusty-photon monorepo (ADR-010); still
-# published to crates.io from crates/zwo-rs/libzwo-sys (dual-home).
+# Dual-homed like zwo-rs: the package identity stays explicit (NOT
+# `*.workspace = true`), so the crate releases to crates.io from this directory
+# on its own cadence (docs/workspace.md, "Dual-homed crates inherit shared deps
+# too").
 repository = "https://github.com/rusty-photon/rusty-photon"
 description = "Raw FFI bindings (bindgen) for the ZWO ASI / EFW / EAF SDK"
 keywords = ["zwo", "asi", "efw", "ffi", "astronomy"]
@@ -21,15 +23,14 @@ links = "zwo"
 
 [features]
 # The three ZWO device SDKs are independent libraries with no shared handle, so
-# each link directive is gated by its own feature (ADR-014): a consumer links
-# only the SDK(s) it talks to. The features are purely ADDITIVE link surface —
-# `--all-features` yields the full link, i.e. exactly the pre-split behaviour —
-# so they don't reintroduce the silent-simulation footgun that keeps
-# ZWO_SKIP_NATIVE_LINK env-gated (see build.rs). Bindings are always generated
-# for the whole vendored header set; bare extern declarations force no linkage.
-# Default = everything, so a bare/external `cargo build` behaves exactly like
-# the pre-split crate; rusty-photon's services narrow via
-# `default-features = false`.
+# each link directive is gated by its own feature: a consumer links only the
+# SDK(s) it talks to. The features are purely ADDITIVE link surface —
+# `--all-features` links every SDK — so they cannot bring in the
+# silent-simulation footgun that keeps ZWO_SKIP_NATIVE_LINK env-gated (see
+# build.rs). Bindings are always generated for the whole vendored header set;
+# bare extern declarations force no linkage.
+# Default = everything, so a bare `cargo build` links every SDK; rusty-photon's
+# services narrow via `default-features = false`.
 default = ["camera", "efw", "focuser"]
 # Link libASICamera2 (ASI cameras; pulls libusb-1.0).
 camera = []
@@ -51,8 +52,8 @@ focuser = []
 # that drags prettyplease down to 0.2 while syn resolves to 3 produces a
 # combination bindgen cannot compile, because its
 # `prettyplease::unparse(&syn::parse_quote!(..))` needs both crates on the same
-# syn major. Nothing in the graph pins prettyplease today, but keeping the
-# feature off means a future dependency cannot reintroduce that break here.
+# syn major. With the feature off, prettyplease is not in the graph at all, so
+# no dependency can bring that break here.
 bindgen = { version = "0.73", default-features = false, features = [
   "logging",
   "runtime",

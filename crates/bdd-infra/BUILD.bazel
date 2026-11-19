@@ -40,8 +40,8 @@ rust_library(
     # The OmniSim profile seed tree rides along in the runfiles of every
     # test that links this harness, so the per-instance OMNISIM_SETTINGS_DIR
     # seeding (rp_harness/omnisim.rs `seed_config_source`, branch 2 -- the
-    # cwd-ancestors walk) resolves it under Bazel. Without this the seed
-    # never resolved under Bazel and OmniSim ran on upstream defaults.
+    # cwd-ancestors walk) resolves it under Bazel. Without it the seed does
+    # not resolve under Bazel and OmniSim runs on upstream defaults.
     data = glob(["omnisim-config/**"]),
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -54,10 +54,10 @@ rust_library(
 )
 
 # Variant with the conformu feature enabled. Services' conformu_integration
-# tests use run_conformu() to drive the ConformU CLI directly, replacing
-# ascom_alpaca::test::ConformUTestBuilder so they no longer need the
-# ascom-alpaca/test feature (whose transitive `dtor` dep crate_universe can't
-# resolve). Each mode runs under a deadline through rusty-photon-process.
+# tests use run_conformu() to drive the ConformU CLI directly, not
+# ascom_alpaca::test::ConformUTestBuilder, whose ascom-alpaca/test feature
+# pulls a transitive `dtor` dep crate_universe can't resolve. Each mode runs
+# under a deadline through rusty-photon-process.
 rust_library(
     name = "bdd-infra_conformu",
     srcs = glob(
@@ -103,8 +103,8 @@ rust_library(
 
 # Variant with rp-harness AND tls-auth enabled, for the suites that spawn rp
 # alongside their TLS + auth scenarios (rp, ui-htmx, calibrator-flats,
-# focus-model, session-runner). A test binary can link only one bdd_infra
-# crate, so the feature union needs its own variant.
+# focus-model, polar-align, session-runner). A test binary can link only one
+# bdd_infra crate, so the feature union needs its own variant.
 rust_library(
     name = "bdd-infra_rp_harness_tls_auth",
     srcs = glob(
@@ -156,9 +156,9 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    # 3 of the run_once_* tests need pre-built doctor / rp binaries, found
+    # The three run_once_* tests need pre-built doctor / rp binaries, found
     # via the cargo target-dir walk when DOCTOR_BINARY / RP_BINARY aren't
-    # pre-set. See docs/plans/archive/bazel-migration.md "Known test gaps".
+    # pre-set.
     tags = ["requires-cargo"],
     deps = all_crate_deps(
         normal = True,
@@ -170,13 +170,15 @@ rust_test(
 # modules. The base :bdd-infra_unit_test compiles WITHOUT the rp-harness
 # feature, so those modules' tests (OmniSim restart serialization, config
 # builders, stubs, SSE parsing) are cfg'd out of it — and it is tagged
-# requires-cargo anyway, so per-PR `bazel test //...` never ran them; they
-# only ran in the nightly Cargo safety net. This target compiles the
-# rp-harness variant and positively filters to the two feature-gated
-# module trees, skipping the base `tests::` module whose run_once_* tests
-# shell out to cargo. All filtered-in tests are hermetic (localhost axum
-# stubs, tempfiles, pure parsing), so no requires-cargo tag: they run on
-# every PR — including the #431 restart-serialization regression test.
+# requires-cargo anyway, so per-PR `bazel test //...` does not run it, and
+# without this target those tests would run only in the nightly Cargo safety
+# net. This target compiles the rp-harness variant and positively filters to
+# the two feature-gated module trees, skipping the base `tests::` module
+# whose run_once_* tests need pre-built doctor / rp binaries. All
+# filtered-in tests are hermetic (localhost axum stubs, tempfiles, pure
+# parsing), so no requires-cargo tag: they run on every PR — including the
+# regression test of the serialized OmniSim restarts
+# (docs/skills/testing.md § 5.5).
 rust_test(
     name = "bdd-infra_rp_harness_unit_test",
     size = "small",
@@ -298,11 +300,11 @@ rust_test(
 # Same shape and same reason as :bdd-infra_signals_unit_test above: the base
 # :bdd-infra_unit_test is tagged requires-cargo for the run_once_* tests, so
 # per-PR `bazel test //...` runs none of `tests::` and coverage sees none of
-# it — which left `find_binary`'s discovery ladder, the code that decides
-# which binary every BDD suite spawns, uncovered on every PR. These tests are
-# hermetic (tempdirs, env vars, and cwd juggling under CWD_LOCK; they resolve
-# paths without spawning anything), so this target selects just that
-# submodule and carries no requires-cargo tag.
+# it — without this target `find_binary`'s discovery ladder, the code that
+# decides which binary every BDD suite spawns, is uncovered on every PR.
+# These tests are hermetic (tempdirs, env vars, and cwd juggling under
+# CWD_LOCK; they resolve paths without spawning anything), so this target
+# selects just that submodule and carries no requires-cargo tag.
 rust_test(
     name = "bdd-infra_binary_discovery_unit_test",
     size = "small",
@@ -394,4 +396,21 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

@@ -24,8 +24,8 @@ pub const SITE_LONGITUDE_DEG: f64 = -122.8;
 /// a site block must use this one: rp hard-errors on mount connect
 /// when its configured site differs from the mount's reported site by
 /// more than 0.01°, and mutating `OmniSim`'s site instead would leak
-/// into other suites (the write outlives the scenario — see
-/// `OmniSimHandle::set_telescope_site`).
+/// into the later scenarios on this process's `OmniSim` (the write
+/// outlives the scenario — see `OmniSimHandle::set_telescope_site`).
 pub const OMNISIM_SITE_LATITUDE_DEG: f64 = 51.0786;
 pub const OMNISIM_SITE_LONGITUDE_DEG: f64 = -0.2944;
 

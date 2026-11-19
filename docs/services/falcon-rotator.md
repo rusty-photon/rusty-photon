@@ -7,15 +7,15 @@ ASCOM Alpaca Rotator driver for the Pegasus Astro Falcon Rotator.
 The `pa-falcon-rotator` service exposes the Pegasus Astro Falcon Rotator (firmware ≥ v1.3) as **two** ASCOM Alpaca devices on a single server:
 
 1. An ASCOM **Rotator** device implementing the standard `IRotatorV4` surface: `Position`, `MechanicalPosition`, `TargetPosition`, `IsMoving`, `Reverse`, `Move` / `MoveAbsolute` / `MoveMechanical` / `Sync` / `Halt`.
-2. An ASCOM **Switch** device with two read-only switches: `0` = input-voltage reading from `VS` (raw ADC count — scale factor deferred), `1` = limit-hit indicator from `FA.limit_detect`. See [Status Switch Device](#status-switch-device).
+2. An ASCOM **Switch** device with two read-only switches: `0` = input-voltage reading from `VS` (raw ADC count, no scale factor applied), `1` = limit-hit indicator from `FA.limit_detect`. See [Status Switch Device](#status-switch-device).
 
 The service borrows the **layering** from `ppba-driver` / `qhy-focuser` but deliberately **omits the cached / background-polled state machine** those services carry. Every ASCOM property read maps to a serial command. See [Why no cache](#why-no-cache) for the trade-offs.
 
 - **Codec** (`codec.rs`) — `FalconCodec` implements `rusty_photon_shared_transport::Codec`: `encode` appends `\n`, `decode` dispatches by reply prefix into the `FalconResponse` enum, `matches` enforces variant-shape pairing.
-- **Transport factory** (`serial.rs`, `mock.rs`) — `FalconTransportFactory` opens the port through the shared crate's `open_serial_port` (one opener for every serial driver: builder settings, error mapping, and the bounded retry that rides out a Windows handle still closing) and builds a `SerialFrameTransport` with `\n` framing; `MockFalconTransportFactory` (feature-gated under `mock`) hands out an in-memory state machine for tests.
+- **Transport factory** (`serial.rs`, `mock.rs`) — `FalconTransportFactory` opens the port through the shared crate's [`open_serial_port`](../crates/rusty-photon-shared-transport.md#opening-a-serial-port) and builds a `SerialFrameTransport` with `\n` framing; `MockFalconTransportFactory` (feature-gated under `mock`) hands out an in-memory state machine for tests.
 - **Protocol layer** (`protocol.rs`) — command serialisation, response parsing, and the `validate_echo` helper (used by the manager to confirm echo-bearing replies match the issued command).
 - **Manager** (`manager.rs`) — `FalconManager` wraps an `Arc<SharedTransport<FalconCodec>>` plus the three small pieces of driver-side state pinned by the [Sync semantics](#sync-semantics--why-driver-side-not-sd) and [`limit_detect` handling](#limit_detect-handling) sections (`sync_offset`, `target_position`, `last_limit_detected`). Constructs `Hooks { handshake, on_last_disconnect, shutdown, while_open: None }` — there is no background poll loop, so the while-open slot is empty. Exposes the protocol API (`read_status`, `read_voltage_raw`, `move_mechanical`, `halt`, `set_reverse`, `sync`) that the device types call through a `&Session<FalconCodec>`.
-- **ASCOM devices** (`rotator_device.rs`, `switch_device.rs`) — `Device` + `Rotator` / `Device` + `Switch` trait implementations. Each device holds its own `Option<Session<FalconCodec>>`; `set_connected(true)` calls `transport().acquire()` to obtain one and `set_connected(false)` calls `session.close().await` to release it. The two devices share one `Arc<FalconManager>` and therefore one underlying transport — refcounting on `SharedTransport` is what makes both devices' `Connected=true` calls cooperate on a single open serial port.
+- **ASCOM devices** (`rotator_device.rs`, `switch_device.rs`) — `Device` + `Rotator` / `Device` + `Switch` trait implementations. Each device holds its own `Option<Session<FalconCodec>>`; `set_connected(true)` calls `transport().acquire()` to obtain one and `set_connected(false)` calls `session.close().await` to release it. The two devices share one `Arc<FalconManager>` and therefore one underlying transport, which `ServerBuilder::build()` opens at service start; refcounting is what lets both devices hold a session on the one port, not what decides when it opens.
 - **Server builder** (`lib.rs`) — binds the ASCOM Alpaca server and registers both devices.
 
 ## Architecture
@@ -35,15 +35,15 @@ The service borrows the **layering** from `ppba-driver` / `qhy-focuser` but deli
 +-------------------+
 ```
 
-A single serial connection is shared by both registered devices and all of their clients. The `FalconManager` wraps a `SharedTransport<FalconCodec>` from `rusty-photon-shared-transport`; `ServerBuilder::build()` calls `transport().start()` before binding, so the port is opened and handshaken at service start and stays open until shutdown; refcounting on that transport is what lets both devices share it, not what decides when it opens. The transport's command-arbitration lock serialises every device-bound encode → `send_frame` → `recv_frame` → decode pair so concurrent property reads queue cleanly on the one physical port. The `FalconManager` also holds three small pieces of driver-side state: `sync_offset` (sky-vs-mechanical correction), `target_position` (the last requested target in **sky** coordinates), and `last_limit_detected` (used for `limit_detect` edge logging — see [`limit_detect` handling](#limit_detect-handling)). The transport's `Hooks::handshake` runs the documented `F# → FV → DR:0 → FA → VS` sequence atomically — if any step fails at start the service does not come up, and if it fails on a reconnect the attempt is reported as failed and retried, so a half-connected state can't escape either way.
+A single serial connection is shared by both registered devices and all of their clients. The `FalconManager` wraps a `SharedTransport<FalconCodec>` from `rusty-photon-shared-transport`; `ServerBuilder::build()` calls `transport().start()` before binding, so the port is opened and handshaken at service start and stays open until shutdown (the shared crate's `ServiceLifetime` [lifecycle](../crates/rusty-photon-shared-transport.md#lifecycles)); refcounting on that transport is what lets both devices share it, not what decides when it opens. The transport's [command lock](../crates/rusty-photon-shared-transport.md#the-command-lock) serialises every device-bound encode → `send_frame` → `recv_frame` → decode pair so concurrent property reads queue cleanly on the one physical port. The `FalconManager` also holds three small pieces of driver-side state: `sync_offset` (sky-vs-mechanical correction), `target_position` (the last requested target in **sky** coordinates), and `last_limit_detected` (used for `limit_detect` edge logging — see [`limit_detect` handling](#limit_detect-handling)). The transport's `Hooks::handshake` runs the documented `F# → FV → DR:0 → FA → VS` sequence atomically — if any step fails at start the service does not come up, and if it fails on a [reconnect](../crates/rusty-photon-shared-transport.md#reconnect) the attempt is reported as failed and retried, so a half-connected state can't escape either way.
 
 ### Why no cache
 
-Every other serial service in this repo (`ppba-driver`, `qhy-focuser`, `star-adventurer-gti`) caches device state behind a `RwLock<CachedState>` updated by a background poller. `pa-falcon-rotator` does not, by design.
+Every other driver on the shared transport — `ppba-driver`, `qhy-focuser` and `star-adventurer-gti` among them — caches device state that a background poller keeps up to date. `pa-falcon-rotator` does not, by design.
 
 The benefit a cache would add — sub-millisecond property reads — matters when many concurrent ASCOM clients hit the same server. We don't expect that here: observatory rotators are typically driven by exactly one session at a time. The costs are real: a polling task with its own lifecycle, a state-completion detector, an "active refresh" patch for `is_moving()` to defeat staleness during moves, and a second source of truth that drifts when the device is mutated out of band by the Pegasus Unity app.
 
-A no-cache design pays one ~10–30 ms serial roundtrip per property read in exchange for always-fresh reads, drift-free state, and `Hooks::while_open = None` on the shared transport (versus the poll loop the other three services configure there). The trade-off is reversible: if production load shows contention, we can layer a TTL cache on top later — and the device-trait implementations need not change, because every property reads through the same `FalconManager` API.
+A no-cache design pays one ~10–30 ms serial roundtrip per property read in exchange for always-fresh reads, drift-free state, and `Hooks::while_open = None` on the shared transport (versus the poll loop the other drivers configure there). The trade-off is reversible: if production load shows contention, we can layer a TTL cache on top later — and the device-trait implementations need not change, because every property reads through the same `FalconManager` API.
 
 ## Hardware Constraints
 
@@ -106,16 +106,16 @@ Field types:
 | `position_in_deg` | `f64`, two decimals | Authoritative for `MechanicalPosition`; always wrapped to `[0, 360)` |
 | `is_moving` | `0` / `1` | Drives `IsMoving` |
 | `limit_detect` | `0` / `1` | Driver logs `warn!` on edge transitions, does not raise |
-| `do_derotation` | `0` / `1` | MVP keeps this `0` (see [De-rotation](#de-rotation)) |
+| `do_derotation` | `0` / `1` | The handshake forces this to `0` (see [De-rotation](#de-rotation)) |
 | `motor_reverse` | `0` / `1` | Drives `Reverse` |
 
-> **Signed step counter (validated on real hardware, firmware 1.5, ConformU).**
+> **Signed step counter (seen on real hardware, firmware 1.5, under ConformU).**
 > A target beyond the 220° CW limit is reached the long way round — CCW past the
 > 0° home — where `position_in_steps` goes **negative** (e.g. `FR_OK:-2838:327.24:1:0:0:0`)
-> while `position_in_deg` stays wrapped to `[0, 360)`. Parsing the step field as
-> unsigned previously aborted every status read in that region with
-> `INVALID_OPERATION: FA position_steps: invalid digit found in string`; it is
-> now parsed as `i32`. The degree field is unaffected, so positions stay correct.
+> while `position_in_deg` stays wrapped to `[0, 360)`. The driver parses the step
+> field as `i32`; parsed as unsigned, every status read in that region would fail
+> with `INVALID_OPERATION: FA position_steps: invalid digit found in string`. The
+> degree field is unaffected, so positions stay correct.
 
 ### Commands the driver does **not** send
 
@@ -142,12 +142,12 @@ A sky angle therefore can't be used where a mechanical one is expected, and the 
 | `IsMoving` | Issues `FA`, returns `FA.is_moving == 1`. Always fresh from the device. |
 | `Position` | Issues `FA`, returns `(FA.position_in_deg + sync_offset) mod 360`. |
 | `MechanicalPosition` | Issues `FA`, returns `FA.position_in_deg` normalised to `[0, 360)`. |
-| `TargetPosition` | If a `Move*` is outstanding, returns the sky-coordinate target stored in `FalconManager::target_position: Mutex<Option<f64>>`. Otherwise (no move ever requested, or last move was halted, or the device is idle after a completed move) returns the current `Position`. Treating "where I am" as the implicit target when nothing else is in flight keeps ConformU happy and matches the dominant convention among ASCOM rotator drivers. |
+| `TargetPosition` | If a target is stored, returns it: the sky-coordinate target of the last `Move*`, held in `FalconManager::target_position: Mutex<Option<SkyDegrees>>` and kept after the move completes (see [Move target storage](#move-target-storage)). Otherwise (no move requested yet, or the last one was halted) returns the current `Position`. Treating "where I am" as the implicit target when no target is stored keeps ConformU happy and matches the dominant convention among ASCOM rotator drivers. |
 | `Reverse` (get) | Issues `FA`, returns `FA.motor_reverse`. |
 | `Reverse` (set) | EEPROM-wear-aware: issues `FA` first, only writes `FN:b` if the requested value differs from the device's current value. See [Reverse semantics](#reverse-semantics--eeprom-persistence). |
 | `StepSize` | `0.01155` (constant). Per the vendor product page, the Falcon does 86.6 steps per degree → `1.0 / 86.6 ≈ 0.01155 °/step`. Reported as `f64` even though the `MD:nn.nn` wire format limits commandable values to 0.01° precision; ASCOM clients that round move targets to `StepSize` will land within one motor step of the requested angle. |
-| `Halt()` | `FH`. Clears `TargetPosition` and `is_moving` on success. |
-| `Move(delta)` | Relative move: `target = (MechanicalPosition + delta - sync_offset) mod 360`, then `MD:<target>`. ASCOM defines `Move` in **sky** coordinates, so the same `sync_offset` is applied. |
+| `Halt()` | `FH`. Clears the stored target on success, so `TargetPosition` reads the current `Position` again; `IsMoving` keeps reading the device. |
+| `Move(delta)` | Relative move: issues `FA`, then `MD:<(MechanicalPosition + delta) mod 360>`. ASCOM defines `Move` in **sky** coordinates; the sky angle is the mechanical one plus `sync_offset`, so moving it by `delta` moves the mechanical angle by the same `delta` and the offset cancels. |
 | `MoveAbsolute(skyDeg)` | `target_mechanical = (skyDeg - sync_offset) mod 360`, then `MD:<target_mechanical>`. |
 | `MoveMechanical(mechDeg)` | Wire command: `MD:<mechDeg mod 360>` directly — `sync_offset` is **not** applied to the wire value. Internal `target_position` is still stored in sky coordinates (`mechDeg + sync_offset`) so subsequent `TargetPosition` reads stay in the same frame regardless of which `Move*` variant set them. |
 | `Sync(skyDeg)` | `sync_offset = (skyDeg - MechanicalPosition) mod 360`. **Driver-side only.** The Falcon's `SD` command is *not* used here: ASCOM Sync must leave `MechanicalPosition` unchanged, but `SD` rewrites the device's stored counter. |
@@ -156,18 +156,18 @@ All command issuance flows through the device's held `Session<FalconCodec>` — 
 
 ### Sync semantics — why driver-side, not `SD`
 
-ASCOM's `Sync(skyAngle)` is specified as: *the value reported by `Position` becomes `skyAngle`, the value reported by `MechanicalPosition` is unchanged*. The Falcon's `SD:<deg>` command rewrites the device's stored counter, which would change `MechanicalPosition` on the next `FA` read and break the ASCOM contract. The driver therefore tracks the offset in software as `FalconManager::sync_offset: Mutex<f64>` (initialised to `0.0` on connect, reset by `FalconManager::clear_session_state` when the last device disconnects) and never issues `SD`.
+ASCOM's `Sync(skyAngle)` is specified as: *the value reported by `Position` becomes `skyAngle`, the value reported by `MechanicalPosition` is unchanged*. The Falcon's `SD:<deg>` command rewrites the device's stored counter, which would change `MechanicalPosition` on the next `FA` read and break the ASCOM contract. The driver therefore tracks the offset in software as `FalconManager::sync_offset: Mutex<SyncOffset>` (zero when the service starts, and reset by `FalconManager::clear_session_state` under the conditions in [Connection Lifecycle](#connection-lifecycle)) and never issues `SD`.
 
-A side-effect of this choice: the sync offset is **not** persisted across driver restarts. If a deployment needs persistent sync, that is a follow-up — see [Open questions](#open-questions).
+A side-effect of this choice: the sync offset is **not** persisted across driver restarts — see [Follow-ups](#follow-ups).
 
 ### Move target storage
 
-`FalconManager` holds `target_position: Mutex<Option<f64>>` storing the **sky-coordinate** target (so `TargetPosition` reads don't need to re-apply the offset). Lifecycle:
+`FalconManager` holds `target_position: Mutex<Option<SkyDegrees>>` storing the **sky-coordinate** target (so `TargetPosition` reads don't need to re-apply the offset). Lifecycle:
 
-1. `Move(delta)` / `MoveAbsolute(skyDeg)` / `MoveMechanical(mechDeg)` each compute the sky target, write `target_position = Some(sky_target)`, convert to mechanical, then issue `MD:<mech>`.
+1. `Move(delta)` / `MoveAbsolute(skyDeg)` / `MoveMechanical(mechDeg)` each compute the mechanical target, issue `MD:<mech>`, and once the echo validates write `target_position = Some(sky_target)`, the sky angle of the wire-quantised value sent (see [Move Lifecycle](#move-lifecycle)).
 2. While the move is in progress, `is_moving()` reads `FA.is_moving` directly from the device on every call. There is no driver-side "is the move done?" flag — the device is the authoritative source.
 3. `TargetPosition` reads return the stored sky target if `Some`; otherwise they return the current `Position` (one fresh `FA` read).
-4. `target_position` is cleared (`None`) in exactly two places: on `Halt`, and on the *next* `Move*` (the new target overwrites; this is a momentary transition, not a clear-then-set). A **successful move does not clear `target_position`** — the stored target remains readable so clients can verify "did I land where I asked?" by comparing `Position` to `TargetPosition` after `IsMoving` falls false.
+4. `target_position` is cleared (`None`) on `Halt` and by `clear_session_state` (see [Connection Lifecycle](#connection-lifecycle)), and replaced on the *next* `Move*` (the new target overwrites; this is a momentary transition, not a clear-then-set). A **successful move does not clear `target_position`** — the stored target remains readable so clients can verify "did I land where I asked?" by comparing `Position` to `TargetPosition` after `IsMoving` falls false.
 
 The Falcon's `is_moving` flag is the authoritative completion signal. We deliberately do **not** compare `FA.position_in_deg` to `target_position` for completion — angular comparison would have to handle backlash, overshoot, and wraparound, and the device already tells us the answer.
 
@@ -190,7 +190,7 @@ All angles exposed to ASCOM clients are normalised to `[0.0, 360.0)`. The normal
 
 `FA.limit_detect == 1` indicates the rotator hit a mechanical end stop on the most recent move. The driver surfaces this two ways:
 
-1. **`warn!` log on the rising edge.** `FalconManager` holds `last_limit_detected: Mutex<Option<bool>>`. Every `FA` response parsed via `FalconManager::read_status` runs the edge check — the rule itself lives in the pure `is_limit_detect_rising_edge(previous, current)` helper — and on a `false → true` (or `None → true`) transition the driver logs `warn!("Falcon reported limit_detect after move toward {:?}", target_position)`. The state is initialised to `None` by the connect-time handshake hook, so a fresh connection whose very first observation reports `limit_detect = 1` still logs — the `None → true` arm exists precisely so that case is not swallowed while waiting for a `false → true` transition that may never come. A fresh connection reporting `limit_detect = 0` logs nothing.
+1. **`warn!` log on the rising edge.** `FalconManager` holds `last_limit_detected: Mutex<Option<bool>>`. Every `FA` response parsed via `FalconManager::read_status` runs the edge check — the rule itself lives in the pure `is_limit_detect_rising_edge(previous, current)` helper — and on a `false → true` (or `None → true`) transition the driver logs `warn!("Falcon reported limit_detect after move toward {:?}", target_position)`. The state is initialised to `None` by the handshake hook, which runs at service start and on every reconnect, so a fresh connection whose very first observation reports `limit_detect = 1` still logs — the `None → true` arm exists precisely so that case is not swallowed while waiting for a `false → true` transition that may never come. A fresh connection reporting `limit_detect = 0` logs nothing.
 2. **Read-only Switch ID `1`.** The Status Switch device exposes `limit_detect` as a boolean switch (`MinSwitchValue = 0`, `MaxSwitchValue = 1`, `SwitchStep = 1`). `GetSwitch(1)` and `GetSwitchValue(1)` each issue a fresh `FA` and return the value verbatim. Operator dashboards (sentinel, custom monitors) can poll this switch to alert on limit hits.
 
 The driver does **not**:
@@ -203,17 +203,17 @@ The driver does **not**:
 
 The Falcon's `DR:<ms>` enables a free-running rotation intended for alt-az field derotation. ASCOM's `IRotator` has no derotation concept and assumes discrete moves to a target.
 
-**MVP behaviour:** the driver issues `DR:0` once during the connect handshake to guarantee a known idle state. The driver does **not** expose any way to *enable* derotation. The `FA` field is parsed and logged but not surfaced over Alpaca.
+The driver issues `DR:0` in its handshake — at service start and on every reconnect — to guarantee a known idle state. The driver does **not** expose any way to *enable* derotation. The `FA` field is parsed but not surfaced over Alpaca.
 
 `DR:0` is a write, and the handshake it sits in re-runs on every reconnect, so why [tenet 3](../workspace.md#project-tenets) permits it is worth stating rather than leaving to be re-derived. The tenet forbids a connect path *starting* motion and always permits stopping it. `DR:0` can only stop: it disables a free-running rotation and has no form that begins one, which puts it in the same class as the halt the mount's reconnect replays on its own fresh link. The corollary that handshakes stay read-only is there to stop a reconnect commanding the device somewhere — and a reconnect that instead left an out-of-band de-rotation running, under a driver with no way to represent it or to stop it, would be the less safe reading of the same rule.
 
-Adding derotation later is tracked in [Open questions](#open-questions).
+The designs that would expose it are listed under [Follow-ups](#follow-ups).
 
 ## Status Switch Device
 
 The Falcon reports two non-rotator state values that fall outside the ASCOM Rotator surface: an input-voltage reading (`VS`, "raw format" per the PDF) and a limit-detect flag (`FA.limit_detect`). Both are exposed as read-only switches on a second ASCOM device registered on the same Alpaca server.
 
-ASCOM `IObservingConditions` was considered for voltage and rejected: its standard properties are strictly weather data (`Temperature`, `Humidity`, `Pressure`, `DewPoint`, `CloudCover`, etc.) and voltage is not in that set. ConformU would flag an `ObservingConditions` device that exposed only voltage. `ppba-driver` reaches the same conclusion — its `Switch` device carries voltage (switch `10`), and its `ObservingConditions` device carries only the temp/humidity/dewpoint trio.
+ASCOM `IObservingConditions` does not fit voltage: its standard properties are strictly weather data (`Temperature`, `Humidity`, `Pressure`, `DewPoint`, `CloudCover`, etc.) and voltage is not in that set. ConformU would flag an `ObservingConditions` device that exposed only voltage. `ppba-driver` reaches the same conclusion — its `Switch` device carries voltage (switch `10`), and its `ObservingConditions` device carries only the temp/humidity/dewpoint trio.
 
 ### Switch layout
 
@@ -229,7 +229,7 @@ ASCOM `IObservingConditions` was considered for voltage and rejected: its standa
 - `GetSwitchValue(0)` issues `VS` and returns the parsed raw ADC count as `f64`.
 - `GetSwitchValue(1)` issues `FA` and returns `0.0` or `1.0`.
 
-`Min = 0`, `Max = 1023` for switch 0 assumes a 10-bit ADC on the Falcon's MCU. If hardware characterisation reveals a wider range (12-bit / 16-bit) the `Max` value is widened in a follow-up; the field is hard-coded rather than configurable to keep the ASCOM metadata stable across deployments.
+`Min = 0`, `Max = 1023` for switch 0 assumes a 10-bit ADC on the Falcon's MCU. A wider ADC (12-bit / 16-bit), should a bench measurement find one, widens `Max` (see [Follow-ups](#follow-ups)); the field is hard-coded rather than configurable to keep the ASCOM metadata stable across deployments.
 
 #### Write surface (read-only device)
 
@@ -245,12 +245,10 @@ Because both switches are read-only, the write surface is a capability gap rathe
 
 ### Scale calibration
 
-The voltage raw-to-volts conversion is **deliberately deferred**. The PDF gives no scale factor, and we have no schematic for the input divider. Two follow-up paths once hardware characterisation is in hand:
+The switch reports the raw count, with no raw-to-volts conversion: the PDF gives no scale factor, and there is no schematic for the input divider. Two designs fit once the Falcon has been bench-measured:
 
 1. Replace the raw-ADC switch with a calibrated `Input Voltage (V)` switch using a hard-coded scale derived from the bench measurement. Simplest if the conversion is firmware-stable.
 2. Add `voltage_scale: f64` and `voltage_offset: f64` to the rotator config and report `volts = raw * scale + offset`. Lets the operator re-calibrate without a code change.
-
-Either path is a follow-up PR. The MVP just exposes the raw count.
 
 ### Reads
 
@@ -308,7 +306,7 @@ Either path is a follow-up PR. The MVP just exposes the raw count.
 | `switch` | `enabled` | Whether to register the Switch device | `true` |
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -320,7 +318,7 @@ Each device's `unique_id` is its stable ASCOM **UniqueID**. The driver mints a
 fresh **UUIDv4** for the rotator and for the status switch on first run (via the
 shared `rusty-photon-config` crate), persists them to the resolved config file,
 and **never overwrites** an existing id — so identities are globally unique and
-stable across restarts, as the ASCOM spec requires. First run now **creates the
+stable across restarts, as the ASCOM spec requires. First run **creates the
 config file** (at `--config`, else the platform default —
 `~/.config/rusty-photon/pa-falcon-rotator.json` on Linux,
 `%PROGRAMDATA%\rusty-photon\pa-falcon-rotator.json` on Windows) if it is
@@ -353,8 +351,7 @@ combined with the subcommand (the mixed form would silently ignore them).
 ### Setup pages
 
 The driver configures itself through the HTML pages the Alpaca Management
-API defines, served by the driver itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
+API defines, served by the driver itself behind its own TLS and Basic Auth:
 
 | Path | Holds |
 |------|-------|
@@ -393,6 +390,8 @@ reload, whichever page it came from; `main.rs` runs under
 down (releasing the shared serial port) and rebuilds from the freshly-persisted
 file. The BDD suite runs the server in-process, which cannot reload itself,
 so `setup_pages.feature` spawns the mock-feature binary instead.
+`restart.feature` and `auth.feature` spawn it too: the restart routes exist
+only where `main.rs` wires them.
 
 ## Module Structure
 
@@ -454,11 +453,18 @@ services/pa-falcon-rotator/
    - `DR:0` → force derotation off (known state regardless of how the device was last left; stop-class, which is why it is allowed on a path that re-runs on every glitch — see [De-rotation](#de-rotation)).
    - `FA` → smoke-test the response shape (parsed but not stored — there is no cache).
    - `VS` → smoke-test the voltage response shape.
-   - Initialises `last_limit_detected` to `None` so the first post-connect `read_status` observation triggers the rising-edge log if `limit_detect` is high.
-5. The transport's `is_available()` flips to `true`; the device's session slot stores the returned `Session<FalconCodec>`.
-6. Subsequent `set_connected(true)` calls on the *other* device (or repeated calls on the same device while connected) bump the shared refcount without re-running the handshake.
-7. `set_connected(false)` takes the slot lock, calls `session.close().await`, and propagates any teardown error. On the 1→0 transition `SharedTransport` runs the (no-op for Falcon) teardown hook and drops the `FrameTransport`, closing the underlying serial port.
-8. Once the transport reports `is_available() == false`, the driver-side `sync_offset` is reset to `0.0`, `target_position` is cleared, and the `last_limit_detected` edge tracker is reset by `FalconManager::clear_session_state`. None of these is persisted across reconnects.
+   - Initialises `last_limit_detected` to `None` so the first `read_status` after the handshake triggers the rising-edge log if `limit_detect` is high.
+5. The device's session slot stores the returned `Session<FalconCodec>`. `Connected` reads true while the slot holds a session and the transport reports `is_available()`.
+6. A `set_connected(true)` call on the *other* device bumps the shared refcount without re-running the handshake; a repeated call on a device already connected does nothing.
+7. `set_connected(false)` takes the slot lock, calls `session.close().await`, and propagates any error. On the 1→0 transition `SharedTransport` runs the last-disconnect hook, which sends nothing and asserts the [no-client state](../crates/rusty-photon-shared-transport.md#the-no-client-state) at once; the port stays open until the service stops.
+8. After the close, a device that finds the transport unavailable — reconnecting, or shut down — calls `FalconManager::clear_session_state`, which resets `sync_offset` to zero, clears `target_position` and resets the `last_limit_detected` edge tracker. A disconnect from an available transport leaves all three alone — the other device may still hold a session that reads them — and the transport stays available after the last client goes too. The sync offset and the stored target therefore last until the service stops or reloads, or until a disconnect lands while the transport is down; every handshake, at start and on each reconnect, resets the edge tracker on its own.
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## Move Lifecycle
 
@@ -468,7 +474,7 @@ For each of `Move(delta)`, `MoveAbsolute(skyDeg)`, `MoveMechanical(mechDeg)`:
 2. For `Move(delta)`, the driver issues `FA` (through `FalconManager::read_status`) first to read the current `position_in_deg` so the relative move can be computed against the live mechanical angle. `MoveAbsolute` / `MoveMechanical` need no read.
 3. Compute the mechanical target (per the [mapping table](#ascom-rotator-mapping)).
 4. Quantise to the `MD:nn.nn` wire precision and normalise into `[0.0, 360.0)`.
-5. Through the held `Session<FalconCodec>` (which holds the shared transport's command-arbitration lock for the call's duration), issue `MD:<wire>` and validate the echo (`MD:<wire>`).
+5. Through the held `Session<FalconCodec>` (whose request holds the shared transport's [command lock](../crates/rusty-photon-shared-transport.md#the-command-lock) for the exchange), issue `MD:<wire>` and validate the echo (`MD:<wire>`).
 6. Store the **wire-quantised** sky-coordinate target via `FalconManager::set_target_position` (a near-boundary input like `359.999` lands on the wire as `MD:0.00`, so the stored target tracks what the device was actually told to reach — not the raw input).
 7. Return `Ok(())` to the client (ASCOM `Move*` returns immediately; the move is asynchronous).
 8. Move completion is reported by `IsMoving` reads — each one issues a fresh `FA`. `target_position` survives completion so `TargetPosition` reads stay populated until either `Halt` or the next `Move*`.
@@ -488,9 +494,9 @@ Matches the qhy-focuser / ppba-driver precedent for cross-driver consistency: on
 
 ## MVP Scope
 
-In scope for the first iteration:
+In scope:
 
-- Connect / disconnect with handshake (`F# → FV → DR:0 → FA → VS`).
+- Connect / disconnect, and the handshake (`F# → FV → DR:0 → FA → VS`) at service start and on every reconnect.
 - `Position`, `MechanicalPosition`, `IsMoving`, `Reverse`, `TargetPosition` reads on the Rotator device — each backed by a live serial command.
 - `MoveAbsolute`, `Move`, `MoveMechanical`, `Halt`.
 - `Sync` as a driver-side offset.
@@ -499,38 +505,37 @@ In scope for the first iteration:
 - ConformU compliance for both `IRotatorV4` and `ISwitchV3`.
 - BDD scenarios mirroring each feature area listed in [Module Structure](#module-structure).
 
-Deferred:
+Not implemented (see [Follow-ups](#follow-ups)):
 
-- De-rotation (no ASCOM mapping; design out a Custom Action or a derotator-flavoured device).
-- Voltage raw-to-volts scale calibration (Switch currently reports raw ADC; scale factor or config-driven calibration is a follow-up).
+- De-rotation (no ASCOM mapping; it needs a Custom Action or a derotator-flavoured device).
+- Voltage raw-to-volts scale calibration (the Switch reports the raw ADC count; see [Scale calibration](#scale-calibration)).
 - `SD`-based persistent sync (only if `Sync` offset persistence becomes a real requirement).
-- Internationalisation of the CLI (`ppba-driver` style) — skip for MVP; reuse the spike outcome later.
+- Internationalisation of the CLI, which `ppba-driver` has through `rusty-photon-i18n`.
 
 ## Testing
 
 Per [`docs/skills/testing.md`](../skills/testing.md):
 
-- **BDD** (cucumber-rs, primary): one feature file per concern in `tests/features/`. Scenarios run the `ServerBuilder` **in-process** on an ephemeral port and drive the registered devices through Alpaca HTTP clients (`AlpacaClient::get_devices`). The world holds an `Arc<MockFalconTransportFactory>` shared with the `SharedTransport`, which lets step bodies (a) seed mock state — reported mechanical position, voltage, `motor_reverse`, `limit_detect` — and (b) assert on the wire-level `command_log` for contracts like "F# is the first command" or "no SD was issued". The `tests/bdd.rs` entry point uses a plain `#[tokio::main]` rather than the `bdd_infra::bdd_main!` macro, because the macro is only needed for harnesses that spawn child processes via `ServiceHandle` (see [`testing.md` §5.2](../skills/testing.md#52-entry-point-structure)). Tag any in-flight scenario with `@wip` while its implementation lands; strip the tag in the same commit that turns the scenario green.
-- **Unit tests** (`#[cfg(test)]` in `src/`): protocol serialisation, `FA` response parsing (happy path + every failure mode in the [error table](#error-model)), config defaults, sync-offset arithmetic, normalisation rules, and the `limit_detect` rising-edge rule (`is_limit_detect_rising_edge`, exhaustive over all six `previous × current` combinations). The `warn!` the edge drives is deliberately **not** asserted via a captured-event subscriber — see [`testing.md` §6.8](../skills/testing.md#68-do-not-assert-on-captured-tracing-events) and issue #949; the mock-backed tests assert the `last_limit_detected` tracker instead.
+- **BDD** (cucumber-rs, primary): one feature file per concern in `tests/features/`. Most scenarios run the `ServerBuilder` **in-process** on an ephemeral port and drive the registered devices through Alpaca HTTP clients (`AlpacaClient::get_devices`). The world holds an `Arc<MockFalconTransportFactory>` shared with the `SharedTransport`, which lets step bodies (a) seed mock state — reported mechanical position, voltage, `motor_reverse`, `limit_detect` — and (b) assert on the wire-level `command_log` for contracts like "F# is the first command" or "no SD was issued". The setup-page, restart and auth scenarios spawn the mock-feature binary through `ServiceHandle` instead, so the `tests/bdd.rs` entry point is the `bdd_infra::bdd_main!` macro (see [`testing.md` §5.2](../skills/testing.md#52-entry-point-structure)). Tag any in-flight scenario with `@wip` while its implementation lands; strip the tag in the same commit that turns the scenario green.
+- **Unit tests** (`#[cfg(test)]` in `src/`): protocol serialisation, `FA` response parsing (happy path + every failure mode in the [error table](#error-model)), config defaults, sync-offset arithmetic, normalisation rules, and the `limit_detect` rising-edge rule (`is_limit_detect_rising_edge`, exhaustive over all six `previous × current` combinations). The `warn!` the edge drives is deliberately **not** asserted via a captured-event subscriber — see [`testing.md` §6.8](../skills/testing.md#68-do-not-assert-on-captured-tracing-events); the mock-backed tests assert the `last_limit_detected` tracker instead.
 - **Property tests** (`proptest`): `FalconStatus` wire-format round-trip — serialise a randomly-generated status with `format!`, parse the result back through `FalconStatus`'s `FromStr` impl, and assert field-by-field equality. Pins the parser against any future format-string drift.
-- **Server tests** (`#[cfg(feature = "mock")]`, `tests/test_lib.rs`): bind the `ServerBuilder` on `127.0.0.1:0` with the `MockFalconTransportFactory` and assert the management surface — `/management/v1/description` responds, `/management/v1/configureddevices` lists both Rotator and Switch when enabled, and disabling `switch` registers only the Rotator. Tests run sequentially behind a `SERVER_LOCK` `Mutex<()>` so re-runs against a left-over discovery binding don't race.
+- **Server tests** (`#[cfg(feature = "mock")]`, `tests/test_lib.rs`): bind the `ServerBuilder` on `127.0.0.1:0` with the `MockFalconTransportFactory` and assert the management surface — `/management/v1/description` responds, `/management/v1/configureddevices` lists both Rotator and Switch when enabled, and disabling `switch` registers only the Rotator. Each test sets `discovery_port = None`, and the tests run sequentially behind a `SERVER_LOCK` `Mutex<()>`.
 - **ConformU** (`tests/conformu_integration.rs`; self-skips unless `CONFORMU_PATH` names a ConformU binary, so it is inert in the ordinary suites and runs in the nightly `conformu.yml` rotation): runs ConformU's **full** test set against the binary with the `mock` feature through `bdd_infra::run_conformu`, mirroring `ppba-driver` / `qhy-focuser`. Each test passes a `bdd_infra::FullRunSettings` of timeouts only — the rotator run lowers `RotatorTimeout` to 30 s, the switch run lowers `SwitchReadDelay` / `SwitchWriteDelay` to 50 / 100 ms — so the Switch run includes ConformU's switch **write** tests (`SetFullTest()` forces `SwitchEnableSet` on). Registered under `[package.metadata.conformu]`.
 
 ## Follow-ups
 
-These are explicit deferrals — not open design questions, but work the MVP intentionally leaves to a later iteration.
+What the driver deliberately leaves undone — not open design questions — and the shape each would take.
 
-1. **Voltage scale calibration.** Switch `0` currently exposes the raw ADC count. Once the Falcon has been bench-measured against a known supply rail, replace the raw-count switch with a calibrated `Input Voltage (V)` switch using either a hard-coded scale or `voltage_scale` / `voltage_offset` config fields.
-2. **ADC width.** Switch `0`'s `MaxSwitchValue = 1023` assumes a 10-bit ADC. If hardware characterisation finds a wider range (12-bit / 16-bit), widen the metadata in a follow-up PR.
-3. **Sync offset persistence.** Driver-side `sync_offset` resets on every reconnect. If observatories ever ask for it to survive driver restarts (rare — the standard workflow is to re-plate-solve and re-sync each session), add a small JSON state file next to the config.
-4. **De-rotation surface.** `DR` is forced off on connect and never exposed. If a real demand emerges, the natural designs are a Custom ASCOM `Action` ("StartDerotation"/"StopDerotation"), an additional read/write Switch, or a separate device alongside the existing two.
+1. **Voltage scale calibration.** Switch `0` exposes the raw ADC count. Once the Falcon has been bench-measured against a known supply rail, replace the raw-count switch with a calibrated `Input Voltage (V)` switch using either a hard-coded scale or `voltage_scale` / `voltage_offset` config fields.
+2. **ADC width.** Switch `0`'s `MaxSwitchValue = 1023` assumes a 10-bit ADC. If hardware characterisation finds a wider range (12-bit / 16-bit), widen the metadata.
+3. **Sync offset persistence.** Driver-side `sync_offset` lives in memory and is zero again whenever the service starts or reloads. If observatories ever ask for it to survive driver restarts (rare — the standard workflow is to re-plate-solve and re-sync each session), add a small JSON state file next to the config.
+4. **De-rotation surface.** `DR` is forced off by the handshake and never exposed. If a real demand emerges, the natural designs are a Custom ASCOM `Action` ("StartDerotation"/"StopDerotation"), an additional read/write Switch, or a separate device alongside the existing two.
 5. **Falcon Rotator v2.** This design targets the discontinued v1 hardware. If a v2 ever lands on this codebase, expect a fresh PDF + a partial protocol divergence.
-6. **TLS-cert hot-reload.** Inherited from `ppba-driver` / `qhy-focuser`: the service requires a restart to pick up new TLS certs. Not a Falcon-specific issue.
 
 ## References
 
 - **Pegasus Astro Falcon Serial Command Table** (firmware ≥ v1.3, Sep 2020): `https://pegasusastro.com/wp-content/uploads/2022/05/Falcon_Serial_Command_Table.pdf`
 - **Falcon Rotator product page**: `https://pegasusastro.com/products/falcon-rotator/`
 - **ASCOM IRotatorV4 spec**: <https://ascom-standards.org/newdocs/rotator.html>
-- **`ppba-driver` design doc**: [`ppba-driver.md`](ppba-driver.md) — the architectural template (and the first `rusty-photon-shared-transport` consumer).
+- **`ppba-driver` design doc**: [`ppba-driver.md`](ppba-driver.md) — the architectural template.
 - **`qhy-focuser` design doc**: [`qhy-focuser.md`](qhy-focuser.md) — the closest behavioural analogue (single moving device with `IsMoving` + `Position`).

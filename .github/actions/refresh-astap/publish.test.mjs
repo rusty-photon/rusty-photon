@@ -217,6 +217,44 @@ test('with no open tracking issue the proposal stands on its own, and nothing is
   assert.match(stdout, /install-astap's tracking issue is not open, so it gets no comment/);
 });
 
+// What detect writes for Windows-ARM64 when its archive could not be downloaded.
+const UNAVAILABLE = {
+  runner: 'Windows-ARM64',
+  archive: TABLE.cli['Windows-ARM64'].archive,
+  pinned: TABLE.cli['Windows-ARM64'].sha256,
+  banner: 'cross-mirror SHA only (no runner, no verification)',
+  verified: 'unavailable',
+  problem: 'astap_command-line_version_win11_aarch64.zip: HTTP 404',
+};
+
+test("an archive that could not be downloaded keeps its pin, and the other runners' new pins are still proposed", async (t) => {
+  const api = await fakeGitHub();
+  t.after(api.close);
+  const { value } = await run(api, [PASSED[0], UNAVAILABLE]);
+  assert.equal(value.outcome, 'proposed');
+  const before = formatTable(TABLE).split('\n');
+  const after = sent(api, 'POST /repos/o/r/git/trees').tree[0].content.split('\n');
+  assert.deepEqual(
+    after.flatMap((line, i) => (line === before[i] ? [] : [[before[i], line]])),
+    [[`      "sha256": "${TABLE.cli['Linux-X64'].sha256}"`, `      "sha256": "${NEW['Linux-X64']}"`]],
+  );
+  const { body } = sent(api, 'POST /repos/o/r/pulls');
+  assert.ok(body.includes(`${row(PASSED[0])}\n${row(UNAVAILABLE)}\n`), body);
+  assert.equal(
+    row(UNAVAILABLE),
+    `- **Windows-ARM64**: \`${UNAVAILABLE.archive}\` could not be downloaded, so its pin \`${UNAVAILABLE.pinned.slice(0, 8)}…\` stays: ${UNAVAILABLE.problem}`,
+  );
+});
+
+test('when no archive that could be downloaded rotated, nothing is proposed and nothing is asked of GitHub', async (t) => {
+  const api = await fakeGitHub();
+  t.after(api.close);
+  const { value, stdout } = await run(api, [UNAVAILABLE]);
+  assert.deepEqual(value, { outcome: 'none' });
+  assert.match(stdout, /^::warning::No archive that could be downloaded rotated/m);
+  assert.deepEqual(api.requests, []);
+});
+
 test('when main already pins what upstream serves, nothing is proposed', async (t) => {
   const table = structuredClone(TABLE);
   table.cli['Linux-X64'].sha256 = NEW['Linux-X64'];
@@ -380,6 +418,15 @@ test('readResults refuses a result detect would not write', async () => {
   await assert.rejects(bad({ banner: undefined }), /: no banner$/);
 });
 
+test('readResults takes an unavailable result without an upstream, but not one without its problem', async () => {
+  assert.deepEqual(await readResults(artifacts([UNAVAILABLE])), [UNAVAILABLE]);
+  await assert.rejects(readResults(artifacts([{ ...UNAVAILABLE, problem: undefined }])), /an unavailable result with no problem/);
+  await assert.rejects(
+    readResults(artifacts([{ ...result('Linux-X64', '9'.repeat(64)), upstream: undefined }])),
+    /upstream, undefined, is not a SHA-256/,
+  );
+});
+
 test('what detect writes is what publish reads', async (t) => {
   const cli = zip([{ path: 'astap_cli.exe', data: 'a new release' }]);
   const server = await serve((req, res) => res.end(cli));
@@ -392,6 +439,21 @@ test('what detect writes is what publish reads', async (t) => {
   assert.equal(read.runner, 'Windows-ARM64');
   assert.equal(read.verified, 'skipped');
   assert.equal(repin(TABLE, [read]).changes.length, 1);
+});
+
+test('an unavailable result detect writes is one publish reads, and it moves no pin', async (t) => {
+  const server = await serve((req, res) => {
+    res.statusCode = 404;
+    res.end();
+  });
+  t.after(server.close);
+  const results = join(tempDir(), 'refresh-result-Windows-ARM64');
+  await capture(() =>
+    detect({ runner: 'Windows-ARM64', verify: false, work: tempDir(), results, fixtures: tempDir(), server: server.url, download: { delayMs: 1 } }),
+  );
+  const [read] = await readResults(join(results, '..'));
+  assert.equal(read.verified, 'unavailable');
+  assert.deepEqual(repin(TABLE, [read]).changes, []);
 });
 
 // --- The table ------------------------------------------------------------------

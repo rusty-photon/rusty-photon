@@ -64,8 +64,8 @@ const ERROR_REPLY: &str = "ERR";
 /// Highest auto-dew mask the device reports.
 const AUTO_DEW_MASK_MAX: u8 = 7;
 
-/// Auto-dew off — the default, so the dew heaters stay writable and a
-/// `ConformU` run's dew-write tests pass without any preset.
+/// Auto-dew off — the default, so every dew heater is writable and a
+/// `ConformU` run writes each one's duty without any preset.
 const DEFAULT_AUTO_DEW: u8 = 0;
 
 /// Nothing tripped — the default overcurrent field.

@@ -91,7 +91,8 @@ it then runs as root, so the config lives under root's home; see
 Configuration below).
 
 **Config-gated services** (`sky-survey-camera`, `plate-solver`,
-`calibrator-flats`, `focus-model`) have no sensible default config.
+`calibrator-flats`, `session-runner`, `polar-align`, `focus-model`) have
+no sensible default config.
 There is no launchd condition mechanism and none is needed: simply write
 the config first, then `brew services start` it. Started without a
 config they exit immediately and launchd respawn-loops them — harmless,
@@ -148,9 +149,9 @@ there is no `~/.config` here and no `/etc/rusty-photon` symlink. Under
 `sudo brew services` (LaunchDaemon, runs as root) the same path is under
 root's home: `/var/root/Library/Application Support/rusty-photon/`.
 
-The same class exceptions as Linux apply: the config-gated three never
-write one, and the two cameras, `zwo-focuser`, and `phd2-guider` run on
-built-in defaults without writing a file until settings are saved on the
+The same class exceptions as Linux apply: the config-gated six never
+write one, and the two cameras and `zwo-focuser` run on built-in
+defaults without writing a file until settings are saved on the
 service's setup page (`/setup`) or one is created by hand.
 
 To change settings, edit the file and restart (there is no `systemctl
@@ -290,6 +291,22 @@ brew services stop rusty-photon-<svc>
 brew uninstall rusty-photon-<svc>          # or the whole family:
 brew uninstall rusty-photon $(brew list --formula | grep '^rusty-photon-')
 ```
+
+If you installed the meta-formula, it holds the services it installed in
+both directions:
+
+- While `rusty-photon` is installed, Homebrew refuses to uninstall one of
+  its services ("required by rusty-photon, which is currently installed");
+  `brew uninstall --ignore-dependencies rusty-photon-<svc>` removes it
+  anyway.
+- Uninstalling `rusty-photon` on its own uninstalls every service it
+  installed as well: Homebrew 7.0.13 and later autoremove a formula that
+  came in only as a dependency once nothing depends on it. A service you
+  installed by name stays. To keep one that came in with the family, mark
+  it before uninstalling the meta-formula:
+  `brew tab --installed-on-request rusty-photon-<svc>`. Stop the services
+  you run first, as the first line above does: uninstalling removes their
+  binaries.
 
 Homebrew never touches runtime-created state (the rpm-erase parity, not
 dpkg purge): to fully clean up, delete

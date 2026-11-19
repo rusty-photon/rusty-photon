@@ -85,12 +85,12 @@ current 0-1024"* that is converted to Amps by dividing by 65, a scale
 the PPBA keeps for compatibility with the original Pocket Powerbox. INDI's
 PPBA driver applies the same divisor.
 
-Publishing the count as Amps is not only a wrong number: a count of 40 was
-published as 40 A from a box drawing about 0.6 A, far outside the 0-20 A
-the switch declares for itself, which is an ASCOM conformance failure as
-well as a misreading. Scaled by 65, the top of the documented sense range,
-1024, is 15.75 A, so every count the device documents sending lands inside
-the published range. The parser does not clamp or range-check the count,
+Publishing the count as Amps would not only be a wrong number: a box
+drawing about 0.6 A sends a count of about 40, which would read as 40 A,
+far outside the 0-20 A the switch declares for itself — an ASCOM
+conformance failure as well as a misreading. Scaled by 65, the top of the
+documented sense range, 1024, is 15.75 A, so every count the device
+documents sending lands inside the published range. The parser does not clamp or range-check the count,
 the same as every other `PA` field: a count above 1024 is outside the
 device's contract, and is published as read rather than hidden.
 
@@ -267,7 +267,7 @@ Configuration is provided via a JSON file:
 ```
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -323,7 +323,7 @@ therefore the empty string, which signals "mint me on first run".
 The config path is resolved from `--config` if given, otherwise from the
 platform default (e.g. `~/.config/rusty-photon/ppba-driver.json` on Linux,
 `%PROGRAMDATA%\rusty-photon\ppba-driver.json` on Windows). Because identity must be
-persisted, **first run now writes the config file if it is absent**, seeding it
+persisted, **first run writes the config file if it is absent**, seeding it
 with the default scaffold and the two freshly-minted UUIDs. CLI overrides
 (`--port`, `--server-port`, `--enable-switch`, `--enable-observingconditions`)
 are applied to the in-memory config *after* loading and are never written back
@@ -386,8 +386,7 @@ everything else with `INVALID_VALUE` — including `NaN`, which an Alpaca client
 can send because `f64::from_str` parses `"NaN"`. The check is one range test
 rather than a pair of ordered comparisons on purpose: every ordered comparison
 against `NaN` is false, so `NaN` would otherwise pass validation and reach the
-seconds-to-`Duration` conversion, which panics on a non-finite value
-([#1247](https://github.com/rusty-photon/rusty-photon/issues/1247)).
+seconds-to-`Duration` conversion, which panics on a non-finite value.
 
 The manager holds the same line for callers that do not come through the
 device: `set_averaging_period` leaves every sensor window *and* the recorded
@@ -406,7 +405,11 @@ the range, the instantaneous window and the mapping above are the
 shared verbatim with `upbv2-driver` and `gemini-powerbox-adv3-driver`, so a
 change to the policy reaches all three drivers at once.
 
-`TimeSinceLastUpdate` with an empty sensor name is the freshest of the three
+`TimeSinceLastUpdate` counts from the instant the status frame that carried
+the newest sample was read off the wire, on the monotonic clock, so a step
+of the wall clock does not move it
+([Values that carry their time](../workspace.md#values-that-carry-their-time)).
+With an empty sensor name it is the freshest of the three
 windows, through the same module. While all three are empty — the state a
 window shrink that evicts every sample leaves behind — it answers what one
 empty window answers, the no-data value, not zero: a client asking whether
@@ -425,8 +428,7 @@ The rolling-mean implementation is shared with `upbv2-driver` and lives in
 ### Setup pages
 
 The driver configures itself through the HTML pages the Alpaca Management
-API defines, served by the driver itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
+API defines, served by the driver itself behind its own TLS and Basic Auth:
 
 | Path | Holds |
 |------|-------|
@@ -499,6 +501,8 @@ cargo run -p ppba-driver -- -c config.json -l debug
 | `-c, --config <FILE>` | Path to configuration file |
 | `--port <PORT>` | Serial port (overrides config) |
 | `--server-port <PORT>` | Server port (overrides config) |
+| `--enable-switch <BOOL>` | Register the Switch device or not (overrides `switch.enabled`) |
+| `--enable-observingconditions <BOOL>` | Register the ObservingConditions device or not (overrides `observingconditions.enabled`) |
 | `-l, --log-level <LEVEL>` | Log level (trace, debug, info, warn, error) |
 | `--service` | Hidden: run as a Windows service (passed by the Windows service control manager; no-op on other platforms) |
 
@@ -510,8 +514,7 @@ combined with the subcommand (the mixed form would silently ignore them).
 ### Localised CLI help
 
 `ppba-driver`'s `--help` output and the `--log-level` validation error are
-translated via Fluent (`crates/rusty-photon-i18n` + `i18n-embed`) — see
-[`docs/plans/archive/i18n-cli-spike.md`](../plans/archive/i18n-cli-spike.md). Locale is
+translated via Fluent (`crates/rusty-photon-i18n` + `i18n-embed`). Locale is
 resolved at startup, before clap parses arguments. Precedence:
 
 1. `RP_LOCALE`
@@ -520,13 +523,12 @@ resolved at startup, before clap parses arguments. Precedence:
 4. `en` (fallback)
 
 Translation files live under `services/ppba-driver/i18n/{locale}/ppba-driver.ftl`
-and are embedded into the binary at compile time. Currently shipped:
-`en` (source) and `de` (LLM-bootstrapped, marked `# machine-translated, needs review`).
+and are embedded into the binary at compile time. The binary ships `en`
+(source) and `de` (LLM-bootstrapped, marked `# machine-translated, needs review`).
 Unsupported locales fall back to `en`.
 
-Clap's own built-in messages ("Usage:", "Options:", "error: …") remain English
-in this spike — translating them is a separate decision tracked in
-[`docs/plans/i18n.md`](../plans/i18n.md).
+Clap's own built-in messages ("Usage:", "Options:", "error: …") stay English:
+they are clap's strings, and no `.ftl` file carries them.
 
 ## ASCOM Alpaca API
 
@@ -565,6 +567,13 @@ curl -X PUT http://localhost:11112/api/v1/switch/0/setswitch \
 curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
   -d "Id=2&Value=128"
 ```
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## Architecture
 
@@ -620,7 +629,7 @@ ppba-driver/
 
 ### Key Design Decisions
 
-1. **Shared transport via `rusty-photon-shared-transport`**: refcounted lifecycle, command-lock arbitration, while-open poll task, and the connect/handshake/teardown sequence all live in the shared crate. `PpbaCodec` plugs in the `P#`/`PA`/`PS` framing and response parsing; `PpbaTransportFactory` opens the port through the shared crate's `open_serial_port` — one opener for every serial driver, carrying the builder settings, the error mapping, and the bounded retry that rides out a Windows handle still closing — and wraps the stream in a `SerialFrameTransport`. Each ASCOM device holds `Option<Session<PpbaCodec>>` — the session existing is the canonical "Connected" state, so the previously-separate "requested" flag can't desync from the underlying transport (issue #251 cannot reoccur).
+1. **Shared transport via `rusty-photon-shared-transport`**: refcounted lifecycle, command-lock arbitration, while-open poll task, reconnect supervisor, and the open/handshake/close sequence all live in the shared crate ([Lifecycles](../crates/rusty-photon-shared-transport.md#lifecycles)). `ServerBuilder` calls `start()` before binding, so the port is opened and handshaken at startup — `P#` must answer `PPBA_OK`, then `PA` and `PS` seed the cache — and a failed handshake fails the start. `PpbaCodec` plugs in the `P#`/`PA`/`PS` framing and response parsing; `PpbaTransportFactory` opens the port through the shared crate's `open_serial_port`, one opener for every serial driver ([Opening a serial port](../crates/rusty-photon-shared-transport.md#opening-a-serial-port)), and wraps the stream in a `SerialFrameTransport` that reads to `\n`. Each ASCOM device holds `Option<Session<PpbaCodec>>`, and the session existing is its `Connected` state: there is no second flag to desync from the transport, and `set_connected` holds the slot's write lock across its check-and-modify, so two concurrent `Connected = true` calls cannot both acquire ([Adopting the crate](../crates/rusty-photon-shared-transport.md#adopting-the-crate)).
 
 2. **Background polling**: Once the transport is open, the shared crate's `while_open` hook runs the PPBA poll loop (PA + PS every `polling_interval`) into the shared `CachedState`. Reads are served from the cache; writes refresh on demand.
 
@@ -661,9 +670,10 @@ write methods to `CanWrite`: `SetSwitch` and `SetSwitchValue` must raise
 `MethodNotImplemented` when `CanWrite` is false for that switch, and
 ConformU judges every write by the `CanWrite` it read for the switch. A
 heater under auto-dew already reports `CanWrite = false`, so any other code
-makes the two answers disagree, which on hardware was four ConformU issues
-(one per write method per heater). `upbv2-driver` classifies its auto-dew
-refusal the same way. The message still tells the operator what to do.
+makes the two answers disagree, which ConformU reports on hardware as
+four issues (one per write method per heater). `upbv2-driver` classifies
+its auto-dew refusal the same way. The message still tells the operator
+what to do.
 
 The auto-dew check comes before the range check, so an out-of-range value
 on a heater under auto-dew is also answered `NOT_IMPLEMENTED`: the switch
@@ -677,6 +687,7 @@ The driver caches device state to minimize serial communication overhead:
 - **CanWrite() queries**: Use cached state (may be up to `polling_interval` stale if auto-dew changed externally), except for dew heaters (switches 2 & 3) which refresh the cache if not yet populated to ensure accurate writability reporting
 - **SetSwitch() / SetSwitchValue() for dew heaters**: Refreshes state (`PA`) immediately before the auto-dew check (always validates against current device state)
 - **After successful writes**: State is refreshed immediately to reflect the change
+- **Store order**: Every `PA` and `PS` frame is stored with the instant it was read off the wire, and a frame read before the cached one is dropped, sensor samples included. A poll whose `PA` was read just before a write therefore cannot land after the write's refresh and put the switch back to its old value ([Stamped values](../crates/rusty-photon-shared-transport.md#stamped-values))
 - **External changes**: Auto-dew changes made by other clients or via serial are detected within the polling interval
 
 For tighter synchronization with external changes, reduce `polling_interval` in the configuration. However, note that very short intervals (< 1s) increase serial communication overhead.
@@ -763,7 +774,7 @@ states (see [ConformU Compliance Testing](#conformu-compliance-testing)).
 # Run unit tests only
 bazel test //services/ppba-driver:ppba-driver_unit_test
 
-# Run BDD tests (spawns the mock binary with MockSerialPortFactory)
+# Run BDD tests (spawns the mock binary with MockPpbaTransportFactory)
 bazel test --test_tag_filters=bdd //services/ppba-driver/...
 
 # Run all tests (unit + BDD)
@@ -865,7 +876,7 @@ this service's runs, newest first:
   ([record](../validation/2026-09-27-ppba-driver-ppba-gen2c-linux-auto-dew-on/README.md)).
   Both devices, both suites, clean in the box's normal state. ConformU finds
   the dew heaters read-only and confirms that both write methods answer
-  `NOT_IMPLEMENTED`, the four checks that were issues before this was fixed.
+  `NOT_IMPLEMENTED`: four checks, one per write method per heater.
 
 - **2026-09-27 — PPBADV Gen2C on Linux x86_64**
   ([record](../validation/2026-09-27-ppba-driver-ppba-gen2c-linux/README.md)).

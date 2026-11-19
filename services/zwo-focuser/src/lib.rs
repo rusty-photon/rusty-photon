@@ -78,7 +78,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
 use rusty_photon_driver::overrides::{OverrideDevice, OverridePages};
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_service_lifecycle::{ReloadSignal, Restart};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use tokio::net::TcpListener;
@@ -108,6 +108,9 @@ pub struct ServerBuilder {
     config_path: Option<PathBuf>,
     overrides: CliOverrides,
     reload: Option<ReloadSignal>,
+    /// The runner's restart handle; none, and the restart routes are not
+    /// served.
+    restart: Option<Restart>,
     /// Register no focusers (the test-only zero-focuser startup path, C0).
     force_empty: bool,
     /// Test-only: while this file exists the simulated EAF is off the bus
@@ -144,6 +147,15 @@ impl ServerBuilder {
     #[must_use]
     pub fn with_reload_signal(mut self, reload: ReloadSignal) -> Self {
         self.reload = Some(reload);
+        self
+    }
+
+    /// The runner's restart handle, which `POST /service/v1/restart`
+    /// requests (docs/crates/rusty-photon-service-lifecycle.md § Restart on
+    /// request). Without one the restart routes are not served.
+    #[must_use]
+    pub fn with_restart(mut self, restart: Restart) -> Self {
+        self.restart = Some(restart);
         self
     }
 
@@ -261,7 +273,8 @@ impl ServerBuilder {
                 .await
                 .map_err(|e| ZwoFocuserError::Discovery(e.to_string()))?;
 
-        let app = axum::Router::new().fallback_service(server.into_service());
+        let app = rusty_photon_driver::restart::router(self.restart.clone())
+            .fallback_service(server.into_service());
         let app = match &self.config.server.auth {
             Some(auth) => {
                 if self.config.server.tls.is_none() {

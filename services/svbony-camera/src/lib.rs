@@ -9,16 +9,15 @@
 )]
 //! # svbony-camera — ASCOM Alpaca driver for `SVBony` cameras
 //!
-//! **Phase E scope (this crate today).** The service binary builds, binds
-//! the Alpaca listener on port 11125, and serves `/management/*` correctly
-//! with zero or one registered device; `doctor` genuinely diagnoses config +
-//! SDK reachability. [`camera::SvbonyCamera`] implements both `Device` and
-//! `ascom_alpaca::api::Camera` for real — connection lifecycle, config
-//! actions, sensor geometry/type, gain/offset/readout, binning/ROI,
-//! cooling, and the soft-trigger video-capture exposure state machine
-//! (incl. abort and pulse-guide) — with `ElectronsPerADU` the one
-//! permanent `NOT_IMPLEMENTED` stub (no native SDK field). See
-//! `docs/services/svbony-camera.md` for the full design.
+//! The service binary binds the Alpaca listener (port 11125 by default) and
+//! serves `/management/*` with every camera it registers; `doctor` diagnoses
+//! the config, SDK reachability and the device claims.
+//! [`camera::SvbonyCamera`] implements both `Device` and
+//! `ascom_alpaca::api::Camera` — connection lifecycle, sensor geometry/type,
+//! gain/offset/readout, binning/ROI, cooling, and the soft-trigger
+//! video-capture exposure state machine (incl. abort and pulse-guide) — with
+//! `ElectronsPerADU` the one permanent `NOT_IMPLEMENTED` stub (no native SDK
+//! field). See `docs/services/svbony-camera.md` for the full design.
 //!
 //! ## Native dependency
 //!
@@ -90,7 +89,7 @@ use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
 use rusty_photon_driver::claims::{ClaimsPages, PlacedCamera, Rescan, Served};
-use rusty_photon_service_lifecycle::ReloadSignal;
+use rusty_photon_service_lifecycle::{ReloadSignal, Restart};
 use rusty_photon_setup::SetupPages;
 use rusty_photon_tls::config::TlsConfig;
 use svbony_rs::CameraInfo;
@@ -113,13 +112,17 @@ pub struct ServerBuilder {
     config_path: Option<PathBuf>,
     overrides: CliOverrides,
     reload: Option<ReloadSignal>,
+    /// The runner's restart handle; none, and the restart routes are not
+    /// served.
+    restart: Option<Restart>,
     /// Register no cameras regardless of what enumeration would otherwise
     /// report — the test-only zero-camera startup path, mirroring
     /// `zwo-camera`'s `--simulation-empty` (contract C0). It empties only the
     /// SDK's side of the join; the USB scan is untouched.
     force_empty: bool,
-    /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
-    /// this driver's default ([`claims::default_usb_source`]).
+    /// Where this build's USB scan comes from, with a `usb_devices` list or
+    /// without (U7); `None` takes this driver's default
+    /// ([`claims::default_usb_source`]).
     usb_source: Option<UsbSource>,
     /// The setup pages, set by [`Self::build`] when there is a config
     /// source and a reload path.
@@ -162,6 +165,15 @@ impl ServerBuilder {
         self
     }
 
+    /// The runner's restart handle, which `POST /service/v1/restart`
+    /// requests (docs/crates/rusty-photon-service-lifecycle.md § Restart on
+    /// request). Without one the restart routes are not served.
+    #[must_use]
+    pub fn with_restart(mut self, restart: Restart) -> Self {
+        self.restart = Some(restart);
+        self
+    }
+
     /// Register no cameras regardless of what the SDK reports — the test-only
     /// empty-backend path exercising the zero-camera startup (contract C0).
     #[must_use]
@@ -170,9 +182,9 @@ impl ServerBuilder {
         self
     }
 
-    /// Take a `usb_devices` list's USB scan from `source` (U7) — a staged
-    /// document, in a simulation build. The default is the host in a release
-    /// build and the simulated cameras' records in a simulation build.
+    /// Take this build's USB scan from `source` (U7) — a staged document, in
+    /// a simulation build. The default is the host in a release build and the
+    /// simulated cameras' records in a simulation build.
     #[cfg(feature = "simulation")]
     #[must_use]
     pub fn with_usb_source(mut self, source: UsbSource) -> Self {
@@ -268,7 +280,8 @@ impl ServerBuilder {
                 .map_err(|e| SvbonyCameraError::Discovery(e.to_string()))?;
 
         let tls = self.config.server.tls.clone();
-        let app = axum::Router::new().fallback_service(server.into_service());
+        let app = rusty_photon_driver::restart::router(self.restart.clone())
+            .fallback_service(server.into_service());
 
         // HTTP Basic Auth (config `server.auth`); absent means unauthenticated.
         let app = match &self.config.server.auth {
@@ -658,8 +671,8 @@ impl BoundServer {
     }
 
     /// Serve until `shutdown` resolves — or, after a failed USB scan, until
-    /// the re-scan finds a rebuild would serve the list (U6) — then drain
-    /// gracefully.
+    /// a re-scan finds both the scan and the SDK enumeration passing (U6,
+    /// U10) — then drain gracefully.
     ///
     /// Returns which of the two ended it: on [`Ended::Rescanned`] the caller
     /// rebuilds the server, as for a reload.
@@ -970,12 +983,13 @@ mod simulation_tests {
 mod production_default_tests {
     use super::*;
 
-    /// The production (non-`simulation`) build's `build()` registers exactly
-    /// the cameras `svbony_rs::Sdk::cameras()` reports. Under `cargo test`
-    /// the dev-dependency turns on `svbony-rs/simulation` via feature
+    /// The production (non-`simulation`) build enumerates through
+    /// `svbony_rs::Sdk::cameras()` and binds. Under `cargo test` the
+    /// dev-dependency turns on `svbony-rs/simulation` via feature
     /// unification, so the *production* enumeration path here sees the one
-    /// simulated camera — the same code path that registers physical
-    /// cameras in the real-SDK binary.
+    /// simulated camera — the same code path that enumerates physical
+    /// cameras in the real-SDK binary. The host's USB scan holds no record
+    /// for it, so the no-list default refuses it (U10).
     #[tokio::test]
     async fn production_build_enumerates_via_the_sdk() {
         let cameras = enumerate_cameras().await.unwrap();

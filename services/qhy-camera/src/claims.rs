@@ -103,7 +103,7 @@ pub struct Enumerated {
 /// model read is an SDK call. Nothing is opened.
 ///
 /// A camera whose model cannot be read is joined as a model this driver does
-/// not know ([`enumerated`]), so one unreadable camera — the guide camera a
+/// not know (`enumerated`), so one unreadable camera — the guide camera a
 /// list leaves out, say — costs no other camera its number.
 #[must_use]
 pub fn enumerate(sdk: &qhyccd_rs::Sdk) -> Vec<Enumerated> {

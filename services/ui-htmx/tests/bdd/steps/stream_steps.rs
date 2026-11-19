@@ -1,7 +1,7 @@
 //! Steps for `stream_page.feature` — the activity-stream page markup and the
 //! `/stream/events` SSE proxy driven over plain HTTP (SSE is server bytes; no
 //! browser needed — the browser-side swap behaviour is proven by the
-//! `@browser` `sse.feature` spike).
+//! `@browser` layer: `browser.feature`'s stream scenario and `sse.feature`).
 
 use cucumber::{given, then, when};
 

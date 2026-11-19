@@ -15,6 +15,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-ephemeris:rp-ephemeris",
     "//crates/rp-fits:rp-fits",
     "//crates/rp-focus-curve:rp-focus-curve",
+    "//crates/rp-image-analysis:rp-image-analysis",
     "//crates/rp-mcp-client:rp-mcp-client",
     "//crates/rp-targets:rp-targets",
     "//crates/rp-vocabulary:rp-vocabulary",
@@ -74,13 +75,6 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     aliases = aliases(),
-    # `mcp/tests.rs` embeds the auto_focus V-curve fixtures via
-    # `include_bytes!("../../tests/fixtures/auto_focus/*.fits")`;
-    # `compile_data` makes those files visible to rustc inside
-    # Bazel's compilation sandbox. Only needed on the test-twin
-    # because the embeds sit inside a `#[cfg(test)] mod tests`
-    # block — the production twin (`rp_lib`) skips them.
-    compile_data = glob(["tests/fixtures/**"]),
     crate_name = "rp",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -103,32 +97,13 @@ rust_binary(
     ] + all_crate_deps(normal = True),
 )
 
-# Examples built by `cargo build --all-targets` (not executed in CI). Bazel
-# mirrors them as rust_binary targets for `bazel build //...` parity. Both pull
-# rp::imaging / rp::persistence from rp_lib; ndarray + tokio are normal deps, so
-# the dep list matches the `rp` binary above.
-rust_binary(
-    name = "check_autofocus_fixtures",
-    srcs = ["examples/check_autofocus_fixtures.rs"],
-    aliases = aliases(),
-    edition = "2021",
-    proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [
-        _RP_PLATE_SOLVER,
-        _RP_GUIDER,
-    ] + all_crate_deps(normal = True),
-)
-
-rust_binary(
-    name = "gen_autofocus_fixtures",
-    srcs = ["examples/gen_autofocus_fixtures.rs"],
-    aliases = aliases(),
-    edition = "2021",
-    proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [":rp_lib"] + _INTRA_WORKSPACE_DEPS + [
-        _RP_PLATE_SOLVER,
-        _RP_GUIDER,
-    ] + all_crate_deps(normal = True),
+# The real frames of tests/fixtures/star_detection, which rp's BDD
+# scenarios hand rp by path and the kernels' unit tests in
+# crates/rp-image-analysis embed.
+filegroup(
+    name = "star_detection_fixtures",
+    srcs = glob(["tests/fixtures/star_detection/*.fits"]),
+    visibility = ["//crates/rp-image-analysis:__pkg__"],
 )
 
 rust_test(
@@ -211,16 +186,9 @@ rust_test(
     # measured 171 s -> 96 s wall for +7% aggregate CPU (16 OmniSim spawns
     # instead of 8).
     shard_count = 16,
-    # `resources:omnisim:1`: every OmniSim-spawning BDD action (each shard of
-    # this target, and the other three OmniSim suites) takes one token from
-    # the `omnisim` pool defined in .bazelrc. Since #467 the harness spawns a
-    # private OmniSim per test process (--multi-instance + dynamic port +
-    # per-instance OMNISIM_SETTINGS_DIR — the fork env var that re-roots the
-    # profile store on every platform; XDG_CONFIG_HOME only worked on Linux),
-    # so the pool is sized generously on every OS and these actions genuinely
-    # run in parallel; it remains only as a throttle to grab if OmniSim
-    # concurrency ever turns flaky.
-    # Any new OmniSim-spawning BDD target MUST also carry this tag.
+    # `resources:omnisim:1`: each OmniSim-spawning BDD action takes one token
+    # from the `omnisim` pool, which .bazelrc defines and explains. Any new
+    # OmniSim-spawning BDD target MUST also carry this tag.
     tags = [
         "bdd",
         "resources:omnisim:1",
@@ -243,5 +211,22 @@ rust_test(
 filegroup(
     name = "pkg",
     srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

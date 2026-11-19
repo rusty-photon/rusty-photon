@@ -10,7 +10,7 @@
 #
 # Cadence: nightly cron + workflow_dispatch (manual). Not on every
 # PR (PRs already pay for the mock BDD; ASTAP install + DB download
-# would be ~100 MB per run × 3 OSes per PR for marginal benefit).
+# would be ~400 MB per run × 3 OSes per PR for marginal benefit).
 #
 # See docs/plans/plate-solver.md §"Real-ASTAP coverage: cadence
 # and gating" for the rationale and the bdd.rs filter snippet.
@@ -27,7 +27,7 @@ on:
     # same upstream SourceForge endpoint at the same minute.
     - cron: "30 3 * * *"
   workflow_dispatch:
-  # The only workflow that installs the D05 database, so a change to the
+  # The only workflow that installs the D20 database, so a change to the
   # shared modules install-astap runs (.github/actions/lib) runs it too.
   push:
     paths:
@@ -48,12 +48,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `stagger` offsets each leg's D05 download when the cache is cold.
-        # The repo Actions cache sits at its 10 GB ceiling, so the 103 MB D05
+        # `stagger` offsets each leg's D20 download when the cache is cold.
+        # The repo Actions cache sits at its 10 GB ceiling, so the 400 MB D20
         # entry is evicted regularly and a cold nightly has all three legs
-        # pulling the same ~100 MB from the same upstream in the same second.
-        # A healthy fetch takes well under 30 s, so 45 s spacing keeps the
-        # legs from overlapping. The wait is skipped entirely on a cache hit,
+        # pulling the same ~400 MB from the same upstream in the same second.
+        # A healthy fetch takes about 20 s, so 45 s spacing keeps the legs
+        # from overlapping. The wait is skipped entirely on a cache hit,
         # so a warm run pays nothing.
         include:
           - os: ubuntu-latest
@@ -68,7 +68,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install ASTAP + D05 database
+      - name: Install ASTAP + D20 database
         uses: ./.github/actions/install-astap
         with:
           download-database: "true"

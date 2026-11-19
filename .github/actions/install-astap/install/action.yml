@@ -1,13 +1,13 @@
 name: Install ASTAP from SourceForge
 description: >-
   The last step of install-astap: downloads the ASTAP CLI archive into
-  <workspace>/astap, and the D05 star database into <workspace>/astap-db when
+  <workspace>/astap, and the D20 star database into <workspace>/astap-db when
   asked, checks each against its SHA-256 and unpacks it, unless the cache
   restored it; then puts the CLI's directory on PATH and exports ASTAP_BINARY,
   and ASTAP_DB_DIR with the database.
 inputs:
   download-database:
-    description: Whether to install the D05 star database too.
+    description: Whether to install the D20 star database too.
     required: false
     default: "false"
   download-stagger-seconds:

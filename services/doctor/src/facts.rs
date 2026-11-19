@@ -44,10 +44,11 @@ pub struct UnitFacts {
     /// Remediation text must use this name; catalog joins use `name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_name: Option<String>,
-    /// The unit's `SupplementaryGroups=` names. systemd only — and the
-    /// only place group membership exists in this stack: no packaging step
-    /// ever edits `/etc/group`, so the hardware access checks judge
-    /// against this, never against login groups.
+    /// The unit's `SupplementaryGroups=` names. systemd only — where the
+    /// packages confer device-group membership: no packaging step adds the
+    /// service user to a group in `/etc/group`, so the hardware access
+    /// checks judge against these first, and name an account-level
+    /// membership when only that grants access.
     #[serde(default)]
     pub supplementary_groups: Vec<String>,
     /// Whether the unit is running right now. A real gather always answers;
@@ -737,9 +738,9 @@ mod tests {
         );
     }
 
-    /// Older tooling emitted `Name<TAB>StartType` only — the parser keeps
-    /// working (the aggregation facts just stay ungathered) so a staged
-    /// two-field listing never panics a diagnosis.
+    /// A listing with only `Name<TAB>StartType` columns parses, with the
+    /// aggregation facts left ungathered, so a staged two-field listing
+    /// never panics a diagnosis.
     #[test]
     fn test_windows_service_listing_tolerates_missing_columns() {
         let units = parse_windows_service_listing("rusty-photon-rp\tAutomatic\n");

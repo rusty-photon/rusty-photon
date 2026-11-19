@@ -103,7 +103,7 @@ fn main() -> ServiceResult {
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
-    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    // the final lines flush on SCM Stop. Console mode logs to stderr.
     let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "dsd-fp2",
         args.log_level,
@@ -141,6 +141,7 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            let restart = shutdown.restart();
             loop {
                 let config = load_effective_config(&config_path, &overrides)?;
                 debug!(
@@ -156,6 +157,7 @@ fn main() -> ServiceResult {
                         .with_factory(factory)
                         .with_config_source(config_path.clone(), overrides.clone())
                         .with_reload_signal(reload.clone())
+                        .with_restart(restart.clone())
                         .build()
                         .await?
                 };
@@ -165,6 +167,7 @@ fn main() -> ServiceResult {
                     .with_config(config)
                     .with_config_source(config_path.clone(), overrides.clone())
                     .with_reload_signal(reload.clone())
+                    .with_restart(restart.clone())
                     .build()
                     .await?;
 

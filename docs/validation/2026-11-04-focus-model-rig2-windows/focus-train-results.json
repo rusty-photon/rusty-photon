@@ -1,0 +1,709 @@
+{
+  "note": "focus_train results exactly as rp relayed them from focus-model, one per run. Night 1 ran at microns_per_step 1.06985 (the FocusLynx's ASCOM StepSize), night 2 at 2.1 (set in rp.json).",
+  "runs": [
+    {
+      "night": "1",
+      "microns_per_step": 1.06985,
+      "run": 1,
+      "result": {
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.8840548486066304,
+        "best_position": 29618,
+        "confirmation": {
+          "accepted": true,
+          "document_id": "a906ddd1-ca27-4cf1-ae6c-14013313a9f5",
+          "hfr": 1.1241197767264315,
+          "star_count": 2088
+        },
+        "confirmed": true,
+        "curve_points": [
+          {
+            "document_id": "667fe984-674b-4fab-a809-605db0920911",
+            "hfr": 1.613824151448342,
+            "position": 29572,
+            "rejected": null,
+            "star_count": 1575
+          },
+          {
+            "document_id": "38d1823d-07b2-4c25-9a44-5c3dcc688b6e",
+            "hfr": 1.1287367935109134,
+            "position": 29614,
+            "rejected": null,
+            "star_count": 2066
+          },
+          {
+            "document_id": "1b80d0a2-0f6a-4cd7-bec7-ac5333ce30ce",
+            "hfr": 1.398209093774263,
+            "position": 29656,
+            "rejected": null,
+            "star_count": 1648
+          },
+          {
+            "document_id": "7778c10c-e69e-4fad-b4eb-70e07b2ac4d3",
+            "hfr": 2.654880000572787,
+            "position": 29698,
+            "rejected": null,
+            "star_count": 887
+          },
+          {
+            "document_id": "41ae05ce-0b50-43ea-8d13-09c8d9e33172",
+            "hfr": 4.5321603503380095,
+            "position": 29740,
+            "rejected": null,
+            "star_count": 467
+          },
+          {
+            "document_id": "3728e9f3-7a00-4d8e-8f40-26ac14a4e35b",
+            "hfr": 6.479299489826414,
+            "position": 29782,
+            "rejected": null,
+            "star_count": 291
+          },
+          {
+            "document_id": "4630cbf0-46fe-48ed-a393-edd119eca385",
+            "hfr": 8.182010839659437,
+            "position": 29824,
+            "rejected": null,
+            "star_count": 218
+          },
+          {
+            "document_id": "e824302b-27e3-4faa-aaaa-8a817503ba30",
+            "hfr": 8.882680627823177,
+            "position": 29866,
+            "rejected": "sparse",
+            "star_count": 196
+          }
+        ],
+        "filter": "L",
+        "fit_r_squared": 0.9692649580430605,
+        "guiding_paused": false,
+        "hfr": 1.1241197767264315,
+        "model": "fresh",
+        "position": 29618,
+        "prediction": {
+          "from_position": 29737,
+          "missing": [
+            "last_good"
+          ],
+          "moved": false,
+          "skipped": null,
+          "start": null,
+          "terms": {
+            "last_good": null,
+            "offset": null,
+            "temperature": null
+          }
+        },
+        "recorded": {
+          "last_good_updated": true,
+          "runs": 1
+        },
+        "samples_used": 7,
+        "sweep": {
+          "cfz_steps": 62.71907276721036,
+          "end_ratio": 4.0,
+          "half_width": 165,
+          "hfr_focus": 0.8542254309293302,
+          "points": 8,
+          "predicted_slope": 2.011963270884117,
+          "source": "derived",
+          "step_size": 42,
+          "wavelength_nm": 550.0
+        },
+        "temperature_c": 14.4,
+        "train_id": "main",
+        "wing_slope": 4.140957852624756
+      }
+    },
+    {
+      "night": "1",
+      "microns_per_step": 1.06985,
+      "run": 2,
+      "result": {
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.7702842999930817,
+        "best_position": 29613,
+        "confirmation": {
+          "accepted": true,
+          "document_id": "722dbe0d-0891-4476-ae02-5ebc704a189b",
+          "hfr": 0.9077897394818799,
+          "star_count": 2302
+        },
+        "confirmed": true,
+        "curve_points": [
+          {
+            "document_id": "34ca1e18-6bb0-45c7-af25-e096a0fc2b90",
+            "hfr": 8.61269902587053,
+            "position": 29401,
+            "rejected": null,
+            "star_count": 248
+          },
+          {
+            "document_id": "93216dfa-ef9a-4abd-86bd-f4145de18773",
+            "hfr": 6.137804203482401,
+            "position": 29456,
+            "rejected": null,
+            "star_count": 366
+          },
+          {
+            "document_id": "8330a823-4080-480f-9346-36020e70a165",
+            "hfr": 3.737356470687895,
+            "position": 29511,
+            "rejected": null,
+            "star_count": 664
+          },
+          {
+            "document_id": "1e77f99e-38ba-407e-8419-fe89032c6646",
+            "hfr": 1.6163379189886018,
+            "position": 29566,
+            "rejected": null,
+            "star_count": 1601
+          },
+          {
+            "document_id": "fa09b256-2e2e-4a7a-9cf6-701fa0c86463",
+            "hfr": 0.9850440258754838,
+            "position": 29621,
+            "rejected": null,
+            "star_count": 2237
+          },
+          {
+            "document_id": "403de644-eab9-4103-b9b7-6ca74dd05d7d",
+            "hfr": 2.0165134597054495,
+            "position": 29676,
+            "rejected": null,
+            "star_count": 1186
+          },
+          {
+            "document_id": "7cd167d3-8f26-4b14-9723-ce5cbe3b2864",
+            "hfr": 4.347506371778982,
+            "position": 29731,
+            "rejected": null,
+            "star_count": 511
+          },
+          {
+            "document_id": "e8559e35-a52c-4f7a-a329-f7caabcb94c5",
+            "hfr": 6.8259583383279745,
+            "position": 29786,
+            "rejected": null,
+            "star_count": 288
+          }
+        ],
+        "filter": "L",
+        "fit_r_squared": 0.9783024681237394,
+        "guiding_paused": false,
+        "hfr": 0.9077897394818799,
+        "model": "fresh",
+        "position": 29613,
+        "prediction": {
+          "from_position": 29768,
+          "missing": [
+            "temperature_coefficient"
+          ],
+          "moved": true,
+          "skipped": null,
+          "start": 29618,
+          "terms": {
+            "last_good": 29618,
+            "offset": 0,
+            "temperature": null
+          }
+        },
+        "recorded": {
+          "last_good_updated": true,
+          "runs": 2
+        },
+        "samples_used": 8,
+        "sweep": {
+          "cfz_steps": 62.71907276721036,
+          "end_ratio": 4.0,
+          "half_width": 217,
+          "hfr_focus": 1.1241197767264315,
+          "points": 8,
+          "predicted_slope": 2.011963270884117,
+          "source": "derived",
+          "step_size": 55,
+          "wavelength_nm": 550.0
+        },
+        "temperature_c": 14.4,
+        "train_id": "main",
+        "wing_slope": 4.372222616929568
+      }
+    },
+    {
+      "night": "1",
+      "microns_per_step": 1.06985,
+      "run": 3,
+      "result": {
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.6088523104686471,
+        "best_position": 29627,
+        "confirmation": {
+          "accepted": true,
+          "document_id": "e7e3dbf2-8017-4c16-a7d0-ede6dcc3556d",
+          "hfr": 0.9036225251747617,
+          "star_count": 1322
+        },
+        "confirmed": true,
+        "curve_points": [
+          {
+            "document_id": "23426c74-057d-437c-a448-9848b2e28466",
+            "hfr": 6.90787161045123,
+            "position": 29448,
+            "rejected": null,
+            "star_count": 193
+          },
+          {
+            "document_id": "fdf94ce2-d454-441c-9773-9afe53d7d7dd",
+            "hfr": 5.103184191038146,
+            "position": 29490,
+            "rejected": null,
+            "star_count": 271
+          },
+          {
+            "document_id": "61bbbc54-11e3-4e36-b1aa-2cf307d32901",
+            "hfr": 3.2710296124255023,
+            "position": 29532,
+            "rejected": null,
+            "star_count": 455
+          },
+          {
+            "document_id": "55fca5f4-2657-4d2a-917f-cc900a534e96",
+            "hfr": 1.5959223953635517,
+            "position": 29574,
+            "rejected": null,
+            "star_count": 973
+          },
+          {
+            "document_id": "f6d7881f-53a9-48ae-a74f-fd78220d96d8",
+            "hfr": 0.8608473446419965,
+            "position": 29616,
+            "rejected": null,
+            "star_count": 1377
+          },
+          {
+            "document_id": "b5f28d3b-6279-4841-a68d-506120f2e808",
+            "hfr": 1.1810530472859677,
+            "position": 29658,
+            "rejected": null,
+            "star_count": 1041
+          },
+          {
+            "document_id": "932a1a15-12ab-4a85-80f0-ccb846a26594",
+            "hfr": 2.4238789798772107,
+            "position": 29700,
+            "rejected": null,
+            "star_count": 542
+          },
+          {
+            "document_id": "8f8d5aad-151a-425b-8913-9c83b37ace80",
+            "hfr": 4.3010512226283595,
+            "position": 29742,
+            "rejected": null,
+            "star_count": 272
+          }
+        ],
+        "filter": "R",
+        "fit_r_squared": 0.9763617118091246,
+        "guiding_paused": false,
+        "hfr": 0.9036225251747617,
+        "model": "fresh",
+        "position": 29627,
+        "prediction": {
+          "from_position": 29613,
+          "missing": [
+            "temperature_coefficient"
+          ],
+          "moved": false,
+          "skipped": "within 31 steps of the current position",
+          "start": 29633,
+          "terms": {
+            "last_good": 29613,
+            "offset": 20,
+            "temperature": null
+          }
+        },
+        "recorded": {
+          "last_good_updated": true,
+          "runs": 3
+        },
+        "samples_used": 8,
+        "sweep": {
+          "cfz_steps": 62.71907276721036,
+          "end_ratio": 4.0,
+          "half_width": 165,
+          "hfr_focus": 0.8542254309293302,
+          "points": 8,
+          "predicted_slope": 2.011963270884117,
+          "source": "derived",
+          "step_size": 42,
+          "wavelength_nm": 550.0
+        },
+        "temperature_c": 14.4,
+        "train_id": "main",
+        "wing_slope": 4.2304767199704
+      }
+    },
+    {
+      "night": "2",
+      "microns_per_step": 2.1,
+      "run": 1,
+      "result": {
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.7780316492130137,
+        "best_position": 29557,
+        "confirmation": {
+          "accepted": true,
+          "document_id": "33ca1053-b7a1-4ed6-844a-c014fd0092c1",
+          "hfr": 0.9142975892110531,
+          "star_count": 2355
+        },
+        "confirmed": true,
+        "curve_points": [
+          {
+            "document_id": "9d8532d2-d59d-4adb-9dee-4501580ad7fc",
+            "hfr": 1.0901583000527757,
+            "position": 29529,
+            "rejected": null,
+            "star_count": 2190
+          },
+          {
+            "document_id": "a167e06e-2a42-45b5-9dbc-58a665dc4ad6",
+            "hfr": 0.9448679074275974,
+            "position": 29550,
+            "rejected": null,
+            "star_count": 2331
+          },
+          {
+            "document_id": "f0374aed-0dbc-4f0f-8331-c16eb9ef81b2",
+            "hfr": 1.0160012931826068,
+            "position": 29571,
+            "rejected": null,
+            "star_count": 2216
+          },
+          {
+            "document_id": "ce967f3d-8ebf-4933-ba4a-df4610e64ada",
+            "hfr": 1.3449511320423737,
+            "position": 29592,
+            "rejected": null,
+            "star_count": 1814
+          },
+          {
+            "document_id": "887e5c83-d0bc-4f0a-9d73-1d31208d7829",
+            "hfr": 1.870181082845555,
+            "position": 29613,
+            "rejected": null,
+            "star_count": 1356
+          },
+          {
+            "document_id": "2fc3ccea-c861-4a14-8821-b9790cb88bb9",
+            "hfr": 2.610749217230636,
+            "position": 29634,
+            "rejected": null,
+            "star_count": 947
+          },
+          {
+            "document_id": "99b5198f-5e88-4cfe-9731-a166f73ca689",
+            "hfr": 3.5860505613273754,
+            "position": 29655,
+            "rejected": null,
+            "star_count": 677
+          },
+          {
+            "document_id": "ac6cddc5-b461-4ced-ac39-d49167dbb60c",
+            "hfr": 4.638126655865758,
+            "position": 29676,
+            "rejected": null,
+            "star_count": 473
+          },
+          {
+            "document_id": "4222beaf-3062-4170-b104-14f88a7eb183",
+            "hfr": 5.410733712343559,
+            "position": 29697,
+            "rejected": null,
+            "star_count": 398
+          }
+        ],
+        "filter": "L",
+        "fit_r_squared": 0.9749274726730203,
+        "guiding_paused": false,
+        "hfr": 0.9142975892110531,
+        "model": "reset: microns_per_step changed from 1.06985 to 2.1",
+        "position": 29557,
+        "prediction": {
+          "from_position": 29613,
+          "missing": [
+            "last_good"
+          ],
+          "moved": false,
+          "skipped": null,
+          "start": null,
+          "terms": {
+            "last_good": null,
+            "offset": null,
+            "temperature": null
+          }
+        },
+        "recorded": {
+          "last_good_updated": true,
+          "runs": 1
+        },
+        "samples_used": 9,
+        "sweep": {
+          "cfz_steps": 31.952380952380956,
+          "end_ratio": 4.0,
+          "half_width": 84,
+          "hfr_focus": 0.8542254309293302,
+          "points": 9,
+          "predicted_slope": 3.9492665970525276,
+          "source": "derived",
+          "step_size": 21,
+          "wavelength_nm": 550.0
+        },
+        "temperature_c": 10.0,
+        "train_id": "main",
+        "wing_slope": 3.6541526842876606
+      }
+    },
+    {
+      "night": "2",
+      "microns_per_step": 2.1,
+      "run": 2,
+      "result": {
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.8798983144012743,
+        "best_position": 29553,
+        "confirmation": {
+          "accepted": true,
+          "document_id": "92caf886-9dc5-4d53-8210-505f374896bc",
+          "hfr": 0.9548799400071191,
+          "star_count": 2337
+        },
+        "confirmed": true,
+        "curve_points": [
+          {
+            "document_id": "4b121b3b-d62b-47b7-9b3a-ccca00cc5f35",
+            "hfr": 2.886640144619352,
+            "position": 29467,
+            "rejected": null,
+            "star_count": 925
+          },
+          {
+            "document_id": "3e3cd4e8-8563-4a07-b27d-69a8f53447c9",
+            "hfr": 2.1834474241599793,
+            "position": 29490,
+            "rejected": null,
+            "star_count": 1256
+          },
+          {
+            "document_id": "6bb74b81-21e7-48fe-a0fb-52e3c34bcdca",
+            "hfr": 1.350718909838903,
+            "position": 29513,
+            "rejected": null,
+            "star_count": 1850
+          },
+          {
+            "document_id": "daf58177-394d-4862-9599-575398254ff9",
+            "hfr": 1.099868558500223,
+            "position": 29536,
+            "rejected": null,
+            "star_count": 2206
+          },
+          {
+            "document_id": "cceb79e6-9281-41fb-bd84-8f55fa2ca16c",
+            "hfr": 0.9730288019449588,
+            "position": 29559,
+            "rejected": null,
+            "star_count": 2303
+          },
+          {
+            "document_id": "8910195f-0e29-4cdd-90e5-5d0da37379b7",
+            "hfr": 1.1328149075082135,
+            "position": 29582,
+            "rejected": null,
+            "star_count": 2021
+          },
+          {
+            "document_id": "6f91e15c-912f-4ee3-9aff-20ea4b3e1f70",
+            "hfr": 1.7994012943862427,
+            "position": 29605,
+            "rejected": null,
+            "star_count": 1420
+          },
+          {
+            "document_id": "b542a058-dd0a-4825-92f5-c5b2f0cddc3e",
+            "hfr": 2.6103300998163057,
+            "position": 29628,
+            "rejected": null,
+            "star_count": 960
+          }
+        ],
+        "filter": "L",
+        "fit_r_squared": 0.9729463857739133,
+        "guiding_paused": false,
+        "hfr": 0.9548799400071191,
+        "model": "fresh",
+        "position": 29553,
+        "prediction": {
+          "from_position": 29707,
+          "missing": [
+            "temperature_coefficient"
+          ],
+          "moved": true,
+          "skipped": null,
+          "start": 29557,
+          "terms": {
+            "last_good": 29557,
+            "offset": 0,
+            "temperature": null
+          }
+        },
+        "recorded": {
+          "last_good_updated": true,
+          "runs": 2
+        },
+        "samples_used": 8,
+        "sweep": {
+          "cfz_steps": 31.952380952380956,
+          "end_ratio": 4.0,
+          "half_width": 90,
+          "hfr_focus": 0.9142975892110531,
+          "points": 8,
+          "predicted_slope": 3.9492665970525276,
+          "source": "derived",
+          "step_size": 23,
+          "wavelength_nm": 550.0
+        },
+        "temperature_c": 10.0,
+        "train_id": "main",
+        "wing_slope": 3.2119895484958527
+      }
+    },
+    {
+      "night": "2",
+      "microns_per_step": 2.1,
+      "run": 3,
+      "result": {
+        "attempts": 1,
+        "attempts_log": [],
+        "best_hfr": 0.7827467512956152,
+        "best_position": 29568,
+        "confirmation": {
+          "accepted": true,
+          "document_id": "b0cb7007-dc90-41f3-92bb-f4e412bd6298",
+          "hfr": 0.8674951472551073,
+          "star_count": 1407
+        },
+        "confirmed": true,
+        "curve_points": [
+          {
+            "document_id": "d8c6d92f-9a21-4caf-be93-f06fc3b4e111",
+            "hfr": 2.6782485709932917,
+            "position": 29489,
+            "rejected": null,
+            "star_count": 572
+          },
+          {
+            "document_id": "21b8d1d5-3654-437d-a677-fc2bd7e54916",
+            "hfr": 1.8451276761712683,
+            "position": 29510,
+            "rejected": null,
+            "star_count": 880
+          },
+          {
+            "document_id": "fc2bb4aa-ceba-41d6-975a-fddfa8a7ee24",
+            "hfr": 1.2923046561255143,
+            "position": 29531,
+            "rejected": null,
+            "star_count": 1180
+          },
+          {
+            "document_id": "6439668c-9b57-441f-9e3a-ce6387801774",
+            "hfr": 0.9659224760522878,
+            "position": 29552,
+            "rejected": null,
+            "star_count": 1372
+          },
+          {
+            "document_id": "242f2bb8-abaf-4a99-9984-d7ccbf678019",
+            "hfr": 0.8795682615945895,
+            "position": 29573,
+            "rejected": null,
+            "star_count": 1392
+          },
+          {
+            "document_id": "83f8213a-3b90-4f16-a288-cf0f7459f814",
+            "hfr": 1.033456779201162,
+            "position": 29594,
+            "rejected": null,
+            "star_count": 1221
+          },
+          {
+            "document_id": "ddc0a159-fda9-4be6-8c0e-253080796f6a",
+            "hfr": 1.4972834581176602,
+            "position": 29615,
+            "rejected": null,
+            "star_count": 916
+          },
+          {
+            "document_id": "0af524f6-aa65-423b-a38f-fb2f73b701bd",
+            "hfr": 2.3053170494808217,
+            "position": 29636,
+            "rejected": null,
+            "star_count": 591
+          },
+          {
+            "document_id": "6b9d44a1-a01a-4e55-8ec7-98f2c4e8f39d",
+            "hfr": 2.94791643918435,
+            "position": 29657,
+            "rejected": null,
+            "star_count": 439
+          }
+        ],
+        "filter": "R",
+        "fit_r_squared": 0.9782133894229637,
+        "guiding_paused": false,
+        "hfr": 0.8674951472551073,
+        "model": "fresh",
+        "position": 29568,
+        "prediction": {
+          "from_position": 29553,
+          "missing": [
+            "temperature_coefficient"
+          ],
+          "moved": true,
+          "skipped": null,
+          "start": 29573,
+          "terms": {
+            "last_good": 29553,
+            "offset": 20,
+            "temperature": null
+          }
+        },
+        "recorded": {
+          "last_good_updated": true,
+          "runs": 3
+        },
+        "samples_used": 9,
+        "sweep": {
+          "cfz_steps": 31.952380952380956,
+          "end_ratio": 4.0,
+          "half_width": 84,
+          "hfr_focus": 0.8542254309293302,
+          "points": 9,
+          "predicted_slope": 3.9492665970525276,
+          "source": "derived",
+          "step_size": 21,
+          "wavelength_nm": 550.0
+        },
+        "temperature_c": 10.1,
+        "train_id": "main",
+        "wing_slope": 3.1197202720536787
+      }
+    }
+  ]
+}

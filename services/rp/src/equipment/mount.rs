@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::Telescope;
 use tracing::{debug, error};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
@@ -33,8 +34,9 @@ impl MountEntry {
 pub(super) async fn establish_mount(
     config: &config::MountConfig,
     ca_cert_path: Option<&std::path::Path>,
+    budget: ConnectBudget,
 ) -> Result<Arc<dyn Telescope>, EstablishError> {
-    establish_listed(config, ca_cert_path).await
+    establish_listed(config, ca_cert_path, budget).await
 }
 
 pub(super) async fn connect_mount(
@@ -43,7 +45,7 @@ pub(super) async fn connect_mount(
 ) -> MountEntry {
     debug!(alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to mount");
 
-    match establish_mount(config, ca_cert_path).await {
+    match establish_mount(config, ca_cert_path, ConnectBudget::Full).await {
         Ok(t) => {
             debug!("mount connected successfully");
             MountEntry {

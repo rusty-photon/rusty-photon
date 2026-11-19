@@ -44,8 +44,10 @@
 //! - **Windows.** Every packaged service but svbony-camera has a fragment
 //!   that installs it as a Windows service of its package's name, from its
 //!   exe, with `--service`, restarting after 5 s with the failure-actions
-//!   flag, its firewall port as `packaging::PORTS` gives it, and starts it
-//!   on install, or installs it demand-start when it is [`GATED`].
+//!   flag, its firewall port as `packaging::PORTS` gives it, starting
+//!   automatically, started on install and stopped with a wait for it to
+//!   stop. A [`GATED`] service's start does not wait for it to run: without
+//!   its config it stops at once.
 //!   `Package.wxs` wires each feature, every fragment belongs to a service,
 //!   and doctor rides in sentinel's fragment with its renewal task.
 //! - **Ports.** Every packaged service has one in `packaging::PORTS`, which
@@ -1020,22 +1022,47 @@ fn fragment_contract(check: &mut Check, svc: &str, fragment: &str, port: Option<
             format!("{svc}: firewall exception port must be {port}")
         });
     }
-    let started = fragment.contains(r#"Start="install""#);
+    check.require(fragment.contains(r#"Start="auto""#), || {
+        format!("{svc}: service must install with Start=\"auto\"")
+    });
+    let controls = elements(fragment, "ServiceControl");
+    let starts: Vec<&str> = controls
+        .iter()
+        .copied()
+        .filter(|control| control.contains(r#"Start="install""#))
+        .collect();
+    check.require(!starts.is_empty(), || {
+        format!("{svc}: ServiceControl must start the service on install")
+    });
+    check.require(
+        controls
+            .iter()
+            .any(|control| control.contains(r#"Stop="both""#) && control.contains(r#"Wait="yes""#)),
+        || format!("{svc}: ServiceControl must stop the service, and wait for it, on install and uninstall"),
+    );
+    // Without its config a gated service stops at once, so it never runs for
+    // a start that waits to see it run.
     if GATED.contains(&svc) {
-        check.require(fragment.contains(r#"Start="demand""#), || {
-            format!("{svc}: gated service must install with Start=\"demand\"")
-        });
-        check.require(!started, || {
-            format!("{svc}: gated service must not be started by the installer")
-        });
-    } else {
-        check.require(fragment.contains(r#"Start="auto""#), || {
-            format!("{svc}: service must install with Start=\"auto\"")
-        });
-        check.require(started, || {
-            format!("{svc}: ServiceControl must start the service on install")
-        });
+        check.require(
+            starts
+                .iter()
+                .all(|control| control.contains(r#"Wait="no""#)),
+            || format!("{svc}: the ServiceControl that starts a gated service must not wait (Wait=\"no\")"),
+        );
     }
+}
+
+/// Each self-closing `element` in `fragment`: its text, from its name to its
+/// `/>`.
+fn elements<'a>(fragment: &'a str, element: &str) -> Vec<&'a str> {
+    fragment
+        .split(format!("<{element} ").as_str())
+        .skip(1)
+        .map(|rest| {
+            rest.split_once("/>")
+                .map_or(rest, |(attributes, _)| attributes)
+        })
+        .collect()
 }
 
 /// Every packaged service has a port, which its verifiers probe and its `WiX`
@@ -1520,6 +1547,61 @@ fn names_each_mistake_in_an_sdk_pin() {
 }
 
 #[test]
+fn names_each_mistake_in_a_services_start_and_stop() {
+    use Change::Replace;
+    assert_named(&[
+        (
+            &[Replace(
+                PLATE_SOLVER_FRAGMENT,
+                "Start=\"auto\"",
+                "Start=\"demand\"",
+            )],
+            &["plate-solver: service must install with Start=\"auto\""],
+        ),
+        (
+            &[Replace(
+                PLATE_SOLVER_FRAGMENT,
+                "Wait=\"no\"",
+                "Wait=\"yes\"",
+            )],
+            &["plate-solver: the ServiceControl that starts a gated service must not wait"],
+        ),
+        (
+            &[Replace(
+                PLATE_SOLVER_FRAGMENT,
+                "Start=\"install\"",
+                "Start=\"never\"",
+            )],
+            &["plate-solver: ServiceControl must start the service on install"],
+        ),
+        (
+            &[Replace(PPBA_FRAGMENT, "Start=\"auto\"", "Start=\"demand\"")],
+            &["ppba-driver: service must install with Start=\"auto\""],
+        ),
+        (
+            &[Replace(
+                PPBA_FRAGMENT,
+                "Start=\"install\"",
+                "Start=\"never\"",
+            )],
+            &["ppba-driver: ServiceControl must start the service on install"],
+        ),
+        (
+            &[Replace(PPBA_FRAGMENT, "Wait=\"yes\"", "Wait=\"no\"")],
+            &["ppba-driver: ServiceControl must stop the service, and wait for it"],
+        ),
+        (
+            &[Replace(
+                PLATE_SOLVER_FRAGMENT,
+                "Stop=\"both\"",
+                "Stop=\"install\"",
+            )],
+            &["plate-solver: ServiceControl must stop the service, and wait for it"],
+        ),
+    ]);
+}
+
+#[test]
 fn names_each_mistake_in_the_installer() {
     use Change::{Add, Remove, Replace};
     const NAME: &str = "                        Name=\"rusty-photon-ppba-driver\"";
@@ -1570,21 +1652,6 @@ fn names_each_mistake_in_the_installer() {
         (
             &[Replace(PPBA_FRAGMENT, "Port=\"", "Port=\"9")],
             &["ppba-driver: firewall exception port must be"],
-        ),
-        (
-            &[Replace(PLATE_SOLVER_FRAGMENT, "Start=\"demand\"", "Start=\"install\"")],
-            &[
-                "plate-solver: gated service must install with Start=\"demand\"",
-                "plate-solver: gated service must not be started by the installer",
-            ],
-        ),
-        (
-            &[Replace(PPBA_FRAGMENT, "Start=\"auto\"", "Start=\"demand\"")],
-            &["ppba-driver: service must install with Start=\"auto\""],
-        ),
-        (
-            &[Replace(PPBA_FRAGMENT, "Start=\"install\"", "Start=\"never\"")],
-            &["ppba-driver: ServiceControl must start the service on install"],
         ),
         (
             &[Replace(PACKAGE_WXS, "<ComponentGroupRef Id=\"PpbaDriverComponents\" />", "")],

@@ -29,7 +29,7 @@ It serves two surfaces, one nav:
    [`rp-mcp-client`](../decisions/017-standard-mcp-client-construction.md).
 
 Configuration is not one of them. Every service configures itself on its own
-`/setup` page ([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)): the
+`/setup` page ([rusty-photon-setup.md](../crates/rusty-photon-setup.md)): the
 nav's **Setup** link leads to rp's — the equipment roster and rp's settings,
 from which each driver's own pages are linked — and the BFF's own
 configuration is edited on its own `/setup` ([Setup page](#setup-page)).
@@ -41,10 +41,10 @@ fails loudly at load.
 **JavaScript (htmx) is required.** The UI does not carry a no-JS fallback: the
 targets forms submit via `hx-post` (no `method`/`action`), and the row
 affordances are `<button hx-post>` (no `<a href>`), so without htmx loaded the
-page renders but is inert. This is a deliberate decision (UI-testing plan §7):
-the UI is **optional** — rusty-photon runs fully headless — and the genuine
-recovery path is ssh + editing the config file; a whole-app no-JS guarantee is
-also incompatible with the real-time stream UI. Direct navigation/refresh still
+page renders but is inert. This is deliberate: the UI is **optional** —
+rusty-photon runs fully headless — and the genuine recovery path is ssh +
+editing the config file; a whole-app no-JS guarantee is also incompatible with
+the real-time stream UI. Direct navigation/refresh still
 returns a full styled page (the `HX-Request` full-page-vs-fragment branch is
 core htmx, not a no-JS feature). The setup pages are the exception: they are the
 shared crate's plain HTML forms, which need no JavaScript.
@@ -107,7 +107,7 @@ live rp (the pattern `sentinel` uses for its Alpaca polling — see
 
 The SSE proxy holds a raw `reqwest` client of its own (the buffered
 `HttpClient` seam cannot stream); its unit tests run it against an in-test axum
-stub of rp's stream (ADR-004).
+stub of rp's stream.
 
 ## Routes
 
@@ -148,8 +148,8 @@ laptop would follow to itself, so the link keeps rp's scheme and port and, when
 rp's host is a loopback address (`127.0.0.1`, `::1`, `localhost`), carries the
 host the browser reached the BFF by — the request's `Host` header without its
 port. Any other host is used as written. The rule is the shared crate's
-`origin::link_for`, which rp's own roster page links its drivers by too
-(driver-setup-pages D5). On a doctor-issued certificate the substituted
+`origin::link_for`, which rp's own roster page links its drivers by too. On a
+doctor-issued certificate the substituted
 hostname is a SAN; an IP address is one only when doctor was given
 `--extra-san`.
 
@@ -157,9 +157,8 @@ hostname is a SAN; an IP address is one only when doctor was given
 where rp is — is edited on its own `/setup`, the shared
 [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate's server page
 over the BFF's `Config` (`setup.rs`), so the rule "a service's configuration is
-edited on that service's `/setup`" holds for the BFF too (driver-setup-pages
-D9). It is a plain form with the crate's Security section, origin check and
-password rules:
+edited on that service's `/setup`" holds for the BFF too. It is a plain form
+with the crate's Security section, origin check and password rules:
 
 - **Fields.** `server.port`, `server.bind_address`, and `rp.base_url` render
   as inputs; `server.tls` and `rp.auth` are optional blocks the page names as
@@ -195,8 +194,7 @@ password rules:
 
 ## Targets inbox (`/targets`)
 
-The operator surface for rp's [Target Store](rp.md#target-store) — P4 of
-[planetarium-target-import.md](../plans/archive/planetarium-target-import.md).
+The operator surface for rp's [Target Store](rp.md#target-store).
 Imports land *paused* (`active: false`) with default goals and no framing
 angle; this page is where the operator reviews them: attach or adjust
 acquisition goals, set the position angle, then **activate** the target
@@ -212,7 +210,7 @@ client like the orchestrator, not a REST caller"). The page drives rp's
 target tools — `list_targets`, `get_target`, `update_target`,
 `set_goals`, `delete_target` — through the standard
 [`rp-mcp-client`](../decisions/017-standard-mcp-client-construction.md)
-crate (ADR-017; the BFF is its fourth consumer), constructed from the
+crate, constructed from the
 **same required [`rp` block](#configuration)** the REST surfaces use:
 the MCP URL is `rp.base_url` + `/mcp`, the credential is `rp.auth`, and
 the CA is `rp.ca_cert_path`. No new config keys — one rp target, two
@@ -221,10 +219,11 @@ covers both.
 
 **Clients are per-request.** Each page request connects, makes its
 burst of tool calls, and drops the client — the BFF never holds a
-standing MCP client. This is the planetarium-bridge's own lesson made
-policy: an idle rmcp client holds an open POST that stalls rp's
-graceful stop (the transport is session-less, ADR-021, so that is the
-only reason left). It is also the same philosophy as the REST reads'
+standing MCP client. An idle rmcp client holds an open POST that
+stalls rp's graceful stop, and the transport is session-less, so
+dropping the client loses nothing — planetarium-bridge holds no
+standing client for the same reason. It is also the same philosophy as
+the REST reads'
 `Connection: close` — target review is low-frequency; connection reuse
 buys nothing.
 
@@ -242,7 +241,7 @@ don't carry (rp.md § Target MCP tools):
 
 - **The filter roster** — each name in every
   `equipment.filter_wheels[].filters`, the same list rp validates goals
-  against at write time (rp.md § Target Store, Decision 10).
+  against at write time (rp.md § Target Store).
 - **Train position-angle defaults** — each imaging train's
   `default_position_angle_degrees` (rp.md § Position angle), for the PA
   field's inherit hint.
@@ -292,11 +291,10 @@ Behavioral contract:
   refusal (`SafetyUnsafe`) only reaches it when an operator's
   `safety.gate` gated the target tools. The card names both causes and
   the detail says which. No stale data is rendered beneath it.
-- **Progress is not rendered yet.** `list_targets` reports real
-  per-goal `good`/`total` now that rp's on-disk frame scan has landed
-  (rp.md § Progress derivation). The goals summary still shows only
-  `desired_count`; surfacing the progress columns is a follow-up on
-  this page, not a gap in the data.
+- **Progress is not rendered.** `list_targets` reports per-goal
+  `good`/`total` from rp's on-disk frame scan (rp.md § Progress
+  derivation), but the goals summary shows only `desired_count`: the
+  missing columns are this page's gap, not the data's ([Deferred](#deferred)).
 
 ### The review page (`GET /targets/{slug}`)
 
@@ -319,13 +317,14 @@ An unknown slug renders a "no such target" card. Otherwise the form:
   `updated_by: "operator"`, so a pending import edited here stops being
   upsert-eligible for repeated Aligns of the same spot — a later
   nearby import creates a new pending row instead of overwriting the
-  operator's work. That is Decision 3's protection working as designed,
-  not a bug to report.
+  operator's work. That is rp's upsert rule
+  ([rp.md § Import form](rp.md#import-form-source)) protecting the
+  operator's edits, by design.
 
 #### The position-angle field
 
 The field must keep "inherit the train default" and "explicit 0°
-north-up" distinguishable (the plan's P4 note; rp.md § Position angle):
+north-up" distinguishable (rp.md § Position angle):
 
 - **Rendered:** the target's explicit angle when set; **blank** when
   inheriting. The hint line names what blank currently means, from the
@@ -394,14 +393,16 @@ sticky **status strip** under the nav, and a **fold panel** (the CSS Grid
 All live behaviour arrives over one SSE connection driven by the vendored
 [htmx-ext-sse] extension: the page declares `hx-ext="sse"
 sse-connect="/stream/events"` once, and named `sse-swap` regions receive
-server-rendered fragments — no hand-written JavaScript, exactly the pattern the
-`test-sse` spike proved.
+server-rendered fragments — no hand-written JavaScript.
 
 - **The feed** (`sse-swap="feed"` with `hx-swap="afterbegin"`): every rp event
   envelope renders as one card — severity dot (`*_failed` and
   `safety_changed:unsafe` are bad; `*_complete`/`*_settled` ok; `*_started`
-  live; `stream_gap` warn), event title, payload-specific detail line (target
-  coordinates, exposure duration, HFR, RMS error, error messages, …),
+  live; `stream_error`, `guide_stopped` and `guide_star_lost` warn), event
+  title, payload-specific detail line (target coordinates, exposure
+  duration, HFR, RMS error, error messages, a `guide_stopped`'s `reason`
+  and the guider's `stop_reason` beside it, how long a guide star has
+  been lost, …),
   monospace timestamp, and the operation duration when `elapsed_ms` is
   present. Unknown event types render a generic card (event name + compact
   payload) so new rp events degrade gracefully rather than vanish.
@@ -413,11 +414,14 @@ server-rendered fragments — no hand-written JavaScript, exactly the pattern th
   render). Slots are updated
   from **each event's own payload alone** — the proxy is stateless, so a slot
   a given event doesn't describe simply keeps its previous content.
-- **The fold panel**: the equipment LED list, fetched from `/stream/equipment`
-  at render and re-fetched on an htmx timer (`hx-trigger="every 10s"`) — there
-  are no device-connectivity events to push yet. The mock's guider graph and
-  trend-chart cards need telemetry history rp does not expose; they are
-  deferred (see [MVP scope](#mvp-scope)).
+- **The fold panel**: the equipment LED list, one LED per device in rp's
+  roster, of every kind `GET /api/equipment` reports (the nine roster kinds
+  and the singular mount), each labelled with rp's noun for its kind. It is
+  fetched from `/stream/equipment` at render and re-fetched on an htmx timer
+  (`hx-trigger="every 10s"`). rp's
+  `equipment_changed` events do not drive it: they reach the feed as generic
+  cards. The mock's guider graph and trend-chart cards need telemetry history
+  rp does not expose ([Deferred](#deferred)).
 - **Initial state**: the page renders the LED panel from
   `GET /api/equipment` (which is also how it learns whether rp is
   reachable); the strip's slots start empty and the feed fills from the
@@ -452,7 +456,8 @@ terminates the browser's `EventSource` and holds its own connection to rp's
   retry/backoff and replay come from the platform + rp rather than BFF state.
 - **Keep-alive** every 15 s (axum `KeepAlive`), independent of rp's.
 - **Shutdown.** Open SSE responses do not end on axum's graceful-shutdown
-  signal (axum #2673 — the hazard the `test-sse` spike pinned), so the proxy
+  signal ([axum issue 2673](https://github.com/tokio-rs/axum/issues/2673)),
+  so the proxy
   select!s each stream against a service-wide cancellation token wired to the
   `ServiceRunner` shutdown — the same `sse_shutdown` pattern rp uses. The BFF
   therefore shuts down promptly (and flushes coverage in BDD) even with
@@ -464,14 +469,17 @@ The BFF has its own small config (it is not an ASCOM device), edited on its
 [setup page](#setup-page) or in the file: the listening server and where rp is
 (`http://127.0.0.1:11115` — the single-box default). The `rp` target is
 **required**: an rp-less BFF has no purpose, so a config without the block (or
-with `"rp": null`) fails loudly at load. The retired `drivers` override map
-(rp's equipment roster is the only device list) fails loudly the same way
-(`deny_unknown_fields` — the sentinel `services`-map precedent). The retired
-`sentinel` block (the BFF restarts nothing since its configuration pages
-retired) is accepted and ignored instead, with a warning at load: doctor wrote
-it into the installs it wired, and an upgrade runs no doctor, so refusing it
-would leave an upgraded web UI down. It never reaches the setup page, and the
-page's next save drops it. Doctor's `config.retired-keys` fix deletes both.
+with `"rp": null`) fails loudly at load. The default config, rp on this
+machine, is correct for every install, so the service creates it on first
+start ([CLI Arguments](#cli-arguments)) and no installer seeds it: the device
+list is rp's equipment roster, not ui-htmx config. A `drivers` map, a retired key,
+fails loudly at load the same way (`deny_unknown_fields`, as sentinel's
+retired `services` map does). The retired `sentinel` block is accepted and
+ignored instead, with a warning at load. The BFF restarts no service
+(Sentinel's dashboard does), but an install an earlier doctor wired carries
+the block, and an upgrade runs no doctor, so refusing it would leave an
+upgraded web UI down. It never reaches the setup page, and the page's next
+save drops it. Doctor's `config.retired-keys` fix deletes both.
 Every block
 (`Config` and each nested target/auth struct) rejects unknown keys at
 deserialize, so a typo or a key removed by a schema change fails loudly at load
@@ -498,7 +506,7 @@ instead of being silently ignored.
 ```
 
 The `server` block is the shared `ServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), and optional `tls`/`auth`. Absent `tls`/`auth` — the
 default — means plain, unauthenticated HTTP. When `auth` is set, HTTP Basic
 credentials are required on **every** route (`/health` and `/setup` included);
@@ -526,7 +534,7 @@ combined with the subcommand (the mixed form would silently ignore them).
   `rusty-photon-tls` — the same client construction `sentinel` uses. Its setup
   page draws `rp.auth` as edited in the file, so the password never reaches the
   browser.
-- **The MCP leg follows ADR-017's credential policy.** The targets inbox's
+- **The MCP leg follows `rp-mcp-client`'s credential policy.** The targets inbox's
   `rp-mcp-client` presents `rp.auth` as HTTP Basic **only over verified
   HTTPS** (a configured `ca_cert_path` and an `https` base URL); any other
   combination connects unauthenticated with a loud warning — plaintext
@@ -576,19 +584,39 @@ combined with the subcommand (the mixed form would silently ignore them).
 - **Image thumbnails in the feed** — `exposure_complete` links a document id;
   rendering pixels (`GET /api/images/{id}/pixels` ImageBytes → browser image)
   is a follow-up.
-- **Targets-inbox follow-ups**: per-goal progress columns (rp's
-  frame-scan derivation now supplies real `good`/`total`; the page has
-  yet to render them); per-target
+- **Targets-inbox follow-ups**: per-goal progress columns
+  (`list_targets` carries `good`/`total`; the page does not render
+  them); per-target
   `scheduling` editing (a composite with replace-whole-object semantics —
   edited over MCP when needed); `grading` overrides (rp accepts them on
   `add_target`/`update_target`, but this form does not offer them);
   and a dedicated presentation for rp's `SafetyUnsafe` refusal in the
-  unavailable card (the detail text carries it today).
+  unavailable card (the detail text carries it).
 - The **LCARS theme** and **i18n**.
 
 ## Testing Strategy
 
 Follows [`docs/skills/testing.md`](../skills/testing.md).
+
+### Three obligations, three layers
+
+The BFF's interactivity is a declarative contract between the bytes the server
+sends and the vendored `htmx.min.js`. The script is the same file on every OS
+and the browser engine is the operator's, so behaviour can differ between
+server OSes only if the server's bytes do. The suite therefore proves three
+obligations, each with its cheapest tool, and all of them inside the BDD
+scenarios; the code and the feature files use these names:
+
+| Obligation | Question | Layer | Runs on |
+|------------|----------|-------|---------|
+| **P1** — output correctness | Does the server emit the right markup and `hx-*` wiring? | **Layer A**: [`scraper`] DOM assertions, with request helpers that drive the BFF as htmx would | every OS, both build systems |
+| **P2** — output OS-invariance | Is the browser-relevant output byte-identical on every OS? | **Layer B**: [`insta`] byte snapshots | every OS, both build systems |
+| **P3** — output to behaviour | Does real htmx execute it — the swap lands, the poll stops, the click works? | **Layer C**: the `@browser` scenarios ([`thirtyfour`]) | one environment |
+
+P3 shows once that a structure produces a behaviour, and P2 that every OS emits
+that structure, so the behaviour holds on every OS without a browser on each. P1
+proves the structure is the right one: P2 alone passes if every OS is wrong in
+the same way.
 
 ### BDD Tests (Cucumber)
 
@@ -614,8 +642,8 @@ mishandle attribute order and boolean attributes). The request helpers drive the
 BFF the way htmx would: `submit_rendered_form` reads the enabled controls from
 the **rendered** form and POSTs them to its own `hx-post` URL with the `HX-*`
 header set (disabled fields are omitted, just as a browser omits them), and a
-row button is followed by its own rendered `hx-post` URL. This is Layer A of the [UI-testing plan](../plans/archive/ui-testing.md), proving the page's
-markup and `hx-*` wiring are correct (obligation P1) without a browser; `scraper`
+row button is followed by its own rendered `hx-post` URL. This is Layer A, proving
+the page's markup and `hx-*` wiring are correct (P1) without a browser; `scraper`
 is a test-only dev-dependency and is never compiled into the shipped binary.
 
 [`scraper`]: https://docs.rs/scraper/
@@ -654,8 +682,8 @@ FIREFOX_BINARY=/path/to/firefox GECKODRIVER_BINARY=/path/to/geckodriver \
   bazel test --config=browser //services/ui-htmx:bdd
 ```
 
-This Bazel path is verified green **on Linux only** (plan §9 Tier 0 step 5
-go/no-go): the browser layer runs on a single environment by design, so
+This Bazel path is verified green **on Linux only**: the browser layer runs on a
+single environment by design, so
 macOS/Windows browser-under-Bazel is intentionally not pursued — the cross-OS
 guarantee rides the P1/P2 server-bytes layers, which do run on every OS under
 both build systems. The always-compiled `thirtyfour` dev-dep stays out of the
@@ -676,9 +704,9 @@ browser flake never reddens a PR; the per-PR P1/P2 layers carry correctness.
 prove htmx executes — a smoke render (proves `htmx.min.js` loads) and an rp event
 landing in the feed through the SSE extension's `sse-swap` (a safety monitor
 flipped unsafe on rp; rp replays its history to a fresh subscriber, so the card
-arrives whether the flip lands before or after the browser connects). Two are Tier 0
-robustness checks from the [UI-testing plan](../plans/archive/ui-testing.md) §9 that harden
-teardown so BDD subprocess coverage is never silently lost (the §5.4 hazard in
+arrives whether the flip lands before or after the browser connects). Two are
+robustness checks that harden teardown so BDD subprocess coverage is never
+silently lost (the §5.4 hazard in
 [`testing.md`](../skills/testing.md)):
 
 - **Coverage invariant.** Quitting the browser *before* stopping the BFF lets the
@@ -710,7 +738,7 @@ coverage numbers. These fixtures exercise htmx behaviors the server-bytes layers
 negative — htmx silently drops an OOB element whose target is absent), an
 `HX-Retarget` header moving a **byte-identical** body to a different target (the
 body is a plain fragment; the divergence lives entirely in the response header — a
-§A tripwire asserts the header, the browser asserts the landing), and an
+Layer A tripwire asserts the header, the browser asserts the landing), and an
 `HX-Push-Url` header changing the browser location. The BDD suite spawns a binary
 built with the feature: cargo `--all-features` provides it; under Bazel the
 `:ui-htmx_fixtures` binary (the drivers' `_mock` pattern) does, so
@@ -721,22 +749,23 @@ built with the feature: cargo `--all-features` provides it; under Bazel the
 **Test-only `/fixtures/sse*` routes (the `test-sse` feature).** A third `@browser`
 feature ([`sse.feature`]) drives a `crate::sse_fixtures` route set gated on the
 separate `test-sse` cargo feature (off by default, `#[coverage(off)]`, ships
-nothing). It is the streaming spike for the future live-telemetry UI: a fixture
-page wires the vendored htmx SSE extension (`htmx-ext-sse@2.2.3`, vendored
-byte-for-byte from upstream; the htmx project is Zero-Clause-BSD — htmx 2.0 split
-SSE out of core, so the embedded `htmx.min.js` carries none, and the extension is
-`include_str!`'d only under this feature) to **one** `sse-connect` EventSource
+nothing). A fixture page of its own wires the vendored htmx SSE extension
+(`htmx-ext-sse@2.2.3`, vendored byte-for-byte from upstream; the htmx project is
+Zero-Clause-BSD — htmx 2.0 split SSE out of core, so the embedded `htmx.min.js`
+carries none; the fixture module embeds its own copy of the file the activity
+stream serves) to **one** `sse-connect` EventSource
 feeding **two** `sse-swap` regions, and an axum `Sse` endpoint pushes two named
 events on a timer then holds the connection open. Two scenarios prove what only a
 browser can: that both regions update from the single connection (async
 server-pushed DOM updates, which have no server "bytes" for P1/P2 to assert), and
-that an open SSE stream — which never closes on the shutdown signal (axum #2673) —
+that an open SSE stream — which never closes on the shutdown signal (see the
+[SSE proxy](#the-sse-proxy-streamevents)'s shutdown) —
 still allows a graceful, coverage-flushing BFF shutdown **when the browser is quit
 first**. The latter is the §5.4 coverage hazard with no in-process escape hatch (the
 connection is held by the out-of-process browser), so `driver.quit()` must precede
 `ServiceHandle::stop()`; the teardown order in `tests/bdd.rs` enforces it. The BDD
 binary carries both `test-fixtures` and `test-sse` (cargo `--all-features`; Bazel
-`:ui-htmx_fixtures`), the latter pulling the optional `async-stream` dependency.
+`:ui-htmx_fixtures`).
 
 [`sse.feature`]: ../../services/ui-htmx/tests/features/sse.feature
 
@@ -758,7 +787,7 @@ saved page names it and the field that changed; behind the BFF's own login, rp's
 password typed on that confirmation keeps `rp.auth` for the new address, and a
 wrong one is refused with the file untouched; behind no login the confirmation
 offers no password box; a save that leaves rp's address and CA keeps it; a file
-still carrying the retired `sentinel` block starts, and a save drops the block;
+carrying the retired `sentinel` block starts, and a save drops the block;
 and a save posted from another site is refused.
 
 **Activity stream scenarios** (`stream_page.feature`) cover the page's SSE and
@@ -773,7 +802,7 @@ link to rp's setup page carrying the host the browser used, and the proxy:
   "rp unreachable" status frame and stream end. The BDD client drops its SSE
   connection before stopping the BFF (testing.md §5.4). Browser-level SSE
   swap behaviour is proven by the `@browser` layer: `browser.feature`'s stream
-  scenario and the `sse.feature` spike.
+  scenario and `sse.feature`.
 
 ### Targets-inbox BDD (`targets_page.feature`)
 
@@ -837,8 +866,8 @@ avoids.
   `stream_gap` divider).
 - `sse_proxy.rs`: the incremental SSE frame parser (frames split across
   chunks, CRLF, multi-line `data:`, comment lines, missing `id:`), and the
-  proxy against an in-test axum stub serving a canned rp stream (ADR-004's
-  escape hatch — streaming is beyond mockall): cursor forwarding, frame `id`
+  proxy against an in-test axum stub serving a canned rp stream (streaming is
+  beyond mockall): cursor forwarding, frame `id`
   placement, gap + disconnect translation.
 - `pages/targets.rs`: the PA tri-state (blank → explicit `null`,
   number passthrough, non-numeric → field error), goal-row parsing
@@ -871,9 +900,8 @@ avoids.
 
 ## References
 
-- The BFF's origin: [`docs/plans/archive/config-actions.md`](../plans/archive/config-actions.md)
-- Targets inbox (P4): [`docs/plans/archive/planetarium-target-import.md`](../plans/archive/planetarium-target-import.md); rp-side contract: [`rp.md` § Target Store](rp.md#target-store); MCP client construction: [ADR-017](../decisions/017-standard-mcp-client-construction.md)
+- Targets inbox, rp-side contract: [`rp.md` § Target Store](rp.md#target-store); MCP client construction: [ADR-017](../decisions/017-standard-mcp-client-construction.md)
 - Chosen UI direction + stack: [`docs/plans/ui-design/mocks/README.md`](../plans/ui-design/mocks/README.md)
-- The setup pages the BFF's own `/setup` and rp's are served by: [`docs/crates/rusty-photon-setup.md`](../crates/rusty-photon-setup.md); why the configuration pages moved there: [`driver-setup-pages.md`](../plans/archive/driver-setup-pages.md)
+- The setup pages the BFF's own `/setup` and rp's are served by: [`docs/crates/rusty-photon-setup.md`](../crates/rusty-photon-setup.md)
 - HTTP-client / mockall pattern: [`sentinel.md`](sentinel.md)
 - Lifecycle: [`docs/skills/service-lifecycle.md`](../skills/service-lifecycle.md) "Plain axum service"

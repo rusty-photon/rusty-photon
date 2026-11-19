@@ -16,9 +16,7 @@
 //!   launchd would restart it, again and again;
 //! - a [`SERIAL`] driver exits on its absent device, so it is checked for
 //!   its config and its handshake attempt in the log, not a probe;
-//! - the cameras, zwo-focuser and phd2-guider create no config
-//!   ([`NO_CONFIG_FILE`]), and phd2-guider's `/health` answers 503 with no
-//!   PHD2 to talk to;
+//! - the cameras and zwo-focuser create no config ([`NO_CONFIG_FILE`]);
 //! - zwo-focuser finds its focuser through the HID APIs, which under launchd
 //!   block until the user grants a privacy permission, which a CI runner
 //!   cannot: it is held to staying alive under launchd, then probed in the
@@ -73,11 +71,17 @@ fn refused(reason: impl Into<String>) -> Error {
     Error::Refused(reason.into())
 }
 
-/// A `brew` command, run without its auto-update, cleanup and hints.
+/// A `brew` command, run without its auto-update, cleanup and hints, and
+/// without the autoremove that follows `brew uninstall`. Autoremove would
+/// take every service along with the meta-formula, before each service's
+/// own uninstall is checked, and any formula already on the machine that
+/// was installed as a dependency nothing needs any more: a run removes only
+/// what it installed.
 fn brew(args: &[&str]) -> Cmd {
     Cmd::new("brew", args)
         .env("HOMEBREW_NO_AUTO_UPDATE", "1")
         .env("HOMEBREW_NO_INSTALL_CLEANUP", "1")
+        .env("HOMEBREW_NO_AUTOREMOVE", "1")
         .env("HOMEBREW_NO_ENV_HINTS", "1")
 }
 
@@ -443,20 +447,6 @@ impl<R: Runner> Run<'_, R> {
         Ok(())
     }
 
-    /// phd2-guider answers 503 without PHD2, which still shows it serves.
-    fn phd2_answers(&mut self, url: &str) -> Option<String> {
-        let mut last = String::new();
-        let answered = self.wait_until(30, |run| {
-            let curl = Cmd::new(
-                "curl",
-                &["-s", "-o", "/dev/null", "-w", "%{http_code}", url],
-            );
-            last = run.runner.read(&curl).unwrap_or_else(|_| "000".to_owned());
-            last == "200" || last == "503"
-        });
-        (!answered).then_some(last)
-    }
-
     fn check(&mut self, service: &str) -> Result<(), Error> {
         let bin = self.bin(service);
         self.require(
@@ -531,24 +521,12 @@ impl<R: Runner> Run<'_, R> {
         if service == "zwo-focuser" {
             return self.hid_gated(service, &url, port);
         }
-        if service == "phd2-guider" {
-            if let Some(last) = self.phd2_answers(&url) {
-                return Err(self.fail(
-                    service,
-                    &format!(
-                        "no HTTP response on port {port} ({}; last code {last})",
-                        probe_path(service)
-                    ),
-                ));
-            }
-        } else {
-            let served = self.wait_until(30, |run| run.answers(&url));
-            self.require(
-                served,
-                service,
-                &format!("no HTTP response on port {port} ({})", probe_path(service)),
-            )?;
-        }
+        let served = self.wait_until(30, |run| run.answers(&url));
+        self.require(
+            served,
+            service,
+            &format!("no HTTP response on port {port} ({})", probe_path(service)),
+        )?;
         if self_creates_config(service) {
             let created = self.wait_until(15, has_config);
             self.require(
@@ -969,6 +947,35 @@ mod tests {
         assert!(formulas.join("rusty-photon-nightly.rb").is_file());
     }
 
+    /// Homebrew's uninstall autoremoves every formula installed as a
+    /// dependency that nothing needs any more, unless
+    /// `HOMEBREW_NO_AUTOREMOVE` is set; a service's uninstall then finds no
+    /// keg.
+    #[test]
+    fn the_meta_formula_uninstall_leaves_each_service_to_its_own() {
+        let mac = Mac::new(&["plate-solver"]);
+        mac.install("rusty-photon-plate-solver");
+        let keg = mac.path("prefix/bin/rusty-photon-plate-solver");
+        let bin = keg.clone();
+        let mut runner = mac
+            .brew()
+            .on_cmd("brew uninstall rusty-photon-nightly", move |cmd| {
+                let autoremove = !cmd
+                    .env
+                    .contains(&("HOMEBREW_NO_AUTOREMOVE".to_owned(), "1".to_owned()));
+                if autoremove {
+                    fs::remove_file(&keg).unwrap();
+                }
+                Ok(String::new())
+            })
+            .on("brew uninstall rusty-photon-plate-solver", move || {
+                fs::remove_file(&bin)
+                    .map(|()| String::new())
+                    .map_err(|_| ())
+            });
+        mac.verify(&mut runner, &Mac::request(None)).unwrap();
+    }
+
     #[test]
     fn a_failed_check_cleans_up_and_names_the_service() {
         let mac = Mac::new(&["filemonitor"]);
@@ -1098,7 +1105,7 @@ mod tests {
     }
 
     /// A service that installs, answers its probe and needs no config:
-    /// zwo-camera, phd2-guider and zwo-focuser are such.
+    /// zwo-camera and zwo-focuser are such.
     fn quiet_service(mac: &Mac, service: &'static str) -> Script {
         mac.install(&format!("rusty-photon-{service}"));
         let bin = mac.path(&format!("prefix/bin/rusty-photon-{service}"));
@@ -1187,23 +1194,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "FAIL [sentinel]: rusty-photon-doctor tls renew (nothing due) did not exit 0"
-        );
-    }
-
-    #[test]
-    fn phd2_guider_answering_503_serves() {
-        let mac = Mac::new(&["phd2-guider"]);
-        let request = Mac::request(Some(&["phd2-guider"]));
-        let mut runner = quiet_service(&mac, "phd2-guider")
-            .on("curl -s -o /dev/null -w", || Ok("503".to_owned()));
-        mac.verify(&mut runner, &request).unwrap();
-
-        let mut runner = quiet_service(&mac, "phd2-guider")
-            .on("curl -s -o /dev/null -w", || Ok("404".to_owned()));
-        let error = mac.verify(&mut runner, &request).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "FAIL [phd2-guider]: no HTTP response on port 11130 (/health; last code 404)"
         );
     }
 

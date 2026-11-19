@@ -23,7 +23,7 @@ thiserror = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
 # The MCP *server* half: the focus tools rp aggregates (rp.md § Plugin-
-# Provided Tools). The client half comes through rp-mcp-client (ADR-017).
+# Provided Tools). The client half comes through rp-mcp-client.
 rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 schemars = { workspace = true }
 # The request cancellation token rmcp hands a tool body (`RequestContext::ct`).
@@ -122,6 +122,9 @@ mockall = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+# test-util: paused tokio time (`start_paused`), so the offsets tests walk
+# a focus that drifts over minutes of sweeps without waiting them out.
+tokio = { workspace = true, features = ["test-util"] }
 cargo-husky = { workspace = true }
 
 [[test]]

@@ -26,6 +26,10 @@ this doc covers the crate's own design.
 - Cooperative-shutdown propagation: the handle is a
   `CancellationToken`-backed clone, so spawned subtasks observe the
   same cancellation as the main loop.
+- Restart on request ([`Restart`]): a service asked to restart stops as
+  it does on a shutdown and exits with [`RESTART_EXIT_CODE`], which its
+  service manager restarts it on, within [`RESTART_CLOSE_DEADLINE`] even
+  when its close hangs ([below](#restart-on-request)).
 - Install the shared tracing subscriber ([`init_tracing`] /
   [`init_service_tracing`]): logs go to stderr (stdout is reserved for the
   `bound_addr=` handshake the BDD harness parses), filtered by `RUST_LOG`
@@ -77,26 +81,39 @@ Out of scope:
 
 ## Public API
 
-Four types, three result/error aliases, and four free functions
+Five types, three result/error aliases, four free functions
 ([`init_tracing`], [`init_service_tracing`], [`is_scm_service`],
-[`report_from_boxed`]), plus the type-only `color_eyre::Report`
+[`report_from_boxed`]) and two constants ([`RESTART_EXIT_CODE`],
+[`RESTART_CLOSE_DEADLINE`]), plus the type-only `color_eyre::Report`
 re-export.
 [`Shutdown`] is constructed only by the runner.
 [`ReloadSignal`] has a public constructor so integration tests can
 drive a service's run loop with synthetic reload events, and so
 non-signal-driven reload sources (e.g. a file-watcher) can share the
 same primitive — but the canonical producer remains the runner.
+[`Restart`] has one for the same tests: its request only cancels the
+token it was given, with no deadline and no exit, since only the
+runner turns the stop into an exit.
 
 ```text
 ServiceRunner::new(name)                       -> ServiceRunner
 ServiceRunner::with_reload(self)               -> ServiceRunner
 ServiceRunner::scm_mode(self, enable)          -> ServiceRunner   // no-op unless cfg(all(windows, feature = "scm"))
+ServiceRunner::condition_path_exists(self, path) -> ServiceRunner // under the SCM, a clean stop while `path` is absent
 ServiceRunner::run(self, |Shutdown| async)              -> ServiceResult
 ServiceRunner::run_with_reload(self, |Shutdown, ReloadSignal| async) -> ServiceResult
 
 Shutdown::token()        -> CancellationToken
 Shutdown::cancelled()    -> impl Future<Output = ()> + Send + 'static
 Shutdown::is_cancelled() -> bool
+Shutdown::restart()      -> Restart
+
+Restart::new(CancellationToken) -> Restart    // for tests: a request only cancels the token
+Restart::request(&self)                       // stop as on a shutdown, then exit with RESTART_EXIT_CODE; a second call does nothing
+Restart::is_requested(&self) -> bool
+
+RESTART_EXIT_CODE: i32 = 75                   // sysexits' EX_TEMPFAIL
+RESTART_CLOSE_DEADLINE: Duration = 10 s
 
 ReloadSignal::new()      -> ReloadSignal      // for tests / alt sources
 ReloadSignal::notify(&self)                   // wake one waiter
@@ -280,6 +297,78 @@ sources lets one drop the other mid-flight — that's the bug
 the underlying motivation for funneling everything through a single
 `Shutdown` handle.
 
+### Restart on request
+
+A service restarts itself when a client asks it to. The daily power
+cycle's dusk restarts each service whose device was power-cycled, so
+the service meets its device in a fresh process
+([daily-power-cycle.md](../plans/daily-power-cycle.md), decision 5).
+The runner owns the process side of the restart; the request arrives
+however the service takes requests (a driver service's HTTP route,
+[below](#a-driver-service-takes-the-request-over-http)).
+
+- **A request is a shutdown that exits with a code.**
+  [`Shutdown::restart`] hands out a [`Restart`]. [`Restart::request`]
+  marks the restart, starts the close deadline, and cancels the
+  shutdown token, so the service runs the stop path it already has: it
+  stops serving and closes its devices. When the run closure returns,
+  `Ok` or `Err`, the runner exits with [`RESTART_EXIT_CODE`] instead of
+  returning to `main`. A second request does nothing, and a shutdown
+  signal before or after one leaves the exit the restart's.
+- **Every service manager restarts on the code.** 75 is not 0, so
+  systemd's `Restart=on-failure` starts the service again after
+  `RestartSec=5`, launchd's `KeepAlive` respawns it, and the SCM's
+  failure actions restart it after 5 s, since the installer sets the
+  flag that runs them on a stop that reports an error
+  ([SCM mode](#scm-mode-cfgallwindows-feature--scm)). It is not 1, the
+  code a failed run exits with, so a journal or the SCM's event log
+  tells a requested restart from a failure.
+- **Console mode exits from the runner.** Once the closure returns, the
+  runner logs the restart and calls `std::process::exit(75)` without
+  dropping the runtime, so a blocking task that a hung driver call
+  holds cannot hold the exit. `main` never sees the restart.
+- **SCM mode reports a stop with the code.** The runner shuts the
+  runtime down in the background, without waiting for its blocking
+  tasks, reports `SERVICE_STOPPED` with `ServiceSpecific(75)`, a clean
+  stop record with a cause (event 7024), and `dispatch` returns
+  `Ok(())`.
+- **The close has a fixed deadline, [`RESTART_CLOSE_DEADLINE`] (10 s).**
+  A wedged camera can hang its close (decision 11), so the request
+  starts a watchdog on an OS thread of its own. If the closure has not
+  returned when the deadline passes, the watchdog logs that the close
+  did not finish and exits with the restart code, after reporting
+  `SERVICE_STOPPED` with it under the SCM. A thread rather than a task:
+  a close that blocks a runtime worker, or the thread that polls the
+  closure, cannot hold it. Under systemd, an exit that itself hangs (a
+  vendor SDK's exit handler waiting on the wedged call) is sentinel's to
+  end: the process no longer answers its health probes, and the restart
+  sentinel then makes has systemd kill it once the unit's stop timeout
+  passes, minutes later rather than seconds ([sentinel.md § Service
+  Health Supervision](../services/sentinel.md#service-health-supervision)).
+
+#### A driver service takes the request over HTTP
+
+`rusty-photon-driver`'s `restart::routes` serves two routes, which every
+ASCOM driver service merges into its router beside the Alpaca API,
+behind the same Basic Auth and TLS:
+
+| Request | Answer |
+|---|---|
+| `POST /service/v1/restart`, with a JSON body (`{}`) | `202 Accepted` with `{"instance": "<id>"}`, the process that is restarting. The restart is requested before the answer is written, and the answer still reaches the client: the server finishes a request in flight before it stops |
+| `GET /service/v1/instance` | `200` with `{"instance": "<id>"}` |
+| Either request without the service's credentials, when `server.auth` is configured | `401`, as for an Alpaca request: the restart is not requested |
+
+The instance id names one process. It is fixed when the process first
+serves and differs in every process after it, and a reload keeps it.
+A client that needs to know the restarted service is back polls
+`GET /service/v1/instance` until another id answers, as `rp`'s
+`restart_service` does ([rp.md § Power
+Switching](../services/rp.md#power-switching)). The `POST` takes JSON
+so that a page on another site cannot submit it as a form: a body of
+any other type is refused with `415`, and a browser sends
+`application/json` to another site only after a CORS preflight, which
+no driver grants: none sends CORS headers.
+
 ### SCM mode (`#[cfg(all(windows, feature = "scm"))]`)
 
 When `scm_mode(true)` is set on Windows with the `scm` feature
@@ -332,6 +421,23 @@ request) report `Win32(0)` and trigger no restart.
 When `scm_mode(false)` (or the `scm` feature is off, or the target
 is not Windows), the runner falls through to the OS-signal path
 unchanged.
+
+**The config condition (`condition_path_exists`).** A service with no
+config it can default hands its config path to the runner, which does
+what systemd's `ConditionPathExists=` does for the Linux unit: when the
+run goes to the SCM and the file is not there, it logs `<name>: not
+started: <path> does not exist; write it, then start the service` and
+ends the run with `Ok(())` without calling the closure. Step 6 then
+reports `Win32(0)`, a clean stop, which the failure actions leave alone,
+so the service stays stopped until it is started again. The MSI
+installs such a service Automatic like every other
+([ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)),
+and the condition is what keeps it from running without its config. A
+path that cannot be checked, as opposed to one that is not there, lets
+the closure run and meet whatever stopped the check. A console run
+ignores the condition, on every platform: the service meets the missing
+file and fails with its own error, which is what an operator running it
+by hand needs to see.
 
 ### SCM-mode rolling-file logging (`init_service_tracing`)
 
@@ -570,6 +676,8 @@ crates/rusty-photon-service-lifecycle/src/
 │                # every OS so its helpers are unit-tested cross-platform
 ├── shutdown.rs  # Shutdown — thin wrapper over CancellationToken
 ├── reload.rs    # ReloadSignal — thin wrapper over Arc<Notify>
+├── restart.rs   # Restart — the request, its exit code, and the close
+│                # deadline's watchdog thread
 └── runner.rs    # ServiceRunner — builder + run/run_with_reload
 ```
 
@@ -600,12 +708,27 @@ If the SCM glue grows past ~100 LOC it gets its own module.
   `.with_reload()` returns a descriptive error rather than running
   the closure. The runner builds and tears down a fresh runtime
   per call.
+- **Restart** — unit tests pin that a request cancels the shutdown
+  token and marks the restart, that a second request does nothing, and
+  that the watchdog runs its exit once the deadline passes, through an
+  exit and a deadline the test supplies. The exit itself is pinned by
+  each driver service's BDD suite: a driver asked to restart exits with
+  75.
 - **Error reporting** — the `Once`-guarded `color_eyre::install()` is
   idempotent across repeated `ServiceRunner::run` calls; a closure
   error with a `source()` chain renders as a multi-line report (chain
   present) rather than a single `Debug` line; the subscriber built by
   `init_tracing` carries the `ErrorLayer` (asserted via
   `SpanTrace::capture()` under `tracing::subscriber::with_default`).
+- **Config condition** — the decision is a plain function of whether
+  the run goes to the SCM, the condition, and the file: unit tests pin
+  that only an SCM run with the file absent holds the service back,
+  that a path which cannot be checked does not (Unix: a file as the
+  parent), that only a Windows build with `scm` goes to the SCM, and
+  that a console run, with and without reload, calls the closure with
+  the file absent. The stop itself is proven installed: `cargo ci
+  verify-msi` requires each gated service with no config to be stopped
+  with exit code 0 and its log to say it did not start.
 - **SCM mode** — `scm_mode(false)` is a no-op and falls through to
   the OS-signal path on Windows. The full SCM dispatch is *not*
   exercised in CI: `windows_service::service_dispatcher::start` only

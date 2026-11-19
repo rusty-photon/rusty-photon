@@ -66,8 +66,8 @@ impl FilterWheel {
 
     /// Returns `true` if the filter wheel is open
     /// # Errors
-    /// Infallible today — this is [`Camera::is_open`](crate::Camera::is_open)
-    /// on the shared backend.
+    /// Infallible — this is [`Camera::is_open`](crate::Camera::is_open) on the
+    /// shared backend.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};

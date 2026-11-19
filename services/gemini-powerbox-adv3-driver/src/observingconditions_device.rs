@@ -1,8 +1,5 @@
 //! The Advanced 3's `ObservingConditions` device.
 //!
-//! Like the Switch device, this holds an `Option<Session<GeminiCodec>>` —
-//! the session existing is the canonical "Connected" state.
-//!
 //! `Temperature`, `Humidity` and `DewPoint` are the AHT20's three values
 //! from the frame the manager polls, each through the shared sliding-window
 //! mean in [`rusty_photon_rolling_stats`]. The manager feeds a window only
@@ -21,6 +18,7 @@ use rusty_photon_rolling_stats::observing_conditions::{
 use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 use tracing::debug;
 
 use crate::codec::GeminiCodec;
@@ -41,6 +39,8 @@ macro_rules! ensure_connected {
 #[derive(derive_more::Debug)]
 pub struct GeminiObservingConditionsDevice {
     config: ObservingConditionsConfig,
+    /// The connected state: `Some` from a successful connect to a
+    /// disconnect, with no flag beside it that could disagree.
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<GeminiCodec>>>>,
     #[debug(skip)]
@@ -195,7 +195,7 @@ impl ObservingConditions for GeminiObservingConditionsDevice {
             .get_cached_state()
             .await
             .temp_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -210,7 +210,7 @@ impl ObservingConditions for GeminiObservingConditionsDevice {
             .get_cached_state()
             .await
             .humidity_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -225,7 +225,7 @@ impl ObservingConditions for GeminiObservingConditionsDevice {
             .get_cached_state()
             .await
             .dewpoint_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -237,17 +237,17 @@ impl ObservingConditions for GeminiObservingConditionsDevice {
     async fn time_since_last_update(&self, sensor_name: String) -> ASCOMResult<f64> {
         ensure_connected!(self);
         let state = self.manager.get_cached_state().await;
+        let now = Instant::now().into_std();
         let duration = match sensor_name.to_lowercase().as_str() {
             // The freshest window; `None` while all three are empty, so the
             // client reads "no data" rather than "updated just now".
-            "" => time_since_freshest_update([
-                &state.temp_mean,
-                &state.humidity_mean,
-                &state.dewpoint_mean,
-            ]),
-            "temperature" => state.temp_mean.time_since_last_update(),
-            "humidity" => state.humidity_mean.time_since_last_update(),
-            "dewpoint" => state.dewpoint_mean.time_since_last_update(),
+            "" => time_since_freshest_update(
+                [&state.temp_mean, &state.humidity_mean, &state.dewpoint_mean],
+                now,
+            ),
+            "temperature" => state.temp_mean.time_since_last_update(now),
+            "humidity" => state.humidity_mean.time_since_last_update(now),
+            "dewpoint" => state.dewpoint_mean.time_since_last_update(now),
             "cloudcover" | "pressure" | "rainrate" | "skybrightness" | "skyquality"
             | "starfwhm" | "skytemperature" | "winddirection" | "windgust" | "windspeed" => {
                 return Err(ASCOMError::NOT_IMPLEMENTED);
@@ -314,6 +314,7 @@ mod tests {
     use ascom_alpaca::ASCOMErrorCode;
     use async_trait::async_trait;
     use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+    use std::time::Duration;
 
     /// Factory whose `open()` always fails.
     struct FailingFactory;
@@ -410,7 +411,8 @@ mod tests {
     async fn the_three_readings_are_the_aht20s_fields() {
         let (device, manager) = make_device_on(Arc::new(MockGeminiTransportFactory::default()));
         device.set_connected(true).await.unwrap();
-        let frame = manager.get_cached_state().await.status.unwrap();
+        let state = manager.get_cached_state().await;
+        let frame = state.status.get().unwrap();
         let t = device.temperature().await.unwrap();
         assert!(
             (t - frame.ambient_temperature.unwrap()).abs() < 0.01,
@@ -452,6 +454,29 @@ mod tests {
             .unwrap();
         assert!(any <= temperature, "{any} > {temperature}");
         assert!(any < 5.0, "{any}");
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn time_since_last_update_follows_the_clock_the_frame_is_dated_on() {
+        // The handshake's frame is the newest sample. Three seconds of the
+        // paused clock later, short of the next poll, every sensor name
+        // answers three seconds: the age is counted on the clock that dated
+        // the frame, which no other clock follows while this one is paused.
+        let device = connected_device().await;
+
+        tokio::time::advance(Duration::from_secs(3)).await;
+
+        for sensor in ["", "temperature", "humidity", "dewpoint"] {
+            let seconds = device
+                .time_since_last_update(sensor.to_string())
+                .await
+                .unwrap();
+            assert!(
+                (seconds - 3.0).abs() < f64::EPSILON,
+                "{sensor:?}: {seconds} s"
+            );
+        }
         device.set_connected(false).await.unwrap();
     }
 

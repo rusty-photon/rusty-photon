@@ -26,15 +26,8 @@
 //! incarnation has served instead of sleeping.
 //!
 //! The listening socket is bound once and held for the stub's whole
-//! life, through every stop and restart: a stopped stub keeps
-//! accepting connections and drops each one unanswered, which a client
-//! sees as a dead service, while the port can never be handed to
-//! another process in the meantime. Test shards run concurrently and
-//! bind OS-assigned ports of their own; a port released between a stop
-//! and a restart was taken by another shard's Alpaca server often
-//! enough to fail a scenario on a healthy tree.
+//! life, through every stop and restart (`held_port` says why).
 
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -42,6 +35,8 @@ use std::time::Duration;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::json;
+
+use super::held_port::{self, SharedListener};
 
 /// ASCOM `NOT_CONNECTED` error number (0x407), answered by device reads
 /// while the stub's server-side `Connected` state is false.
@@ -124,6 +119,15 @@ struct StubState {
     unique_id: String,
     /// `configureddevices` reads served by this incarnation.
     device_list_reads: AtomicU32,
+    /// `Connected = true` requests this incarnation has taken.
+    connect_requests: AtomicU32,
+    /// `Connected = false` requests this incarnation has taken.
+    disconnect_requests: AtomicU32,
+    /// The process the restart routes name: a restart request replaces it
+    /// once the stub has played its restart.
+    instance: RwLock<String>,
+    /// Restart requests this incarnation has taken.
+    restart_requests: AtomicU32,
 }
 
 /// In-process Alpaca device service that can be stopped and brought
@@ -141,32 +145,6 @@ pub struct AlpacaDeviceStub {
     /// Ends the current task (server or refuser).
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<()>>,
-}
-
-/// `axum::serve` wants to own its listener; this hands it a shared
-/// handle instead, so the socket outlives the server and the refuser
-/// can take it over without the port ever being released.
-struct SharedListener(Arc<tokio::net::TcpListener>);
-
-impl axum::serve::Listener for SharedListener {
-    type Io = tokio::net::TcpStream;
-    type Addr = SocketAddr;
-
-    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        loop {
-            match self.0.accept().await {
-                Ok(pair) => return pair,
-                // A transient accept error (a reset before accept, a
-                // descriptor shortage): back off briefly, as axum's own
-                // listener does, rather than spin.
-                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        }
-    }
-
-    fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        self.0.local_addr()
-    }
 }
 
 impl AlpacaDeviceStub {
@@ -189,7 +167,7 @@ impl AlpacaDeviceStub {
     /// Panics if no loopback port can be bound.
     #[must_use]
     pub fn start_as(device: StubDevice, unique_id: &str) -> Self {
-        let listener = bind_loopback().expect("failed to bind Alpaca stub");
+        let listener = held_port::bind_loopback().expect("failed to bind Alpaca stub");
         let port = listener
             .local_addr()
             .expect("stub has no local addr")
@@ -280,6 +258,28 @@ impl AlpacaDeviceStub {
         self.state.device_list_reads.load(Ordering::SeqCst)
     }
 
+    /// How many `Connected = true` requests the current incarnation has
+    /// taken. Resets to zero on a restart.
+    #[must_use]
+    pub fn connect_requests(&self) -> u32 {
+        self.state.connect_requests.load(Ordering::SeqCst)
+    }
+
+    /// How many `Connected = false` requests the current incarnation has
+    /// taken. Resets to zero on a restart.
+    #[must_use]
+    pub fn disconnect_requests(&self) -> u32 {
+        self.state.disconnect_requests.load(Ordering::SeqCst)
+    }
+
+    /// How many restart requests (`POST /service/v1/restart`) the current
+    /// incarnation has taken. Resets to zero on [`Self::restart`]; the
+    /// restart a request plays does not reset it.
+    #[must_use]
+    pub fn restart_requests(&self) -> u32 {
+        self.state.restart_requests.load(Ordering::SeqCst)
+    }
+
     /// Set the reading the safety-monitor variant reports while
     /// connected.
     pub fn set_is_safe(&self, is_safe: bool) {
@@ -368,25 +368,9 @@ impl AlpacaDeviceStub {
         self.task = Some(task);
     }
 
-    /// Stand in for a stopped service: accept every connection and drop
-    /// it unanswered, keeping the port bound.
+    /// Stand in for a stopped service, keeping the port bound.
     fn refuse(&mut self) {
-        let listener = self.listener.clone();
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    accepted = listener.accept() => match accepted {
-                        Ok((stream, _)) => drop(stream),
-                        // Same backoff as the serving listener: a
-                        // persistent accept error (descriptor
-                        // exhaustion) must not become a busy loop.
-                        Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-                    }
-                }
-            }
-        });
+        let (shutdown_tx, task) = held_port::refuse(self.listener.clone());
         self.shutdown_tx = Some(shutdown_tx);
         self.task = Some(task);
     }
@@ -409,16 +393,22 @@ fn fresh_state(is_safe: bool, probe: FocuserProbe, unique_id: &str) -> Arc<StubS
         temperature_reads: AtomicU32::new(0),
         unique_id: unique_id.to_string(),
         device_list_reads: AtomicU32::new(0),
+        connect_requests: AtomicU32::new(0),
+        disconnect_requests: AtomicU32::new(0),
+        instance: RwLock::new(next_instance()),
+        restart_requests: AtomicU32::new(0),
     })
 }
 
-/// Bind a loopback listener on an OS-assigned port — once per stub;
-/// the socket is never released and rebound.
-fn bind_loopback() -> std::io::Result<tokio::net::TcpListener> {
-    let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
-    socket.listen(64)
+/// A process id no stub process has named before.
+fn next_instance() -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    format!("stub-process-{}", NEXT.fetch_add(1, Ordering::SeqCst))
 }
+
+/// How long a stub asked to restart takes to come back as a new process:
+/// long enough that a client sees the old process first.
+const STUB_RESTART_DELAY: Duration = Duration::from_millis(300);
 
 fn router(device: StubDevice, state: Arc<StubState>) -> Router {
     let connected_path = format!("/api/v1/{}/0/connected", device.api_path());
@@ -466,16 +456,59 @@ fn router(device: StubDevice, state: Arc<StubState>) -> Router {
                         .find(|(k, _)| k == "Connected")
                         .is_some_and(|(_, v)| v.eq_ignore_ascii_case("true"));
                     state.connected.store(requested, Ordering::SeqCst);
+                    let counter = if requested {
+                        &state.connect_requests
+                    } else {
+                        &state.disconnect_requests
+                    };
+                    counter.fetch_add(1, Ordering::SeqCst);
                     Json(json!({ "ErrorNumber": 0, "ErrorMessage": "" }))
                 }
             }),
         );
 
+    let app = restart_routes(app, &state);
     match device {
         StubDevice::SafetyMonitor => safety_monitor_routes(app, state),
         StubDevice::Camera => camera_routes(app, &state),
         StubDevice::Focuser => focuser_routes(app, state),
     }
+}
+
+/// A driver service's restart routes
+/// (docs/crates/rusty-photon-service-lifecycle.md § Restart on request).
+/// A request is answered with the current process, which the stub
+/// replaces [`STUB_RESTART_DELAY`] later with a new one whose device is
+/// disconnected, as a restarted service's is.
+fn restart_routes(app: Router, state: &Arc<StubState>) -> Router {
+    let instance_state = Arc::clone(state);
+    let restart_state = Arc::clone(state);
+    app.route(
+        "/service/v1/instance",
+        get(move || {
+            let state = Arc::clone(&instance_state);
+            async move { Json(json!({ "instance": *state.instance.read().expect("stub instance lock poisoned") })) }
+        }),
+    )
+    .route(
+        "/service/v1/restart",
+        axum::routing::post(move |_: Json<serde_json::Value>| {
+            let state = Arc::clone(&restart_state);
+            async move {
+                state.restart_requests.fetch_add(1, Ordering::SeqCst);
+                let current = state.instance.read().expect("stub instance lock poisoned").clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(STUB_RESTART_DELAY).await;
+                    state.connected.store(false, Ordering::SeqCst);
+                    *state.instance.write().expect("stub instance lock poisoned") = next_instance();
+                });
+                (
+                    axum::http::StatusCode::ACCEPTED,
+                    Json(json!({ "instance": current })),
+                )
+            }
+        }),
+    )
 }
 
 /// `IsSafe`, gated on `Connected`.

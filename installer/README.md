@@ -1,8 +1,8 @@
 # installer/ — the Windows suite MSI (WiX v5)
 
-One `rusty-photon-<version>-x64.msi` for the whole family (ADR-015;
-design + phase log: `docs/plans/archive/windows-packaging.md`). Hand-authored WiX v5
-sources, no generator — the same explicitness rule as the Linux
+One `rusty-photon-<version>-x64.msi` for the whole family
+([ADR-015](../docs/decisions/015-windows-packaging-architecture.md) holds
+why). Hand-authored WiX v5 sources, no generator — the same explicitness rule as the Linux
 `services/<svc>/pkg/` dirs: `git grep` must find the real bytes that ship.
 
 ## Layout
@@ -13,15 +13,16 @@ sources, no generator — the same explicitness rule as the Linux
   Automation), and the `rusty-photon-renew` scheduled-task custom actions
   (daily `rusty-photon-doctor.exe tls renew` as LocalSystem, registered
   via `schtasks` — WiX has no native scheduled-task element; removed on
-  uninstall, rollback-guarded). The former ui-htmx seed custom action is
-  gone (#569).
+  uninstall, rollback-guarded). No action seeds ui-htmx's config: the
+  service creates its own
+  ([ui-htmx.md § Configuration](../docs/services/ui-htmx.md#configuration)).
 - `fragments/<svc>.wxs` — one fragment per packaged service (the Linux
   package set plus session-runner). Each installs
   `rusty-photon-<svc>.exe` (renamed from the Cargo bin), a Windows service
   named `rusty-photon-<svc>` running as LocalSystem with `--service`,
   restart-after-5s failure actions **plus the failure-actions flag** (see
   below), and a per-port firewall exception. The two zwo fragments bundle
-  their MIT SDK DLL (ADR-013/014); `zwo-sdk-license.wxs` is the shared
+  their MIT SDK DLL; `zwo-sdk-license.wxs` is the shared
   license component. The sentinel fragment additionally installs
   `rusty-photon-doctor.exe` (doctor ships in Core with sentinel — no
   separate package; the renewal scheduled task in `Package.wxs` runs it).
@@ -31,9 +32,10 @@ sources, no generator — the same explicitness rule as the Linux
 The tools crate's packaging guard
 ([`tools/rusty-photon-ci/src/pkg_assets.rs`](../tools/rusty-photon-ci/src/pkg_assets.rs))
 checks the fragment contract (fragment per service, service name, exe
-rename, `--service`, failure actions + flag, firewall port, demand-start on
-exactly the gated services, the doctor exe + renewal-task wiring, QHY/ZWO
-pin parity) on every pull request. Run it after any edit here, with
+rename, `--service`, failure actions + flag, firewall port, Automatic
+start type, a start on install and a stop that waits, a gated service's
+start that does not, the doctor exe + renewal-task wiring, QHY/ZWO pin
+parity) on every pull request. Run it after any edit here, with
 `cargo test -p rusty-photon-ci pkg_assets`.
 
 ## Fragment contract notes
@@ -49,16 +51,25 @@ pin parity) on every pull request. Run it after any edit here, with
   types); `cargo ci build-msi` suppresses it — the util element cannot
   express the flag, and `cargo ci verify-msi` behaviorally proves the
   combination works.
-- **Demand-start** (`Start="demand"`, no `Start="install"`) is the
-  `ConditionPathExists=` translation for the six no-defaultable-config
-  services: sky-survey-camera, plate-solver, calibrator-flats,
-  session-runner, polar-align, focus-model.
+- **Every service starts automatically**, the six with no defaultable
+  config too (sky-survey-camera, plate-solver, calibrator-flats,
+  session-runner, polar-align, focus-model). They do what the Linux units'
+  `ConditionPathExists=` does themselves (`ServiceRunner::condition_path_exists`
+  in `rusty-photon-service-lifecycle`): without their config they stop at
+  once with exit code 0, which the failure actions leave alone. The start
+  type is therefore the package's, and an upgrade, which removes the old
+  product and installs each service afresh, has no operator setting to
+  lose. Their start on install is a `ServiceControl` of its own with
+  `Wait="no"`, since a service that stops at once never runs for the
+  installer to see; the stop keeps `Wait="yes"`, so no exe is replaced or
+  removed while it runs.
 - **zwo-focuser's DLL keeps ZWO's original name** `EAF_focuser.dll`: the
   import library embeds the DLL name it was generated from, so the exe's
   import table asks the loader for that exact name (the `EAFFocuser.lib`
   rename exists only for the `-lEAFFocuser` link directive).
-- **qhy-camera ships no DLL** (ADR-013): `qhyccd.dll` comes from QHY's
-  operator-installed All-in-One pack; the exe delay-loads it and the
+- **qhy-camera ships no DLL**: QHYCCD's SDK is proprietary and never
+  redistributed, so `qhyccd.dll` comes from QHY's operator-installed
+  All-in-One pack; the exe delay-loads it and the
   fragment adds a Start-Menu shortcut for the interactive `doctor`.
 
 ## Building and verifying
@@ -74,8 +85,7 @@ CI: the `msi` workflow (`.github/workflows/msi.yml`) runs both on
 the release upload; and the `msi` leg of `nightly-packages.yml` runs them
 nightly with `cargo ci build-msi --version <nightly stamp>`, installing
 over the previously published nightly MSI with the shipped doctor's
-`--fix` in the loop (`cargo ci verify-msi --upgrade-from`;
-`docs/plans/archive/nightly-releases.md` N3).
+`--fix` in the loop (`cargo ci verify-msi --upgrade-from`).
 Operator guide: `docs/packaging-windows.md`.
 
 The build always defines two preprocessor variables: `Version` (the MSI

@@ -3,6 +3,11 @@
 class = "alpaca"
 port = 11117
 
+# The mount state record the driver writes beside its config
+# (docs/services/star-adventurer-gti.md §The mount state record): runtime
+# state, which doctor must never take for a misnamed config.
+state_file = "star-adventurer-gti.mount-state.json"
+
 # Hardware identity (docs/services/doctor.md §Hardware).
 # The mount's USB-C side is an STM32 running ST's stock USB-CDC stack, so
 # usb_vendor/usb_product are STMicroelectronics' generic Virtual COM Port ids

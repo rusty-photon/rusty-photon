@@ -1,7 +1,6 @@
 //! BDD step definitions for rp service
 
 pub mod auth_steps;
-pub mod auto_focus_steps;
 pub mod camera_info_steps;
 pub mod capture_binning_steps;
 pub mod capture_concurrency_steps;
@@ -25,7 +24,9 @@ pub mod estimate_background_steps;
 pub mod event_steps;
 pub mod focuser_steps;
 pub mod focuser_temperature_steps;
+pub mod guide_camera_guard_steps;
 pub mod guide_focus_steps;
+pub mod guide_run_watch_steps;
 pub mod guider_steps;
 pub mod image_http_api_steps;
 pub mod image_stats_steps;
@@ -40,7 +41,7 @@ pub mod operation_event_steps;
 pub mod optical_trains_steps;
 pub mod plan_schema_validation_steps;
 pub mod plate_solve_steps;
-pub mod refocus_train_steps;
+pub mod power_switching_steps;
 pub mod retired_config_steps;
 pub mod rotator_steps;
 pub mod safety_steps;

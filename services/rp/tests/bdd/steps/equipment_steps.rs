@@ -108,6 +108,7 @@ fn configured_with_switch(world: &mut RpWorld) {
         id: "main-switch".to_string(),
         alpaca_url: url,
         device_number: 0,
+        outputs: Vec::new(),
     });
 }
 
@@ -117,6 +118,7 @@ fn configured_with_switch_at(world: &mut RpWorld, url: String, device_number: i3
         id: "main-switch".to_string(),
         alpaca_url: url,
         device_number: device_number.cast_unsigned(),
+        outputs: Vec::new(),
     });
 }
 

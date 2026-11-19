@@ -94,7 +94,7 @@ fn main() -> ServiceResult {
 
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process exit so
-    // the final lines flush on SCM Stop. Console mode logs to stderr as before.
+    // the final lines flush on SCM Stop. Console mode logs to stderr.
     let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "calibrator-flats",
         cli.log_level,
@@ -109,6 +109,9 @@ fn main() -> ServiceResult {
 
     ServiceRunner::new("calibrator-flats")
         .scm_mode(cli.service)
+        // No default config to write: under the SCM the service stays
+        // stopped until the operator writes one.
+        .condition_path_exists(&config_path)
         .run(move |shutdown| async move {
             debug!(config_path = %config_path.display(), "loading configuration");
             let mut config = calibrator_flats::config::load_config(&config_path)?;

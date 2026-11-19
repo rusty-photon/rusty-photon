@@ -1,7 +1,7 @@
 //! Cucumber `World` for the `ui-htmx` BDD suite.
 //!
 //! Mirrors the binary-spawning pattern the other services use (see
-//! [`sentinel`](../../../../sentinel/tests/bdd/world.rs)): every scenario
+//! [`sentinel`](../../../sentinel/tests/bdd/world.rs)): every scenario
 //! spawns the *real* `ui-htmx` binary, plus a real `rp` orchestrator where
 //! the scenario reads one, and drives the BFF over HTTP. There is no
 //! in-process router and no stubbed client: the production clients reach rp's
@@ -36,7 +36,7 @@ pub struct UiWorld {
     /// The rendered HTML of the last BFF response. Kept as a `String` (never a
     /// parsed DOM): the `!Send` `scraper::Html` is built, queried, and dropped
     /// inside the synchronous [`crate::dom`] helpers, so it never crosses an
-    /// `.await` (see [`crate::dom`] and the UI-testing plan §4).
+    /// `.await` (see [`crate::dom`]).
     pub last_body: String,
     /// The URL of the last top-level page navigation, reported as `HX-Current-URL`
     /// on subsequent htmx requests so the captured fragments match what a browser
@@ -46,13 +46,13 @@ pub struct UiWorld {
     /// `@browser` step (Layer C / P3). Absent for the default, browser-free suite.
     pub browser: Option<BrowserSession>,
     /// How long `ServiceHandle::stop()` took to bring the BFF down after the
-    /// browser was quit. The coverage-invariant scenario (plan §9 Tier 0 step 3)
-    /// asserts this is well under the 5s SIGKILL grace — a graceful exit ran the
-    /// BFF's `atexit`, so its `.profraw` coverage was flushed (testing.md §5.4).
+    /// browser was quit. The coverage-invariant scenario asserts this is well
+    /// under the 5s SIGKILL grace — a graceful exit ran the BFF's `atexit`, so
+    /// its `.profraw` coverage was flushed (testing.md §5.4).
     pub bff_stop_elapsed: Option<Duration>,
     /// Live PIDs in the browser process group recorded just before the simulated
     /// geckodriver crash (≥ geckodriver + Firefox) — non-empty proves the reaper
-    /// had real work to do (plan §9 Tier 0 step 4).
+    /// had real work to do.
     pub session_pids_before: Vec<u32>,
     /// Live PIDs left in the browser process group after the reaper ran — must be
     /// empty (no orphaned geckodriver/Firefox/content processes survive).
@@ -122,10 +122,10 @@ impl UiWorld {
 
     // --- spawning real services -------------------------------------------
 
-    /// Spawn just the BFF — no rp process — for the `/fixtures/*`
-    /// scenarios (plan §9 Tier 1). The fixtures never talk to rp, so the
-    /// configured (unreachable) rp target is never contacted; this is the
-    /// lightest setup that brings up a fixtures-capable BFF. The spawned
+    /// Spawn just the BFF — no rp process — for the `/fixtures/*` scenarios.
+    /// The fixtures never talk to rp, so the configured (unreachable) rp
+    /// target is never contacted; this is the lightest setup that brings up a
+    /// fixtures-capable BFF. The spawned
     /// binary carries the `test-fixtures` feature (cargo `--all-features`;
     /// Bazel `:ui-htmx_fixtures`).
     pub async fn start_bff_only(&mut self) {
@@ -159,12 +159,10 @@ impl UiWorld {
         self.rp = Some(handle);
     }
 
-    /// Spawn rp with an empty roster (site configured so site-field validation
-    /// scenarios have something to reject).
+    /// Spawn rp with an empty roster.
     pub async fn start_rp_with_empty_roster(&mut self) {
-        let mut builder = bdd_infra::rp_harness::RpConfigBuilder::new();
-        builder.with_site(47.6, -122.3);
-        self.start_rp(&builder).await;
+        self.start_rp(&bdd_infra::rp_harness::RpConfigBuilder::new())
+            .await;
     }
 
     /// Spawn rp with an otherwise empty roster and one stub safety monitor,
@@ -409,8 +407,8 @@ impl UiWorld {
     }
 
     /// Fetch a `/fixtures/*` swap endpoint as an htmx request and return its
-    /// `(HX-* response header value, body)` for the named header — the §A
-    /// "header-presence tripwire" (plan §9 Tier 1). It proves the divergence-
+    /// `(HX-* response header value, body)` for the named header — the Layer A
+    /// header-presence tripwire. It proves the divergence-
     /// carrying signal (e.g. `HX-Retarget`) is observable in the *response* even
     /// though the body bytes are a plain fragment a P2 snapshot couldn't tell apart
     /// from a normal swap; the browser then proves it actually retargets.
@@ -496,8 +494,8 @@ impl UiWorld {
     }
 
     /// Tear down in the **correct** order — browser first, then the BFF — and time
-    /// the BFF stop (plan §9 Tier 0 step 3). Quitting the browser first closes its
-    /// `WebDriver` session (and so Firefox's held connections to the BFF), so the
+    /// the BFF stop. Quitting the browser first closes its `WebDriver` session
+    /// (and so Firefox's held connections to the BFF), so the
     /// BFF's graceful shutdown completes promptly instead of blocking until the
     /// 5s SIGKILL grace and losing its `.profraw` coverage flush (testing.md
     /// §5.4). Both handles are taken, so the `after`-hook teardown skips them.
@@ -511,8 +509,8 @@ impl UiWorld {
         self.bff_stop_elapsed = Some(start.elapsed());
     }
 
-    /// Worst-case browser teardown (plan §9 Tier 0 step 4): capture failure
-    /// artifacts while the session is live, simulate a geckodriver crash that
+    /// Worst-case browser teardown: capture failure artifacts while the
+    /// session is live, simulate a geckodriver crash that
     /// orphans Firefox, then reap the whole process group — recording the group's
     /// membership before the crash and the survivors after the reap. The browser
     /// handle is taken (reaped, not gracefully quit), so the `after`-hook skips it.

@@ -61,7 +61,6 @@ pub const NON_ALPACA_SERVICES: &[&str] = &[
     "calibrator-flats",
     "focus-model",
     "polar-align",
-    "phd2-guider",
     "ui-htmx",
 ];
 

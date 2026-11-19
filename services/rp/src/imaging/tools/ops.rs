@@ -1,9 +1,9 @@
 //! Shared trait surface for compound equipment-driving tools.
 //!
-//! Both [`super::auto_focus`] and [`super::center_on_target`] need a
-//! `capture(duration) → document_id` operation against the live camera
-//! adapter — extracted here so the trait has one canonical home rather
-//! than being declared in each compound tool's module.
+//! [`super::center_on_target`] needs a `capture(duration) →
+//! document_id` operation against the live camera adapter; the trait
+//! lives here, apart from the tool's driving logic, as the equipment
+//! surface a compound tool captures through.
 //!
 //! `String` errors keep the trait surface deliberately simple: every
 //! adapter ultimately wraps an Alpaca call whose error already carries

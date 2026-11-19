@@ -13,9 +13,8 @@
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    start_rp, write_temp_config_file, CameraConfig, CannedGuiding, FilterWheelConfig,
-    FocuserConfig, GuiderConfig, GuiderStub, GuiderStubBehavior, McpTestClient, MountConfig,
-    OmniSimHandle, OpticalTrainConfig, WebhookReceiver,
+    start_rp, write_temp_config_file, CameraConfig, FilterWheelConfig, FocuserConfig, GuiderConfig,
+    GuiderStub, McpTestClient, MountConfig, OmniSimHandle, OpticalTrainConfig, WebhookReceiver,
 };
 use bdd_infra::ServiceHandle;
 use cucumber::{given, then, when};
@@ -142,20 +141,19 @@ async fn webhook_receiver_subscribed_to(world: &mut FocusModelWorld, event_type:
     }));
 }
 
-#[given("a stub guider returning canned guiding stats")]
-async fn stub_guider_canned(world: &mut FocusModelWorld) {
-    let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding::default())).await;
-    world.guider = Some(GuiderConfig::url_only(stub.url.clone()));
-    world.guider_stub = Some(stub);
-}
-
-#[given("a stub guider reporting guiding inactive")]
-async fn stub_guider_inactive(world: &mut FocusModelWorld) {
-    let stub = GuiderStub::start(GuiderStubBehavior::Canned(CannedGuiding {
-        guiding: false,
-        ..CannedGuiding::default()
-    }))
-    .await;
+/// Serve the guider's contract from `bdd-infra`'s stub guider in
+/// `state`, and point rp's guiding block at it.
+///
+/// With the simulator running, the stub's device report names the
+/// simulator's mount, the one a guiding-train rig rosters. Its camera
+/// is one of its own until a scenario names another.
+#[given(expr = "a stub guider in state {string}")]
+async fn stub_guider_in_state(world: &mut FocusModelWorld, state: String) {
+    let stub = GuiderStub::start(&state).await;
+    if world.omnisim.is_some() {
+        let mount_id = world.simulator_unique_id("Telescope").await;
+        stub.set_mount_unique_id(Some(&mount_id));
+    }
     world.guider = Some(GuiderConfig::url_only(stub.url.clone()));
     world.guider_stub = Some(stub);
 }
@@ -314,46 +312,6 @@ async fn rp_with_shared_focuser(world: &mut FocusModelWorld) {
     push_offline_guiding_train(
         world,
         vec!["main-focuser".to_string(), "guide-cam".to_string()],
-    );
-    start_provider_then_rp(world).await;
-}
-
-/// `main-focuser` upstream of `main-helical` in the imaging train and
-/// of `guide-focuser` in the guiding train, the two downstream
-/// focusers offline: a shared focuser terminal in no train, which rp
-/// plans through the main camera.
-#[given(
-    "rp is running with a shared focuser terminal in no train and focus-model registered as a tool provider"
-)]
-async fn rp_with_shared_focuser_terminal_nowhere(world: &mut FocusModelWorld) {
-    configure_rig(world, Some(APERTURE_MM));
-    for id in ["main-helical", "guide-focuser"] {
-        world.focusers.push(FocuserConfig {
-            id: id.to_string(),
-            alpaca_url: "not-a-url".to_string(),
-            device_number: 0,
-            min_position: None,
-            max_position: None,
-            backlash: None,
-            microns_per_step: None,
-        });
-    }
-    push_train(
-        world,
-        vec![
-            "main-fw".to_string(),
-            "main-focuser".to_string(),
-            "main-helical".to_string(),
-            "main-cam".to_string(),
-        ],
-    );
-    push_offline_guiding_train(
-        world,
-        vec![
-            "main-focuser".to_string(),
-            "guide-focuser".to_string(),
-            "guide-cam".to_string(),
-        ],
     );
     start_provider_then_rp(world).await;
 }
@@ -627,8 +585,8 @@ async fn filter_wheel_at(world: &mut FocusModelWorld, expected: i64) {
 }
 
 #[then("the stub guider should have received a pause request with full false")]
-async fn stub_pause_request(world: &mut FocusModelWorld) {
-    let mut pauses = world.guider().requests_to("/guiding/pause").await;
+fn stub_pause_request(world: &mut FocusModelWorld) {
+    let mut pauses = world.guider().requests_to("/guiding/pause");
     let request = pauses
         .pop()
         .expect("the stub guider received no pause request");
@@ -640,14 +598,14 @@ async fn stub_pause_request(world: &mut FocusModelWorld) {
 }
 
 #[then("the stub guider should have received a resume request")]
-async fn stub_resume_request(world: &mut FocusModelWorld) {
-    let resumes = world.guider().requests_to("/guiding/resume").await;
+fn stub_resume_request(world: &mut FocusModelWorld) {
+    let resumes = world.guider().requests_to("/guiding/resume");
     assert!(!resumes.is_empty(), "the stub received no resume request");
 }
 
 #[then("the stub guider should not have received a pause request")]
-async fn stub_no_pause_request(world: &mut FocusModelWorld) {
-    let pauses = world.guider().requests_to("/guiding/pause").await;
+fn stub_no_pause_request(world: &mut FocusModelWorld) {
+    let pauses = world.guider().requests_to("/guiding/pause");
     assert!(pauses.is_empty(), "the stub received {pauses:?}");
 }
 

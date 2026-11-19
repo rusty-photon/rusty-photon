@@ -1,6 +1,6 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
 //! `bdd-infra`, plus the Givens that start this service in each shape and
-//! the steps on its (now empty) action list. The optics and `SkyView`
+//! the steps on its empty action list. The optics and `SkyView`
 //! Givens are `connection_steps`', the follow-mode ones `follow_mode_steps`'.
 
 use ascom_alpaca::ASCOMErrorCode;

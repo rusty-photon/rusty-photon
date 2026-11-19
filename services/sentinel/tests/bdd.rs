@@ -49,6 +49,12 @@ bdd_infra::bdd_main! {
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
+                    // Close the silent device first: sentinel's disconnect
+                    // from it is then refused at once instead of waiting
+                    // out the request bound, past the stop's grace period.
+                    if let Some(device) = world.silent_device.take() {
+                        device.abort();
+                    }
                     // Stop sentinel first so it can disconnect from filemonitor
                     if let Some(sentinel) = world.sentinel.as_mut() {
                         sentinel.stop().await;
@@ -69,6 +75,10 @@ bdd_infra::bdd_main! {
                 }
             })
         })
-        .run_and_exit("tests/features")
+        .filter_run_and_exit("tests/features", |feature, _rule, scenario| {
+            let is_wip = feature.tags.iter().any(|t| t == "wip" || t == "@wip")
+                || scenario.tags.iter().any(|t| t == "wip" || t == "@wip");
+            !is_wip
+        })
         .await;
 }

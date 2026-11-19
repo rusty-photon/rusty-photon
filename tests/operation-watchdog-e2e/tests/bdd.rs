@@ -4,7 +4,9 @@
 //! plate-solver stub) and drives the watchdog through wedge → escalation →
 //! corrective ladder. See `world.rs` for the process lifecycle.
 
-#![allow(clippy::expect_used)]
+// An allow, not an expect, for `clippy::panic`: whether it fires inside the
+// `bdd_main!` body depends on the clippy version.
+#![allow(clippy::expect_used, clippy::panic)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
     clippy::needless_pass_by_ref_mut,
@@ -44,10 +46,16 @@ bdd_infra::bdd_main! {
         .fail_on_skipped()
         .before(|_feature, _rule, _scenario, _world| {
             Box::pin(async move {
-                // Reset OmniSim devices between scenarios (the singleton leaks
-                // state otherwise). Non-fatal before the first scenario starts
-                // OmniSim — the rp-unresponsive scenario never spawns it.
-                let _ = bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await;
+                // The scenarios of this process share one OmniSim, so each
+                // starts with every device class restarted to its defaults.
+                // Until a step has started that OmniSim (the rp-unresponsive
+                // scenario never starts it), the call sends nothing and
+                // returns Ok. See docs/skills/testing.md § 5.5.
+                if let Err(errors) =
+                    bdd_infra::rp_harness::OmniSimHandle::reset_all_devices().await
+                {
+                    panic!("OmniSim device reset failed: {}", errors.join("; "));
+                }
             })
         })
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {

@@ -62,6 +62,7 @@ pub struct GeminiWorld {
 
     /// State for the shared setup-page steps (`setup_pages.feature`).
     pub setup_pages: SetupPagesState,
+    pub service_restart: bdd_infra::service_restart::ServiceRestartState,
     /// The TLS + auth fixture the setup-page credential scenario starts
     /// the service through.
     pub tls_auth: TlsAuthState,
@@ -85,6 +86,25 @@ impl SetupPagesWorld for GeminiWorld {
     }
 }
 
+impl bdd_infra::service_restart::ServiceRestartWorld for GeminiWorld {
+    fn service_restart(&mut self) -> &mut bdd_infra::service_restart::ServiceRestartState {
+        &mut self.service_restart
+    }
+
+    fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
+        self.gemini.as_mut().expect("the service was not started")
+    }
+
+    fn service_behind_auth(&self) -> (u16, &bdd_infra::tls_auth::PkiFixture) {
+        let port = self
+            .gemini
+            .as_ref()
+            .expect("the service was not started")
+            .port();
+        (port, self.pki.as_deref().expect("TLS certs not generated"))
+    }
+}
+
 impl GeminiWorld {
     /// Start the gemini-powerbox-adv3-driver binary with the current config.
     /// Writes config to a temp file, spawns the process, waits for ready,
@@ -96,12 +116,11 @@ impl GeminiWorld {
     /// Start the gemini-powerbox-adv3-driver binary with extra environment variables on the
     /// child process.
     ///
-    /// Two facts about the simulated device cannot be reached through the
-    /// driver's own command set: the auto-dew mask (the driver never sends
-    /// `PD:`) and the overcurrent flags (nothing asks a healthy box to trip a
-    /// rail). The mock reads both from its environment, and scenarios run
-    /// concurrently in one test process, so the preset has to travel on the
-    /// spawned child rather than through `std::env::set_var`.
+    /// The state the driver cannot set — the firmware and identity replies,
+    /// the sensors, the dew modes at start, the faults — reaches the mock
+    /// through its environment, and scenarios run concurrently in one test
+    /// process, so the preset has to travel on the spawned child rather than
+    /// through `std::env::set_var`.
     pub async fn start_gemini_with_env(&mut self, envs: &[(&str, &str)]) {
         self.start_gemini_with(&[], envs).await;
     }

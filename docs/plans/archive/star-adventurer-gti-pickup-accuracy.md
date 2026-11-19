@@ -302,7 +302,8 @@ becomes the new conformu-test-config.json default for the driver.
 - PR #210 conversation for the diagnostic walk-through that led to
   this plan
 - `docs/services/star-adventurer-gti.md` §"Post-slew tracking-pickup"
-  (Phase 4 finding) and §"Phase 4 driver-logic changes" (current
-  pickup loop)
+  (Phase 4 finding) and
+  [§"Phase 4 driver-logic changes"](star-adventurer-gti-phase-record.md#phase-4-driver-logic-changes-that-real-hardware-required)
+  (current pickup loop)
 - INDI eqmod `eqmodbase.cpp` `RAGOTORESOLUTION` / `DEGOTORESOLUTION`
   (= 5″) and `GOTO_ITERATIVE_LIMIT` (= 5)

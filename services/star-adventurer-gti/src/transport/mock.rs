@@ -6,8 +6,7 @@
 //! well-formed `=...\r` / `!XX\r` replies. Plugs into the shared
 //! transport via [`MockTransportFactory`] (and [`CapturingMockFactory`]
 //! for tests that need a long-lived state handle), implementing the
-//! shared crate's [`TransportFactory`] / [`FrameTransport`] traits in
-//! place of the legacy `Transport`-based mock.
+//! shared crate's [`TransportFactory`] / [`FrameTransport`] traits.
 //!
 //! The mock is deliberately not exposed unless the `mock` feature is on
 //! so a production build cannot accidentally pick it up.
@@ -46,11 +45,11 @@ pub struct AxisSimState {
     /// the mock advances the encoder accordingly.
     pub direction: Direction,
     pub speed: Speed,
-    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
-    /// reports `Blocked` when the motor is stepping but the encoder
-    /// isn't advancing. Tests seed this directly to exercise the
-    /// slew/park watchers' blocked-abort path; the mock does not
-    /// derive it from physical state.
+    /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): `Blocked`, the
+    /// firmware's report that the motor cannot follow its steps. Tests
+    /// seed this directly to exercise the slew/park watchers'
+    /// blocked-abort path; the mock does not derive it from physical
+    /// state.
     pub blocked: bool,
     pub goto_target_ticks: i32,
     /// Last `:I` payload: timer-counter units between motor steps. In
@@ -393,13 +392,31 @@ pub struct MockMountState {
     /// How long each reply is held back after its command has acted.
     /// The command still acts — and a `:j` still latches its count — as
     /// the frame arrives; only the reply's delivery is late, the way it
-    /// is on a host too busy to notice a reply (issue #1371).
+    /// is on a host too busy to notice a reply.
     /// [`Duration::ZERO`] (the default) delivers at once.
     pub reply_delay: Duration,
+    /// The controller's power and link; see [`MockLink`].
+    pub link: MockLink,
     /// Pending replies the next `recv_frame` call should drain. Every
     /// processed command appends one frame; the [`FrameTransport`] impl
     /// pulls from the front to deliver replies in order.
     pending_replies: std::collections::VecDeque<Vec<u8>>,
+}
+
+/// The controller's power and its link, as [`MockMountState::link`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MockLink {
+    /// Powered, and the link carries every request.
+    #[default]
+    Up,
+    /// Powered, but the next request fails with an I/O error: a link that
+    /// drops while the controller keeps its power and its state. See
+    /// [`MockMountState::drop_link`].
+    DropNext,
+    /// No power: every request fails and the port does not open, as a
+    /// controller behind a switched-off 12 V output behaves. See
+    /// [`MockMountState::power_off`] and [`MockMountState::power_on`].
+    Unpowered,
 }
 
 /// One entry of [`MockMountState::fault_script`].
@@ -446,6 +463,7 @@ impl Default for MockMountState {
             ignore_decelerating_stop: false,
             ignore_instant_stop: false,
             reply_delay: Duration::ZERO,
+            link: MockLink::Up,
             pending_replies: std::collections::VecDeque::new(),
         }
     }
@@ -513,6 +531,49 @@ impl MockMountState {
         self.advance_tracking(now);
     }
 
+    /// Bring both axes up to the present: tracking motion and any coast.
+    pub fn advance_to_now(&mut self) {
+        let now = Instant::now();
+        self.advance_tracking(now);
+        self.ra.advance_coast(now);
+        self.dec.advance_coast(now);
+    }
+
+    /// Cut the controller's power: the axes stop where they have got to,
+    /// every request fails and the port does not open until
+    /// [`Self::power_on`]. Returns the encoder ticks `(ra, dec)` at the
+    /// cut.
+    pub fn power_off(&mut self) -> (i32, i32) {
+        self.advance_to_now();
+        self.link = MockLink::Unpowered;
+        self.pending_replies.clear();
+        (self.ra.position_ticks, self.dec.position_ticks)
+    }
+
+    /// Restore the power: the controller restarts as the `GTi`'s does,
+    /// encoders at `(0, 0)`, both axes stopped and uninitialised. A
+    /// configured [`StopCoast`] is the mount's mechanics, not its state,
+    /// and stays.
+    pub fn power_on(&mut self) {
+        self.link = MockLink::Up;
+        self.ra = AxisSimState {
+            stop_coast: self.ra.stop_coast,
+            ..AxisSimState::default()
+        };
+        self.dec = AxisSimState {
+            stop_coast: self.dec.stop_coast,
+            ..AxisSimState::default()
+        };
+    }
+
+    /// Drop the link once: the next request fails with an I/O error and
+    /// the controller keeps its power and its state.
+    pub fn drop_link(&mut self) {
+        if self.link == MockLink::Up {
+            self.link = MockLink::DropNext;
+        }
+    }
+
     /// Integrate tracking-mode motion on both axes up to `now`; see
     /// [`AxisSimState::advance_tracking`].
     fn advance_tracking(&mut self, now: Instant) {
@@ -528,8 +589,8 @@ impl MockMountState {
             self.pending_replies.push_back(err_reply(0));
             return;
         };
-        // A 3-byte frame has no payload: `3..2` is `None` here, where the
-        // old slicing panicked on the backwards range.
+        // A 3-byte frame has no payload: `get(3..2)` is `None`, where
+        // indexing by the backwards range would panic.
         let payload = request
             .get(3..request.len().saturating_sub(1))
             .unwrap_or_default();
@@ -867,7 +928,25 @@ impl FrameTransport for MockFrameTransport {
                 "mock received malformed request frame: {bytes:?}"
             )));
         }
-        self.state.lock().await.process_command(bytes);
+        let mut state = self.state.lock().await;
+        match state.link {
+            MockLink::Unpowered => {
+                return Err(TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "mock mount has no power",
+                )));
+            }
+            MockLink::DropNext => {
+                state.link = MockLink::Up;
+                return Err(TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "mock link dropped",
+                )));
+            }
+            MockLink::Up => {}
+        }
+        state.process_command(bytes);
+        drop(state);
         Ok(())
     }
 
@@ -933,6 +1012,12 @@ impl CapturingMockFactory {
 #[async_trait]
 impl TransportFactory for CapturingMockFactory {
     async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        if self.state.lock().await.link == MockLink::Unpowered {
+            return Err(TransportError::Open(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "mock mount has no power",
+            )));
+        }
         Ok(Box::new(MockFrameTransport {
             state: Arc::clone(&self.state),
         }))

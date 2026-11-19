@@ -6,7 +6,7 @@ Feature: The retired orchestrator surface is refused at config load
   rejected at load, by a save on rp's setup page and by rp doctor
   alike, with a message naming the migration ("orchestrator
   registrations were removed; start runs at session-runner — see
-  docs/plans/archive/mcp-sessionless.md"), because accepting it silently would
+  docs/services/session-runner.md"), because accepting it silently would
   leave an operator believing rp will start their session at dusk
   (D11). rusty-photon-doctor reports the same on an installed config as
   rp.orchestrator-registration-removed.

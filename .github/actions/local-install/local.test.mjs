@@ -157,7 +157,7 @@ test('TOOLS installs each tool by its install-* action module', () => {
   assert.equal(TOOLS['zwo-sdk'].resolve, zwoSdk.resolve);
   assert.equal(TOOLS['zwo-sdk'].installAt, zwoSdk.installAt);
   // Each description starts in one column, past the longest name.
-  assert.match(usage(), /\n {2}astap {6}ASTAP's CLI and D05 star database/);
+  assert.match(usage(), /\n {2}astap {6}ASTAP's CLI and D20 star database/);
   assert.match(usage(), /\n {2}conformu {3}ASCOM ConformU's latest release/);
   assert.match(usage(), /\n {2}omnisim {4}ASCOM OmniSim/);
   assert.match(usage(), /\n {2}pebble {5}Pebble and pebble-challtestsrv/);

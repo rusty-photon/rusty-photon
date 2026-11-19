@@ -95,7 +95,7 @@ fn main() -> ServiceResult {
     // In Windows SCM service mode logs go to the rolling file under
     // %PROGRAMDATA%\rusty-photon\logs\; hold the guard until process
     // exit so the final lines flush on SCM Stop. Console mode logs to
-    // stderr as before.
+    // stderr.
     let _tracing_guard = rusty_photon_service_lifecycle::init_service_tracing(
         "focus-model",
         cli.log_level,
@@ -110,6 +110,9 @@ fn main() -> ServiceResult {
 
     ServiceRunner::new("focus-model")
         .scm_mode(cli.service)
+        // No default config to write: under the SCM the service stays
+        // stopped until the operator writes one.
+        .condition_path_exists(&config_path)
         .run(move |shutdown| async move {
             debug!(config_path = %config_path.display(), "loading configuration");
             let mut config = focus_model::config::load_config(&config_path)?;

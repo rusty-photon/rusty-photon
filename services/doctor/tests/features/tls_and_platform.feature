@@ -1,11 +1,11 @@
 Feature: TLS material and platform default diagnosis
   A server.tls block whose cert or key path does not exist means the service
   will refuse to serve at next start — a fail. server.auth without
-  server.tls is legal pre-D6 but puts HTTP Basic credentials on the wire in
-  cleartext, so it warns (ADR-003's scheme is Basic over TLS). And rp
-  self-creates a session.data_directory default that is not valid on every
-  platform: a directory that does not exist is a fail because session state
-  cannot persist.
+  server.tls is legal but puts HTTP Basic credentials on the wire in
+  cleartext, so it warns (the services' auth scheme is Basic over TLS). And
+  rp self-creates a session.data_directory default that is not valid on
+  every platform: a directory that does not exist is a fail because session
+  state cannot persist.
 
   Background:
     Given platform facts with enabled units:

@@ -7,13 +7,14 @@ exports_files(
 )
 
 # Hand-written QHYCCD SDK FFI bindings (no bindgen — `lib.rs` is a hand-written
-# `extern "C"` block). First first-party `cargo_build_script` in the workspace.
+# `extern "C"` block).
 #
-# `build.rs` emits the per-OS native link directives (Linux: search
-# /usr/local/lib + static=qhyccd + dylib=usb-1.0 + dylib=stdc++; macOS adds the
-# Homebrew/`$GITHUB_WORKSPACE` search paths + dylib=c++ + dylib=usb-1.0; Windows
-# searches `$GITHUB_WORKSPACE/pkg_win`). The SDK itself is PROVISIONED into the
-# Bazel build actions (see services/qhy-camera/BUILD.bazel + .bazelrc, which
+# `build.rs` emits the per-OS native link directives (static=qhyccd everywhere;
+# dylib=usb-1.0 + dylib=stdc++ on Linux, dylib=c++ + dylib=usb-1.0 on macOS) and
+# the search paths it finds the SDK on: `QHYCCD_SDK_DIR` when set, the SDK the CI
+# workspace extracted (macOS, Windows), /usr/local/lib (Linux, macOS), and the
+# Homebrew lib directory for libusb on macOS. The SDK itself is PROVISIONED into
+# the Bazel build actions (see services/qhy-camera/BUILD.bazel + .bazelrc, which
 # forward GITHUB_WORKSPACE on macOS/Windows); on Linux build.rs finds it at
 # /usr/local/lib. `links = "qhyccd"` lets Bazel coordinate the native link the
 # same way the Cargo `links` key does.
@@ -39,5 +40,22 @@ rust_library(
 # (tools/rusty-photon-ci/src/pkg_assets.rs) checks against the packaging pins.
 exports_files(
     ["build.rs"],
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

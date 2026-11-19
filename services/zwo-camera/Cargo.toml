@@ -6,17 +6,16 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "ASCOM Alpaca Camera (+ EFW FilterWheel) driver for ZWO ASI hardware"
+description = "ASCOM Alpaca Camera driver for ZWO ASI hardware"
 
 [features]
 default = []
-# Forwards to `zwo-rs/simulation`: a hardware-free, in-Rust simulated camera/EFW
-# for development and tests. As in qhyccd-rs this removes the *camera*, NOT the
-# SDK *link* — the native ZWO SDK is still linked. See the README and
-# docs/services/zwo-camera.md "Native dependency & build gating". It also
-# stages the USB scan a `usb_devices` list is placed from
-# (docs/services/zwo-camera.md U7): the fabricated camera is on no bus a host
-# scan could read.
+# Forwards to `zwo-rs/simulation`: a hardware-free, in-Rust simulated camera
+# for development and tests. It removes the *camera*, NOT the SDK *link* — the
+# native ZWO SDK is still linked (docs/services/zwo-camera.md "Native
+# dependency & build gating"). It also stages the USB scan cameras are placed
+# from (docs/services/zwo-camera.md U7): the fabricated camera is on no bus a
+# host scan could read.
 simulation = ["zwo-rs/simulation", "rusty-photon-doctor-checks/mock"]
 # Cross-driver alias for `simulation` (the workspace-wide test-backend name).
 mock = ["simulation"]
@@ -31,7 +30,7 @@ workspace = true
 # `client` is NOT enabled here — the production server never builds an Alpaca
 # client; only the BDD harness does, so it lives in [dev-dependencies] below.
 ascom-alpaca = { workspace = true, features = ["server", "camera"] }
-# `camera` only (ADR-014): this binary links libASICamera2 (+ libusb-1.0) and
+# `camera` only: this binary links libASICamera2 (+ libusb-1.0) and
 # nothing else — the EFW/EAF SDKs belong to their own services.
 zwo-rs = { workspace = true, features = ["camera"] }
 rp-auth = { workspace = true }
@@ -76,7 +75,7 @@ priority = "optional"
 # Explicit list, NOT "$auto": the bundled SDK blob carries no SONAME, so
 # dpkg-shlibdeps cannot map the binary's bare libASICamera2.so NEEDED entry to
 # any package and would fail. The binary links only the camera SDK (zwo-rs's
-# `camera` feature, ADR-014), so libASICamera2.so is the only blob it needs —
+# `camera` feature), so libASICamera2.so is the only blob it needs —
 # and ships (the EFW/EAF SDKs belong to their own services). Direct runtime
 # needs: glibc, libgcc, C++ runtime + libusb for libASICamera2 (its DT_NEEDED);
 # adduser is used by postinst.
@@ -86,7 +85,7 @@ assets = [
     ["pkg/90-rusty-photon-zwo.rules", "usr/lib/udev/rules.d/90-rusty-photon-zwo.rules", "644"],
     # MIT SDK blob: staged into gitignored pkg/lib/ by `cargo ci build-packages`
     # from the pinned indi-3rdparty ref (same pin as .github/actions/install-zwo-sdk),
-    # never committed (ADR-013). Exactly the one SDK this binary links (ADR-014) —
+    # never committed. Exactly the one SDK this binary links —
     # co-installing zwo-focuser is conflict-free because each package owns only
     # its own blob. No SONAME, so the binary finds it via the RUNPATH
     # `cargo ci build-packages` injects (-Wl,-rpath,/usr/lib/rusty-photon).
@@ -108,7 +107,7 @@ restart-after-upgrade = true
 name = "rusty-photon-zwo-camera"
 summary = "ASCOM Alpaca Camera driver for ZWO ASI cameras"
 # Aggregate expression: our dual-licensed code AND the bundled MIT-only ZWO
-# SDK blobs — Apache-2.0 alone does not cover the whole package contents.
+# SDK blob — Apache-2.0 alone does not cover the whole package contents.
 license = "(MIT OR Apache-2.0) AND MIT"
 assets = [
     { source = "target/release/zwo-camera", dest = "/usr/bin/rusty-photon-zwo-camera", mode = "755" },
@@ -165,14 +164,10 @@ libgcc = "*"
 libusb1 = "*"
 
 [dev-dependencies]
-# zwo-rs is now a first-party member with explicit Bazel real
-# (`//crates/zwo-rs:zwo-rs`) and simulation (`:zwo-rs_sim`) variants, so this
-# dev-dep no longer flips a single `@cr` variant. Its remaining (narrowed) role:
-# `crate_universe` only resolves an optional dep into `@cr` if some member enables
-# the gating feature, so this keeps `zwo-rs/simulation`'s optional deps (rand,
-# rayon) present in `@cr` — which the `:zwo-rs_sim` target pulls via
-# `all_crate_deps`. Resolver v2 still keeps it out of the production `cargo build`.
-# See docs/plans/vendor-zwo-rs.md (Phase 2 spike).
+# `crate_universe` resolves an optional dep into `@cr` only if some member
+# enables the gating feature, so this keeps `zwo-rs/simulation`'s optional dep
+# (rand) in `@cr`, which `//crates/zwo-rs:zwo-rs_sim` pulls via
+# `all_crate_deps`. Resolver v2 keeps it out of the production `cargo build`.
 zwo-rs = { workspace = true, features = ["simulation"] }
 # Client API for the BDD harness (tests/bdd/world.rs); kept out of the prod build.
 ascom-alpaca = { workspace = true, features = ["client"] }

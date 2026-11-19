@@ -60,16 +60,16 @@ test --test_env=PEBBLE_CHALLTESTSRV_PATH
 # only coverage of the ACME network path that isn't a mock, and a skip notice
 # in a green log is not something anyone reads — so a CI run with Pebble
 # missing must fail, not quietly drop six scenarios. Every workflow that runs
-# doctor's suite provisions Pebble today (.github/actions/install-pebble), so
-# this is inert until that stops being true: an install step that breaks, a
+# doctor's suite provisions Pebble (.github/actions/install-pebble), so this
+# fires only when that stops being true: an install step that breaks, a
 # workflow that forgets it, or a new runner that can't fetch the release.
 test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 
 # The `omnisim` resource pool. Every OmniSim-spawning BDD action (the six
 # suites rp:bdd / calibrator-flats:bdd / focus-model:bdd / session-runner:bdd
 # / polar-align:bdd / operation-watchdog-e2e:bdd, and each shard of a sharded
-# suite) is tagged `resources:omnisim:1` and takes one token. Since #467 the
-# bdd-infra harness gives every test process a PRIVATE OmniSim — spawned
+# suite) is tagged `resources:omnisim:1` and takes one token. The bdd-infra
+# harness gives every test process a PRIVATE OmniSim — spawned
 # with the fork's --multi-instance flag (skips upstream's machine-global
 # single-instance mutex) on a dynamically chosen port, with a per-instance
 # OMNISIM_SETTINGS_DIR — so these actions can genuinely run in parallel on
@@ -82,7 +82,7 @@ test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 # --enable_platform_specific_config appends platform lines after this one,
 # so they win).
 #
-# The throttle is deliberately NOT engaged today. It is worth reaching for
+# The throttle is deliberately NOT engaged. It is worth reaching for
 # only on one specific signature: several CHEAP suites failing in the SAME
 # run, each at 2x or more its normal duration. That is the heavy
 # OmniSim-spawning suites starving everything else — the pool caps the
@@ -227,6 +227,16 @@ build:windows --enable_runfiles
 # discards the analysis cache (see the OMNISIM_PATH note below). Linux/macOS link
 # qhyccd statically (no runtime lib), so this is Windows-only.
 build:windows --test_env=PATH
+
+# GitHub's Windows image builds Windows PowerShell's module analysis cache in
+# advance and names it in PSModuleAnalysisCachePath. Without that cache, a
+# powershell.exe analyses the modules on its path to find the first cmdlet it
+# runs: 20-27 s per launch on that image, against under a second with it. The
+# install actions' tests launch one for each unpacking (`unpackZips` in
+# .github/actions/lib/install.mjs), so without the variable their Windows legs
+# outrun their size's timeout. Forwarded by name, on `build:windows` for the
+# reason PATH is above.
+build:windows --test_env=PSModuleAnalysisCachePath
 
 # zwo-camera's `libzwo-sys` build script (bindgen) + link step need native ZWO
 # SDK toolchain env that `--incompatible_strict_action_env` (above) otherwise

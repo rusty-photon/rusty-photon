@@ -1,7 +1,7 @@
 # phd2-guider camera facade — a connect before PHD2's first frame, PHD2 2.6.14 Simulator, Linux
 
 The facade's connect when PHD2 does not know its camera's frame size yet
-([phd2-guider.md § A frame size PHD2 does not know yet](../../services/phd2-guider.md#a-frame-size-phd2-does-not-know-yet)),
+([phd2-guider.md § A frame size PHD2 does not know yet](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md#a-frame-size-phd2-does-not-know-yet)),
 run against a live PHD2 on the field rig. PHD2 2.6.14's Simulator camera
 reports a 0 × 0 frame until it has taken one. The facade's connect then
 takes one 1 ms frame and serves the size PHD2 reports after it. A probe

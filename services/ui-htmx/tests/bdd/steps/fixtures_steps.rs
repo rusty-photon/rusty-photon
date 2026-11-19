@@ -1,5 +1,5 @@
-//! Step definitions for fixtures.feature (`@browser`) — Layer C / P3, plan §9
-//! Tier 1. These drive the test-only `/fixtures/*` routes (present only in a
+//! Step definitions for fixtures.feature (`@browser`) — Layer C / P3. These
+//! drive the test-only `/fixtures/*` routes (present only in a
 //! `test-fixtures`-feature binary) to prove the browser harness observes htmx
 //! behaviors the server-bytes layers cannot: out-of-band swaps, response-header
 //! retargets, and push-url history changes.
@@ -79,10 +79,10 @@ async fn response_header_tripwire(
     value: String,
     body: String,
 ) {
-    // The §A header-presence tripwire: the divergence-carrying signal is in the
-    // response header, while the body is a plain fragment a P2 snapshot couldn't
-    // distinguish from a normal swap. (The browser steps above prove it actually
-    // retargets; this proves the body alone is insufficient to know that.)
+    // The Layer A header-presence tripwire: the divergence-carrying signal is in
+    // the response header, while the body is a plain fragment a P2 snapshot
+    // couldn't distinguish from a normal swap. (The browser steps above prove it
+    // actually retargets; this proves the body alone is insufficient to know that.)
     let (header_value, actual_body) = world.fixture_response_header_and_body(&path, &header).await;
     assert_eq!(
         header_value.as_deref(),

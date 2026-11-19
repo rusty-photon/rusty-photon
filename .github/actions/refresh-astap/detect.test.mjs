@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import test from 'node:test';
 
 import { TABLE } from '../install-astap/astap.mjs';
@@ -29,8 +29,8 @@ const ENTRY = TABLE.cli[RUNNER];
 // What the real ASTAP does, as a Node script started in the binary's place: it
 // reads the scenario the binary's file holds. Run with no arguments it prints
 // the banner; given a field with -f it does what the scenario says for that
-// field: prints `say` and `err`, writes `wcs` beside it, and exits `code`, or
-// hangs. Each run is recorded, with the names in its environment, in the file
+// field: prints `say` and `err`, writes `wcs` beside it, and exits `code`.
+// Each run is recorded, with the names in its environment, in the file
 // FAKE_ASTAP_CALLS names.
 const FAKE = `
 const fs = require('node:fs');
@@ -46,18 +46,25 @@ if (args.length === 0) {
 }
 const fits = args[args.indexOf('-f') + 1];
 const field = path.basename(fits) === 'm101_known.fits' ? scenario.m101 : scenario.empty;
-if (field.hang) {
-  setInterval(() => {}, 1000);
-} else {
-  process.stdout.write(field.say ?? '');
-  process.stderr.write(field.err ?? '');
-  if (field.wcs !== undefined) fs.writeFileSync(fits.replace(/\\.fits$/, '.wcs'), field.wcs, 'latin1');
-  process.exit(field.code);
-}
+process.stdout.write(field.say ?? '');
+process.stderr.write(field.err ?? '');
+if (field.wcs !== undefined) fs.writeFileSync(fits.replace(/\\.fits$/, '.wcs'), field.wcs, 'latin1');
+process.exit(field.code);
 `;
 
 // runProgram, with the fake in the binary's place.
 const fake = (binary, args, options) => runProgram(process.execPath, ['-e', FAKE, binary, ...args], options);
+
+// fake, except that the solve of `file` ends at once as a run runProgram
+// killed at its timeout, with no process. A real hang would need a timeout
+// short enough for a test, and that timeout also bounds the solves meant to
+// succeed, each a Node process a loaded runner can take longer to start. The
+// kill itself is runProgram's, which its own test shows with a run that never
+// ends.
+const timesOut = (file) => (binary, args, options) =>
+  basename(args[args.indexOf('-f') + 1]) === file
+    ? Promise.resolve({ code: null, signal: 'SIGKILL', timedOut: true, output: '' })
+    : fake(binary, args, options);
 
 const BANNER = 'ASTAP astrometric solver version CLI-2099.01.01';
 
@@ -85,8 +92,8 @@ function scenarioFile(scenario) {
 }
 
 const DATABASE_ZIP = zip([
-  { path: 'd05_0101.1476', data: 'tile 1' },
-  { path: 'd05_0201.1476', data: 'tile 2' },
+  { path: 'd20_0101.1476', data: 'tile 1' },
+  { path: 'd20_0201.1476', data: 'tile 2' },
 ]);
 
 // A SourceForge stand-in serving this runner's CLI archive, its binary
@@ -178,11 +185,11 @@ test('a rotated archive whose binary solves M101 is a passed result, with its ba
     runs.map(({ args, cwd }) => [args, cwd]),
     [
       [[], work],
-      [['-f', join(solve, M101.file), '-d', join(work, 'd05'), '-wcs', '-ra', '14.0540', '-spd', '144.3469', '-fov', '0.42', '-r', '3.0'], solve],
-      [['-f', join(solve, DEGENERATE), '-d', join(work, 'd05'), '-wcs'], solve],
+      [['-f', join(solve, M101.file), '-d', join(work, 'd20'), '-wcs', '-ra', '14.0540', '-spd', '144.3469', '-fov', '0.42', '-r', '3.0'], solve],
+      [['-f', join(solve, DEGENERATE), '-d', join(work, 'd20'), '-wcs'], solve],
     ],
   );
-  assert.deepEqual(readdirSync(join(work, 'd05')).sort(), ['d05_0101.1476', 'd05_0201.1476']);
+  assert.deepEqual(readdirSync(join(work, 'd20')).sort(), ['d20_0101.1476', 'd20_0201.1476']);
 });
 
 test('without verify, a rotated archive is compared and nothing more', async (t) => {
@@ -200,6 +207,36 @@ test('without verify, a rotated archive is compared and nothing more', async (t)
   });
   assert.deepEqual(downloads(site), [ENTRY.archive]);
   assert.deepEqual(runs, []);
+});
+
+// A SourceForge that serves nothing, as a folder that does not hold the
+// archive answers.
+async function emptySite() {
+  const server = await serve((req, res) => {
+    res.statusCode = 404;
+    res.end();
+  });
+  return { server, table: structuredClone(TABLE) };
+}
+
+test('without verify, an archive that cannot be downloaded is an unavailable result that keeps its pin, and the step goes on', async (t) => {
+  const site = await emptySite();
+  t.after(site.server.close);
+  const { value, stdout, runs, result } = await detectHere(site, { here: 'Linux-ARM64', verify: false });
+  assert.deepEqual(value, { rotated: false, unavailable: true });
+  assert.deepEqual(
+    { ...result, problem: undefined },
+    { runner: RUNNER, archive: ENTRY.archive, pinned: ENTRY.sha256, banner: CROSS_MIRROR, verified: 'unavailable', problem: undefined },
+  );
+  assert.match(result.problem, /404/);
+  assert.ok(stdout.includes(`::warning::${ENTRY.archive} could not be downloaded, so ${RUNNER}'s pin stays: `), stdout);
+  assert.deepEqual(runs, []);
+});
+
+test('with verify, an archive that cannot be downloaded fails the step, as there is no binary to check', async (t) => {
+  const site = await emptySite();
+  t.after(site.server.close);
+  await assert.rejects(detectHere(site), /404/);
 });
 
 test("verify on another runner's archive is refused before anything is downloaded", async (t) => {
@@ -228,10 +265,10 @@ test('a binary that fails a solve is a failed result with the reason, annotated,
 });
 
 test('a database that rotated too is warned about, and the binary is checked against it', async (t) => {
-  const site = await sourceForge(GOOD, { pin: OLD_PIN, database: zip([{ path: 'd05_0101.1476', data: 'a new tile' }]) });
+  const site = await sourceForge(GOOD, { pin: OLD_PIN, database: zip([{ path: 'd20_0101.1476', data: 'a new tile' }]) });
   t.after(site.server.close);
   const { stdout, result } = await detectHere(site);
-  assert.match(stdout, /^::warning::d05_star_database\.zip also rotated upstream \([0-9a-f]{64}, pinned [0-9a-f]{64}\)\. The refresh does not move that pin/m);
+  assert.match(stdout, /^::warning::d20_star_database\.zip also rotated upstream \([0-9a-f]{64}, pinned [0-9a-f]{64}\)\. The refresh does not move that pin/m);
   assert.equal(result.verified, 'passed');
 });
 
@@ -298,9 +335,9 @@ test('a binary that solves the empty field, or leaves a .wcs for it, fails', asy
   assert.equal(await solveWith({ ...GOOD, empty: { code: 1, wcs: RECORDED_WCS } }), 'degenerate_no_stars.fits produced a .wcs sidecar');
 });
 
-test('a solve that hangs is stopped at the timeout and fails', async () => {
-  assert.equal(await solveWith({ ...GOOD, m101: { hang: true } }, { timeoutMs: 300 }), 'M101 solve did not finish in 0.3 s');
-  assert.equal(await solveWith({ ...GOOD, empty: { hang: true } }, { timeoutMs: 300 }), 'degenerate_no_stars.fits solve did not finish in 0.3 s');
+test('a solve that runs past the timeout fails, and the failure names that solve', async () => {
+  assert.equal(await solveWith(GOOD, { run: timesOut(M101.file) }), 'M101 solve did not finish in 120 s');
+  assert.equal(await solveWith(GOOD, { run: timesOut(DEGENERATE) }), 'degenerate_no_stars.fits solve did not finish in 120 s');
 });
 
 // --- Reading the .wcs ---------------------------------------------------------------

@@ -5,17 +5,9 @@ Power & Data Hubs Advanced 3 (the box identifies itself on the wire as
 `GeminiPowerBoxPlusAdv3`; the vendor's ASCOM driver is named
 `GeminiPowerAndDataHubAdv3`).
 
-**Status: implemented (Phase 3 of [development-workflow.md](../skills/development-workflow.md)), 2026-10-26**,
-against a mock that serves the captured frame and streams as the hub does,
-and validated on the dev box's unit the same day: the
-[write probe](#what-the-wire-actually-does) answered items 1, 2 and 4 of
-the [hardware validation](#hardware-validation) list and ConformU ran
-clean on the hub ([record](#real-hardware-validation)); items 3 and 5,
-the absent-sensor frames and a power cycle, were answered on the same unit
-on 2026-10-27.
-Everything stated about the wire was either read from the
+Everything this document states about the wire was either read from the
 two open-source drivers named under [Sources](#sources) or measured against
-the dev box's own unit on 2026-10-26, and the document says which.
+the dev box's own unit (firmware 308), and the document says which.
 
 ## Overview
 
@@ -118,7 +110,7 @@ The driver does not bundle it.
 
 | Item | Value | Source |
 |------|-------|--------|
-| Serial | 19200 baud, 8N1, DTR and RTS asserted | both drivers; measured |
+| Serial | 19200 baud, 8N1, DTR and RTS asserted. This driver sets neither line: Linux raises both as the port opens, which is where it was measured; Windows leaves both low | both drivers; measured |
 | Command | ASCII `>X…#` followed by `\n` | both drivers (the vendor's uses `SerialPort.WriteLine`; INDI sends `\r\n`); measured with `\n` |
 | Reply | ASCII `*X…#` where `X` echoes the command letter; **no line ending after `#`** | measured: frames arrive back to back, `…P#*G…` |
 | Frame terminator for `SerialFrameTransport` | `#` | follows from the above |
@@ -242,9 +234,9 @@ observation; the drivers' claims it confirms or contradicts are named.
   the phase would have moved. The driver therefore does nothing special
   with DTR or `HUPCL`; the `>H#` retry below is the only concession to a
   unit that might behave differently.
-- **A command interrupts a periodic frame.** Measured at the
-  implementation's first connect to the same unit, later on 2026-10-26,
-  with the hub still streaming from the design session's probe: the first
+- **A command interrupts a periodic frame.** Measured when the driver
+  first connected to the same unit, later on 2026-10-26, with the hub
+  still streaming from the probe above: the first
   `>H#` was answered 118 ms later by one 89-byte chunk,
   `*G1111D…19.86D12*HGeminiPowerBoxPlusAdv3#` — the periodic frame the hub
   was sending stopped after 63 of its 81 bytes, and the identity reply
@@ -252,8 +244,8 @@ observation; the drivers' claims it confirms or contradicts are named.
   therefore begins at the **last** `*` of what the terminator delivers, and
   the codec parses from there; nothing a reply carries contains a `*`, so
   the rule is exact.
-- **The implementation's smoke test, 2026-10-26.** The finished driver
-  against the same unit, read-only but for one write: the handshake took
+- **The driver against the same unit, 2026-10-26.** Read-only but for
+  one write: the handshake took
   `>H#` in 118 ms (the glued chunk above, again), `>V#` in 176 ms with one
   streamed `*G` frame skipped under the budget before `*V308#`, and `>G#`
   in 49 ms. All 26 switches and the three sensor properties read as the
@@ -263,18 +255,20 @@ observation; the drivers' claims it confirms or contradicts are named.
   200 ms with nothing skipped: the firmware takes the second command of a
   buffer, so the two-request fallback is not needed for the reply. Whether
   the set itself is applied is what a value change shows, which this write
-  did not make ([hardware validation](#hardware-validation), item 1).
+  did not make and the write probe below does.
 - **The write probe, 2026-10-26.** Sixteen sets to the same unit, each in
   one buffer with a `>G#` behind it, every byte timestamped
-  ([record](#real-hardware-validation)). A bare `>G#` drew its whole
+  ([record](../validation/2026-10-26-gemini-powerbox-adv3-driver-adv3-linux/README.md#the-write-probe)).
+  A bare `>G#` drew its whole
   frame 49 ms after the send; a set with its `>G#` drew the frame 123–125
   ms after the send, which with the frame's 42 ms on the wire puts the
   hub's first byte about 80 ms after a set. `>C3#\n>G#\n` drew a frame
   with DC3 off and `>O3#\n>G#\n` one with it on again, so the second
-  command of a buffer is applied before the frame is composed (item 1).
+  command of a buffer is applied before the frame is composed.
   `>X50#` and `>X100#` in Manual were each reflected in field 8 by the
-  frame behind them (item 2); `>M12#`, `>M10#` and `>M11#` in field 5,
-  `>Z10#`/`>Z11#` in field 4 in Switch, Auto and Manual alike (item 4).
+  frame behind them; `>M12#`, `>M10#` and `>M11#` in field 5,
+  `>Z10#`/`>Z11#` in field 4 in Switch, Auto and Manual alike, the duty
+  field in Manual staying as it was.
   In Auto, field 8 kept the manual duty for some twenty seconds and then
   showed the loop's own output — `0`, the lens being 4 °C above the dew
   point — and a `>X30#` sent in Auto showed `30` for one frame before the
@@ -286,18 +280,31 @@ observation; the drivers' claims it confirms or contradicts are named.
   the frame predated it. The reply proper followed 85 ms behind, showing
   the set applied. The write path's second look exists for exactly this
   frame, and the window is about 110 ms per 3 s period — about one write
-  in twenty-seven, not the 5 ms the design first estimated.
+  in twenty-seven.
 - **The hub's state when found.** DC2–DC5 all on, USB A–F all on, both
   sensors attached, both dew channels **Manual at 100 %**, 12.2 V in,
   0.02–0.06 A. AlpacaBridge reports the same dew state on power-up
   ("both dew channels came up Manual at 100 %"), which is the state both
   units were found in, not a default they return to: **the hub keeps every
-  output and dew setting across a power cycle**
-  ([hardware validation](#hardware-validation), item 5). So **a heater
+  output and dew setting across a power cycle**. DC3 and USB A off, DEW6
+  at 50 % in Switch mode and disabled, set before a 14 s cut, were all in
+  the first frame after it, and the hub sent nothing on its own for the
+  12 s before the first `>G#`: a power-up disarms the stream, which a
+  port close does not
+  ([power probe](../validation/2026-10-26-gemini-powerbox-adv3-driver-adv3-linux/README.md#item-5-output-state-across-a-power-cycle),
+  2026-10-27). So **a heater
   plugged into DEW6 or DEW7 runs at whatever its channel last held — 100 %
   Manual on a unit nobody has changed — from the moment the hub powers up
   until some client changes it.** That is a property of the hub, not of
   this driver, and the operator needs to know it.
+- **A frame that is not text, once.** At the driver's first start on
+  2026-11-03, with the hub streaming since an earlier session, a chunk
+  read while the first `>H#` waited carried a byte that is not UTF-8 at
+  its third position. Its bytes were not logged; a start a moment later,
+  on the same port with nothing else holding it, read every reply clean.
+  Line noise as the port opens and a streamed frame the open garbled are
+  the candidates, and neither has been reproduced deliberately. The
+  handshake skips such a frame ([Handshake](#handshake)).
 
 ### Sources
 
@@ -306,7 +313,7 @@ independent reverse-engineered drivers agree with each other and with the
 capture above:
 
 - **INDI**, `drivers/power/indi-gemini-pbh/` in `indilib/indi`, merged
-  2026-08-30 ([PR #2469](https://github.com/indilib/indi/pull/2469)),
+  2026-08-30 ([INDI pull request 2469](https://github.com/indilib/indi/pull/2469)),
   GPL-2.0-or-later, validated on firmware 308 hardware. Its
   `parseStatusPayload` is the in-order, per-tag parser described above.
   Its usage guide carries the sensor-presence rule for Auto mode and the
@@ -333,9 +340,9 @@ sources are cited so a later reader can check a claim against them.
 | ObservingConditions | MVP |
 
 One serial port, one command stream, sensors reachable only through the
-hub: bundling the two devices in one service is the
-[ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)
-case for bundling, exactly as for the two Pegasus boxes.
+hub: the hardware forces the two devices into one service, exactly as
+[`upbv2-driver`](upbv2-driver.md#ascom-device-set) argues for the two
+Pegasus boxes.
 
 ## Switch mapping
 
@@ -423,8 +430,8 @@ Rules for the mode switch:
   ([tenet 3](../workspace.md#project-tenets)) and is exactly what this
   driver does not do. A hub power cycle keeps the mode, the flag and the
   duty each channel held when the power went
-  ([hardware validation](#hardware-validation), item 5), and the driver
-  reports what it finds.
+  ([What the wire actually does](#what-the-wire-actually-does)), and the
+  driver reports what it finds.
 
 `DEW6 Enabled` is deliberately not named "on": in Auto mode a `1` means
 the loop is running, and the heater may well be at 0 % because the lens is
@@ -439,8 +446,8 @@ wants a particular manual duty writes the mode first and the duty after.
 The enabled flag persists across modes the same way (measured 2026-10-27:
 a channel disabled in Switch mode and then set to Manual read `Enabled 0`
 in Manual, and the hub took a `>Z11#` there). `DEWn Enabled` stays
-read-only in Manual all the same — the owner's decision on 2026-10-27 —
-so an operator who finds a channel disabled in Manual sets the flag from
+read-only in Manual all the same — a decision, not an oversight — so an
+operator who finds a channel disabled in Manual sets the flag from
 Switch or Auto and returns to Manual. Whether the flag gates the heater in
 Manual was not measured: no heater was attached.
 
@@ -470,9 +477,9 @@ driver believes the flag over the number. When a flag is `0`:
   temperature rows declare `-127` as their minimum;
 - that sensor's fields need not hold a number — and nor need they while
   the flag reads `1`, since 3.0.8 can misreport a probe as attached
-  ([Firmware](#firmware)). A sensor field (10–13) ends at its own tag
-  rather than at the next upper-case letter, and whatever sits there
-  that is not a finite number — `nan`, `NaN`, `ovf`, blanks — is a
+  ([Device identity](#device-identity)). A sensor field (10–13) ends at
+  its own tag rather than at the next upper-case letter, and whatever sits
+  there that is not a finite number — `nan`, `NaN`, `ovf`, blanks — is a
   reading the frame does not carry, never a parse error, so no
   placeholder can fail every frame and with it the handshake. A field
   with no reading makes its Switch row read the sentinel and gives
@@ -481,15 +488,18 @@ driver believes the flag over the number. When a flag is `0`:
   The state and electrical fields stay strict.
 
 What the firmware writes into fields 10–13 while a sensor is unplugged is
-a bare `0`, no padding, in each field the sensor would fill:
-`…C 24.06S0T0H0D…` with the AHT20 out, `…C0S 25.13T 71.55H 19.63D…` with
-the probe out, `…C0S0T0H0D…` with both out
-([hardware validation](#hardware-validation), item 3). The AHT20's flag
-dropped in the same frame as its fields; the probe's transitions were not
-seen in-stream, since its jack resets the hub's USB side. The mock writes the same. A `0` is a finite number, so the parser
-keeps it, and it is the flag that makes the rows read the sentinel and the
-windows take no sample; the tolerance for non-numbers stays for whatever
-3.0.8 leaves in a field it misreports as attached.
+a bare `0`, no padding, in each field the sensor would fill, and nothing
+else in the frame changes: `…C 24.06S0T0H0D…` with the AHT20 out,
+`…C0S 25.13T 71.55H 19.63D…` with the probe out, `…C0S0T0H0D…` with both
+out
+([sensor probe](../validation/2026-10-26-gemini-powerbox-adv3-driver-adv3-linux/README.md#item-3-the-frame-with-a-sensor-unplugged),
+2026-10-27). The AHT20's flag dropped in the same frame as its fields; the
+probe's transitions were not seen in-stream, since its jack resets the
+hub's USB side, which the AHT20's connector does not. The mock writes the
+same. A `0` is a finite number — a working sensor gives it at 0 °C — so
+the parser keeps it, and it is the flag that makes the rows read the
+sentinel and the windows take no sample; the tolerance for non-numbers
+stays for whatever 3.0.8 leaves in a field it misreports as attached.
 
 ### Operator labels
 
@@ -556,6 +566,16 @@ state; the driver reports it and changes nothing.
    with the skipped frames in the `wire recv` trace log. The guard matters
    because every Gemini CH340 device enumerates identically
    ([Device identity](#device-identity)).
+   A frame that does not decode while `>H#` waits — a byte after its `*`
+   that is not text, or a `*G` frame that does not parse — is skipped
+   the same way, its bytes and the decode error in a `debug!` event.
+   This is the first request after the port opens, so line noise as it
+   opens, or a streamed frame the open garbled, lands here
+   ([observed once](#what-the-wire-actually-does)). Skipping the frame
+   lets the request read on to a reply behind it, and costs nothing when
+   the garbled frame was the reply itself: the request then times out,
+   and the timeout draws the retry below, as silence does. A frame that
+   decodes as another device's identity is still refused by name.
    If no `*H` reply arrives within `serial.timeout`, the driver waits 2 s
    and sends `>H#` once more before failing — the vendor driver's flat 2 s
    post-open sleep, spent only when needed. The dev box's unit answers at
@@ -582,19 +602,13 @@ buffer would otherwise be taken as the answer to a `>G#` sent seconds
 later, and after a write it would show the state *before* the write.
 
 So every request that expects a `*G` frame is preceded by a **discard of
-the input buffer**, which is one small addition to the shared crate:
-
-- `FrameTransport::discard_input()` — default no-op. `SerialFrameTransport`
-  implements it by dropping what its reader has buffered — whole frames
-  included, since the reader fills by the chunk — and then reading the
-  stream dry without waiting: each read is polled once, and the first
-  `Pending` ends it. No port-level flush: the transport is generic over
-  its stream, and the drain reaches the same bytes. The BDD mock drops its
-  queued unsolicited frames.
-- `Codec::discard_before_send(&cmd) -> bool` — default `false`; the Gemini
-  codec answers `true` for `>G#` and for every set command.
-- `Connection::request` calls the first when the second says so, right
-  before `send_frame`.
+the input buffer**: the codec's `discard_before_send` answers `true` for
+`>G#` and for every set command, and the shared crate then drops what
+is buffered on the input side right before the command goes out
+([The command lock](../crates/rusty-photon-shared-transport.md#the-command-lock)).
+`>H#` and `>V#` go out without one: neither reply can be mistaken for a
+streamed frame, and the skip budget covers a frame that arrives first.
+The BDD mock's discard drops its queued unsolicited frames.
 
 What can still precede the real reply after a discard: the tail of a frame
 that was mid-flight when the buffer was cleared (it does not start with
@@ -602,14 +616,24 @@ that was mid-flight when the buffer was cleared (it does not start with
 discard, and a frame the hub cut short to answer, which arrives glued to
 the reply in one chunk ([measured](#what-the-wire-actually-does)). The
 codec takes the reply from the last `*` in the chunk and sorts it by its
-letter. `*G`, `*H` and `*V` are parsed, and a `*G` frame that then fails to parse — a tag out
-of sequence, a wrong digit count, a bad number — is a `ParseError`: the
-request fails at once, the cache is untouched, and nothing reconnects,
-because the shared crate treats a codec error as the device's answer, not
-as a lost link. Anything else — a frame without a leading `*`, or a `*`
-with another letter — decodes into an `Unrelated` response rather than an
-error, and `matches` rejects `Unrelated` and any `*G` frame when the
-request was not for one, so the request loop skips it. `max_skip` is 2.
+letter. Only the reply is read as text: the bytes ahead of that `*` — a
+cut frame, or noise as the port opens — are never decoded, so a byte
+there that is not text costs nothing. `*G`, `*H` and `*V` are parsed. A
+reply with a byte after its `*` that is not text is an
+`InvalidResponse`, and a `*G` frame that fails to parse — a tag out of
+sequence, a wrong digit count, a bad number — is a `ParseError`. Either
+way the request fails at once, the cache is untouched, and nothing
+reconnects, because the shared crate treats a codec error as the
+device's answer, not as a lost link
+([Reconnect](../crates/rusty-photon-shared-transport.md#reconnect)).
+The one exception is `>H#`, which skips such a frame instead
+([Handshake](#handshake)): the codec names it
+through `Codec::skip_undecodable`, whose default, off, every other
+request keeps. Anything else — a frame without a leading `*`, whatever
+its bytes, or a `*` with another letter — decodes into an `Unrelated`
+response rather than an error, and `matches` rejects `Unrelated` and any
+`*G` frame when the request was not for one, so the request loop skips
+it. `max_skip` is 2.
 A malformed reply therefore costs one failed request, never a 3 s wait
 for the next periodic frame and the reconnect that a 2 s timeout would
 bring.
@@ -618,7 +642,23 @@ The poll loop then is: every `serial.polling_interval` (default 5 s),
 discard, `>G#`, parse, store in the shared `CachedState`. Reads are served
 from the cache; a poll that fails to parse leaves the cache untouched and
 logs at `debug!`; a poll that times out is a transport error and the
-shared crate's supervisor reconnects (re-running the read-only handshake).
+shared crate's supervisor reconnects, re-running the read-only handshake
+([Reconnect](../crates/rusty-photon-shared-transport.md#reconnect)).
+
+### The cache keeps the frame read last
+
+Every frame is stored with the instant it was read off the wire
+([Wire timing](../crates/rusty-photon-shared-transport.md#wire-timing))
+in the shared crate's `Stamped<T>`, which refuses a frame read before the
+one the cache holds
+([Stamped values](../crates/rusty-photon-shared-transport.md#stamped-values)).
+Such a frame is dropped whole, sensor samples included. Without the
+stamp, a poll whose task is slow to run again — a loaded host — could
+store the frame it read just before a write after the write's confirmed
+frame, and a read straight after the confirmed write would report the
+written switch at its old value until the next poll. The handshake, the
+poll, a write's readback and its second look all store through this one
+rule.
 
 ### Writes are confirmed against a fresh frame
 
@@ -630,7 +670,9 @@ produced after acting on the set, and the driver compares the field the
 write addressed with what it asked for:
 
 - a match stores the frame in the cache and the write succeeds — so a read
-  straight after a write reflects the device, as in the siblings;
+  straight after a write reflects the device, as in the siblings, and a
+  poll that read its frame before the write cannot put the old value back
+  ([The cache keeps the frame read last](#the-cache-keeps-the-frame-read-last));
 - a mismatch is asked once more (discard, `>G#`) before it is believed,
   because a periodic frame the hub starts after the set went out can
   still predate it and is then the first whole frame read. Measured on
@@ -657,21 +699,20 @@ Which field confirms which write:
 | `DEWn Duty` | frame 8 / 9 — confirmed on hardware 2026-10-26: in Manual the field shows the new duty in the frame behind the set. (The INDI driver classes the manual duty as *not confirmable*; what it may have met is Auto mode, where the loop overwrites the same field — and this driver refuses a duty write outside Manual.) |
 
 The two-commands-in-one-buffer shape, which both open-source drivers
-avoid by sending sets alone, was exercised on hardware on 2026-10-26:
-every one of the probe's sixteen sets drew a frame showing it applied
-([hardware validation](#hardware-validation), item 1). The fallback that
-would have been needed had the firmware dropped the second command is
-kept here for a unit that behaves differently: a set command sent on its own
-followed by a `>G#` request — and a set sent alone draws no reply, which
-the shared transport cannot express today: `Connection::request` always
-reads a frame after it writes one, and a read that times out is a
-transport error that reconnects. The fallback therefore needs a second
-shared-crate addition alongside `discard_input`:
+avoid by sending sets alone, holds on the dev box's unit: every one of
+the write probe's sixteen sets drew a frame showing it applied
+([write probe](../validation/2026-10-26-gemini-powerbox-adv3-driver-adv3-linux/README.md#the-write-probe)).
+A unit whose firmware dropped the second command would need a set command
+sent on its own followed by a `>G#` request — and a set sent alone draws
+no reply, which the shared transport cannot express:
+`Connection::request` always reads a frame after it writes one, and a
+read that times out is a transport error that reconnects. That fallback
+needs a codec hook the shared crate does not have,
 `Codec::expects_reply(&cmd) -> bool`, default `true`, under which the
-request returns a reply-less response without reading. The set then
-takes one lock cycle and the readback another, and the readback's
-discard-then-second-look rule covers the gap between them. The dev box's
-unit did not ask for it, and it is not built.
+request returns a reply-less response without reading. The set would
+then take one lock cycle and the readback another, and the readback's
+discard-then-second-look rule would cover the gap between them. It is not
+built.
 
 ### Synchronous switches only
 
@@ -706,7 +747,10 @@ staleness rule (an emptied window reads `VALUE_NOT_SET`) are exactly as
 [`ppba-driver`](ppba-driver.md#averageperiod-staleness-and-the-meaning-of-zero)
 specifies them, and the three drivers share the one implementation in
 `rusty-photon-rolling-stats`; this document does not restate them.
-`TimeSinceLastUpdate` with an empty sensor name is the freshest of the
+`TimeSinceLastUpdate` counts from the instant the frame that carried the
+newest sample was read off the wire, on the monotonic clock
+([Values that carry their time](../workspace.md#values-that-carry-their-time)).
+With an empty sensor name it is the freshest of the
 three windows, and while all three are empty it answers what one empty
 window answers — the no-data value, not zero. A sample is fed only while
 the AHT20's attached flag is
@@ -746,7 +790,7 @@ boxes.
 
 Shape, defaults and semantics follow
 [`ppba-driver`](ppba-driver.md#configuration): the shared
-`AlpacaServerConfig` (ADR-016), `deny_unknown_fields` on every block, an
+`AlpacaServerConfig`, `deny_unknown_fields` on every block, an
 empty `unique_id` meaning "mint a UUIDv4 on first run" via
 `rusty_photon_config::resolve_and_init`, humantime durations, the bootstrap
 that fills in an absent device section and never writes a file the driver
@@ -811,15 +855,17 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops — the siblings' behaviour and the open question of [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
-| The DS18B20's jack pulled or inserted while the hub is powered | The hub's whole USB side — the VIA Labs hub that carries USB A–F, and the CH340 with it — drops off the bus and re-enumerates about three seconds later, so anything on the hub's USB ports disconnects too (measured with no port open, not yet with the driver holding one). The request in flight fails as a transport error and the shared supervisor retries every 5 s with the read-only handshake; the default `by-id` link, or a `by-path` one, is found again when it returns. A raw `/dev/ttyUSBn` in `serial.port` can come back under the next number while the driver still holds the old one, and then neither the retries nor a restart finds it: point `serial.port` at a link, or re-enumerate the hub with nothing holding the port. Plug the lens probe before powering the hub. |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers — the siblings' behaviour, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#start-the-services-with-every-device-powered), [Windows](../packaging-windows.md#start-the-services-with-every-device-powered))). |
+| The DS18B20's jack pulled or inserted while the hub is powered | The hub's whole USB side — the VIA Labs hub that carries USB A–F, and the CH340 with it — drops off the bus and re-enumerates about three seconds later, so anything on the hub's USB ports disconnects too (measured with no port open, not with the driver holding one). The request in flight fails as a transport error and the shared supervisor retries every 5 s with the read-only handshake; the default `by-id` link, or a `by-path` one, is found again when it returns. A raw `/dev/ttyUSBn` in `serial.port` can come back under the next number while the driver still holds the old one, and then neither the retries nor a restart finds it: point `serial.port` at a link, or re-enumerate the hub with nothing holding the port. Plug the lens probe before powering the hub. |
 | `>H#` answers another `*HGeminiPowerBox…#` | Connect fails: "a Gemini power box, but not the Advanced 3". |
 | `>H#` answers `*HGeminiFlatPanel…#` or another `*H` text | Connect fails naming the identity that answered: the port holds another Gemini device. |
 | `>H#` draws no `*H` reply — silence, or frames without the prefix | One retry after 2 s, then connect fails as "no Gemini identity reply on `<port>`"; whatever did arrive is in the trace log. |
+| A frame that does not decode while `>H#` waits — a byte after its `*` that is not text, or a `*G` frame that does not parse | Skipped under the skip budget (2), its bytes and the decode error in a `debug!` event; the request reads on to its `*H` reply, or times out into the retry above. |
+| A reply with a byte after its `*` that is not text while `>V#`, `>G#` or a set waits | `InvalidResponse`; the request fails at once, as a `*G` frame that does not parse does. |
 | `>V#` below 308 | Connect refused, naming the version and the vendor's `FirmwareUpgradeTool`. |
 | `>V#` is 308 | Connects; a `debug!` notes that 309 fixes DS18B20 detection. |
 | `*G` frame with a tag out of sequence, a wrong digit count, or an unparseable number | `ParseError` naming the field; cache untouched; the request fails and the poll goes on. |
-| Frame not starting with `*` (a discarded frame's tail) or a `*G` frame when another reply was asked for | Skipped under the skip budget (2); the request waits for the next frame. |
+| Frame not starting with `*` (a discarded frame's tail, or noise as the port opens), whatever its bytes, or a `*G` frame when another reply was asked for | Skipped under the skip budget (2); the request waits for the next frame. |
 | Skip budget exhausted | The request fails as a communication error; the cache is untouched. |
 | `>G#` unanswered within `serial.timeout` | Transport timeout; the shared supervisor reconnects with the read-only handshake. |
 | Write to `DC1` | `NOT_IMPLEMENTED` (CanWrite false). |
@@ -850,14 +896,21 @@ transport lock across the 3 s cadence and delay writes — not worth it while
 a `>G#` draws its whole frame in about 50 ms, measured on the dev box's
 unit); any persistence of dew modes.
 
-## Relationship to issue #1173
+## Relationship to the daily power cycle plan
 
-[#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) (daily
-power cycling) wants a Switch to flip outputs at dusk and dawn. This
-driver exposes the outputs; the decision to flip one belongs to a
-session-runner document, never to any connect or supervisory path here —
-the same boundary [`upbv2-driver`](upbv2-driver.md#relationship-to-issue-1173)
+The [daily power cycle plan](../plans/daily-power-cycle.md) switches
+outputs at dusk and dawn. This driver exposes the outputs; the decision to
+flip one belongs to a session-runner document, never to any connect or
+supervisory path here — the same boundary
+[`upbv2-driver`](upbv2-driver.md#relationship-to-the-daily-power-cycle-plan)
 draws.
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## Testing
 
@@ -865,18 +918,18 @@ Per [testing.md](../skills/testing.md) and the `ppba-driver` precedent:
 feature files under `tests/features/`, steps under `tests/bdd/steps/`, the
 binary spawned with `--features mock`, unit tests inline in `src/`.
 
-### Feature files (Phase 2)
+### Feature files
 
 | Design section | Feature file | Covers |
 |----------------|--------------|--------|
-| Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, a device with no `*H` at all), each refusing the start by name; firmware 307 refused, 308 and 309 connect; `>H#` retry |
+| Handshake | `connection_lifecycle.feature` | connect/disconnect over HTTP; identity mismatch (flat panel, other power box, a device with no `*H` at all), each refusing the start by name; firmware 307 refused, 308 and 309 connect; `>H#` retry; line noise during `>H#` — bytes that are not text glued to the reply or framed on their own, a streamed frame that is not text or does not parse — leaves the start unharmed |
 | Switch mapping | `switch_metadata.feature` | 26 names, descriptions, ranges, steps, `CanWrite` per dew mode, DC1 read-only |
 | Writes | `switch_control.feature` | each writable switch round-trips through the readback frame; dew mode gates; Auto refused without sensors; a readback that predates the set, rescued by the second look |
 | Error behaviour | `switch_errors.feature` | the table above, row by row |
 | Status frame | `sensor_readings.feature` | the pinned frame's values read back exactly; a field outside its row's range (a 24 V input) published unclamped; sentinel rows with a sensor absent |
 | ObservingConditions | `observing_conditions.feature` | the three means, `AveragePeriod`, `VALUE_NOT_SET` on an empty window and on an absent AHT20 |
 | Labels | `switch_metadata.feature` | a `DEW6` label renames three rows; a bad key fails the load |
-| Config, setup, auth, TLS, doctor, server registration | as the siblings' files | |
+| Config, setup, auth, TLS, doctor, server registration, restart on request | as the siblings' files | |
 
 ### The mock's pinned frame
 
@@ -917,12 +970,21 @@ Knobs reaching state the driver cannot set:
 | `GEMINI_MOCK_STREAMING_AT_START` | `1`: the hub is streaming when the port opens, as a unit left armed by an earlier session is |
 | `GEMINI_MOCK_CUT_FRAMES` | `1`: once armed, every reply arrives glued to a periodic frame cut short after 63 bytes, as measured |
 | `GEMINI_MOCK_PRE_WRITE_FRAME` | `1`: every set is answered first by the frame the hub started before acting on it, then by the post-set frame — the second look's rescue |
+| `GEMINI_MOCK_LINE_NOISE` | bytes on the line ahead of the hub's first reply, `%XX` for a byte given in hex — noise as the port opens, or a streamed frame the open garbled. They are framed at each `#` as the serial transport frames them, so bytes after the last `#` arrive glued to the front of the reply |
 
 Each is read once at mock construction; the in-process `with_…` builders
 are the unit-test equivalents. The knobs fix the sensor flags for the run,
 so the mid-session unplug — a full window, then a frame with the AHT20
 flag at `0`, then `VALUE_NOT_SET` at once — is a unit test on the poll
 loop over a scripted mock, not a scenario.
+
+A poll's store landing after a write's is a unit test on the poll loop
+too, because the gap it needs lies after the poll's turn on the wire,
+inside the driver, where no knob on a subprocess's mock reaches: the
+test transport holds a poll's reply, the test holds the cache while it
+lets the reply go and writes behind it, stores the write's frame first,
+and then reads the cache once the poll's next request shows the poll has
+stored.
 
 ### ConformU
 
@@ -941,80 +1003,42 @@ link, a heater on a DEW port goes to full power in Switch mode
 ([hardware-validation.md](../skills/hardware-validation.md) says the same
 of every powerbox).
 
-### Hardware validation
-
-The first validation run on the dev box's unit (firmware 308) settles the
-facts this design could not, each recorded in the run's
-`docs/validation/` entry and folded back into this document:
-
-1. **Two commands in one buffer.** Does `>O3#\n>G#\n` yield a frame
-   showing output 3 changed? If the firmware drops the second command, the
-   write path falls back to two requests. *Answered 2026-10-26:* yes —
-   `>C3#\n>G#\n` drew a frame with DC3 off and `>O3#\n>G#\n` one with
-   it on, 124 ms after each send
-   ([write probe](#what-the-wire-actually-does)); no fallback is needed.
-2. **Fields 8/9 under `>X`/`>Y`.** Does the duty field follow the set at
-   once in Manual mode, and what does it show in Auto mode — the manual
-   setpoint or the loop's live duty? *Answered 2026-10-26:* in Manual the
-   frame behind the set shows the new duty; in Auto the field is the
-   loop's live duty, which overwrites a `>X` within a few seconds, and a
-   return to Manual keeps the loop's last value
-   ([dew heaters](#dew-heaters-three-switches-per-channel)).
-3. **Absent sensors.** The frame with the AHT20 unplugged, and with the
-   DS18B20 unplugged: fields 2/3 and whatever the firmware puts in 10–13.
-   *Answered 2026-10-27:* the flag drops and each of the sensor's fields
-   reads a bare `0` — `0T0H0D` for the AHT20, `0S` for the probe, in every
-   combination — and nothing else in the frame changes; the AHT20's flag
-   and fields changed in one frame, out and back, while the probe's
-   transitions fell inside the USB reset its jack causes and were not
-   seen in-stream. Pulling or inserting the DS18B20's 3.5 mm
-   jack while the hub is powered drops the hub's whole USB side for about
-   three seconds, so the serial port goes away and comes back; the AHT20's
-   connector does not ([record](#real-hardware-validation)).
-4. **Dew modes.** That `>M1x#` is reflected in field 5, that `>Z1x#` is
-   reflected in field 4 in Auto and Switch modes, and what `>Z10#` does in
-   Manual. *Answered 2026-10-26:* every mode digit and every flag write
-   showed in the frame behind it, in Manual too, where the flag changed
-   and the duty field did not (the heater's behaviour there was not
-   observed; the driver refuses the write in Manual regardless).
-5. **Output state across a hub power cycle.** Whether DC2–DC5 and USB come
-   back as they were or all on. Not a driver behaviour, but an operator
-   fact for this document. *Answered 2026-10-27:* as they were. DC3 and
-   USB A off, DEW6 at 50 % in Switch mode and disabled, set before a 14 s
-   cut, were all in the first frame after it; the hub also sent nothing on
-   its own for the 12 s before the first `>G#`: a power-up disarms the
-   stream, which a port close does not.
-6. **ConformU**, all four suites, clean, in both dew modes, with the
-   version gate first and **both sensors attached**: a `DEWn Mode` write
-   to Auto is refused while either sensor is absent, so a run started with
-   a sensor still unplugged after item 3 records that refusal as an error.
-   *Done 2026-10-26* ([record](#real-hardware-validation)).
-
 ### Real-hardware validation
 
 [2026-10-26, the dev box's unit on Linux](../validation/2026-10-26-gemini-powerbox-adv3-driver-adv3-linux/README.md):
 ConformU 4.5.3, both Switch suites with both channels in Manual and again
-in Auto, both ObservingConditions suites, all clean; the write probe for
-items 1, 2 and 4 with its log; and, added on 2026-10-27, the sensor and
-power-cycle probes for items 3 and 5 with their logs and the kernel's
-record of the USB re-enumeration.
+in Auto, both ObservingConditions suites, all clean; the write probe with
+its log; and the sensor and power-cycle probes of 2026-10-27 with their
+logs and the kernel's record of the USB re-enumeration.
+
+The run settles what the two open-source drivers left open — the
+numbered [hardware validation list](../plans/archive/gemini-powerbox-adv3-driver-validation-record-2026-10.md#hardware-validation)
+that its record and its probes refer to — and each answer is stated
+where the design rests on it. The hub applies the second
+command of a buffer before it composes the frame, and every output, duty,
+mode and flag write shows in the frame behind it
+([Writes are confirmed against a fresh frame](#writes-are-confirmed-against-a-fresh-frame)).
+In Auto the duty field is the loop's live duty, and a return to Manual
+keeps the loop's last value
+([Dew heaters](#dew-heaters-three-switches-per-channel)). An unplugged
+sensor's fields read a bare `0`
+([Sensor presence](#sensor-presence-and-the-absent-sensor-sentinel)), and
+the DS18B20's jack resets the hub's USB side
+([Error behaviour](#error-behaviour)). The hub keeps every output and dew
+setting across a power cycle
+([What the wire actually does](#what-the-wire-actually-does)).
 
 ## Open items
 
-1. ~~**`DEWn Duty` confirmation**~~ — settled by item 2 above on
-   2026-10-26: the field confirms the write in Manual.
-2. ~~**The absent-sensor sentinel**~~ — settled by item 3 on 2026-10-27:
-   the firmware writes `0`, which is a reading a working sensor gives at
-   0 °C, so the rows keep `-127`/`0`.
-3. **A second Gemini CH340 device on the same rig** shares the by-id name;
+1. **A second Gemini CH340 device on the same rig** shares the by-id name;
    the design points operators at `by-path`. Whether doctor should warn
-   when two `1a86:7523` devices are present is a doctor question, not
-   raised as an issue yet.
+   when two `1a86:7523` devices are present is a doctor question, and an
+   open one.
 
 ## Dependencies
 
 - `ascom-alpaca` — Alpaca server, Switch and ObservingConditions traits
-- `rusty-photon-shared-transport` — refcounted transport, `open_serial_port`, and the `discard_input` addition this driver introduces
+- `rusty-photon-shared-transport` — refcounted transport, `open_serial_port`, and the input discard before a command (`Codec::discard_before_send`)
 - `rusty-photon-rolling-stats` — the sensor means
 - `rusty-photon-config`, `-server-config`, `-setup`, `-driver`, `-service-lifecycle`, `-tls`, `rp-auth`, `-i18n`, `-doctor-checks` — as the siblings
 - `tokio`, `serde`/`serde_json`, `clap`, `tracing`, `thiserror`, `strum`

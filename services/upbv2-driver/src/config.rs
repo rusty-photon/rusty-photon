@@ -177,7 +177,7 @@ const fn default_true() -> bool {
 }
 
 const fn default_averaging_period() -> Duration {
-    Duration::from_mins(5) // 5 minutes
+    Duration::from_mins(5)
 }
 
 /// Platform-dependent default serial port. Both values are placeholders the
@@ -227,7 +227,9 @@ impl Default for ObservingConditionsConfig {
     }
 }
 
-/// Legacy `DeviceConfig` for backward compatibility during migration
+/// A device's name, ASCOM `UniqueID` and description. Nothing in the driver
+/// reads it: the config's device sections are [`SwitchConfig`] and
+/// [`ObservingConditionsConfig`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
@@ -395,7 +397,7 @@ mod tests {
         assert_eq!(config.unique_id, "");
         assert_ne!(config.description, "");
         assert!(config.enabled);
-        assert_eq!(config.averaging_period, Duration::from_mins(5)); // 5 minutes
+        assert_eq!(config.averaging_period, Duration::from_mins(5));
     }
 
     #[test]

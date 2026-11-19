@@ -10,7 +10,7 @@
 
 This is the **evidence** task. `docs/validation/` is the proof trail that
 a given commit passed on real hardware; the per-service design docs
-narrate what was learned. Failures belong in issues, not here.
+state what the hardware does. Failures belong in issues, not here.
 
 ## The version gate — read this first
 
@@ -179,10 +179,22 @@ Every other condition holds unchanged. In particular:
 The first such record is
 [2026-10-06-star-adventurer-gti-gti-rig-pulse-trim](../validation/2026-10-06-star-adventurer-gti-gti-rig-pulse-trim/README.md):
 the GTi's RA pulse trim defaults, with one cross-axis reading from the
-single-sample RA read that #1371 was closed on.
+single-sample RA read, which is closed as an accepted limitation of
+the mount.
 
 Working against the field rig rather than a local device:
 [rig-development.md](rig-development.md).
+
+**ConformU 4.5.3 and a certificate issued for a name.** 4.5.3 opens TLS
+to the address the device's host name resolves to and sends no server
+name, so the certificate's name check fails with
+`RemoteCertificateNameMismatch`; 4.5.0 sends the name and passes (both
+seen on the field rig, in the
+[QHY5III715C's record](../validation/2026-11-17-qhy-camera-qhy5iii715c-linux/README.md)).
+A run against a production HTTPS endpoint under 4.5.3 therefore sets
+`TrustUserGeneratedSslCertificates` in its settings file and says so in
+its README, or runs the service on plain HTTP on loopback, as the
+Windows records do.
 
 ## Record the run
 

@@ -853,5 +853,5 @@ New scenarios in
 - INDI eqmod source — `eqmodbase.cpp::Goto`,
   `eqmodbase.cpp::EncodersToRADec` (https://github.com/indilib/indi-3rdparty/tree/master/indi-eqmod).
 - [Design doc §"Side-of-pier"](../../services/star-adventurer-gti.md#side-of-pier).
-- [Design doc §"Phase 4 driver-logic changes that real hardware required"](../../services/star-adventurer-gti.md#phase-4-driver-logic-changes-that-real-hardware-required) — mechanical-stall finding that motivates the envelope's existence.
+- [Design doc §"Phase 4 driver-logic changes that real hardware required"](star-adventurer-gti-phase-record.md#phase-4-driver-logic-changes-that-real-hardware-required) — mechanical-stall finding that motivates the envelope's existence.
 - [Design doc §"Running ConformU manually"](../../services/star-adventurer-gti.md#running-conformu-manually) — current expected-issues baseline.

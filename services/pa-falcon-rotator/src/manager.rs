@@ -66,8 +66,8 @@ impl FalconManager {
                 Box::pin(handshake(conn, last))
             }),
             on_last_disconnect: Box::new(|_| {
-                // Nothing to assert: this service holds no state that must
-                // survive a no-client gap, so the answer is trivially yes.
+                // Nothing to assert: no device state has to hold while no
+                // client is attached, so the answer is trivially yes.
                 Box::pin(async { StateAssertion::Asserted })
             }),
             shutdown: Box::new(|_| Box::pin(async {})),
@@ -97,10 +97,10 @@ impl FalconManager {
     /// `limit_detect` edge log.
     ///
     /// Logs `warn!` exactly once on the `None → true` or
-    /// `Some(false) → true` transition of `FA.limit_detect`. The state
-    /// initialises to `None` on connect, so a fresh connection whose
-    /// very first observation reports `limit_detect = 1` still surfaces
-    /// the warning.
+    /// `Some(false) → true` transition of `FA.limit_detect`. The handshake
+    /// — at service start and on every reconnect — initialises the state
+    /// to `None`, so a fresh connection whose very first observation
+    /// reports `limit_detect = 1` still surfaces the warning.
     ///
     /// # Errors
     ///
@@ -295,10 +295,13 @@ impl FalconManager {
         *self.target_position.lock().await
     }
 
-    /// Reset all driver-side per-session state. Called by the devices on
-    /// the 1→0 disconnect transition so a subsequent reconnect starts
-    /// from a clean slate (`sync_offset = 0`, no target, no remembered
-    /// limit edge).
+    /// Reset all driver-side state: `sync_offset = 0`, no target, no
+    /// remembered limit edge. A device calls it after its disconnect when
+    /// the transport is unavailable — reconnecting or shut down. Under
+    /// `ServiceLifetime`, which `ServerBuilder::build` starts, the
+    /// transport stays available after the last client goes, so the state
+    /// outlives an ordinary disconnect; under `LazyAcquire`, as in the unit
+    /// tests, the last disconnect closes the transport and so resets it.
     pub async fn clear_session_state(&self) {
         *self.sync_offset.lock().await = SyncOffset::ZERO;
         *self.target_position.lock().await = None;
@@ -309,8 +312,8 @@ impl FalconManager {
 /// The `limit_detect` rising-edge rule: `None → true` and
 /// `Some(false) → true` are edges, everything else is not.
 ///
-/// `previous` is the `last_limit_detected` tracker, which the connect-time
-/// handshake initialises to `None` so a fresh connection whose very first
+/// `previous` is the `last_limit_detected` tracker, which the handshake
+/// initialises to `None` so a fresh connection whose very first
 /// observation reports `limit_detect = 1` still counts as an edge.
 ///
 /// Split out of [`FalconManager::read_status`] deliberately: it makes the
@@ -344,7 +347,8 @@ impl std::fmt::Debug for FalconManager {
     }
 }
 
-/// Connect-time handshake: `F#` → `FV` → `DR:0` → `FA` → `VS`.
+/// Handshake, run on every open of the port — at service start and on
+/// each reconnect: `F#` → `FV` → `DR:0` → `FA` → `VS`.
 ///
 /// The `FA` and `VS` reads are smoke tests — we just want to confirm
 /// the wire format is honoured and that the device responds, so the
@@ -402,8 +406,9 @@ async fn handshake(
         )));
     }
 
-    // Initialise the edge tracker so the first post-connect read_status sees
-    // a fresh observation (rising-edge log fires on None → true).
+    // Initialise the edge tracker so the first read_status after the
+    // handshake sees a fresh observation (rising-edge log fires on
+    // None → true).
     *last_limit_detected.lock().await = None;
     Ok(())
 }
@@ -452,6 +457,9 @@ mod edge_rule_tests {
 ///
 /// Exercises the handshake + protocol API against the deterministic
 /// [`MockFalconTransportFactory`](crate::mock::MockFalconTransportFactory).
+/// Nothing here calls `start()`, so the transport runs `LazyAcquire`: the
+/// first acquire opens the port and runs the handshake, and the last
+/// release closes it.
 /// Race / refcount / rollback invariants are tested once for everyone in
 /// `rusty-photon-shared-transport`'s own test suite — not duplicated here.
 #[cfg(all(test, feature = "mock"))]
@@ -583,7 +591,7 @@ mod mock_tests {
         assert_eq!(log, vec!["MD:330.00".to_string()]);
     }
 
-    // Non-finite rejection now lives at the ASCOM boundary (the
+    // Non-finite rejection lives at the ASCOM boundary (the
     // `MechanicalDegrees` argument is finite by construction); see the
     // `move_*_rejects_non_finite` tests in `rotator_device`.
 
@@ -725,7 +733,7 @@ mod mock_tests {
     // These tests deliberately do NOT capture the `warn!` itself. A
     // thread-local subscriber cannot reliably observe an event whose
     // callsite another test in the same binary may register first — see
-    // issue #949 and `testing.md` §6.8.
+    // `docs/skills/testing.md` §6.8.
 
     #[tokio::test]
     async fn read_status_records_each_limit_detect_observation() {
@@ -781,77 +789,28 @@ mod mock_tests {
     // The happy-path tests above leave the wire-error arms of the protocol
     // methods (read_status / read_voltage_raw / move_mechanical / halt /
     // set_reverse / sync) and the handshake's rollback path uncovered.
-    // The `InjectableFactory` wraps the canonical mock and gates
-    // `send_frame` behind an atomic — flipping it makes the very next
-    // send return EOF, which arrives at the device layer as
-    // `FalconRotatorError::Communication("Connection closed")`. Same
-    // shape as the qhy-focuser + ppba-driver tests added in PR #280.
+    // A `FailingFactory` around the mock fails the next send with EOF,
+    // which arrives at the device layer as
+    // `FalconRotatorError::Communication("Connection closed")`.
     // ========================================================================
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use transport_doubles::FailingFactory;
 
-    /// Wraps the canonical mock factory but gates `send_frame` behind a
-    /// shared atomic — flipping it makes the very next send return EOF.
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockFalconTransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    impl InjectableFactory {
-        fn fail_next_send(&self) -> Arc<AtomicBool> {
-            Arc::clone(&self.fail_next_send)
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-    }
-
-    fn make_injectable_manager() -> (Arc<FalconManager>, Arc<InjectableFactory>) {
-        let factory = Arc::new(InjectableFactory::default());
-        let manager = FalconManager::new(Arc::<InjectableFactory>::clone(&factory));
+    fn make_failing_manager() -> (
+        Arc<FalconManager>,
+        Arc<FailingFactory<MockFalconTransportFactory>>,
+    ) {
+        let factory = Arc::new(FailingFactory::new(MockFalconTransportFactory::default()));
+        let manager = FalconManager::new(Arc::<FailingFactory<_>>::clone(&factory));
         (manager, factory)
     }
 
     #[tokio::test]
     async fn read_status_propagates_transport_failure() {
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .read_status(&session)
             .await
@@ -864,11 +823,10 @@ mod mock_tests {
 
     #[tokio::test]
     async fn read_voltage_raw_propagates_transport_failure() {
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .read_voltage_raw(&session)
             .await
@@ -881,11 +839,10 @@ mod mock_tests {
 
     #[tokio::test]
     async fn move_mechanical_propagates_transport_failure() {
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .move_mechanical(&session, MechanicalDegrees::new(180.0))
             .await
@@ -902,12 +859,11 @@ mod mock_tests {
         // transport failure, propagate the error and leave the cache
         // untouched (the device may still be moving — better to reflect
         // that uncertainty than lie about completion).
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
         manager.set_target_position(SkyDegrees::new(180.0)).await;
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .halt(&session)
             .await
@@ -927,12 +883,11 @@ mod mock_tests {
     async fn sync_propagates_transport_failure_and_leaves_offset_unchanged() {
         // sync's read-FA-first arm: if the FA read fails, the driver-side
         // sync_offset must not be touched.
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
         let session = acquire_session(&manager).await;
         let starting_offset = manager.sync_offset().await.value();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .sync(&session, 90.0)
             .await
@@ -950,10 +905,9 @@ mod mock_tests {
         // - propagate Err from acquire(),
         // - leave is_available() == false (the RollbackGuard fired),
         // - leave driver-side state at its defaults (no partial handshake).
-        let (manager, factory) = make_injectable_manager();
-        let fail_switch = factory.fail_next_send();
+        let (manager, factory) = make_failing_manager();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .transport()
             .acquire()

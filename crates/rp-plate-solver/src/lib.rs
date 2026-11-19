@@ -738,8 +738,8 @@ mod tests {
     #[tokio::test]
     async fn solve_surfaces_connection_refused_as_service_unreachable() {
         // Port 1 is reserved and reliably refuses connections on
-        // dev hosts and CI runners (same pattern auto_focus uses
-        // for the unreachable-focuser scenario).
+        // dev hosts and CI runners (same pattern rp's BDD suite uses
+        // for an unreachable camera).
         let client = PlateSolverClient::new(
             "http://127.0.0.1:1".to_string(),
             Duration::from_secs(2),

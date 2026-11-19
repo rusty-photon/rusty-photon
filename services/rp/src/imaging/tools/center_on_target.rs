@@ -169,8 +169,7 @@ pub trait MountOps {
 ///
 /// Plausible centering runs converge in 2–4 iterations; 50 is generous
 /// enough that no real workflow trips the cap, low enough that a
-/// misconfigured loop can't tie up the rig for hours. Mirrors
-/// `auto_focus`'s `MAX_GRID_POINTS` guardrail.
+/// misconfigured loop can't tie up the rig for hours.
 pub const MAX_ATTEMPTS: usize = 50;
 
 /// Reject centering parameters the loop cannot act on.

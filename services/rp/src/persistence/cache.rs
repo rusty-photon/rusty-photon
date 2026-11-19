@@ -1,7 +1,7 @@
 //! In-memory image cache.
 //!
 //! Holds the pixel buffer that `capture` already decoded so subsequent tools
-//! (`measure_basic`, `auto_focus`, plugins) don't re-read and re-decode the
+//! (`measure_basic`, `measure_stars`, plugins) don't re-read and re-decode the
 //! FITS file. The on-disk FITS file remains the durable source of truth — the
 //! cache is strictly a hot-path optimization, with the file as fallback on
 //! miss. See `docs/services/rp.md` (Image Cache) for the full design.

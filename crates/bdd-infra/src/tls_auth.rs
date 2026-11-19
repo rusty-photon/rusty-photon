@@ -50,7 +50,7 @@ impl PkiFixture {
     /// password cannot be hashed.
     #[must_use]
     pub fn generate(service_name: &str) -> Self {
-        let dir = TempDir::new().unwrap();
+        let dir = crate::scratch::new_dir("tls-auth-pki-").unwrap();
         rusty_photon_tls::test_cert::generate_ca(dir.path()).unwrap();
         let ca_pem = std::fs::read_to_string(dir.path().join("ca.pem")).unwrap();
         let ca_key = std::fs::read_to_string(dir.path().join("ca-key.pem")).unwrap();
@@ -155,9 +155,10 @@ impl PkiFixture {
 /// process is one suite, so this holds one entry in almost every case.
 ///
 /// The fixtures live for the process: their `TempDir`s are never dropped, so
-/// the PKI stays readable for scenarios still running at shutdown. Bazel gives
-/// each test action a private `TMPDIR` and reclaims it, so nothing outlives
-/// the run.
+/// the PKI stays readable for scenarios still running at shutdown, and the
+/// process never removes the directories. [`PkiFixture::generate`] creates
+/// them with [`crate::scratch::new_dir`], so under Bazel they land in the
+/// per-action `TEST_TMPDIR`, which Bazel wipes between runs.
 #[allow(clippy::type_complexity)]
 static SHARED_PKI: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<PkiFixture>>>> = OnceLock::new();
 
@@ -167,11 +168,11 @@ static SHARED_PKI: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<PkiFixture>>>
 /// Both halves matter, and a step should never call [`PkiFixture::generate`]
 /// directly instead:
 ///
-/// *Once per process.* Generating per scenario meant a suite paid for five or
-/// more identical PKIs. `service_name` is the suite's own package name, so
-/// every one of them was interchangeable — the scenarios prove that a valid
-/// credential is accepted and an invalid one refused, and none needs a CA or
-/// password distinct from another scenario's.
+/// *Once per process.* Generating per scenario would make a suite pay for five
+/// or more identical PKIs. `service_name` is the suite's own package name, so
+/// every one of them would be interchangeable — the scenarios prove that a
+/// valid credential is accepted and an invalid one refused, and none needs a
+/// CA or password distinct from another scenario's.
 ///
 /// *Off the poll loop.* Generation is CPU-bound and slow: two keypairs, a
 /// signature, and an Argon2id hash whose whole purpose is to be expensive —
@@ -298,7 +299,7 @@ pub trait TlsAuthSmokeWorld {
 pub fn stage_config_file(state: &mut TlsAuthState, config: &serde_json::Value) -> PathBuf {
     let dir = state
         .config_dir
-        .get_or_insert_with(|| TempDir::new().unwrap());
+        .get_or_insert_with(|| crate::scratch::new_dir("tls-auth-config-").unwrap());
     let path = dir.path().join("tls-auth-config.json");
     std::fs::write(&path, config.to_string()).unwrap();
     path
@@ -338,7 +339,7 @@ pub async fn spawn_service_handle(
 }
 
 /// How long [`wait_until_ready`] keeps starting attempts. A fast-failing
-/// server gets 60 attempts in it, the count the probe used to make.
+/// server gets 60 attempts in it.
 const READY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The pause between two of [`wait_until_ready`]'s attempts.
@@ -382,16 +383,35 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 /// within [`ATTEMPT_TIMEOUT`].
 pub async fn wait_until_ready(client: &reqwest::Client, url: &str, username: &str, password: &str) {
     let credentials = (!username.is_empty()).then_some((username, password));
+    retry_until_ready(url, credentials.is_some(), || {
+        probe_once(client, url, credentials)
+    })
+    .await;
+}
+
+/// [`wait_until_ready`]'s attempt loop, with `probe` making each attempt
+/// against `url`.
+///
+/// The loop is kept apart from the HTTP so that its deadline can be tested
+/// on paused time against a probe that opens no socket. The paused clock
+/// jumps to the next timer whenever the runtime parks with no I/O ready, so
+/// a real reply the kernel has not reported yet loses to the attempt
+/// timeout (`docs/skills/testing.md` §6.12).
+async fn retry_until_ready<F, Fut>(url: &str, with_credentials: bool, mut probe: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     let start = tokio::time::Instant::now();
     let mut attempts = 0_u32;
     loop {
         attempts = attempts.saturating_add(1);
-        let last = match probe_once(client, url, credentials).await {
+        let last = match probe().await {
             Ok(()) => return,
             Err(outcome) => outcome,
         };
         if start.elapsed().saturating_add(READY_INTERVAL) >= READY_DEADLINE {
-            let with = if credentials.is_some() {
+            let with = if with_credentials {
                 " with valid credentials"
             } else {
                 ""
@@ -469,7 +489,7 @@ fn dialled_scheme(url: &str) -> String {
 /// the invisible group a `ty` metavariable is wrapped in.
 ///
 /// The generated steps match this scenario (service-neutral wording, so the
-/// feature file is identical across services):
+/// scenario reads the same in every service):
 ///
 /// ```gherkin
 /// Given generated TLS certificates for the service
@@ -478,6 +498,10 @@ fn dialled_scheme(url: &str) -> String {
 /// Then the service rejects requests without credentials with 401
 /// And the service responds 200 to requests with valid credentials
 /// ```
+///
+/// A driver service's `auth.feature` also carries a restart scenario, whose
+/// Then steps [`service_restart_steps!`](crate::service_restart_steps)
+/// generates.
 ///
 /// `env!("CARGO_PKG_NAME")` expands at the invocation site, so the generated
 /// certificate carries the invoking service's name.
@@ -715,32 +739,46 @@ mod tests {
         assert_eq!(dialled_scheme("https://127.0.0.1:1/health"), "HTTPS");
     }
 
+    /// The message `future` panics with.
+    async fn panic_message(
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> String {
+        let payload = tokio::spawn(future).await.unwrap_err().into_panic();
+        crate::panic_text(payload.as_ref()).to_owned()
+    }
+
     /// The message `wait_until_ready` panics with for `url`.
     async fn readiness_panic(url: &str, username: &str, password: &str) -> String {
         let (url, username, password) = (url.to_owned(), username.to_owned(), password.to_owned());
-        let probe = tokio::spawn(async move {
+        panic_message(async move {
             wait_until_ready(&reqwest::Client::new(), &url, &username, &password).await;
-        });
-        let payload = probe.await.unwrap_err().into_panic();
-        crate::panic_text(payload.as_ref()).to_owned()
+        })
+        .await
+    }
+
+    /// A probe that never succeeds and opens no socket. Each outcome names
+    /// its attempt, so a test can tell which one the panic reports.
+    fn never_ready() -> impl FnMut() -> std::future::Ready<Result<(), String>> {
+        let mut attempt = 0_u32;
+        move || {
+            attempt = attempt.saturating_add(1);
+            std::future::ready(Err(format!("outcome of attempt {attempt}")))
+        }
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_server_never_ready_panics_naming_the_scheme_attempts_and_last_outcome() {
-        let port = canned_server(UNAVAILABLE).await;
-        let url = format!("http://127.0.0.1:{port}/health");
-        let message = readiness_panic(&url, "user", "pass").await;
-        assert!(
-            message.contains(&format!(
-                "over HTTP with valid credentials: {url} (60 attempts in"
-            )),
-            "{message}"
-        );
-        assert!(
-            message.ends_with(&format!(
-                "last outcome: 503 Service Unavailable from 127.0.0.1:{port}"
-            )),
-            "{message}"
+        let message = panic_message(retry_until_ready(
+            "http://127.0.0.1:1/health",
+            true,
+            never_ready(),
+        ))
+        .await;
+        assert_eq!(
+            message,
+            "server did not become ready over HTTP with valid credentials: \
+             http://127.0.0.1:1/health (60 attempts in 29.5s against a 30s deadline); \
+             last outcome: outcome of attempt 60"
         );
     }
 

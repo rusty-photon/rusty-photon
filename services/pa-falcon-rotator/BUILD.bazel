@@ -47,13 +47,13 @@ rust_binary(
 
 # Unit tests compile the lib with `crate_features = ["mock"]` so the in-lib
 # `#[cfg(all(test, feature = "mock"))]` suites in manager.rs / rotator_device.rs
-# / switch_device.rs compile and run, matching the Cargo coverage job's
-# `cargo test --all-features`. The default non-mock compile cfg-excluded them —
-# the dominant bazel<cargo coverage gap (see docs/plans/archive/bazel-migration.md
-# "Coverage under Bazel"). `crate_features` must be on the rust_test itself —
-# `crate = ":..._lib_mock"` does NOT inherit the library's features. The `mock`
-# module is additive and every `not(feature = "mock")` block lives in main.rs
-# (outside this lib), so nothing is lost. Same pattern as `test_lib` below.
+# / switch_device.rs compile and run here, as they do under
+# `cargo test --all-features`; without it they are cfg'd out of the Bazel
+# test and of the coverage `bazel coverage` reports. `crate_features` must be on
+# the rust_test itself — `crate = ":..._lib_mock"` does NOT inherit the
+# library's features. The `mock` module is additive and every
+# `not(feature = "mock")` block lives in main.rs (outside this lib), so
+# nothing is lost. Same pattern as `test_lib` below.
 rust_test(
     name = "pa-falcon-rotator_unit_test",
     size = "medium",
@@ -68,7 +68,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = _INTRA_WORKSPACE_DEPS + ["//crates/transport-doubles"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -155,9 +155,9 @@ rust_test(
     ),
 )
 
-# Mock-feature binary used by the conformu_integration test above. The BDD
-# tests run in-process (no child spawn), but ConformU requires an external
-# binary to connect to, so we need a real executable here.
+# Mock-feature binary, spawned by the conformu_integration test above
+# (ConformU connects to an external server) and by the BDD scenarios that
+# run the service as a process.
 rust_binary(
     name = "pa-falcon-rotator_mock",
     srcs = ["src/main.rs"],
@@ -169,9 +169,9 @@ rust_binary(
     deps = [":pa-falcon-rotator_lib_mock"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
-# BDD cucumber tests run **in-process**: each scenario builds a `BoundServer`
-# on an ephemeral port and drives it via in-process Alpaca HTTP clients.
-# `MockSerialPortFactory` is pulled in via the `_lib_mock` dependency below.
+# The library with the `mock` feature, which carries
+# `MockFalconTransportFactory`: most BDD scenarios build a `BoundServer` from
+# it in-process on an ephemeral port and drive it via Alpaca HTTP clients.
 rust_library(
     name = "pa-falcon-rotator_lib_mock",
     srcs = glob(
@@ -195,8 +195,8 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate_root = "tests/bdd.rs",
-    # The scenarios run in-process, except the doctor smoke: it spawns the
-    # mock-feature binary via bdd_infra::run_once, discovered through
+    # Most scenarios run in-process; the setup-page, restart, auth and
+    # doctor scenarios spawn the mock-feature binary, discovered through
     # PA_FALCON_ROTATOR_BINARY below.
     data = [
         "Cargo.toml",
@@ -218,7 +218,7 @@ rust_test(
     rustc_env = {"CARGO_PKG_NAME": "pa-falcon-rotator"},
     tags = ["bdd"],
     use_libtest_harness = False,
-    # Depend on the mock-feature library so `MockSerialPortFactory` (gated
+    # Depend on the mock-feature library so `MockFalconTransportFactory` (gated
     # on `feature = "mock"`) is visible to the in-process BDD world. The
     # Cargo test uses `required-features = ["mock"]` for the same reason.
     deps = [
@@ -235,5 +235,22 @@ rust_test(
 filegroup(
     name = "pkg",
     srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

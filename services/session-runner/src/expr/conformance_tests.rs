@@ -1,9 +1,8 @@
 //! Conformance corpus derived from `docs/services/session-runner.md`
-//! § Expressions plus the grammar pins fixed by the Phase B spike. Accept
+//! § Expressions and its grammar pins. Accept
 //! cases optionally pin the canonical parse shape (precedence /
 //! associativity probes); reject cases must fail at the parse or static-
-//! check layer. This is the spike's 178-case corpus, kept verbatim as the
-//! regression suite for the grammar.
+//! check layer. The corpus is the regression suite for the grammar.
 
 use super::{ErrorKind, Expression};
 
@@ -590,8 +589,8 @@ fn test_diagnostic_method_call_names_builtins() {
 }
 
 // ---- recursion guard -------------------------------------------------------
-// Found by the expr_parse fuzz target: unbounded nesting depth must be a
-// parse error, not a stack overflow.
+// Unbounded nesting depth must be a parse error, not a stack overflow;
+// the `expr_parse` fuzz target drives the same path.
 
 #[test]
 fn test_deep_paren_nesting_is_an_error_not_a_crash() {

@@ -268,20 +268,18 @@ pub(super) async fn pickup_start_axis(
 /// between current and target and the slew is refused with
 /// `INVALID_OPERATION`.
 ///
-/// Previously a sign-blind heuristic (`|current| > cpr/4 ⇒ "safe is
-/// positive"`) was used. That mis-fired at Park 4 N
-/// (current ≈ -cpr/2, canonical ≈ -4k CCW just past the wrap): the
-/// heuristic flipped the small CCW step into a +cpr/2 + small CW full
-/// revolution that swept across the zone and slammed the CW shaft
-/// into the pier (hardware validation 2026-05-16). The path-aware
-/// check uses the actual CW exclusion zone, so it preserves the safe
-/// canonical step when it doesn't cross. The both-cross refusal was
-/// added after the 2026-05-17 session, where a `SetSideOfPier`
-/// from Park 3 produced a `canonical_delta = -cpr/2` whose long-way
-/// alternative `+cpr/2` swept the OTA through the tripod region with
-/// the narrow `(+6.95, +11.05)` zone permitting it. With the wider
-/// `(+0.95, +11.05)` zone both directions cross and the slew is now
-/// rejected.
+/// The check is of the path against the zone, not of the sign of
+/// `current_ticks`. At Park 4 N (current ≈ -cpr/2, canonical ≈ -4k
+/// CCW just past the wrap) a `|current| > cpr/4 ⇒ "safe is positive"`
+/// rule turns the small CCW step into a near-full CW revolution that
+/// sweeps the zone and drives the CW shaft into the pier; the path
+/// check keeps the canonical step, which does not cross. A
+/// `SetSideOfPier` from Park 3 is the both-cross case: its
+/// `canonical_delta = -cpr/2` and the long-way `+cpr/2` both cross the
+/// default `(+0.95, +11.05)` zone, where a narrower `(+6.95, +11.05)`
+/// zone lets the long way sweep the OTA through the tripod region. See
+/// the design doc's
+/// [§"Through-wrap slew routing"](../../../../docs/services/star-adventurer-gti.md#through-wrap-slew-routing).
 pub(super) fn flip_slew_ra_delta(
     canonical_delta: i32,
     current_ticks: i32,
@@ -365,8 +363,7 @@ pub(super) fn check_non_flip_ra_path(
 /// for northern observers (encoder `+cpr/4`), SCP at altitude `+|lat|`
 /// for southern (encoder `−cpr/4`). The other pole is below the
 /// horizon and the path through it dips the OTA below the local
-/// horizon — exactly the failure mode hit during the first hardware
-/// validation when the OTA was driven through SCP at lat 32.7°N.
+/// horizon.
 ///
 /// Strategy (mirroring [`flip_slew_ra_delta`]): take the canonical
 /// short path unless its linear dec-encoder sweep from `current_ticks`
@@ -376,14 +373,13 @@ pub(super) fn check_non_flip_ra_path(
 /// around (`canonical ± cpr_dec`), which lands at the same modular
 /// destination via the safe pole.
 ///
-/// Previously a sign-blind heuristic (`|current| ≤ cpr/4 ⇒ "safe is
-/// positive (toward NCP for N)"`) was used. It happens to give the
-/// right answer for every realistic flip-slew (current, target) pair
-/// after folding raw to the canonical band, but the path-aware check
-/// makes the safety property explicit, mirrors the RA helper's
-/// structure, and is naturally robust to `current_ticks` outside the
-/// canonical band (the modular-replica scan covers all continuous
-/// sweeps regardless of where raw has accumulated).
+/// The check is of the path, not of the sign of `current_ticks`. A
+/// `|current| ≤ cpr/4 ⇒ "safe is positive (toward NCP for N)"` rule
+/// gives the same answer for every realistic flip-slew (current,
+/// target) pair once raw is folded to the canonical band; the path
+/// check also holds for `current_ticks` outside that band, since the
+/// modular-replica scan covers every continuous sweep wherever raw has
+/// accumulated.
 pub(super) const fn flip_slew_dec_delta(
     canonical_delta: i32,
     current_ticks: i32,

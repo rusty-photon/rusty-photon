@@ -7,29 +7,28 @@ rusty-photon install: packages put bytes on disk, services self-create their
 default configs, and doctor makes the result coherent. It audits **service
 facts** — ports, TLS, auth, service-to-service references, unit wiring — and
 never learns device usage (which camera is the guide cam belongs to `rp`).
-[ADR-016](../decisions/016-service-config-ownership-and-doctor.md) is the
-decision record; [`docs/plans/archive/service-config-doctor.md`](../plans/archive/service-config-doctor.md)
-is the completed plan that delivered it.
+[ADR-016](../decisions/016-service-config-ownership-and-doctor.md) records
+why a standalone doctor, and not the installers or the services, wires
+what spans services.
 
-This document specifies the **D2–D5 scope (diagnosis, repair, the no-SDK
-hardware checks, and the per-service doctors) plus the D6a scope (TLS +
-credential provisioning)**. A default run examines the config directory,
-the platform's service manager, and the host's device surface (device
-nodes, USB inventory, udev rules — all read-only), prints a report, and
-writes nothing; `--fix` (D3) additionally applies the machine-applicable
-fixes, runs the provisioning pass (D6a), and re-diagnoses; the
-`tls`/`auth` subcommands (D6a) expose provisioning à la carte. From D5
-on, every packaged service binary also answers `doctor` itself — its own
-full-config validation, plus SDK-side hardware enumeration on the
-services that link a vendor blob — and central doctor aggregates those
-answers into the one report (§Per-service doctors). Cert renewal (D6b)
-extends this binary later; its contract is recorded in the plan and
-folded in here as it lands.
+This document specifies diagnosis (D2), repair (D3), the no-SDK hardware
+checks (D4), the per-service doctors (D5), TLS and credential provisioning
+(D6a), certificate renewal (D6b) and the ACME flip. A default run examines
+the config directory, the platform's service manager, and the host's
+device surface (device nodes, USB inventory, udev rules — all read-only),
+prints a report, and writes nothing; `--fix` additionally applies the
+machine-applicable fixes, runs the provisioning pass, and re-diagnoses;
+the `tls`/`auth` subcommands expose provisioning à la carte, and
+`tls renew` renews certificates from a platform scheduler. Every packaged
+service binary also answers `doctor` itself — its own full-config
+validation, plus SDK-side hardware enumeration on the services that link
+a vendor blob — and central doctor aggregates those answers into the one
+report (§Per-service doctors).
 
 Doctor is a one-shot CLI, not a long-running service: no server, no config
 file of its own, no unit. It lives at `services/doctor` (cargo binary
 `doctor`) and installs as `rusty-photon-doctor`, riding in sentinel's
-package on every platform (D7 — there is no separate doctor package).
+package on every platform (there is no separate doctor package).
 
 ## Architecture
 
@@ -48,18 +47,21 @@ Six inputs, one output. A default run is read-only: config files are
 parsed but never written, every service-manager interaction is a query
 (`list-unit-files`, `show`), never a verb, and every hardware probe is a
 stat, a directory listing, or a read-only inventory query — doctor never
-opens a device (ADR-016 decision 5: a running service holds its hardware;
-doctor must never contend for it). Only `--fix` and the `tls`/`auth`
-subcommands write — config files through `rusty_photon_config::save`'s
-atomic path, plus the pki tree (D6a) — and nothing ever runs a
-service-manager verb.
+opens a device (a running service holds its hardware; doctor must never
+contend for it). Only `--fix` and the `tls`/`auth` subcommands write —
+config files through `rusty_photon_config::save`'s atomic path, plus the
+pki tree (D6a) — and nothing ever runs a service-manager verb. Doctor's
+own network traffic is the HTTP probes of §Aggregation and §The fake-mount
+hazard and, on an ACME install, the name lookups of `dns.unresolvable` —
+all made once, for the final report — plus the ACME order and the DNS
+provider's API calls, which only `tls issue --acme`, `tls flip-to-acme`
+and `tls renew` make.
 
 ### The derived catalog
 
 Doctor's catalog — which services exist, their class, and their default port —
-is **derived from the packaging tree, not typed into doctor**
-(ADR-016 decision 11). Each packaged service carries a metadata file,
-`services/<svc>/pkg/doctor.toml`:
+is **derived from the packaging tree, not typed into doctor**. Each
+packaged service carries a metadata file, `services/<svc>/pkg/doctor.toml`:
 
 ```toml
 # Catalog metadata for rusty-photon-doctor (docs/services/doctor.md).
@@ -70,11 +72,18 @@ port = 11113      # default port when the config file or server block is absent
 
 # Optional: the unit has no sensible default config and never self-creates
 # one — docs/packaging.md's "config-gated" services (ConditionPathExists= on
-# Linux, start type Manual on Windows). Defaults to false. Feeds
+# Linux; on Windows the service stops itself without its config). Defaults
+# to false. Feeds
 # `units.config-gated`, `inventory.unit-without-config`'s remedy text, and
 # scopes `tls.absent`/`auth.absent` away from a config-gated service's
 # expected `FileAbsent` state (§TLS and auth).
 config_gated = false
+
+# Optional: a file the service writes beside its config, holding runtime
+# state rather than configuration — star-adventurer-gti's mount state
+# record. `inventory.unknown-config` counts it as the service's own file
+# instead of a misnamed config. A bare file name.
+state_file = "star-adventurer-gti.mount-state.json"
 
 # Optional hardware identity (§Hardware checks) — present only on services
 # that talk to a device.
@@ -112,14 +121,16 @@ Three guards keep the catalog honest:
    `AdvertisingServerConfig`). Every service's `server` block **is** one of
    those three shared types rather than a service-local copy of one, so the
    shape a service accepts cannot drift from the shape doctor validates it
-   against — the divergence that made doctor false-`fail` rp's
-   `advertised_url` and, worse, silently skip rp's whole TLS/auth diagnosis
-   with it. Services declaring serial
+   against. A drifted copy would have doctor false-`fail` a key the service
+   accepts (rp's `advertised_url`) and, with the `server` block refused,
+   skip that service's whole TLS/auth diagnosis. Services declaring serial
    metadata extend the same test: the pointer resolves in their own default
    config shape and the declared defaults equal their `DEFAULT_SERIAL_PORT`
-   constants. The five config-gated services (below) assert `config_gated`
-   is `true` in the same test. A drifted copy fails that service's tests,
-   not doctor's.
+   constants. The six config-gated services (below) assert `config_gated`
+   is `true` in the same test. `star-adventurer-gti` asserts its declared
+   `state_file` is the name of the mount state record it writes beside its
+   packaged config. A drifted copy fails that service's tests, not
+   doctor's.
 2. **Doctor embeds the files at build time** and a doctor unit test asserts
    the embedded set parses, ports are unique, and the table matches the files.
    That test is load-bearing rather than belt-and-braces: at runtime the
@@ -132,7 +143,9 @@ Three guards keep the catalog honest:
    A third doctor unit test pins `config_gated` against the known set
    (`calibrator-flats`, `focus-model`, `plate-solver`, `polar-align`,
    `session-runner`, `sky-survey-camera`) — unlike `usb_vendor`, this one
-   is not measured from hardware, so a plain assertion is enough.
+   is not measured from hardware, so a plain assertion is enough. Another
+   pins the declared `state_file`s the same way: `star-adventurer-gti`'s
+   mount state record is the only one.
    Three further doctor unit tests pin every declared `usb_model` against a
    table of descriptors transcribed from the fleet's own buses (the Pi rig's
    sysfs `product`, rig2's bus-reported device description): each model must
@@ -151,7 +164,7 @@ USB identity declarations are measured from real hardware (the values a
 device reports on the bus), so the code-parity guard cannot cover them;
 the vendor-vs-rule assertion, the transcribed-descriptor table above, and the
 on-rig verification leg do.
-Every device-bearing service now declares its identity. Three of them
+Every device-bearing service declares its identity. Three of them
 declare a VID:PID and deliberately no `usb_model`: `qhy-focuser` is a
 GigaDevice GD32 publishing the stock `GD32-CDC_ACM`, `star-adventurer-gti`
 is an STM32 publishing ST's stock `STM32 Virtual ComPort`, and
@@ -167,7 +180,7 @@ number, so its `by-id` name is shared with every other such CH340 and the
 driver's own `>H#` handshake is what tells the hub from them
 ([gemini-powerbox-adv3-driver.md](gemini-powerbox-adv3-driver.md#device-identity)).
 
-The catalog today (24 packaged services):
+The catalog (23 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -188,7 +201,6 @@ The catalog today (24 packaged services):
 | svbony-camera | alpaca | 11125 |
 | planetarium-bridge | alpaca | 11126 |
 | upbv2-driver | alpaca | 11127 |
-| phd2-guider | core | 11130 |
 | plate-solver | core | 11131 |
 | gemini-powerbox-adv3-driver | alpaca | 11132 |
 | calibrator-flats | core | 11170 |
@@ -198,7 +210,7 @@ The catalog today (24 packaged services):
 
 Doctor itself never appears in the catalog: it is a one-shot binary with no
 unit and no port. It also has no `pkg/` directory — the packaging rides
-entirely in sentinel's (plan decision 8): sentinel's deb/rpm assets, MSI
+entirely in sentinel's: sentinel's deb/rpm assets, MSI
 Core feature, and Homebrew formula each carry the `rusty-photon-doctor`
 binary and the renewal scheduling for their platform, so the `services/*/pkg`
 discovery loops and the catalog completeness check never see a doctor
@@ -225,7 +237,7 @@ Doctor diagnoses one config directory per run, resolved in order:
    invoking user is a hard error** (exit 2, "run with sudo"), never a
    fall-through: the tree is 0750-owned by `rusty-photon`, and silently
    diagnosing the operator's own empty config directory instead would report
-   seventeen missing configs on a healthy rig — and scan polkit rule
+   every config missing on a healthy rig — and scan polkit rule
    directories it cannot read. A dangling symlink (packages removed) falls
    through to step 3.
 3. The platform default the services themselves use —
@@ -274,11 +286,11 @@ systemd's `SupplementaryGroups=`) simply do not run on the other platforms.
 ### The hardware gatherer
 
 The device-surface knowledge lives in the shared
-`rusty-photon-doctor-checks` crate (ADR-016 decision 6: the similarity
-between central doctor and D5's per-service doctors is a library, not a
-binary). Doctor derives a probe list from the catalog and the scanned
-configs — the effective serial paths, the expected udev rule files, the
-firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
+`rusty-photon-doctor-checks` crate (the similarity between central doctor
+and D5's per-service doctors is a library, not a binary). Doctor derives a
+probe list from the catalog and the scanned configs — the effective serial
+paths, the expected udev rule files, the firmware artifacts — and the crate
+gathers `HardwareFacts`, read-only:
 
 - **Paths** — `stat` results (exists, file kind, mode, owner) for every
   probed path. Never an `open`.
@@ -389,8 +401,7 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   query's own problem-code expression, read without the filter, gave
   problem code 45 for every one of the VM's 15 stale USB records, the
   camera's and other devices' alike
-  ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md), D2
-  spike item 7).
+  ([the device-claims plan, § D2, spike item 7](../plans/archive/device-claims-and-phd2-camera.md#d2-the-port-path-already-exists-in-this-repo)).
 
   **A scan has three outcomes, and they must not be confused.**
 
@@ -445,17 +456,17 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     is a data type listing that names neither USB report, or a report
     that is not JSON or has no list under the data type it was asked for.
     Reading either as a bus with fewer devices would turn a collector
-    failure into absence and cable diagnoses. Every collector used to
-    fold this into an empty `Vec`, which reads as "no devices" —
-    indistinguishable from a genuinely idle bus, and the wrong answer for
-    any consumer deciding what hardware it may touch. So the scan reports
+    failure into absence and cable diagnoses. Folded into an empty `Vec`,
+    a failed scan would read as "no devices" — indistinguishable from a
+    genuinely idle bus, and the wrong answer for any consumer deciding
+    what hardware it may touch. So the scan reports
     unavailability explicitly (with neither devices nor faults), and
     `HardwareFacts::usb_present` answers `None` rather than `false` when
     it cannot know. `Ok(empty)` still means a genuinely empty bus.
 
   Only entries that present as a USB device — they carry a vendor id, or
   their platform equivalent — are considered at all. The collectors pass
-  over a great deal that is not a device, silently, as before: Linux
+  over a great deal that is not a device, silently: Linux
   interface entries (`1-4.2:1.0`) have no `idVendor`, Windows instance ids
   that are not `USB\VID_…` (root hubs among them) are filtered out by the
   query itself and never reach the parser, the parser skips a Windows
@@ -595,11 +606,12 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   the document and its
   rules; a driver exposes it as a hidden `--usb-inventory <file>` flag under
   its own `simulation` feature as it gains device claims. Doctor,
-  `svbony-camera` and `zwo-camera` read the USB inventory today: a camera
-  driver with a `usb_devices` list places each SDK camera on a port from it
-  before it registers or opens anything ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
-  D4, [svbony-camera.md](svbony-camera.md) U1-U9,
-  [zwo-camera.md](zwo-camera.md) U1-U9). The collectors are the same
+  `svbony-camera`, `zwo-camera` and `qhy-camera` read the USB inventory: a
+  camera driver with a `usb_devices` list places each SDK camera on a port
+  from it before it registers or opens anything
+  ([svbony-camera.md](svbony-camera.md) U1-U9,
+  [zwo-camera.md](zwo-camera.md) U1-U9,
+  [qhy-camera.md](qhy-camera.md) U1-U10). The collectors are the same
   for both: a driver takes the USB scan alone (`facts::scan_usb`), without
   the rest of the gather.
 - **Serial ports** (Windows) — read in-process from the registry key every
@@ -674,9 +686,9 @@ a package inventory and run only in `mode: "packaged"`.
 ## Diagnosis — the D2 checks
 
 Every check yields `ok`, `warn`, or `fail` plus a human-readable detail and,
-where doctor can suggest one, a concrete remedy (as text — machine-applicable
-fixes arrive with D3). Checks are service-scoped where applicable so the
-report groups naturally.
+where doctor can suggest one, a concrete remedy as text; a check whose fix is
+machine-applicable also plans it for `--fix` (§Repair). Checks are
+service-scoped where applicable so the report groups naturally.
 
 ### Inventory (packaged mode only)
 
@@ -684,7 +696,7 @@ report groups naturally.
 |---|---|---|
 | `inventory.unit-without-config` | warn | A `rusty-photon-*` unit is installed but `<svc>.json` does not exist. For a self-defaulting service that has never started (it self-creates config on first run) — or its state directory is wrong; for a `config_gated` service (§The derived catalog) it hard-requires a hand-written file and cannot start without one. The remedy names the actual `ConditionPathExists=` gate on Linux, else falls back to the catalog's `config_gated` flag (the only portable signal — Windows/macOS carry no equivalent fact) so the suggestion never wrongly claims a gated service self-creates. |
 | `inventory.config-without-unit` | warn | `<svc>.json` exists for a catalog service whose unit is not installed. Leftover from a removed package, or a hand-copied file. |
-| `inventory.unknown-config` | warn | A `*.json` in the config dir matches no catalog service and no known non-service file (`acme.json`; the `pki/` tree is ignored). Catches typo'd filenames that a service will silently never read. |
+| `inventory.unknown-config` | warn | A `*.json` in the config dir matches no catalog service, no service's declared `state_file` (`star-adventurer-gti.mount-state.json`), and no known non-service file (`acme.json`; the `pki/` tree is ignored). Catches typo'd filenames that a service will silently never read. A state file is never flagged: the remedy, renaming or removing the file, would destroy the state the service keeps there. |
 | `inventory.unit-and-config` | ok | Unit installed and config present — the healthy pairing, reported so an empty report is never mistaken for a clean one. |
 
 ### Config parsing
@@ -696,13 +708,14 @@ report groups naturally.
 | `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca, `AdvertisingServerConfig` for advertising): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a non-Alpaca service, `advertised_url` on a service that advertises nothing, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
 | `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch`, every client-target join resolving to this service, and — on an ACME install — `tls.stale-selfsigned-pointer` and `rp.advertised-url` all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
 | `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` and `sentinel` keys and the `rp` target). |
-| `config.retired-keys` | fail / warn | A config still carries a key, or a value, its service retired. It fails where the service refuses to start over the key (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured), ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source), or star-adventurer-gti's `mount.flip_policy.flip_range_hours` (#1301 — pier side is derived from the CW exclusion zone alone; configs the pre-#1301 service self-created carry it, so every upgraded install needs this fix), or zwo-camera's `max_adu_reporting` under a former name (`saturation_threshold`, now `sensor_ceiling`; `container_full_scale`, now `zwo_driver`: the service's self-created config wrote the field, and its load refuses a former name as an unknown value). It warns for ui-htmx's `sentinel` block (the web UI restarts nothing since its configuration pages retired; Sentinel's dashboard does), which ui-htmx ignores with a warning: doctor wired it into the installs it fixed, and an upgrade runs no doctor. The remedy is deletion — no replacement config exists — except for zwo-camera's `container_full_scale`, which is given its new name. `saturation_threshold`, the default, is deleted rather than renamed: doctor ships with sentinel, so it can meet a zwo-camera from before the rename, which refuses the new names, and both versions read an absent field as the default. |
-| `rp.orchestrator-registration-removed` | fail | rp's config still carries a `plugins[]` entry with `"type": "orchestrator"` or a `session.session_state_file` key — the surface rp retired when orchestrators started their own runs ([mcp-sessionless](../plans/archive/mcp-sessionless.md) D6 / D11); rp refuses to start over either, naming the same migration. The detail names each offending entry and where runs start now (`session-runner`'s `POST /runs`). Like `config.retired-keys`, the remedy is deletion: the fix removes the entry or key. |
+| `config.retired-keys` | fail / warn | A config still carries a key, or a value, its service retired. It fails where the service refuses to start over the key (`deny_unknown_fields`): sentinel's `services` map (supervision is discovered, not configured), ui-htmx's whole `drivers` override map (rp's equipment roster is the only device source — [ui-htmx.md § Configuration](ui-htmx.md#configuration)), or star-adventurer-gti's `mount.flip_policy.flip_range_hours` (pier side is derived from the CW exclusion zone alone; the service's self-created config wrote the key, so an upgraded install carries it until this fix deletes it), or zwo-camera's `max_adu_reporting` under a former name (`saturation_threshold`, now `sensor_ceiling`; `container_full_scale`, now `zwo_driver`: the service's self-created config wrote the field, and its load refuses a former name as an unknown value). It warns for ui-htmx's `sentinel` block (the web UI restarts nothing; Sentinel's dashboard does), which ui-htmx ignores with a warning: installs an earlier doctor fixed carry the block, and an upgrade runs no doctor. The remedy is deletion — no replacement config exists — except for zwo-camera's `container_full_scale`, which is given its new name. `saturation_threshold`, the default, is deleted rather than renamed: doctor ships with sentinel, so it can meet a zwo-camera from before the rename, which refuses the new names, and both versions read an absent field as the default. |
+| `rp.orchestrator-registration-removed` | fail | rp's config still carries a `plugins[]` entry with `"type": "orchestrator"` or a `session.session_state_file` key — both retired, since orchestrators start their own runs; rp refuses to start over either, naming the same migration. The detail names each offending entry and where runs start (`session-runner`'s `POST /runs`). Like `config.retired-keys`, the remedy is deletion: the fix removes the entry or key. |
 
 Full-config typo detection (a misspelled key in, say, qhy-camera's
-`device_overrides`) is **out of D2's reach by design**: doctor knows only the
-shared blocks. It arrives with D5, where each service's own binary — which has
-the typed shape — validates its own file and doctor aggregates.
+`device_overrides`) is **out of central doctor's reach by design**: it knows
+only the shared blocks. Each service's own binary — which has the typed shape
+— validates its own file (`config.full-shape`, §Per-service doctors), and
+doctor aggregates.
 
 ### Ports
 
@@ -712,35 +725,24 @@ the typed shape — validates its own file and doctor aggregates.
 | `ports.discovery-collision` | fail | Two or more Alpaca configs set the same `discovery_port`. The responder is a per-host opt-in for single-driver deployments precisely because N responders collide; two enabled is always a mistake. |
 
 The catalog gives each service one port, its top-level `server.port`.
-`phd2-guider`'s opt-in camera facade
-([phd2-guider.md § Camera facade](phd2-guider.md#camera-facade-camera)) is
-a second listener, configured at `camera.server.port` (default 11128) and
-present only when `camera.enabled` is true. Doctor does not read it:
-`ports.collision` cannot report a clash on it, and a client URL at the
-facade's port joins no service, so it gets no client-target verdict. The
-facade binds only to loopback for that reason. Describing an optional
-second listener in the catalog is follow-up work, and so is the wider
-bind that waits on it.
 
 ### Units and privileges (systemd facts; run where the platform has them)
 
 | Check | Status | Trigger |
 |---|---|---|
 | `units.failed` | fail | The service manager is holding a `rusty-photon-*` unit in a failed state — one row per unit, tagged with the catalog service when the unit runs one. Linux reads it from one `systemctl list-units --state=failed` query (a failed unit is loaded, so the listing sees it, and the alternative is an `is-failed` per unit); macOS reads brew's `error` status, which costs nothing extra. Windows leaves the fact ungathered — a Scheduled Task's last result lives outside `Win32_Service` — and the check then emits no row at all rather than a green one it cannot back up. The case that motivates it is the **renewal one-shot**: a daemon that dies is eventually noticed because nothing answers it, but `rusty-photon-renew` failing means only that certificates quietly stop renewing, and sentinel deliberately does not supervise it (supervising a job would restart-loop a failed 3am run), so its row names that consequence explicitly. Suggestion-only: doctor starts and resets no units. |
-| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. Today that is sky-survey-camera, plate-solver, calibrator-flats, session-runner, polar-align, and focus-model — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same six services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
-| `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. Points at the scoped rule from [#523](https://github.com/rusty-photon/rusty-photon/issues/523). Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
+| `units.config-gated` | fail | A unit is enabled but its `ConditionPathExists=` file is missing: installed, enabled, and silently inert. They are sky-survey-camera, plate-solver, calibrator-flats, session-runner, polar-align, and focus-model — the catalog's `config_gated` services (§The derived catalog) — all of which hard-require a config file. Linux-only: the check reads the systemd fact directly; Windows/macOS installs of the same six services are covered instead by `inventory.unit-without-config`'s `config_gated`-aware remedy. |
+| `sentinel.privilege-path` | fail | Sentinel's unit is installed and no rule under `/etc/polkit-1/rules.d/` or `/usr/share/polkit-1/rules.d/` (where the sentinel packages ship theirs) grants the `rusty-photon` user `org.freedesktop.systemd1.manage-units` for `rusty-photon-*` units — the packaged unit runs unprivileged with `NoNewPrivileges=yes`, so every restart sentinel attempts will be denied at the privilege boundary. The suggestion points at the scoped rule the sentinel deb and rpm ship under `/usr/share/polkit-1/rules.d/`, or one added under `/etc/polkit-1/rules.d/`. Detection is a heuristic (scan for the action id, unit prefix, and user literal in the rules files) and the detail says so. |
 
 ### Name joins
 
-Since D3s sentinel discovers its services from the platform service manager,
-so the one service-name join that survives resolves against the **installed
+Sentinel discovers its services from the platform service manager,
+so the one service-name join doctor checks resolves against the **installed
 `rusty-photon-*` units** (packaged mode only — the join has nothing to
 resolve against on a dev checkout): the watchdog's
 `operations.<family>.service`, matched by convention and validated by
-nothing at runtime until the 2am 404. (ui-htmx's restart names stopped
-being configured with #569 — they are derived at request time by matching a
-roster device's `alpaca_url` port against sentinel's discovered services,
-so there is no ui-htmx-side name join left to check.)
+nothing at runtime until the 2am 404. (ui-htmx restarts no service and
+names none in its config, so it has no name join to check.)
 
 | Check | Status | Trigger |
 |---|---|---|
@@ -750,38 +752,37 @@ so there is no ui-htmx-side name join left to check.)
 
 | Check | Status | Trigger |
 |---|---|---|
-| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` ends in `/api/v1`. The client appends it itself; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) Sentinel's URLs are all derived since D3s, and ui-htmx's device URLs come from rp's roster since #569 — no other spurious-suffix case is left to check. |
+| `urls.spurious-suffix` | warn | An rp `equipment[].alpaca_url` ends in `/api/v1`. The client appends it itself; doubling it 404s. (Doctor reads `alpaca_url` out of rp's equipment entries and steps around the rest of the block — checking the URL is service wiring, owning the entry is device usage.) Sentinel derives all its URLs, and ui-htmx carries no device URL (rp's roster is its only device source), so doctor checks no other config for the suffix. |
 
 ### TLS and auth
 
 | Check | Status | Trigger |
 |---|---|---|
-| `tls.paths` | fail / warn | A `server.tls` block is present but the cert or key is not an existing **file** after resolving the path the way the service itself will (`TlsConfig::resolved_*_path`, which expands `~`; empty paths and directories are absent) — fail. A **relative** path (D6b) warns instead: the service resolves it against its own working directory, which doctor cannot know, so presence is not judged either way — the suggestion is absolute paths, which is all doctor ever writes. Readability by the unit's user is not checked in D2 — doctor runs privileged on packaged hosts, so an ownership heuristic needs the passwd machinery D4's hardware checks bring. |
-| `tls.auth-without-tls` | warn | `server.auth` is set while `server.tls` is absent: HTTP Basic credentials in cleartext on the wire. Legal, but worth a nag — ADR-003's scheme is Basic **over TLS**. Fixed by the provisioning pass turning TLS on. |
-| `tls.absent` (D6a) | warn | An installed service's config file exists but has no `server.tls` block: it serves plain HTTP. Legal (absent still means off — ADR-016 decision 10(d)), and fixable: the provisioning pass issues a cert and writes the block — on an ACME install (`acme.json` present) the block points at the existing wildcard pair instead, and while that pair is missing the check stays suggestion-only pointing at `doctor tls renew` (§What `--fix` adds). **No config file at all** (`FileAbsent`) grades the same way for any non-`config_gated` service (#598): doctor cannot tell whether the service has simply never started or a working config was deleted, but either way the next (re)start serves plain HTTP — unlike the block-absent case above, this is **unfixable**, since there is no file for `--fix` to write into; the suggestion is to create the file yourself (an empty `{}` is enough — `--fix` provisions `server.tls`/`server.auth` into it from there), or start the service once so it self-creates one, then re-run `--fix`. A `config_gated` service's `FileAbsent` state is expected (it cannot start without an operator-written file in the first place) and stays silent here — `inventory.unit-without-config` / `units.config-gated` own that story. |
+| `tls.paths` | fail / warn | A `server.tls` block is present but the cert or key is not an existing **file** after resolving the path the way the service itself will (`TlsConfig::resolved_*_path`, which expands `~`; empty paths and directories are absent) — fail. A **relative** path warns instead: the service resolves it against its own working directory, which doctor cannot know, so presence is not judged either way — the suggestion is absolute paths, which is all doctor ever writes. Readability by the unit's user is not judged here — doctor runs privileged on packaged hosts, so what it can open says nothing of what the service can; `tls.ownership` judges the pki tree's ownership instead. |
+| `tls.auth-without-tls` | warn | `server.auth` is set while `server.tls` is absent: HTTP Basic credentials in cleartext on the wire. Legal, but worth a nag — the services' auth scheme is Basic **over TLS**. Fixed by the provisioning pass turning TLS on. |
+| `tls.absent` (D6a) | warn | An installed service's config file exists but has no `server.tls` block: it serves plain HTTP. Legal (absent means off), and fixable: the provisioning pass issues a cert and writes the block — on an ACME install (`acme.json` present) the block points at the existing wildcard pair instead, and while that pair is missing the check stays suggestion-only pointing at `doctor tls renew` (§What `--fix` adds). **No config file at all** (`FileAbsent`) grades the same way for any non-`config_gated` service: doctor cannot tell whether the service has simply never started or a working config was deleted, but either way the next (re)start serves plain HTTP — unlike the block-absent case above, this is **unfixable**, since there is no file for `--fix` to write into; the suggestion is to create the file yourself (an empty `{}` is enough — `--fix` provisions `server.tls`/`server.auth` into it from there), or start the service once so it self-creates one, then re-run `--fix`. A `config_gated` service's `FileAbsent` state is expected (it cannot start without an operator-written file in the first place) and stays silent here — `inventory.unit-without-config` / `units.config-gated` own that story. |
 | `auth.absent` (D6a) | warn | An installed service's config file exists but has no `server.auth` block: it answers unauthenticated. Same legality and fix as `tls.absent`, including the `FileAbsent` extension above. |
 | `auth.mismatch` (D6a) | warn | A client auth block's plaintext password does not verify (Argon2id) against the target service's `server.auth` hash — the client will get 401s. Suggestion-only: hand-set credentials are operator intent, so doctor reports the pair and suggests `doctor auth rotate` to re-align everything to the observatory credential. |
 | `tls.ownership` | fail / warn | Unix only, install-wide (no service column). An entry in the pki tree — or `acme.json` / `renew.env` beside the configs — does not belong to the **config root's owner**, the identity the services and the renewal timer run as. Material something reads (the pki directory, `*.pem`, `credential`, `acme-account.json`, and those two files) fails: a service cannot read a key it does not own, so its next start serves no TLS. Anything else in the tree warns, because the ownership sweep skips it too (§Ownership under sudo) — the point of the row is that a mixed-ownership tree is visible in a normal `doctor` run instead of only in a 3am journal. Entries doctor cannot `stat` are not reported: unproven, not wrong. Suggestion-only, but a privileged `--fix` repairs it in passing — its provisioning pass runs the same sweep with the privileges to complete it. |
 | `tls.expiry` (D6b) | fail / warn | A configured `server.tls` certificate is **expired or unparseable** (fail — rustls loads an expired cert cleanly and only *clients* reject the handshake, so without this check the failure surfaces as every client erroring at night) or **inside its renewal window** (warn — 30 days for self-signed material, `renewal_days_before_expiry` for the ACME cert). Graded only when `tls.paths` is clean — an expiry verdict beside a failing pair would read as contradictory. Suggestion-only: the fix is `doctor tls renew` (or `tls issue --force` for a cert the renew legs don't own); `--fix` does not renew, because renewal belongs on the platform timer. |
 
-### Client-target joins ([#607](https://github.com/rusty-photon/rusty-photon/issues/607))
+### Client-target joins
 
 Every other D2/D6a check above judges a service against its **own**
-config. This family is the join the rest missed: a service's config
-points a URL at *another* catalog service — ui-htmx's `rp` target,
+config. This family judges the URLs a service's config points at
+*another* catalog service — ui-htmx's `rp` target,
 rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 every `equipment.<kind>[].alpaca_url` entry including the singular
-`equipment.mount.alpaca_url` (issue #663), the URL of each plugin
+`equipment.mount.alpaca_url`, the URL of each plugin
 registration rp dials — an event plugin's `plugins[].webhook_url`
-(issue #800) and a tool provider's `plugins[].mcp_server_url`
-(mcp-sessionless slice 8) — sentinel's
+and a tool provider's `plugins[].mcp_server_url` — sentinel's
 `operation_watchdog.rp_url` and each Alpaca `monitors[]` entry —
-and nothing checked whether that URL's scheme and credential still match
-the *target's* `server.tls`/`server.auth` after the provisioning pass
-upgrades the target's server side. That gap is exactly how #607 happened:
-provisioning turned rp and sentinel TLS-on/auth-on, but ui-htmx's targets
-kept their pre-provisioning `http://` + no-credential shape, and 88
-service-local checks had nothing to say about it.
+against the *target's* `server.tls`/`server.auth`: whether the URL's
+scheme, the client's CA trust and its credential match what the target
+serves. Without the join, a provisioning pass that turns a target TLS-on
+and auth-on would leave every client dialling it over `http://` without
+a credential, failing every request, and no service-local check would
+say so.
 
 **Resolution.** A client URL joins a target only when its host names
 *this* machine (`127.0.0.1`, `localhost`, `::1` — every shipped default) —
@@ -790,9 +791,7 @@ service in a config file doctor cannot see, and is silently skipped
 rather than guessed at. Among the participating scanned services, the one
 whose effective port matches the URL's is the target; a URL with no
 explicit port, or one that doesn't parse, resolves to nothing. On an
-ACME install one more host shape joins
-([#805](https://github.com/rusty-photon/rusty-photon/issues/805), D3 of
-[the flip plan](../plans/archive/acme-flip.md)): a URL whose host is exactly
+ACME install one more host shape joins: a URL whose host is exactly
 `<svc>.<domain>` — `domain` read from `acme.json`, `<svc>` the
 port-matched service's own catalog name — because the flip rewrites
 client URLs onto exactly those names, and the join family must keep
@@ -805,16 +804,16 @@ reaches the join exactly as the config spells it.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `joins.client-transport` | fail | Any of: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; the target's certificate **is** the ACME wildcard while the client's host is loopback — the wildcard's only SAN is `*.<domain>`, so hostname verification fails no matter the scheme (gap 2 of [#805](https://github.com/rusty-photon/rusty-photon/issues/805)); or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`) — the TLS handshake fails validation. All grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
-| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp` block, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth` since issue #620, every `equipment.<kind>[].auth` / `equipment.mount.auth` since issue #663, and each `plugins[].auth` since issue #800) are judged here. |
+| `joins.client-transport` | fail | Any of: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; the target's certificate **is** the ACME wildcard while the client's host is loopback — the wildcard's only SAN is `*.<domain>`, so hostname verification fails no matter the scheme; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`) — the TLS handshake fails validation. All grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
+| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp` block, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth`, every `equipment.<kind>[].auth` / `equipment.mount.auth`, and each `plugins[].auth`) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp` block carries
 `base_url` + `auth` + `ca_cert_path`, so both checks are fully
 fix-eligible there: the scheme is rewritten in place (preserving the
 URL's path/query byte-for-byte — round-tripping through a URL parser's
 `to_string()` would silently append a trailing `/` to an origin-only URL,
-which some client call sites concatenate a `/`-prefixed path onto without
-trimming), the CA path is written from the resolved pki tree, and the
+which a client that concatenates a `/`-prefixed path onto its base URL
+without trimming would turn into a double-slashed request), the CA path is written from the resolved pki tree, and the
 credential is written from `pki/credential` — the same material
 `plan_client_wiring` already distributes, following the same "absent gets
 it, present is operator intent, never overwritten" contract as every
@@ -823,8 +822,7 @@ other D6a client fix. Sentinel's per-monitor entries carry `scheme` +
 `rp_url` alongside them, trusts sentinel's single top-level `ca_cert`, the
 same shape rp uses), so the scheme and per-monitor credential are equally
 fix-eligible, and a self-signed target with no `ca_cert` set is reported
-against that one field with `/ca_cert` as its fix
-([#801](https://github.com/rusty-photon/rusty-photon/issues/801));
+against that one field with `/ca_cert` as its fix;
 `operation_watchdog.rp_url`'s scheme and CA trust are fix-eligible too,
 but it carries no separate `joins.client-auth` check — its credential is
 the shared `service_auth` pair, `auth.mismatch`'s territory already.
@@ -834,23 +832,18 @@ inside `--fix`; reporting it here is what makes a **plain, read-only
 provisioned and the next `--fix`, instead of leaving it to surface at
 night as monitor errors. rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 every `equipment.<kind>[].alpaca_url` entry — including the singular
-`equipment.mount.alpaca_url` (issue #663) — each event plugin
-registration's `plugins[].webhook_url` (issue #800) and each tool
-provider's `plugins[].mcp_server_url` share rp's single
-top-level
-`ca_cert` field (issue #609 / PR #612, the `wire_auth: false` row of
-`CLIENT_WIRING` in
-`provision/mod.rs`), not a per-target one, so `joins.client-transport`
-is fully fix-eligible for all of them: the scheme is rewritten in place and
-`/ca_cert` is written from the resolved pki tree, same as every other
-CA-trust fix. Every target also carries a per-target `auth` field —
-`plate_solver.auth` / `equipment.mount.guiding.auth` since issue #620,
-every `equipment.<kind>[].auth` / `equipment.mount.auth` since issue
-#663, closing the config-schema gap this section used to describe for
-the generic equipment roster, and `plugins[].auth` since issue #800 —
-so `joins.client-auth` is fully
-fix-eligible for all of them too: an absent credential is written from
-`pki/credential` at the target's own `auth` pointer (e.g.
+`equipment.mount.alpaca_url` — each event plugin registration's
+`plugins[].webhook_url` and each tool provider's
+`plugins[].mcp_server_url` share rp's single top-level `ca_cert` field
+(the `wire_auth: false` row of `CLIENT_WIRING` in `provision/mod.rs`), not
+a per-target one, so `joins.client-transport` is fully fix-eligible for all
+of them: the scheme is rewritten in place and `/ca_cert` is written from
+the resolved pki tree, same as every other CA-trust fix. Every target also
+carries a per-target `auth` field — `plate_solver.auth` /
+`equipment.mount.guiding.auth`, every `equipment.<kind>[].auth` /
+`equipment.mount.auth`, and `plugins[].auth` — so `joins.client-auth` is
+fully fix-eligible for all of them too: an absent credential is written
+from `pki/credential` at the target's own `auth` pointer (e.g.
 `/plate_solver/auth`, `/equipment/mount/guiding/auth`,
 `/equipment/cameras/0/auth`, `/plugins/0/auth`), the same "absent gets
 it, present is operator intent" contract as every other client target.
@@ -875,17 +868,16 @@ presence, so a from-scratch config dir (TLS provisioned before the CA leg
 ever ran) still surfaces the gap instead of silently skipping it.
 
 On an ACME install the hostname-verification leg's fix rewrites the
-loopback host onto the target's public name `<svc>.<domain>`
-([#805](https://github.com/rusty-photon/rusty-photon/issues/805) gap 2;
-D2 of [the flip plan](../plans/archive/acme-flip.md)). For URL-shaped fields the
-scheme and host rewrites compose into a **single** written value —
+loopback host onto the target's public name `<svc>.<domain>`. For
+URL-shaped fields the scheme and host rewrites compose into a **single**
+written value —
 byte-preserving on either side of the rewritten part, per the same
 no-round-trip rule as the scheme rewrite — and sentinel's per-monitor
 `host` field is set directly. Only a loopback host is ever rewritten (a
 hand-set name is operator intent, reported but left alone), and an
 `acme.json` with `staging: true` withholds the fix while still reporting
 the break, naming the staging state — doctor never converges clients
-onto a publicly-untrusted certificate (D4); the staging rehearsal
+onto a publicly-untrusted certificate; the staging rehearsal
 belongs in a scratch `--config-dir`. A target serving the wildcard pair
 while `acme.json` is missing or unreadable is still a real break for a
 loopback client, so it is reported the same way with the fix withheld —
@@ -917,20 +909,19 @@ at.
 |---|---|---|
 | `joins.fake-mount` | fail | Either: rp's `equipment.mount.alpaca_url` resolves — by the same loopback-host + port join every client-target check uses — to the installed planetarium-bridge (the static leg, `checks.rs`); or the URL's management API (`GET /management/v1/configureddevices`, probed as rp itself would connect: rp's `equipment.mount.auth` or the observatory credential; for https, doctor's CA on a self-signed install and the platform store on an ACME one) reports a device whose `UniqueID` is the locally-scanned bridge config's `device.unique_id` (the probe leg, `aggregate.rs`) — which is what catches a config addressing the bridge by a host name the static join cannot resolve (on an ACME install the static join also covers exact `<svc>.<domain>` names, so the probe's remaining territory is every other name shape, e.g. a rig's `<svc>.rig.<domain>`). The probe is skipped when the static leg already resolved the URL to the bridge, and stays silent when the mount does not answer — liveness is `service.devices`' story. |
 
-### ACME convergence ([#805](https://github.com/rusty-photon/rusty-photon/issues/805))
+### ACME convergence
 
-Once `acme.json` exists, the install's declared state is ACME (decision
-D1 of [the flip plan](../plans/archive/acme-flip.md)): every service serves the
-shared wildcard pair, clients trust the platform roots instead of a
-pinned CA, sentinel probes and rp advertises public `<svc>.<domain>`
-names, and those names resolve on the box. These checks grade what
-still diverges from that state and — where the divergent value is
-provably doctor's own material (D2) — plan the fix that converges it,
-so a self-signed install flips with `doctor tls issue --acme`, one
+Once `acme.json` exists, the install's declared state is ACME: every
+service serves the shared wildcard pair, clients trust the platform roots
+instead of a pinned CA, sentinel probes and rp advertises public
+`<svc>.<domain>` names, and those names resolve on the box. These checks
+grade what still diverges from that state and — where the divergent value
+is provably doctor's own material — plan the fix that converges it, so a
+self-signed install flips with `doctor tls issue --acme`, one
 `doctor --fix` run, and the reported hosts entries. The whole family
 runs only while `acme.json` is present and readable, and an `acme.json`
 declaring the staging endpoint downgrades every check in it to a
-suggestion-only `warn` naming the staging state (D4): doctor never
+suggestion-only `warn` naming the staging state: doctor never
 converges a fleet onto a publicly-untrusted certificate — the staging
 rehearsal belongs in a scratch `--config-dir`. The one exception is
 `tls flip-to-acme --allow-staging`'s own planning, which deliberately
@@ -939,21 +930,21 @@ nothing reachable from a plain run or `--fix` ever does.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `tls.stale-selfsigned-pointer` | fail / warn | A `server.tls` block points at material other than the pki tree's wildcard pair while that pair exists on disk (without the pair the fleet is in renewal-recovery territory — `tls.absent`'s suggestion path — and the still-serving self-signed material is all there is, so the check waits). Converged is a **path** judgment against `pki/acme-cert.pem`/`acme-key.pem`, not the file-name convention the trust-model classifiers use: a same-named copy elsewhere is one renewal never rewrites, so it quietly ages out and is reported like any other hand-placed path. The doctor-issued per-service pair — matched by the exact `pki/<svc>.pem` / `pki/<svc>-key.pem` path strings doctor itself writes — fails with a fix rewriting the block's `cert` and `key` onto the wildcard pair: the one flip case where overwriting a present value is exactly intended (D2), expressed as plain string sets so the create-if-absent contract is untouched. A hand-placed foreign path warns, suggestion-only: doctor cannot know the material is not valid for the public name clients dial, so it reports the divergence and the derivable wildcard paths, and the operator decides. |
-| `tls.stale-ca-pin` | fail / warn | A client CA-trust field is set on an ACME install (`warn` only under D4's staging downgrade, like the whole family). The pin replaces the platform trust roots (`tls_certs_only`), so the client rejects the publicly-trusted wildcard outright — a definite break whatever the pin points at. Judged over exactly the fields doctor itself wires: each `CLIENT_WIRING` service's `ca_cert` (sentinel, session-runner, calibrator-flats, focus-model, polar-align, planetarium-bridge's nested `rp.ca_cert`, rp) plus ui-htmx's per-target `ca_cert_path` — one source of truth with the writer, so the two can never drift. Only the doctor-written `pki/ca.pem` path is fix-eligible (a `remove-key` op); a foreign pin is reported suggestion-only — it may be a deliberate private-CA trust. Like the stale-pointer check, it waits for the wildcard pair: before the pair lands, the pin is what keeps the client connected to the still-self-signed fleet. |
+| `tls.stale-selfsigned-pointer` | fail / warn | A `server.tls` block points at material other than the pki tree's wildcard pair while that pair exists on disk (without the pair the fleet is in renewal-recovery territory — `tls.absent`'s suggestion path — and the still-serving self-signed material is all there is, so the check waits). Converged is a **path** judgment against `pki/acme-cert.pem`/`acme-key.pem`, not the file-name convention the trust-model classifiers use: a same-named copy elsewhere is one renewal never rewrites, so it quietly ages out and is reported like any other hand-placed path. The doctor-issued per-service pair — matched by the exact `pki/<svc>.pem` / `pki/<svc>-key.pem` path strings doctor itself writes — fails with a fix rewriting the block's `cert` and `key` onto the wildcard pair: the one flip case where overwriting a present value is exactly intended, expressed as plain string sets so the create-if-absent contract is untouched. A hand-placed foreign path warns, suggestion-only: doctor cannot know the material is not valid for the public name clients dial, so it reports the divergence and the derivable wildcard paths, and the operator decides. |
+| `tls.stale-ca-pin` | fail / warn | A client CA-trust field is set on an ACME install (`warn` only under the staging downgrade, like the whole family). The pin replaces the platform trust roots (`tls_certs_only`), so the client rejects the publicly-trusted wildcard outright — a definite break whatever the pin points at. Judged over exactly the fields doctor itself wires: each `CLIENT_WIRING` service's `ca_cert` (sentinel, session-runner, calibrator-flats, focus-model, polar-align, planetarium-bridge's nested `rp.ca_cert`, rp) plus ui-htmx's per-target `ca_cert_path` — one source of truth with the writer, so the two can never drift. Only the doctor-written `pki/ca.pem` path is fix-eligible (a `remove-key` op); a foreign pin is reported suggestion-only — it may be a deliberate private-CA trust. Like the stale-pointer check, it waits for the wildcard pair: before the pair lands, the pin is what keeps the client connected to the still-self-signed fleet. |
 | `sentinel.probe-domain` | warn | sentinel's config has no `probe_domain` while the install is ACME: its supervision probes then dial bind-derived hosts, which the wildcard's only SAN `*.<domain>` can never match, so probes against TLS-serving services fail hostname verification. The fix writes `acme.json`'s `domain` — the identical value the aggregation probes already derive. A present value is operator intent and is left alone. |
 | `rp.advertised-url` | warn | rp's `server` block has no `advertised_url` while the install is ACME: the MCP endpoint's `Host` allowlist then holds only the bind-derived names, which the wildcard certificate can never match, so a client dialing the public `rp.<domain>` name is answered 403. The fix writes `https://rp.<domain>:<port>` (rp's own effective port), planned only while a parsed `server` block exists to write into — with no `server` key at all the check still reports, and the `--fix` fixpoint loop converges it one round after `tls.absent`'s fix creates the block. |
-| `dns.unresolvable` | fail / warn | A derived `<svc>.<domain>` name for a participating service does not resolve on this host (`warn` only under D4's staging downgrade) — every client and probe dialing it fails before TLS even starts. Report-only (D5: `/etc/hosts` is outside doctor's write surface); the suggestion carries the exact loopback hosts line to paste — loopback, because public DNS alone would make on-box traffic depend on the WAN link and the DHCP lease, against tenets 1 and 2. Like the aggregation probes, this check runs only on the **final** report, never inside the `--fix` fixpoint rounds: it plans no fixes, and a slow or misconfigured resolver must not multiply its timeouts across rounds. A real run resolves through the system resolver (`/etc/hosts` first, DNS behind it — the same path every client dial takes), all names concurrently under one shared deadline with names unanswered in time judged unresolvable — a black-holed resolver costs one deadline in total, not one per service, because a hung diagnosis is the failure mode the aggregation probes' bounds exist to prevent; a staged facts file supplies a `dns` object instead, and one without a `dns` object skips the check entirely, the same whole-truth rule the hardware family follows. All names resolving is reported `ok`, so a clean row is distinguishable from a skipped one. |
+| `dns.unresolvable` | fail / warn | A derived `<svc>.<domain>` name for a participating service does not resolve on this host (`warn` only under the staging downgrade) — every client and probe dialing it fails before TLS even starts. Report-only (`/etc/hosts` is outside doctor's write surface); the suggestion carries the exact loopback hosts line to paste — loopback, because public DNS alone would make on-box traffic depend on the WAN link and the DHCP lease, against tenets 1 and 2. Like the aggregation probes, this check runs only on the **final** report, never inside the `--fix` fixpoint rounds: it plans no fixes, and a slow or misconfigured resolver must not multiply its timeouts across rounds. A real run resolves through the system resolver (`/etc/hosts` first, DNS behind it — the same path every client dial takes), all names concurrently under one shared deadline with names unanswered in time judged unresolvable — a black-holed resolver costs one deadline in total, not one per service, because a hung diagnosis is the failure mode the aggregation probes' bounds exist to prevent; a staged facts file supplies a `dns` object instead, and one without a `dns` object skips the check entirely, the same whole-truth rule the hardware family follows. All names resolving is reported `ok`, so a clean row is distinguishable from a skipped one. |
 
 ### Platform defaults
 
 | Check | Status | Trigger |
 |---|---|---|
-| `rp.data-directory` | fail | rp's `session.data_directory` does not exist — catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md` — or, on a packaged **Linux** install, exists but is not writable by the `rusty-photon` user rp runs as under systemd, judged from the directory's owner/group/mode. Doctor writes no probe files — the judgment is an ownership heuristic, and the detail says so. Dev checkouts keep the existence-only check (the operator owns their own tree), as do macOS and Windows installs — brew services run as the operator and the MSI's services as LocalSystem, so there is no service user to judge for. (`tls.paths` readability keeps its D2 shape; the TLS lifecycle work owns that check's evolution.) |
+| `rp.data-directory` | fail | rp's `session.data_directory` does not exist — catches the Linux-path-on-macOS default documented in `docs/packaging-macos.md` — or, on a packaged **Linux** install, exists but is not writable by the `rusty-photon` user rp runs as under systemd, judged from the directory's owner/group/mode. Doctor writes no probe files — the judgment is an ownership heuristic, and the detail says so. Dev checkouts keep the existence-only check (the operator owns their own tree), as do macOS and Windows installs — brew services run as the operator and the MSI's services as LocalSystem, so there is no service user to judge for. (`tls.paths` judges existence only; the pki tree's ownership is `tls.ownership`'s.) |
 
 ### Hardware (D4 — the no-SDK checks)
 
-Everything here needs no vendor blob (ADR-016 decision 5); SDK-side checks
+Everything here needs no vendor blob; SDK-side checks
 are D5's per-service `doctor` subcommands. One severity rule covers the
 whole family: **`fail` when the service's unit is installed and enabled** —
 it will start at boot and hit the problem, so this is tomorrow's 2am
@@ -981,7 +972,7 @@ above.
 | `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. The match runs over the **inventory** — working devices only. When no working device matches but a **fault** does (the scan found the device but it is not working — no driver, failed to start, disabled), the detail says so, naming the fault's record and reason instead of the unplugged-cable wording, and the check is **always `warn`**, whatever the unit's state: doctor does not fail because a device is not working, only because the scan failed. A working match takes precedence over a fault, so a dead twin never hides a live device. **When the USB inventory is unavailable the check fails and reports that instead of an absence**, naming the collector failure: a scan that could not run says nothing about whether the device is plugged in, and reporting "not on the bus" from a failed scan sends the operator to look at a cable when the fault is on the host. |
 | `hardware.usb-fault` | Linux, macOS, Windows | Host-level, one `warn` per fault the USB scan reported — a record on the bus that is not a working device (see "USB inventory" above for what makes one on each platform): the record's platform name, plus the ids and location it carries when the name does not already spell them out, and the reason. **Always `warn`, never `fail`**, whatever units are enabled: the fault is left out of the inventory, every working device is still inventoried and judged, and the operator decides whether the dead device matters — a service that needs it is already reported by its own `hardware.usb-device` check. Nothing is reported when there are no faults, or when the scan failed (a failed scan reports no faults). |
 | `hardware.udev-rule` | Linux (packaged) | For each service shipping a udev rule, against the effective installed copy: the file is missing (`fail`/`warn` per the severity rule); a `GROUP=` it names does not resolve in the host's group database — udev **silently drops the entire rule line** on an unresolvable `GROUP=`, so file presence alone proves nothing (`fail`/`warn`); or the content differs from the packaged copy doctor embeds (`warn` always — an operator override in `/etc/udev/rules.d` is legitimate, but worth surfacing). |
-| `hardware.firmware-helper` | Linux (packaged) | qhy-camera's unit is installed but the firmware helper's three artifacts are not all present: `/lib/firmware/qhy/` (directory), `/usr/local/sbin/fxload` (executable), `/etc/udev/rules.d/85-qhyccd.rules` (file). The conjunction is the helper's own idempotency gate — any subset is a partial install that must re-converge — and the suggestion points at `/usr/sbin/rusty-photon-qhy-firmware-install` (ADR-013: proprietary firmware is never packaged, so nothing but this check verifies the operator ran it). |
+| `hardware.firmware-helper` | Linux (packaged) | qhy-camera's unit is installed but the firmware helper's three artifacts are not all present: `/lib/firmware/qhy/` (directory), `/usr/local/sbin/fxload` (executable), `/etc/udev/rules.d/85-qhyccd.rules` (file). The conjunction is the helper's own idempotency gate — any subset is a partial install that must re-converge — and the suggestion points at `/usr/sbin/rusty-photon-qhy-firmware-install` (proprietary firmware is never packaged, so nothing but this check verifies the operator ran it). |
 
 None of these checks plan a `--fix`: absent hardware cannot be conjured, a
 missing group or udev rule is package/host surgery outside config files,
@@ -990,9 +981,10 @@ concrete suggestion instead.
 
 ## Per-service doctors and aggregation (D5)
 
-The D4 checks stop exactly where a vendor SDK starts (ADR-016 decision 5:
-a doctor that links every vendor blob recreates the file conflict ADR-014
-fixed). D5 crosses that line from the other side: **every packaged service
+The D4 checks stop exactly where a vendor SDK starts: a doctor that linked
+every vendor blob would ship every blob, beside the service packages that
+ship the same files, and dpkg refuses two owners of one file. D5 crosses
+that line from the other side: **every packaged service
 binary answers `doctor` itself**, using only what it already links, and
 central doctor aggregates the answers.
 
@@ -1017,9 +1009,9 @@ the camera drivers with device claims:
 
 | Check | Services | Trigger |
 |---|---|---|
-| `config.full-shape` | all | The service's config file does not survive the service's **own typed load path** — the same parse a start would perform, `deny_unknown_fields` included, so a typo'd key anywhere in the file is named here (the detail carries serde's path and message). This is the full-config validation D2 deferred: central doctor knows only the shared blocks; the binary that owns the shape validates all of it. An absent file is `ok` — most services write their defaults on first start, config-gated ones stay inert, and either way there is nothing to validate (central doctor's inventory and `units.config-gated` checks own that judgment). |
+| `config.full-shape` | all | The service's config file does not survive the service's **own typed load path** — the same parse a start would perform, `deny_unknown_fields` included, so a typo'd key anywhere in the file is named here (the detail carries serde's path and message). Central doctor knows only the shared blocks; the binary that owns the shape validates all of it. An absent file is `ok` — most services write their defaults on first start, config-gated ones stay inert, and either way there is nothing to validate (central doctor's inventory and `units.config-gated` checks own that judgment). |
 | `hardware.sdk-devices` | qhy-camera, zwo-camera, zwo-focuser | The SDK cannot see the hardware: enumeration (`ScanQHYCCD`, the ASI/EAF list calls) errors (`fail` — with the D4 `hardware.usb-device` check this splits "not on the bus" from "on the bus but the SDK is blind", which is the firmware/driver signature), or enumerates zero devices (`warn` — the binary cannot see unit state, so unplugged-on-purpose and unplugged-by-accident are indistinguishable here; the D4 checks carry the unit-aware severity). `ok` lists the models the SDK reports. **Enumeration only, never an open** — an open against a device the running service holds is the camera-lock class of bug, and the subcommand must stay safe to run by hand at any time. |
-| `usb-devices.resolve` | qhy-camera, zwo-camera, svbony-camera, with a `usb_devices` list | Each listed entry, judged from this run's own USB scan, SDK enumeration and join — what a start would serve now, not what a running instance holds, since placement is not watched ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D8). `ok` once, counting the entries, when every one resolves to a camera; a `warn` per entry a placeholder would hold, with the placeholder's reason: a fault at the port, the device that is there instead, a look-alike, an unrecognised model, or no working camera on the port. `fail` when the USB scan failed — every listed number would be a placeholder — naming the collector's error. An empty list registers nothing and resolves nothing: `ok`, saying so. A camera the driver would fail to open (a ZWO camera's identity read, a QHY camera's CFW probe) is not visible here, because the run opens nothing: the driver's `warn!` and the placeholder's connect error report it. |
+| `usb-devices.resolve` | qhy-camera, zwo-camera, svbony-camera, with a `usb_devices` list | Each listed entry, judged from this run's own USB scan, SDK enumeration and join — what a start would serve now, not what a running instance holds, since placement is not watched. `ok` once, counting the entries, when every one resolves to a camera; a `warn` per entry a placeholder would hold, with the placeholder's reason: a fault at the port, the device that is there instead, a look-alike, an unrecognised model, or no working camera on the port. `fail` when the USB scan failed — every listed number would be a placeholder — naming the collector's error. An empty list registers nothing and resolves nothing: `ok`, saying so. A camera the driver would fail to open (a ZWO camera's identity read, a QHY camera's CFW probe) is not visible here, because the run opens nothing: the driver's `warn!` and the placeholder's connect error report it. |
 | `usb-devices.unlisted` | the same, with a list | One `ok` per camera the join placed on a port no entry lists, naming its port and model, so a camera moved to another port shows here while its old number's `usb-devices.resolve` warns. An empty list names every placed camera. Nothing when every placed camera is listed. Being `ok`, it is counted rather than printed by the text report (§Report): `--json` carries it, and `--devices`' rows show the same cameras as `not listed`. |
 | `usb-devices.implicit` | the same, without a list | What the no-list default would serve. With more than one placed camera, one `ok` naming each camera with the number port order gives it, and the paste-ready block of exactly those cameras with what pasting it needs (delete the `devices` map; `qhy-camera`: check the wheels' numbers); nothing for one or none. Being `ok`, it is counted rather than printed by the text report: `--json` carries it, and `--devices` prints the same numbers and block. Whatever the count, a `warn` for each camera the default refuses — a look-alike, naming the collision; an unrecognised model, with its SDK model and the product id the bus shows; a known model with no working record — and for each record of the driver's vendor no camera is placed on, and each fault that could be the camera. A failed USB scan is one `fail`, naming the collector's error, and no block, since a failed scan has no ports. |
 
@@ -1034,32 +1026,30 @@ loads, to know whether there is a list, and an SDK that enumerates, to join:
 when either is missing, `config.full-shape` or `hardware.sdk-devices` says so
 and these three are not run.
 
-Per-service checks plan no fixes in D5 — machine-applicable repair stays a
+Per-service checks plan no fixes — machine-applicable repair is a
 central-doctor concern, so `--fix` semantics live in exactly one binary.
 
 A camera driver with device claims also answers `doctor --devices`: instead
 of the report, a listing of every camera of its SDK on the bus by USB port,
-and a paste-ready `usb_devices` block
-([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D5). It
-holds to the same rules — read-only, enumeration only, never an open — and
-the same exit codes, and it is text only. `svbony-camera`, `zwo-camera` and
-`qhy-camera` have it ([svbony-camera.md](svbony-camera.md) U8,
-[zwo-camera.md](zwo-camera.md) U8, [qhy-camera.md](qhy-camera.md) U8), and
-closes its listing with `usb-devices.resolve`'s verdicts, the one thing the
-listing does not already show: its rows and notes say what the other checks
-say. The listing,
-its paste-ready block, the join that places each camera, the port order it
-is printed in, and the list entry with its validation are shared code in
+and a paste-ready `usb_devices` block. It holds to the same rules —
+read-only, enumeration only, never an open — and the same exit codes, and
+it is text only. `svbony-camera`, `zwo-camera` and `qhy-camera` have it
+([svbony-camera.md](svbony-camera.md) U8, [zwo-camera.md](zwo-camera.md) U8,
+[qhy-camera.md](qhy-camera.md) U8), and closes its listing with
+`usb-devices.resolve`'s verdicts, the one thing the listing does not already
+show: its rows and notes say what the other checks say. The listing, its
+paste-ready block, the join that places each camera, the port order it is
+printed in, and the list entry with its validation are shared code in
 `rusty-photon-doctor-checks`' `claims` module, beside the inventory they
 read.
 
 The shared machinery — schema, check constructors, config-load harness,
 text/JSON rendering, exit-code mapping — lives in
-`rusty-photon-doctor-checks` (ADR-016 decision 6: the similarity between
-central doctor and the per-service doctors is a library, not a binary).
-With D5 that crate becomes the **canonical home of the report schema**,
-and central doctor re-exports it; a service's subcommand is its clap
-variant plus a closure handing its typed load to the shared runner.
+`rusty-photon-doctor-checks` (the similarity between central doctor and
+the per-service doctors is a library, not a binary). That crate is the
+**canonical home of the report schema**, and central doctor re-exports it;
+a service's subcommand is its clap variant plus a closure handing its typed
+load to the shared runner.
 
 ### Aggregation — the two probe paths
 
@@ -1071,8 +1061,8 @@ installed service, and the two paths are naturally exclusive:
   /management/v1/configureddevices` against the service's effective port
   (Alpaca-class services only — core services expose no management API and
   are fully covered by the config-side checks). The connection follows the
-  service's own config: HTTPS when its `server.tls` is set, credentials
-  from the D6 machinery when `server.auth` is on. The dialled host and
+  service's own config: HTTPS when its `server.tls` is set, the
+  observatory credential when `server.auth` is on. The dialled host and
   the root of trust come as a pair from the install's TLS story: a
   self-signed install is probed at `localhost` (a SAN of every
   doctor-issued cert) verified by doctor's own CA, while an ACME install
@@ -1089,9 +1079,8 @@ installed service, and the two paths are naturally exclusive:
 
   **A placeholder is reported as one, not as a device.** A camera driver
   with device claims holds a listed number it cannot serve with a
-  placeholder ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
-  D4.5), which `configureddevices` lists under its entry's name like any
-  device. Its `UniqueID` has one fixed form, `placeholder:<service>:<port>`
+  placeholder, which `configureddevices` lists under its entry's name like
+  any device. Its `UniqueID` has one fixed form, `placeholder:<service>:<port>`
   (`placeholder:qhy-camera:CFW-<port>` for a declared wheel), so
   `service.devices` leaves it out of the `ok` inventory and reports each as
   a `warn` of its own — *Camera #1 is a placeholder for `<port>`, not a
@@ -1103,9 +1092,10 @@ installed service, and the two paths are naturally exclusive:
   re-scans, so when doctor's own USB scan holds a working device on that
   port — a hub powered on after the service started, or the look-alike that
   made the placeholder — the detail says what the scan shows there and sends
-  the operator to the driver's `doctor --devices` to learn whether a reload
-  would place it. `configureddevices` does not
-  carry a placeholder's reason, and not every reason yields to a reload: a
+  the operator to the driver's `doctor --devices` to learn whether a restart
+  would place it: it enumerates in a fresh process, as a restart does.
+  `configureddevices` does not
+  carry a placeholder's reason, and not every reason yields to a restart: a
   look-alike or an unknown model stays a placeholder, and a service whose own
   scan failed re-scans and places the camera by itself. The `ok` names the other devices, and is still reported when
   every device is a placeholder: the service answered, so it is alive. A
@@ -1117,10 +1107,10 @@ installed service, and the two paths are naturally exclusive:
   own binary — the path the service manager records (systemd `ExecStart=`,
   the SCM image path, the brew formula bin), `doctor --json --config
   <dir>/<svc>.json` — and merges the returned checks into the report with
-  the `service` field set. The parse is permissive in both directions
-  (ADR-016 decision 7): unknown fields, statuses, and ops degrade instead
-  of refusing. A binary that predates the subcommand (version skew across
-  nightlies) fails the shell-out without producing a report; that is a
+  the `service` field set. The parse is permissive in both directions:
+  unknown fields, statuses, and ops degrade instead of refusing. A binary
+  that predates the subcommand (version skew across nightlies) fails the
+  shell-out without producing a report; that is a
   `warn` under `service.doctor-probe` naming the skew, never a `fail` —
   an old binary is not a broken rig.
 
@@ -1158,7 +1148,10 @@ declares, so a scenario can stand up a stub management endpoint.
 fix** the checks planned, then re-runs the diagnosis and reports the
 post-fix state. The loop an operator runs after installing packages is:
 services self-create their defaults, `doctor --fix` makes the install
-coherent, done.
+coherent, done. Each platform's packaging guide walks an operator through
+it ([Linux](../packaging.md#first-wiring-rusty-photon-doctor),
+[Windows](../packaging-windows.md#first-wiring-rusty-photon-doctor),
+[macOS](../packaging-macos.md#first-wiring-rusty-photon-doctor)).
 
 A fix is planned only where the correct value is derivable, not a judgment
 call:
@@ -1171,11 +1164,11 @@ call:
 Everything else stays suggestion-only: a `ConditionPathExists` gate needs a
 hand-written config, a `discovery_port` collision is operator intent (which
 host keeps the responder?), and rp's `session.data_directory` is a placement
-decision. Missing TLS material and absent `tls`/`auth` blocks stopped being
-suggestion-only with D6a — the provisioning pass (next section) conjures
-them.
+decision. Missing TLS material and absent `tls`/`auth` blocks are not
+suggestion-only: the provisioning pass (next section) conjures them.
 `--fix` also never *generates* config — device targets come from rp's
-roster, never from doctor-written entries (see [ui-htmx.md](ui-htmx.md)).
+roster, never from doctor-written entries (see
+[ui-htmx.md § Configuration](ui-htmx.md#configuration)).
 
 Write mechanics:
 
@@ -1195,8 +1188,7 @@ Write mechanics:
   proceeding: dropping the service user's access is worse than not
   writing at all.
 - Doctor reads files directly and holds no override layers, so a fix can
-  never bake a transient value into a file (the plan's layer-aware persist
-  rule is satisfied by construction).
+  never bake a transient value into a file.
 - **Services may be running while `--fix` writes** — that is the canonical
   install flow, so doctor warns rather than refuses: atomic renames make
   corruption impossible, and the residual race (a service's own
@@ -1209,14 +1201,13 @@ Write mechanics:
 
 ## Provisioning — TLS and the observatory credential (D6a)
 
-Doctor owns the TLS and credential lifecycle (ADR-016 decision 10; the
-settled sub-decisions are in the plan's D6 section). The provisioning code —
+Doctor owns the TLS and credential lifecycle. The provisioning code —
 self-signed issuance, ACME, DNS-01 — lives inside doctor as modules; the
-serving half every service links is the `rusty-photon-tls` crate (renamed
-from `rp-tls`), which carries none of the provisioning dependency tree
-(`instant-acme`; the Cloudflare DNS calls go straight through the
-workspace `reqwest` client — ADR-002's 2026-08-30 update). `rp init-tls`
-and `rp hash-password` are removed; their functionality lives here.
+serving half every service links is the `rusty-photon-tls` crate, which
+carries none of the provisioning dependency tree (`instant-acme`; the
+Cloudflare DNS calls go straight through the workspace `reqwest` client).
+rp has no certificate or password subcommands: issuing certificates and
+hashing passwords are doctor's.
 
 ### The pki tree
 
@@ -1225,10 +1216,9 @@ the same resolved config root as the service configs (`--config-dir` >
 `/etc/rusty-photon` symlink > platform default), so a scratch `--config-dir`
 scopes provisioning the same way it scopes diagnosis, and on a packaged
 Linux host the tree is `/var/lib/rusty-photon/.config/rusty-photon/pki`.
-One tree, one symlink, one thing to back up. (`~/.rusty-photon/pki` is
-retired; pre-1.0, no migration shim — a config still pointing at old
-material keeps working, since `tls.paths` checks the configured paths,
-wherever they point.)
+One tree, one symlink, one thing to back up. (A `server.tls` block that
+points at material outside it keeps working: `tls.paths` checks the
+configured paths, wherever they point.)
 
 ```
 <config-root>/
@@ -1244,7 +1234,7 @@ wherever they point.)
 Every issued certificate carries a Subject Key Identifier, and every
 service cert also carries an Authority Key Identifier pointing at the
 CA's SKI — RFC 5280 §4.2.1.1/§4.2.1.2 compliance that strict verifiers
-(e.g. Python 3.13's default `VERIFY_X509_STRICT`) require (issue #621).
+(e.g. Python 3.13's default `VERIFY_X509_STRICT`) require.
 
 Key files and `credential` are `0600` and owned by the service user on
 packaged hosts (doctor runs privileged there and chowns what it writes).
@@ -1256,7 +1246,7 @@ pairs are kept and still chain to the old CA), and redistribute the anchor.
 
 ### The observatory credential
 
-One credential for the whole observatory (ADR-016 decision 10(e)):
+One credential for the whole observatory:
 username **`observatory`**, password minted with ≥128 bits of entropy. The
 canonical plaintext copy is `pki/credential`; because doctor mints it, it
 can write **both forms everywhere they belong**:
@@ -1266,9 +1256,8 @@ can write **both forms everywhere they belong**:
   each client trusts. The blocks are of two kinds:
   - the shared `service_auth` pairs, written by the provisioning pass
     (`CLIENT_WIRING`): sentinel's, the MCP clients' (session-runner,
-    calibrator-flats, focus-model, polar-align — see
-    [ADR-017](../decisions/017-standard-mcp-client-construction.md)) and
-    planetarium-bridge's under its `rp` block;
+    calibrator-flats, focus-model, polar-align) and planetarium-bridge's
+    under its `rp` block;
   - the per-target `auth` blocks beside a client's address of another
     local service, written by `joins.client-auth`'s fix
     (§Client-target joins): rp's equipment entries, plate solver, guider
@@ -1276,7 +1265,7 @@ can write **both forms everywhere they belong**:
 
 `rp` has no shared pair. The provisioning pass gives it only the CA path,
 into its own top-level `ca_cert` (rp.md §Configuration), which an
-`https://` target signed by the observatory CA requires (issue #609). Its
+`https://` target signed by the observatory CA requires. Its
 outbound clients carry a credential per target: the observatory
 plaintext where the target is a local service requiring auth, written by
 `joins.client-auth`, and the operator's own for anything else.
@@ -1314,8 +1303,7 @@ configuration cannot verify self-signed and publicly-trusted targets at
 once (`tls_certs_only` disables platform roots), so wiring one new
 service self-signed would cut it off from every already-flipped client,
 and a freshly written `ca_cert` client block would break that client
-against the rest of the fleet (issue
-[#616](https://github.com/rusty-photon/rusty-photon/issues/616)):
+against the rest of the fleet:
 
 1. **Certs** — without `acme.json`: create the CA if absent; issue a cert
    for each installed service whose `<svc>.pem`/`<svc>-key.pem` pair is
@@ -1348,11 +1336,11 @@ against the rest of the fleet (issue
    incoherence surfaces as `auth.mismatch`/`tls.paths`,
    suggestion-only.
    **A missing config file has nothing to write into** — `tls.absent` /
-   `auth.absent`'s `FileAbsent` case (§TLS and auth, #598) plans no fix,
+   `auth.absent`'s `FileAbsent` case (§TLS and auth) plans no fix,
    so `--fix` silently does nothing for that service; the diagnosis is the
    whole of what doctor can offer until the file exists.
 
-The same "absent means off" contract from decision 10(d) is what makes this
+The same "absent means off" contract (§TLS and auth) is what makes this
 safe: packages start services before any doctor run, and BDD/ConformU
 configs that omit `tls`/`auth` keep meaning plain HTTP. After one `--fix`,
 every wired service is TLS-on and auth-on, and services pick both up at
@@ -1363,47 +1351,45 @@ their next restart (the existing `--fix` restart advice covers it).
 - **`doctor tls issue`** — the cert step alone (CA-if-absent + missing
   service certs), without touching configs. `--services <name>...`
   restricts to named services; `--extra-san <host-or-ip>...` adds SANs —
-  a value that parses as an address becomes an **IP SAN** (D6b), which is
+  a value that parses as an address becomes an **IP SAN**, which is
   what a client dialing the service by LAN IP verifies against, and
   renewal preserves both kinds; `--force` re-issues service certs from
   the existing CA (never the CA itself). The service set defaults to the
-  installed set, derived from the catalog —
-  `rp_tls::cert::DEFAULT_SERVICES` (five hand-typed names of eighteen)
-  is retired.
+  installed set, derived from the catalog.
 - **`doctor tls issue --acme --domain <d> --dns-provider <p>
   (--dns-token <t> | --dns-token-var <NAME>) --email <e> [--staging]
   [--directory-url <u>] [--acme-root <pem>]
-  [--dns-propagation-seconds <n>]`** — the ACME path, unchanged in mechanism
-  from `rp init-tls --acme` (DNS-01, wildcard cert, account state persisted
-  to `acme.json`). Publicly-trusted certs need no CA distribution to
-  clients. The DNS credential takes one of two forms, and the form is
-  what persists into `acme.json`: `--dns-token-var NAME` stores the
-  indirection `$NAME` — the token itself never reaches disk, and
-  issuance and renewal resolve it from the environment (renewal falling
-  back to `renew.env`) — while `--dns-token` stores its value verbatim.
-  A `--dns-token` value that does not start with `$` is a literal
+  [--dns-propagation-seconds <n>]`** — the ACME path (DNS-01, wildcard
+  cert, account state persisted to `acme.json`). Publicly-trusted certs
+  need no CA distribution to clients. The DNS credential takes one of two
+  forms, and the form is what persists into `acme.json`: `--dns-token-var
+  NAME` stores the indirection `$NAME` — the token itself never reaches
+  disk, and issuance and renewal resolve it from the environment (renewal
+  falling back to `renew.env`) — while `--dns-token` stores its value
+  verbatim. A `--dns-token` value that does not start with `$` is a literal
   secret about to be persisted, usually because the shell expanded an
-  unquoted `$VAR` before doctor saw it — and a literal in `acme.json`
-  also means `renew.env` is never consulted, so a rotated token
-  silently stops taking effect; doctor warns loudly on stderr and
-  proceeds (a deliberate literal is legal). The two flags conflict;
-  one is required with `--acme`. With the Cloudflare provider, `--domain` must sit at least one
-  label **below** its zone apex — `rig.example.com` in the `example.com`
-  zone, giving `<service>.rig.example.com` names: the enclosing zone is
-  found by walking parent labels, and the apex itself is rejected because
-  `*.<zone>` would also cover every sibling hostname in the zone. `--directory-url` overrides the Let's Encrypt endpoint entirely
-  (an internal ACME CA such as step-ca — or Pebble in tests); `--acme-root`
-  adds a PEM trust anchor for the ACME server's own TLS endpoint, which
-  such private directories need; `--dns-propagation-seconds` tunes the wait
-  between writing the TXT record and telling the server to validate
-  (default 15). All three persist into `acme.json` — renewal must replay
-  them unattended. Every signed ACME request retries a server-rejected
-  anti-replay nonce (RFC 8555 §6.5) at two levels — per HTTP request
-  inside instant-acme, plus a per-operation layer in doctor — because the
-  fresh nonce a rejection carries can itself be rejected: Let's Encrypt
-  does this when a request lands on a frontend with a diverged nonce pool,
-  and Pebble injects it deliberately (5% of valid nonces by default),
-  which the BDD suite inherits as a live exercise of the retry path.
+  unquoted `$VAR` before doctor saw it — and a literal in `acme.json` also
+  means `renew.env` is never consulted, so a rotated token silently stops
+  taking effect; doctor warns loudly on stderr and proceeds (a deliberate
+  literal is legal). The two flags conflict; one is required with `--acme`.
+  With the Cloudflare provider, `--domain` must sit at least one label
+  **below** its zone apex — `rig.example.com` in the `example.com` zone,
+  giving `<service>.rig.example.com` names: the enclosing zone is found by
+  walking parent labels, and the apex itself is rejected because `*.<zone>`
+  would also cover every sibling hostname in the zone. `--directory-url`
+  overrides the Let's Encrypt endpoint entirely (an internal ACME CA such as
+  step-ca — or Pebble in tests); `--acme-root` adds a PEM trust anchor for
+  the ACME server's own TLS endpoint, which such private directories need;
+  `--dns-propagation-seconds` tunes the wait between writing the TXT record
+  and telling the server to validate (default 15). All three persist into
+  `acme.json` — renewal must replay them unattended. Every signed ACME
+  request retries a server-rejected anti-replay nonce (RFC 8555 §6.5) at two
+  levels — per HTTP request inside instant-acme, plus a per-operation layer
+  in doctor — because the fresh nonce a rejection carries can itself be
+  rejected: Let's Encrypt does this when a request lands on a frontend with
+  a diverged nonce pool, and Pebble injects it deliberately (5% of valid
+  nonces by default), which the BDD suite inherits as a live exercise of the
+  retry path.
 - **`doctor tls flip-to-acme`** — the self-signed → ACME transition in
   one command; §The flip orchestrator below.
 - **`doctor auth rotate`** — mint + distribute, as above.
@@ -1416,10 +1402,10 @@ their next restart (the existing `--fix` restart advice covers it).
 Subcommands report through the same report schema (`--json` works on all
 of them); provisioning actions appear in `fixes_applied` as non-pointer
 operations (`generate-ca`, `generate-cert`, `mint-credential`,
-`renew-acme` from D6b) next to the config-pointer ops, which the
+`renew-acme`) next to the config-pointer ops, which the
 permissive parse lets older consumers skip.
 
-### The flip orchestrator — `doctor tls flip-to-acme` ([#805](https://github.com/rusty-photon/rusty-photon/issues/805) slice 4)
+### The flip orchestrator — `doctor tls flip-to-acme`
 
 ```
 doctor tls flip-to-acme [--domain <d> --dns-provider <p>
@@ -1429,12 +1415,12 @@ doctor tls flip-to-acme [--domain <d> --dns-provider <p>
                         [--dry-run] [--allow-staging]
 ```
 
-The ACME convergence checks already make the flip a two-command recipe
-(`tls issue --acme` + `--fix` + the reported hosts entries — D1 of
-[the flip plan](../plans/archive/acme-flip.md)); `flip-to-acme` wraps that
-sequence in one transaction. It shares `tls issue --acme`'s issuance
-flags (`--dns-token-var` included, with the same literal-token warning
-and either-flag-required rule) and runs four stages:
+The ACME convergence checks make the flip a two-command recipe
+(`tls issue --acme` + `--fix` + the reported hosts entries);
+`flip-to-acme` wraps that sequence in one transaction. It shares
+`tls issue --acme`'s issuance flags (`--dns-token-var` included, with the
+same literal-token warning and either-flag-required rule) and runs four
+stages:
 
 1. **Preconditions** — each refusal is a named reason on stderr, exit 2,
    before anything is written:
@@ -1447,8 +1433,8 @@ and either-flag-required rule) and runs four stages:
      absent config is their normal disabled state — the unit cannot
      start without an operator-written file, so the flip leaves nothing
      behind, and enabling one later on the flipped install wires it to
-     the wildcard pair directly (§What `--fix` adds, #616).
-   - A **staging** install never converges (D4): `--staging`, or an
+     the wildcard pair directly (§What `--fix` adds).
+   - A **staging** install never converges: `--staging`, or an
      existing `acme.json` declaring the staging endpoint, refuses unless
      `--allow-staging` is passed. The override exists for one purpose —
      rehearsing the *full* flip, issuance through convergence, on a
@@ -1469,7 +1455,7 @@ and either-flag-required rule) and runs four stages:
    than guessing which domain the operator means. With `acme.json` but
    no wildcard pair the flip refuses, pointing at `doctor tls renew` —
    the documented recovery path, which replays the persisted settings.
-3. **The op plan, staged in memory (D6)** — the plan is the convergence
+3. **The op plan, staged in memory** — the plan is the convergence
    checks' own fixes (`tls.stale-selfsigned-pointer`, `tls.stale-ca-pin`,
    `sentinel.probe-domain`, `rp.advertised-url`, and the
    `joins.client-transport`/`joins.client-auth` rewrites), iterated the
@@ -1487,9 +1473,10 @@ and either-flag-required rule) and runs four stages:
    atomicity, so an unwritable file mid-sequence still leaves the
    earlier files rewritten: the error names exactly which files were and
    were not written, and re-running the command — or plain
-   `doctor --fix`, D1's backstop — converges the remainder.
+   `doctor --fix`, whose convergence checks judge any partly flipped
+   install — converges the remainder.
 4. **Verification and the hosts block** — the flip families are
-   re-diagnosed from disk and `dns.unresolvable` runs (report-only, D5:
+   re-diagnosed from disk and `dns.unresolvable` runs (report-only:
    the suggestion carries the exact loopback hosts line to paste, and on
    a staged facts file its `dns` object drives the judgment as usual).
    The report renders through the standard schema, `fixes_applied`
@@ -1513,15 +1500,14 @@ path.
 The flip deliberately plans **only** the transition. General repair —
 absent `tls`/`auth` blocks, port collisions, retired keys — stays
 `doctor --fix`'s job; on an ACME install its provisioning pass already
-wires new services onto the wildcard pair (#616). Rollback stays
-config-pointer-only and manual (D8): the flip deletes no self-signed
-material.
+wires new services onto the wildcard pair. Rollback is manual and
+config-pointer-only: the flip deletes no self-signed material.
 
 ### Renewal — `doctor tls renew` (D6b)
 
 Renewal is a **one-shot command on a platform scheduler** (systemd timer /
-Windows scheduled task / launchd interval — certbot's shape; plan
-decision 2), not a background task in any service: renewing zwo-camera's
+Windows scheduled task / launchd interval — certbot's shape), not a
+background task in any service: renewing zwo-camera's
 cert must not require rp — or anything else — to be running. The command
 is a no-op unless material is inside its renewal window, so one daily
 timer serves self-signed installs (10-year certs: effectively never) and
@@ -1586,26 +1572,25 @@ This is the same mechanism on all three platforms — no unit, plist, or
 Scheduled Task edits needed to make `$VAR` indirection work.
 
 After a successful ACME renewal, `post_renewal_hooks` from `acme.json`
-run in order (`sh -c` / `cmd /C`) — the multi-machine distribution hook
-from ADR-002. Every hook runs even if an earlier one fails; any failure
-exits 2, because a silently-failed hook means a remote machine keeps its
-old cert until it expires — exactly the unattended night-time failure
-this command exists to prevent. A hook runs with no stdin, no terminal (one
-that would prompt — `ssh` for a passphrase, `sudo` for a password — fails at
-once instead of waiting), and its stdout discarded (doctor's own stdout
-carries the report; a hook's can carry key material), its stderr's tail kept
-for the failure message, and under a
-5-minute deadline: above the ~2 minutes an `scp` to an unreachable host
-takes for TCP to give up. A hook still running then is stopped, with
-anything it started, and counts as failed — and the hooks after it still
-run, because one unreachable machine must not cost the others their
-certificates. Exit 0 means "nothing was due" or
-"everything due was renewed"; the timer unit needs no logic. `--force`
-ignores the windows and renews everything both legs own (self-signed
-pairs re-issue; the ACME order runs) — the manual escape hatch and the
-test affordance.
+run in order (`sh -c` / `cmd /C`) — the place to distribute a renewed
+certificate to other machines. Every hook runs even if an earlier one
+fails; any failure exits 2, because a silently-failed hook means a remote
+machine keeps its old cert until it expires — exactly the unattended
+night-time failure this command exists to prevent. A hook runs with no
+stdin, no terminal (one that would prompt — `ssh` for a passphrase, `sudo`
+for a password — fails at once instead of waiting), and its stdout discarded
+(doctor's own stdout carries the report; a hook's can carry key material),
+its stderr's tail kept for the failure message, and under a 5-minute
+deadline: above the ~2 minutes an `scp` to an unreachable host takes for TCP
+to give up. A hook still running then is stopped, with anything it started,
+and counts as failed — and the hooks after it still run, because one
+unreachable machine must not cost the others their certificates. Exit 0
+means "nothing was due" or "everything due was renewed"; the timer unit
+needs no logic. `--force` ignores the windows and renews everything both
+legs own (self-signed pairs re-issue; the ACME order runs) — the manual
+escape hatch and the test affordance.
 
-**The swap is in-process** (plan decisions 3–4): `rusty-photon-tls`'s
+**The swap is in-process**: `rusty-photon-tls`'s
 acceptor serves through a `ReloadableCertResolver` — on a TLS handshake,
 at most once every 60 s, it re-stats the configured cert/key files and
 reloads the pair when an mtime changed. A pair that fails to load or
@@ -1615,7 +1600,8 @@ log and the old cert keeps serving until the next check. No signals, no
 watcher lifecycle, no new dependencies, portable to all three platforms
 — and no restart, so renewal can never interrupt an exposure. Services
 need no code or config change: the resolver is inside
-`build_tls_acceptor`. Auth rotation stays restart-based (decision 5).
+`build_tls_acceptor`. Auth rotation is restart-based (§The observatory
+credential).
 Because the trigger is the files' **mtime**, a `post_renewal_hooks`
 command that distributes certs to another machine must not preserve
 timestamps — `scp -p` or `rsync -a`/`-t` land a renewed pair the remote
@@ -1623,7 +1609,7 @@ services never notice until restart; plain `scp`/`cp` update the mtime
 and hot-reload works.
 
 **Timer units** (shipped in sentinel's package — it carries the doctor
-binary and these units; plan decision 8, D7):
+binary and these units):
 
 - systemd: `services/sentinel/pkg/rusty-photon-renew.service`
   (`Type=oneshot`, `ExecStart=/usr/bin/rusty-photon-doctor tls renew`,
@@ -1682,15 +1668,15 @@ is never mistaken for a failed ACME order.
 
 ## Report
 
-One schema, shared by the text renderer and `--json`, and — from D5 on — by
-the per-service `doctor` subcommands central doctor aggregates. Its
-canonical home is `rusty-photon-doctor-checks` (central doctor re-exports
-it), because from D5 every service binary serializes it. It versions and
+One schema, shared by the text renderer, `--json`, and the per-service
+`doctor` subcommands central doctor aggregates. Its canonical home is
+`rusty-photon-doctor-checks` (central doctor re-exports it), because every
+service binary serializes it. It versions and
 parses **permissively** (`#[serde(default)]`, unknown fields tolerated,
 unknown `status`/`mode`/`op` values degrade to explicit `Unknown`
 variants) — the inverse of the config convention, so a doctor and a
 service from different nightlies degrade to a partial report instead of
-refusing to run (ADR-016 decision 7). `mode` is `"service"` in a
+refusing to run. `mode` is `"service"` in a
 per-service report; `doctor_version` always carries the **emitting**
 binary's version, which is what makes version skew visible in an
 aggregated report.
@@ -1718,7 +1704,7 @@ aggregated report.
 
 - `fixes` (per check, empty and omitted when none) carries the
   machine-applicable fix plan as primitive JSON-pointer operations —
-  `set-number`, `set-string`, `set-object` (D6a, for whole
+  `set-number`, `set-string`, `set-object` (for whole
   `server.tls`/`server.auth`/client blocks), `remove-key` — against one
   service's config file. Primitive ops keep the schema forward-parseable:
   an aggregating doctor that does not recognize a newer op simply cannot
@@ -1787,51 +1773,46 @@ Scripts and CI can gate on "the rig is coherent" without parsing JSON.
 Doctor has **no config file**. Its inputs are the flags above. This is
 deliberate: a config-repair tool with its own config file would need a
 doctor. (`acme.json` is provisioning *state* doctor writes and reads back —
-account URL, domain, DNS provider — not configuration of doctor's own
-behavior; every knob in it was a CLI flag first.)
+account URL, domain, DNS provider, and the settings renewal replays
+unattended — not configuration of doctor's own behavior.)
 
 ## Verification
 
 - **Unit** — catalog parsing/uniqueness and the per-service `doctor.toml`
-  parity tests (now including serial pointer/defaults against each service's
+  parity tests (including serial pointer/defaults against each service's
   own config shape, and `usb_vendor` against each shipped udev rule);
   per-check tests against tempdir fixtures; the `doctor-checks` crate's pure
   predicates against staged facts, and its gatherer against fake root trees;
   report schema round-trip including a forward-compatibility case (unknown
   fields, unknown status/mode/op values from a newer binary); the shared
   service-doctor runner against a fake typed-load closure (typo'd key named,
-  absent file ok, exit-code mapping). For client-target joins
-  ([#607](https://github.com/rusty-photon/rusty-photon/issues/607)): scheme
+  absent file ok, exit-code mapping). For client-target joins: scheme
   mismatch in both directions, the ACME-vs-self-signed CA-trust split
-  (including rp's shared top-level `ca_cert`, wired the same way once
-  #609/PR #612 gave rp that field), absent-vs-wrong credential handling,
-  rp's plate-solver/guider `joins.client-auth` fix-eligible path (writing
-  the observatory credential to `plate_solver.auth` /
-  `equipment.mount.guiding.auth` once issue #620 gave rp those fields), a
-  non-loopback host resolving to nothing, and that the scheme- and
-  host-rewrite helpers never introduce the trailing slash a URL-parser
-  round trip would. For the ACME name join and host rewrite
-  ([#805](https://github.com/rusty-photon/rusty-photon/issues/805)): the
-  resolver joins exactly `<svc>.<domain>` for the port-matched service
-  (a foreign name, nested subdomain, foreign domain, or absent/unreadable
-  `acme.json` all keep the loopback-only shape), a loopback URL against
-  an ACME target composes the scheme and host rewrites into one written
-  value, a staging `acme.json` reports the break without a fix, and a
-  monitor's discrete `host` field is rewritten in place. For the ACME
-  convergence family (#805 slice 3): the stale-pointer check
-  distinguishes doctor's per-service pair (fix), a hand-placed path
-  (suggestion-only), the already-converged wildcard pointer (silent),
-  and a missing wildcard pair (silent); the stale-pin check judges each
-  `CLIENT_WIRING` pointer plus ui-htmx's per-target `ca_cert_path` and
-  plans `remove-key` only for the doctor-written `pki/ca.pem` path;
-  `probe_domain` and `advertised_url` fixes carry the derived values and
-  respect present ones; the staging downgrade holds for every check in
-  the family; and the DNS judgment is case-insensitive and driven by
-  staged or gathered facts, with the resolver helper tested against
-  deterministic names only.
+  (including rp's shared top-level `ca_cert`), absent-vs-wrong credential
+  handling, rp's plate-solver/guider `joins.client-auth` fix-eligible path
+  (writing the observatory credential to `plate_solver.auth` /
+  `equipment.mount.guiding.auth`), a non-loopback host resolving to
+  nothing, and that the scheme- and host-rewrite helpers never introduce
+  the trailing slash a URL-parser round trip would. For the ACME name join
+  and host rewrite: the resolver joins exactly `<svc>.<domain>` for the
+  port-matched service (a foreign name, nested subdomain, foreign domain, or
+  absent/unreadable `acme.json` all keep the loopback-only shape), a
+  loopback URL against an ACME target composes the scheme and host rewrites
+  into one written value, a staging `acme.json` reports the break without a
+  fix, and a monitor's discrete `host` field is rewritten in place. For the
+  ACME convergence family: the stale-pointer check distinguishes doctor's
+  per-service pair (fix), a hand-placed path (suggestion-only), the
+  already-converged wildcard pointer (silent), and a missing wildcard pair
+  (silent); the stale-pin check judges each `CLIENT_WIRING` pointer plus
+  ui-htmx's per-target `ca_cert_path` and plans `remove-key` only for the
+  doctor-written `pki/ca.pem` path; `probe_domain` and `advertised_url`
+  fixes carry the derived values and respect present ones; the staging
+  downgrade holds for every check in the family; and the DNS judgment is
+  case-insensitive and driven by staged or gathered facts, with the resolver
+  helper tested against deterministic names only.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
-  collision, dangling watchdog service, retired D3s keys, unparseable JSON,
+  collision, dangling watchdog service, sentinel's retired `services` map, unparseable JSON,
   missing `ConditionPathExists` target, absent polkit rule, a client target
   stale against a TLS/auth-provisioned peer), run the real binary, assert
   the diagnosis, the exit code, and the `--json` schema. For `--fix`:
@@ -1849,14 +1830,14 @@ behavior; every knob in it was a CLI flag first.)
   `probe_domain`/`advertised_url`, rewritten client URLs), a second
   `--fix` applies nothing, a staging `acme.json` downgrades to
   suggestion-only, hand-set material stays untouched, and staged `dns`
-  facts drive the hosts-line report. For the flip orchestrator (#805
-  slice 4): `--dry-run` prints the cross-round op plan (host rewrites
+  facts drive the hosts-line report. For the flip orchestrator:
+  `--dry-run` prints the cross-round op plan (host rewrites
   included) and writes nothing; each precondition refuses with its named
   reason (missing config file, staging without the override, `--domain`
   contradicting `acme.json`, missing pair pointing at `doctor tls
   renew`, absent `acme.json` without the issuance flags); a full flip
   against a staged self-signed tree converges to the same file end
-  state slice 3's `--fix` reaches; a re-run applies nothing;
+  state `--fix` reaches; a re-run applies nothing;
   `--allow-staging` converges a staging tree; and staged `dns` facts
   drive the final hosts-line verification and the exit code. For aggregation: staged unit facts point the shell-out at
   stub binaries (canned report, canned garbage, canned clap error for the
@@ -1864,17 +1845,17 @@ behavior; every knob in it was a CLI flag first.)
   merge, the `service` attribution, and that a degraded probe warns
   instead of failing.
 - **Per-service BDD** — the subcommand itself follows the smoke-suite
-  convention (the tls-auth precedent): one scenario per service asserting
+  convention of `bdd-infra`'s tls-auth smoke: one scenario per service asserting
   `doctor --json` exits 0 on a valid config and exits 1 naming the key on
   a typo'd one, with the deep behavior (rendering, absent-file, SDK
   enumeration against the sim/mock backends) covered once in
   representatives and the shared runner's unit tests.
-- **On-host** (D2 gate, per the plan's all-platforms requirement) — the real
-  inspectors validated against a packaged Linux host, the Windows VM (SCM),
-  and macOS (brew services). The D4 gatherer gets the same three legs, plus
+- **On-host** (all three platforms) — the real inspectors validated
+  against a packaged Linux host, the Windows VM (SCM), and macOS (brew
+  services). The D4 gatherer gets the same three legs, plus
   the rig's unplug-proof: disconnect a device, run doctor, confirm the
   report is honest.
-- **D6a** — unit: cert/ACME module tests move with the code; credential
+- **D6a** — unit: the cert/ACME module tests; credential
   mint → Argon2id hash → verify round-trip; pki paths anchor at the
   resolved config root. BDD: against a scratch `--config-dir`, `--fix`
   creates the CA/certs/credential and writes `tls`/`auth` + client blocks
@@ -1883,17 +1864,15 @@ behavior; every knob in it was a CLI flag first.)
   survive untouched; `auth.mismatch` fires on an incoherent pair;
   `doctor tls issue --force` re-issues service certs but never the CA;
   `doctor auth rotate` re-aligns a mismatched pair. ACME-aware
-  provisioning ([#616](https://github.com/rusty-photon/rusty-photon/issues/616)):
-  with a staged `acme.json` and wildcard pair, `--fix` wires a new
-  service's `server.tls` to the pair (no CA, no per-service pair is
+  provisioning: with a staged `acme.json` and wildcard pair, `--fix` wires
+  a new service's `server.tls` to the pair (no CA, no per-service pair is
   created) and writes client blocks carrying the credential but no
   `ca_cert`; with `acme.json` but no wildcard pair, `tls.absent` stays
   suggestion-only pointing at `doctor tls renew` and no self-signed
-  material appears. rp's
-  `tls_setup.feature`/`acme_setup.feature` and `bdd-infra`'s one-shot
-  command tests move here with the commands. On-host: a packaged install
-  goes TLS-on/auth-on with one `--fix` and every service answers
-  authenticated HTTPS after restart.
+  material appears. `tls_issue.feature` and `acme_setup.feature` cover
+  the issuance commands, and `bdd-infra`'s `run_once` tests run them as
+  one-shot binaries. On-host: a packaged install goes TLS-on/auth-on with
+  one `--fix` and every service answers authenticated HTTPS after restart.
 - **D6b** — unit: `not_after` parsing and window arithmetic against
   world-generated short-lived certs; SAN preservation across a re-issue;
   order retry against a `MockAcmeClient` that fails then succeeds; the
@@ -1907,9 +1886,8 @@ behavior; every knob in it was a CLI flag first.)
   [Pebble](https://github.com/letsencrypt/pebble) — Let's Encrypt's ACME
   test server — plus its `pebble-challtestsrv` DNS sidecar: `tls issue
   --acme --directory-url` obtains a real wildcard cert through the real
-  `instant-acme` order flow (closing the mock-only gap
-  [#541](https://github.com/rusty-photon/rusty-photon/issues/541) called
-  out); `renew` no-ops outside the window, renews a short-validity cert
+  `instant-acme` order flow, which the `MockAcmeClient` unit tests cannot
+  reach; `renew` no-ops outside the window, renews a short-validity cert
   inside it, runs `post_renewal_hooks`, and exits 2 on a failing hook.
   The `@pebble` scenarios need `PEBBLE_PATH` + `PEBBLE_CHALLTESTSRV_PATH`
   (CI provisions both via `.github/actions/install-pebble`; locally the
@@ -1918,65 +1896,9 @@ behavior; every knob in it was a CLI flag first.)
 
 ## MVP scope
 
-**In D2–D5:** derived catalog, config-root resolution, platform
-inspectors, the check list including the no-SDK hardware family, the
-`rusty-photon-doctor-checks` crate (now also the schema's canonical home
-and the shared service-doctor runner), the per-service `doctor`
-subcommands on all catalog services, aggregation over both probe paths,
-text + `--json` rendering, exit codes, and `--fix`. Hardware probes never
-open a device; SDK checks enumerate only; the aggregation probe against
-local services stays on the host.
-
-**In D6a (this document's §Provisioning):** the TLS + credential lifecycle —
-self-signed issuance and ACME moved from `rp` (which loses `init-tls` and
-`hash-password`), the pki tree under the config root, the minted observatory
-credential and its distribution, `tls`/`auth`-on written by `--fix`, and the
-`tls`/`auth` subcommands. Writes cover config files and the pki tree; ACME
-is the one place doctor's network I/O leaves the host, and only when asked.
-
-**In D6b (§Renewal):** `doctor tls renew` (both legs, hooks, retry), the
-`tls.expiry` check, the ACME endpoint/trust/propagation knobs on
-`tls issue --acme`, and the in-process cert hot-reload in
-`rusty-photon-tls` — closing
-[#541](https://github.com/rusty-photon/rusty-photon/issues/541).
-
-**In D7 (§Renewal, §The derived catalog):** the packaging — doctor and
-the renewal scheduling ship in sentinel's deb/rpm/MSI Core/brew formula,
-the install-flow docs in the per-platform packaging guides, and the
-pki-ownership alignment under sudo (the #572 remainder).
-
-**Client-target joins ([#607](https://github.com/rusty-photon/rusty-photon/issues/607),
-[#620](https://github.com/rusty-photon/rusty-photon/issues/620),
-[#800](https://github.com/rusty-photon/rusty-photon/issues/800),
-[#801](https://github.com/rusty-photon/rusty-photon/issues/801),
-[#805](https://github.com/rusty-photon/rusty-photon/issues/805) gap 2):**
-`joins.client-transport` and `joins.client-auth` (§Diagnosis), driven
-from the one client-target registry, with the ACME name join and the
-loopback→`<svc>.<domain>` host rewrite on an ACME install.
-`joins.client-transport` is fully fix-eligible for ui-htmx's
-`rp` target, sentinel's per-monitor `scheme`, sentinel's
-`operation_watchdog.rp_url` scheme, the shared top-level `ca_cert` both
-sentinel client families trust (#801), and rp's plate-solver/guider/plugin
-clients (rp's shared top-level `ca_cert`, closed by #609/PR #612).
-`joins.client-auth`
-is fully fix-eligible for ui-htmx's targets, sentinel's per-monitor
-`auth`, and (since #620 added `plate_solver.auth` /
-`equipment.mount.guiding.auth`, and #800 `plugins[].auth`, to rp's
-config schema) rp's plate-solver/guider/plugin clients; it does not run at all for
-`operation_watchdog.rp_url` (its credential is the shared `service_auth`
-pair — `auth.mismatch` already owns it).
-
-**ACME convergence ([#805](https://github.com/rusty-photon/rusty-photon/issues/805)
-gaps 1, 3, 4, 5, 6):** the five convergence checks (§Diagnosis §ACME
-convergence) — `tls.stale-selfsigned-pointer`, `tls.stale-ca-pin`,
-`sentinel.probe-domain`, `rp.advertised-url`, `dns.unresolvable` — grade
-an already-provisioned install against the ACME target state `acme.json`
-declares and make `--fix` converge everything provably doctor-owned, so
-the flip recipe is `tls issue --acme` + `doctor --fix` + the reported
-hosts entries + service restarts. The `flip-to-acme` orchestrator
-(§The flip orchestrator, slice 4 of the plan) wraps that recipe in one
-transaction: preconditions, issuance-or-accept, the in-memory staged op
-plan, and the hosts-line verification, with `--dry-run` throughout.
-
-Nothing in the MVP scope is deferred: every device-bearing service now
-declares the USB identity its hardware reports (§The derived catalog).
+Doctor diagnoses an install's configs, service manager and device surface
+(D2, D4), repairs what is derivable (D3), aggregates the per-service
+doctors (D5), provisions TLS and the observatory credential (D6a), renews
+certificates (D6b), joins every client address against the service it
+targets, and converges a self-signed install onto ACME. Nothing in that
+scope is deferred.

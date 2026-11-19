@@ -78,7 +78,7 @@ async fn test_start_server_creation() {
 #[cfg(not(miri))]
 async fn test_server_loop_stop_and_reload() {
     use filemonitor::run_server_loop;
-    use rusty_photon_service_lifecycle::ReloadSignal;
+    use rusty_photon_service_lifecycle::{ReloadSignal, Restart};
     use std::io::Write;
     use tokio_util::sync::CancellationToken;
 
@@ -122,7 +122,13 @@ async fn test_server_loop_stop_and_reload() {
             shutdown_trigger.cancel();
         });
 
-        let result = run_server_loop(&config_path, shutdown, reload).await;
+        let result = run_server_loop(
+            &config_path,
+            shutdown.clone(),
+            reload,
+            Restart::new(shutdown),
+        )
+        .await;
 
         assert!(result.is_ok(), "stop test failed: {:?}", result.err());
     }
@@ -181,7 +187,13 @@ async fn test_server_loop_stop_and_reload() {
             shutdown_trigger.cancel();
         });
 
-        let result = run_server_loop(&config_path, shutdown, reload).await;
+        let result = run_server_loop(
+            &config_path,
+            shutdown.clone(),
+            reload,
+            Restart::new(shutdown),
+        )
+        .await;
 
         assert!(
             result.is_err(),

@@ -1,7 +1,8 @@
 //! UPBv2 `ObservingConditions` device implementation.
 //!
-//! Like the Switch device, this holds an `Option<Session<Upbv2Codec>>` —
-//! the session existing is the canonical "Connected" state.
+//! Like the Switch device, it keeps its connection state in one
+//! `Option<Session<Upbv2Codec>>` slot, with no flag beside it that could
+//! disagree.
 //!
 //! The three sensors (temperature, humidity, dewpoint) all come from the one
 //! `PA` frame the manager polls, and are served through the shared
@@ -18,6 +19,7 @@ use rusty_photon_rolling_stats::observing_conditions::{
 use rusty_photon_setup::SetupPages;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 use tracing::debug;
 
 use crate::codec::Upbv2Codec;
@@ -112,7 +114,7 @@ impl Device for Upbv2ObservingConditionsDevice {
                 if let Some(session) = slot.take() {
                     // `Session::close` returns Result<_, TransportError>;
                     // `From<TransportError> for Upbv2Error` handles the
-                    // conversion, and the existing `From<Upbv2Error> for
+                    // conversion, and the `From<Upbv2Error> for
                     // ASCOMError` does the second hop on `?`.
                     session.close().await.map_err(Upbv2Error::from)?;
                 }
@@ -206,7 +208,7 @@ impl ObservingConditions for Upbv2ObservingConditionsDevice {
             .get_cached_state()
             .await
             .temp_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -221,7 +223,7 @@ impl ObservingConditions for Upbv2ObservingConditionsDevice {
             .get_cached_state()
             .await
             .humidity_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -236,7 +238,7 @@ impl ObservingConditions for Upbv2ObservingConditionsDevice {
             .get_cached_state()
             .await
             .dewpoint_mean
-            .get_mean()
+            .get_mean(Instant::now().into_std())
             .ok_or_else(|| {
                 ASCOMError::new(
                     ASCOMErrorCode::VALUE_NOT_SET,
@@ -248,17 +250,17 @@ impl ObservingConditions for Upbv2ObservingConditionsDevice {
     async fn time_since_last_update(&self, sensor_name: String) -> ASCOMResult<f64> {
         ensure_connected!(self);
         let state = self.manager.get_cached_state().await;
+        let now = Instant::now().into_std();
         let duration = match sensor_name.to_lowercase().as_str() {
             // The freshest window; `None` while all three are empty, so the
             // client reads "no data" rather than "updated just now".
-            "" => time_since_freshest_update([
-                &state.temp_mean,
-                &state.humidity_mean,
-                &state.dewpoint_mean,
-            ]),
-            "temperature" => state.temp_mean.time_since_last_update(),
-            "humidity" => state.humidity_mean.time_since_last_update(),
-            "dewpoint" => state.dewpoint_mean.time_since_last_update(),
+            "" => time_since_freshest_update(
+                [&state.temp_mean, &state.humidity_mean, &state.dewpoint_mean],
+                now,
+            ),
+            "temperature" => state.temp_mean.time_since_last_update(now),
+            "humidity" => state.humidity_mean.time_since_last_update(now),
+            "dewpoint" => state.dewpoint_mean.time_since_last_update(now),
             "cloudcover" | "pressure" | "rainrate" | "skybrightness" | "skyquality"
             | "starfwhm" | "skytemperature" | "winddirection" | "windgust" | "windspeed" => {
                 return Err(ASCOMError::NOT_IMPLEMENTED);
@@ -316,6 +318,7 @@ mod tests {
     use ascom_alpaca::ASCOMErrorCode;
     use async_trait::async_trait;
     use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
+    use std::time::Duration;
 
     /// Factory whose `open()` always fails. Used to exercise the
     /// `set_connected(true)` acquire-failure mapping into ASCOM errors —
@@ -440,10 +443,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_real_ten_second_average_does_not_read_back_as_zero() {
-        // Ten seconds was once the window that stood in for "no averaging",
-        // and the read-back inferred the period from the window — so asking
-        // for a genuine ten-second average got 0 hours back, which means the
-        // opposite. The period is now recorded as set.
+        // Ten seconds is shorter than the instantaneous window (15 s at the
+        // default 5 s poll interval), so it is served with that window. A
+        // read-back inferred from the window could not tell it from "not
+        // averaging" and would answer 0 hours, the opposite of what was
+        // asked; the period is read back as set.
         let device = connected_device().await;
         let ten_seconds_in_hours = 10.0 / 3600.0;
         device
@@ -488,7 +492,8 @@ mod tests {
         // mean holds exactly that sample. Asserting against the cache pins
         // each ASCOM property to its own wire field without hard-coding the
         // mock's numbers here as well as in the mock.
-        let status = manager.get_cached_state().await.status.unwrap();
+        let state = manager.get_cached_state().await;
+        let status = state.status.get().unwrap();
         let t = device.temperature().await.unwrap();
         assert!((t - status.temperature).abs() < 0.01, "temperature: {t}");
         let h = device.humidity().await.unwrap();
@@ -501,6 +506,29 @@ mod tests {
         assert_ne!(status.temperature, status.dewpoint);
         assert_ne!(status.humidity, status.dewpoint);
 
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn time_since_last_update_follows_the_clock_the_frame_is_dated_on() {
+        // The handshake's frame is the newest sample. Three seconds of the
+        // paused clock later, short of the next poll, every sensor name
+        // answers three seconds: the age is counted on the clock that dated
+        // the frame, which no other clock follows while this one is paused.
+        let device = connected_device().await;
+
+        tokio::time::advance(Duration::from_secs(3)).await;
+
+        for sensor in ["", "temperature", "humidity", "dewpoint"] {
+            let seconds = device
+                .time_since_last_update(sensor.to_string())
+                .await
+                .unwrap();
+            assert!(
+                (seconds - 3.0).abs() < f64::EPSILON,
+                "{sensor:?}: {seconds} s"
+            );
+        }
         device.set_connected(false).await.unwrap();
     }
 
@@ -555,8 +583,4 @@ mod tests {
         let response = device.setup_request(get_request()).await;
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
     }
-
-    // Upbv2Error → ASCOMError mapping tests moved to error.rs once the
-    // canonical mapping landed there (centralised so both devices share
-    // the same classification).
 }

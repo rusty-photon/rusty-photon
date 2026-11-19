@@ -6,8 +6,8 @@
 //! configured devices (it already enumerated its hardware at startup); an
 //! **inactive** unit's own binary is run as `doctor --json` and the
 //! returned checks merge into the report. Units whose staged facts carry
-//! no run state have no aggregation story and are skipped — which is also
-//! what keeps every pre-D5 staged scenario meaning what it meant.
+//! no run state have no aggregation story and are skipped, so a staged
+//! scenario that records no run state runs no probe.
 //!
 //! Both probes are bounded (a short HTTP timeout, a generous shell-out
 //! one), and an answer that never comes is a diagnosis, not a crash.
@@ -56,8 +56,7 @@ enum Probe<'a> {
 /// state.
 ///
 /// Pure fan-out over [`Probe`]; returns no checks (and builds no runtime)
-/// on a host with nothing to probe — a dev checkout diagnosis stays
-/// exactly what it was.
+/// on a host with nothing to probe, such as a dev checkout.
 #[must_use]
 pub fn checks(ctx: &Context) -> Vec<Check> {
     let probes: Vec<Probe> = ctx
@@ -150,10 +149,10 @@ struct FakeMountProbe {
 }
 
 /// The `UniqueID` leg of `joins.fake-mount` (planetarium-bridge.md §
-/// Doctor integration): the static port join (`crate::checks`) only
-/// resolves loopback URLs, but a rig config addresses services by host
-/// name (`<svc>.rig.rustyphoton.io`), where the port join is silently
-/// skipped by design. This leg asks the configured mount itself —
+/// Doctor integration): the static port join (`crate::checks`) resolves
+/// a loopback host and, on an ACME install, the exact `<svc>.<domain>`
+/// name, and silently skips any other host name by design. This leg asks
+/// the configured mount itself —
 /// `GET /management/v1/configureddevices` on rp's
 /// `equipment.mount.alpaca_url` — and fails when any reported device's
 /// `UniqueID` is the locally-installed bridge's minted `device.unique_id`.
@@ -364,7 +363,8 @@ fn devices_command(
 /// them, which stands in for a listed camera (or its wheel) and is not one.
 /// A placeholder never re-scans, so when `hardware`'s USB scan holds a
 /// working device on its port, the warning names it, and leaves whether a
-/// reload would place it to the driver's `doctor --devices`: a placeholder's
+/// restart would place it to the driver's `doctor --devices`, which
+/// enumerates in a fresh process as a restart does: a placeholder's
 /// reason (a look-alike, an unknown model, a failed scan the service re-scans
 /// by itself) is not in `configureddevices`, and only the driver's join knows
 /// it. `command` runs that `doctor --devices` ([`devices_command`]).
@@ -409,7 +409,7 @@ fn inventory_checks(
             let _ = write!(
                 detail,
                 "; the host's USB scan shows {} ({}:{}) on {port}: `{command}` says whether a \
-                 reload of {service} would place it",
+                 restart of {service} would place it",
                 device.model.as_deref().unwrap_or("a device"),
                 device.vendor,
                 device.product
@@ -420,7 +420,7 @@ fn inventory_checks(
             Some(service.to_string()),
             detail,
             Some(format!(
-                "run `{command}`; once the camera is fixed, reload or restart {service}"
+                "run `{command}`; once the camera is fixed, restart {service}"
             )),
         ));
     }
@@ -565,8 +565,8 @@ fn describe_devices(devices: &[&ConfiguredDevice]) -> String {
 /// Run an inactive unit's own binary as `doctor --json --config <file>` and
 /// merge the returned checks. Every way the probe itself can go wrong is a
 /// `warn` under `service.doctor-probe` — most of them are the version-skew
-/// signature (a binary from before D5 does not know the subcommand), and an
-/// old binary is not a broken rig.
+/// signature (a service binary without the `doctor` subcommand rejects it),
+/// and an old binary is not a broken rig.
 async fn probe_shell_out(ctx: &Context, scan: &ServiceScan, unit: &UnitFacts) -> Vec<Check> {
     let name = scan.entry.name;
     let Some(binary) = &unit.binary_path else {
@@ -996,11 +996,8 @@ mod tests {
         assert_eq!(
             checks[1].suggestion.as_deref(),
             Some(
-                format!(
-                    "run `{DEVICES_COMMAND}`; once the camera is fixed, reload or restart \
-                     qhy-camera"
-                )
-                .as_str()
+                format!("run `{DEVICES_COMMAND}`; once the camera is fixed, restart qhy-camera")
+                    .as_str()
             )
         );
         assert!(
@@ -1016,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_placeholder_whose_port_now_holds_a_device_says_a_reload_would_place_it() {
+    fn test_a_placeholder_whose_port_now_holds_a_device_asks_whether_a_restart_would_place_it() {
         let devices = [device(
             "Guide port",
             "Camera",
@@ -1038,7 +1035,7 @@ mod tests {
         assert!(
             checks[1].detail.ends_with(&format!(
                 "; the host's USB scan shows QHY678U3G20-20230106 (1618:0679) on \
-                 {GUIDE_PORT}: `{DEVICES_COMMAND}` says whether a reload of qhy-camera would \
+                 {GUIDE_PORT}: `{DEVICES_COMMAND}` says whether a restart of qhy-camera would \
                  place it"
             )),
             "{}",

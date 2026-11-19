@@ -1,13 +1,13 @@
-//! Issue #258 dissolves here: when the 0→1 transition fails — at the
-//! factory step, the handshake step, or a panic in either — the
-//! transport rolls back fully. The refcount returns to 0,
+//! When the 0→1 transition fails — at the factory step, the handshake
+//! step, a panic in the handshake, or a panic building the while-open
+//! future —
+//! the transport rolls back fully. The refcount returns to 0,
 //! `is_available()` stays false, and the next `acquire()` runs the full
 //! open path again.
 //!
-//! In the per-service code on `main` (before PR #260), a handshake
-//! error in `qhy-focuser` would leave the manager wedged because the
-//! refcount was bumped before the handshake ran and never rolled back.
-//! This test crate proves the new structure can't reproduce that bug.
+//! Without the rollback, the refcount bumped before the handshake stays
+//! above zero, and every later `acquire()` takes the reuse path to an
+//! empty slot instead of opening: the transport is wedged.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -97,9 +97,8 @@ async fn while_open_constructor_panic_rolls_back_state_fully() {
     // future) must roll back the same way a handshake panic does:
     // refcount returns to 0, `is_available()` stays false, and the
     // opened transport is dropped so a fresh acquire goes through
-    // the full open path again. This guards the publish-ordering
-    // invariant flagged in Copilot's review of PR #269: slot /
-    // available must not be published before the user-supplied
+    // the full open path again. This guards the publish order:
+    // slot / available must not be published before the user-supplied
     // while-open closure has been called without panicking.
     let (st, cfg) = build_with_hooks(panicking_while_open_constructor_hooks());
     let st_for_task = st.clone();
@@ -136,11 +135,10 @@ async fn handshake_panic_rolls_back_refcount() {
 
 #[tokio::test]
 async fn alternating_failure_and_success_does_not_leak_count() {
-    // Open succeeds, handshake fails, open succeeds again. The second
-    // success should produce a working session. This is the closest
-    // approximation of the qhy-focuser #258 scenario (handshake fails
-    // mid-sequence) and the test fails loudly if any path leaves count
-    // > 0.
+    // Open succeeds, handshake fails, open succeeds again: a handshake
+    // that fails once mid-sequence. The second success should produce a
+    // working session, and the test fails loudly if any path leaves
+    // count > 0.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
 

@@ -1,14 +1,9 @@
 @serial
 Feature: Capture sets the camera's frame geometry before every exposure
-  `capture`, `auto_focus` and `center_on_target` take an optional
-  `binning` parameter spelled `"AxB"` — the same string an acquisition
-  goal is keyed by — so a goal that asks for `"2x2"` and the capture
-  that fulfils it are written the same way. Omitted, it means `"1x1"`.
-
-  On a train-addressed `auto_focus` the train's `auto_focus.binning`
-  is the default and a per-call `binning` overrides it, the same
-  field-by-field merge every other sweep parameter gets; `refocus_train`
-  takes the block only, since it addresses no call.
+  `capture` and `center_on_target` take an optional `binning`
+  parameter spelled `"AxB"` — the same string an acquisition goal is
+  keyed by — so a goal that asks for `"2x2"` and the capture that
+  fulfils it are written the same way. Omitted, it means `"1x1"`.
 
   `rp` writes the geometry to the camera before every exposure it
   starts, the omitted-parameter `1x1` case included, and never inherits
@@ -114,27 +109,3 @@ Feature: Capture sets the camera's frame geometry before every exposure
     And the reported progress should be exactly:
       | filter | binning | exposure_duration | good | total | desired_count |
       |        | 2x2     | 1s                | 1    | 1     | 10            |
-
-  Scenario: A per-call binning overrides the train's
-    Given rp's data_directory is pinned to a fresh tempdir
-    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block at binning "1x1"
-    And an MCP client connected to rp
-    When the MCP client calls auto_focus with train "main" and binning "2x2"
-    Then 5 FITS files should exist in the pinned data directory
-    And every sidecar JSON in the pinned data directory should report binning "2x2"
-
-  Scenario: A refocus sweep captures at the binning its train configures
-    Given rp's data_directory is pinned to a fresh tempdir
-    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block at binning "2x2"
-    And an MCP client connected to rp
-    When the MCP client calls "refocus_train" with train "main"
-    Then 5 FITS files should exist in the pinned data directory
-    And every sidecar JSON in the pinned data directory should report binning "2x2"
-
-  Scenario: An auto_focus sweep captures at the binning its train configures
-    Given rp's data_directory is pinned to a fresh tempdir
-    And rp is running with a camera and a focuser on the simulator in train "main" with the standard auto_focus block at binning "2x2"
-    And an MCP client connected to rp
-    When the MCP client calls auto_focus with train "main"
-    Then 5 FITS files should exist in the pinned data directory
-    And every sidecar JSON in the pinned data directory should report binning "2x2"

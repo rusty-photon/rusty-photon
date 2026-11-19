@@ -17,12 +17,10 @@ use super::basic_auth::basic_auth_header;
 
 /// A single event captured by [`WebhookReceiver`].
 ///
-/// The historical fields (`event_id`, `event_type`, `timestamp`,
-/// `payload`) capture the legacy webhook body. The
-/// predictive-deadlines event envelope adds the operation-lifecycle
-/// fields below; they are `Option` so legacy point events (which omit
-/// them) and operation events (which carry them) both parse. See
-/// `services/rp/src/events.rs::EventEnvelope`.
+/// `event_id`, `event_type` (the envelope's `event`), `timestamp` and
+/// `payload` are on every envelope. The operation-lifecycle fields
+/// below are `Option`: a point event omits them and an operation event
+/// carries them. See `services/rp/src/events.rs::EventEnvelope`.
 #[derive(Debug, Clone)]
 pub struct ReceivedEvent {
     pub event_id: String,
@@ -40,11 +38,11 @@ pub struct ReceivedEvent {
     pub ended_at: Option<String>,
     /// Wall-clock duration in ms, on `*_complete`/`*_failed` only.
     pub elapsed_ms: Option<u64>,
-    /// Present on `slew_started` (Phase 2.1); absent for operations not
-    /// yet converted to predictive deadlines.
+    /// Predicted duration, on the `*_started` event of an operation rp
+    /// sizes a deadline for; absent on every other event.
     pub predicted_duration_ms: Option<u64>,
-    /// Present on `slew_started` (Phase 2.1); absent for operations not
-    /// yet converted to predictive deadlines.
+    /// Ceiling past which the operation is overrun, on the same
+    /// `*_started` events as `predicted_duration_ms`.
     pub max_duration_ms: Option<u64>,
     pub payload: Value,
     pub received_at: std::time::Instant,

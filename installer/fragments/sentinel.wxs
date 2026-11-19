@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  rusty-photon-sentinel — Windows service fragment (suite MSI; ADR-015).
+  rusty-photon-sentinel — Windows service fragment (suite MSI).
   Port 11114/tcp. The fragment contract (service name, exe rename,
-  failure actions + failure-actions flag, firewall port, demand-start set) is
+  failure actions + failure-actions flag, firewall port, start and stop) is
   checked by tools/rusty-photon-ci/src/pkg_assets.rs.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
@@ -22,9 +22,9 @@
                         Account="LocalSystem"
                         Arguments="--service"
                         Vital="yes">
-          <!-- systemd Restart=on-failure / RestartSec=5 translation (ADR-015
-               decision 2): restart after 5 s on every failure, indefinitely
-               (failure count resets daily). -->
+          <!-- systemd Restart=on-failure / RestartSec=5 translation: restart
+               after 5 s on every failure, indefinitely (failure count resets
+               daily). -->
           <util:ServiceConfig FirstFailureActionType="restart"
                               SecondFailureActionType="restart"
                               ThirdFailureActionType="restart"

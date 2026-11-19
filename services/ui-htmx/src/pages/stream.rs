@@ -88,8 +88,9 @@ impl Severity {
 }
 
 /// Classify an envelope: `*_failed` and `safety_changed:unsafe` are bad,
-/// `*_complete`/`*_settled` ok, `*_started` live, `stream_error` and
-/// `guide_stopped` warn; other point events are neutral.
+/// `*_complete`/`*_settled` ok, `*_started` live, `stream_error`,
+/// `guide_stopped` and `guide_star_lost` warn; other point events are
+/// neutral.
 fn severity_of(env: &EventEnvelope) -> Severity {
     match env.event.as_str() {
         "safety_changed" => {
@@ -99,7 +100,7 @@ fn severity_of(env: &EventEnvelope) -> Severity {
                 Severity::Ok
             }
         }
-        "stream_error" | "guide_stopped" => Severity::Warn,
+        "stream_error" | "guide_stopped" | "guide_star_lost" => Severity::Warn,
         event if event.ends_with("_failed") => Severity::Bad,
         event if event.ends_with("_complete") || event.ends_with("_settled") => Severity::Ok,
         event if event.ends_with("_started") => Severity::Live,
@@ -201,8 +202,8 @@ fn join_parts(base: &str, extras: &[Option<String>]) -> String {
 
 // --- per-event title + detail ---------------------------------------------------
 
-/// The human title and payload-specific detail parts for one envelope, per the
-/// rp event catalog (`docs/services/ui-htmx.md` "Activity stream"). The catalog
+/// The human title and payload-specific detail parts for one envelope, per
+/// rp's event catalog (`docs/services/rp.md` § Events). The catalog
 /// rows live in one family function per event domain; unknown event names
 /// degrade to a humanized name + compact payload dump rather than vanishing.
 fn card_text(env: &EventEnvelope) -> (String, Vec<String>) {
@@ -367,9 +368,22 @@ fn guiding_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
         "guide_started" => ("Guiding started".to_string(), Vec::new()),
         "guide_settled" => ("Guiding settled".to_string(), rms_detail(p)),
         "guide_failed" => ("Guiding failed".to_string(), error_detail(p)),
+        // `stop_reason` is set when the guider ended the run by itself
+        // (`reason: "guider"`), and says how.
         "guide_stopped" => (
             "Guiding stopped".to_string(),
-            field(p, "reason").into_iter().collect(),
+            [field(p, "reason"), field(p, "stop_reason")]
+                .into_iter()
+                .flatten()
+                .collect(),
+        ),
+        "guide_star_lost" => (
+            "Guide star lost".to_string(),
+            p.get("lost_for_ms")
+                .and_then(Value::as_u64)
+                .map(|ms| format!("lost for {}", humanize_ms(ms)))
+                .into_iter()
+                .collect(),
         ),
         "dither_started" => ("Dither started".to_string(), Vec::new()),
         "dither_settled" => ("Dither settled".to_string(), rms_detail(p)),
@@ -379,8 +393,8 @@ fn guiding_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
 }
 
 /// Supervisory rows of the catalog: safety, persistence and stream faults.
-/// (rp keeps no session — mcp-sessionless D6 — so there are no session
-/// lifecycle rows; run status is the orchestrator's, O2.)
+/// (rp keeps no session, so there are no session lifecycle rows; run status
+/// is `session-runner`'s, not rp's.)
 fn supervisory_card(event: &str, p: &Value) -> Option<(String, Vec<String>)> {
     Some(match event {
         "safety_changed" => {
@@ -465,7 +479,7 @@ pub(crate) fn unreachable_slot() -> Markup {
 /// `guide` on `guide_settled`/`dither_settled` (the RMS readout), `safety` on
 /// `safety_changed` (the SAFE / UNSAFE chip). Point
 /// events (`filter_switch`, `centering_iteration`, `guide_stopped`,
-/// `document_persistence_failed`) leave the slots alone — the proxy is
+/// `guide_star_lost`, `document_persistence_failed`) leave the slots alone — the proxy is
 /// stateless, so an untouched slot keeps its previous content.
 pub(crate) fn slot_updates(env: &EventEnvelope) -> Vec<(&'static str, Markup)> {
     match env.event.as_str() {
@@ -682,6 +696,10 @@ fn led_list(status: &EquipmentStatus) -> Markup {
         ("cover calibrator", &status.cover_calibrators),
         ("focuser", &status.focusers),
         ("safety monitor", &status.safety_monitors),
+        ("switch", &status.switches),
+        ("rotator", &status.rotators),
+        ("observing conditions device", &status.observing_conditions),
+        ("dome", &status.domes),
     ] {
         for device in list {
             items.push((kind, Some(device.id.as_str()), device.connected));
@@ -997,10 +1015,24 @@ mod tests {
             ),
             case(
                 "guide_stopped",
-                json!({"reason": "safety stop"}),
+                json!({"reason": "safety", "stop_reason": null}),
                 "sev-warn",
                 "Guiding stopped",
-                Some("safety stop"),
+                Some("safety"),
+            ),
+            case(
+                "guide_stopped",
+                json!({"reason": "guider", "stop_reason": "mount_not_tracking"}),
+                "sev-warn",
+                "Guiding stopped",
+                Some("guider · mount_not_tracking"),
+            ),
+            case(
+                "guide_star_lost",
+                json!({"lost_for_ms": 65_000}),
+                "sev-warn",
+                "Guide star lost",
+                Some("lost for 1m 5s"),
             ),
             case(
                 "document_persistence_failed",
@@ -1223,6 +1255,7 @@ mod tests {
             ("filter_switch", json!({"filter_name": "Ha"}), vec![]),
             ("centering_iteration", json!({}), vec![]),
             ("guide_stopped", json!({"reason": "safety"}), vec![]),
+            ("guide_star_lost", json!({"lost_for_ms": 10_000}), vec![]),
             ("document_persistence_failed", json!({}), vec![]),
             // Unknown started/terminal events still drive the operation slot.
             (
@@ -1381,6 +1414,46 @@ mod tests {
             html.contains(r#"<span class="led ok"></span><span class="kind">mount</span>"#),
             "{html}"
         );
+    }
+
+    /// Every roster kind rp reports gets its LEDs, labelled with rp's noun
+    /// for the kind.
+    #[test]
+    fn led_list_lights_every_kind_rp_reports() {
+        let device = |id: &str| {
+            vec![DeviceStatus {
+                id: id.to_string(),
+                connected: true,
+            }]
+        };
+        let status = EquipmentStatus {
+            cameras: device("cam"),
+            filter_wheels: device("wheel"),
+            cover_calibrators: device("flat"),
+            focusers: device("eaf"),
+            safety_monitors: device("cloud"),
+            switches: device("power"),
+            rotators: device("rot"),
+            observing_conditions: device("wx"),
+            domes: device("roof"),
+            mount: None,
+        };
+        let html = led_list(&status).into_string();
+        for (kind, id) in [
+            ("camera", "cam"),
+            ("filter wheel", "wheel"),
+            ("cover calibrator", "flat"),
+            ("focuser", "eaf"),
+            ("safety monitor", "cloud"),
+            ("switch", "power"),
+            ("rotator", "rot"),
+            ("observing conditions device", "wx"),
+            ("dome", "roof"),
+        ] {
+            let led =
+                format!(r#"<span class="kind">{kind}</span><span class="dev-id">{id}</span>"#);
+            assert!(html.contains(&led), "no {kind} LED for {id}: {html}");
+        }
     }
 
     #[tokio::test]

@@ -1,9 +1,9 @@
-//! `insta` byte-equivalence snapshots of the BFF's HTML output — Layer B of the
-//! UI-testing plan ([`docs/plans/archive/ui-testing.md`] §5, obligation P2).
+//! `insta` byte-equivalence snapshots of the BFF's HTML output — Layer B,
+//! obligation P2 (`docs/services/ui-htmx.md` § Three obligations, three layers).
 //!
 //! The server's response bytes are the **cross-OS-comparable** artifact: htmx
 //! swaps a fragment verbatim, so byte-identical output across OSes implies
-//! identical browser behavior without a browser on every OS. One golden is
+//! identical browser behavior without a browser on every OS. Each golden is
 //! committed under `tests/snapshots/` and compared byte-for-byte on every leg.
 //!
 //! Two build-system facts shape this module:
@@ -18,8 +18,6 @@
 //!   target (Bazel does not propagate `CI`), and the sandbox is read-only, so a
 //!   golden is never written there. Updates are Cargo-local: `cargo insta
 //!   review` / `accept`, then commit.
-//!
-//! [`docs/plans/archive/ui-testing.md`]: ../../../../docs/plans/archive/ui-testing.md
 
 use std::path::{Path, PathBuf};
 

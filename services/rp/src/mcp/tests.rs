@@ -3209,10 +3209,6 @@ fn train_addressable_tool_schemas_declare_their_addressing_alternatives() {
             serde_json::json!([{"required": ["camera_id"]}, {"required": ["train_id"]}]),
         ),
         (
-            schemars::schema_for!(crate::mcp::built_in::auto_focus::AutoFocusToolParams),
-            serde_json::json!([{"required": ["camera_id", "focuser_id"]}, {"required": ["train_id"]}]),
-        ),
-        (
             schemars::schema_for!(crate::mcp::built_in::rotator::MoveRotatorParams),
             serde_json::json!([{"required": ["rotator_id"]}, {"required": ["train_id"]}]),
         ),
@@ -3227,11 +3223,12 @@ fn train_addressable_tool_schemas_declare_their_addressing_alternatives() {
             "schema missing its addressing oneOf: {value}"
         );
     }
-    let refocus = serde_json::to_value(schemars::schema_for!(
-        crate::mcp::built_in::auto_focus::RefocusTrainParams
+    // auto_focus takes the guiding train alone, so it marks it required.
+    let auto_focus = serde_json::to_value(schemars::schema_for!(
+        crate::mcp::built_in::auto_focus::AutoFocusToolParams
     ))
     .unwrap();
-    assert_eq!(refocus["required"], serde_json::json!(["train_id"]));
+    assert_eq!(auto_focus["required"], serde_json::json!(["train_id"]));
 }
 
 #[tokio::test]
@@ -4257,7 +4254,8 @@ async fn get_train_info_describes_the_members_without_touching_a_device() {
     use super::built_in::trains::GetTrainInfoParams;
     // A registry whose only device is the wheel: the camera and the
     // calibrator are roster ids that never connected, and the read
-    // still answers — the train model is config, not device state.
+    // still answers — the train model is config, not device state. A
+    // guiding train, the one train that may hold two focusers.
     let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
         "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
         "focusers": [
@@ -4267,8 +4265,9 @@ async fn get_train_info_describes_the_members_without_touching_a_device() {
         "filter_wheels": [{"id": "fw", "alpaca_url": "http://localhost:1", "filters": ["Lum", "Red"]}],
         "rotators": [{"id": "falcon", "alpaca_url": "http://localhost:1"}],
         "cover_calibrators": [{"id": "cc", "alpaca_url": "http://localhost:1"}],
+        "mount": {"alpaca_url": "http://localhost:1", "guiding": {"url": "http://127.0.0.1:1"}},
         "optical_trains": [
-            {"id": "main", "purpose": "imaging", "focal_length_mm": 360.0,
+            {"id": "main", "purpose": "guiding", "focal_length_mm": 360.0,
              "devices": ["cc", "eaf", "fw", "falcon", "helical", "cam"]}
         ]
     }))
@@ -4286,7 +4285,7 @@ async fn get_train_info_describes_the_members_without_touching_a_device() {
             .unwrap(),
     );
     assert_eq!(json["train_id"], "main");
-    assert_eq!(json["purpose"], "imaging");
+    assert_eq!(json["purpose"], "guiding");
     assert_eq!(json["focal_length_mm"], 360.0);
     assert_eq!(json["camera_id"], "cam");
     assert_eq!(json["filter_wheel_id"], "fw");
@@ -4310,8 +4309,21 @@ async fn get_train_info_names_the_other_trains_its_terminal_focuser_moves() {
     use super::built_in::trains::GetTrainInfoParams;
     // The guiding train's only focuser is the imaging train's: a
     // training run on it would move the imaging train's focus.
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [
+            {"id": "cam", "alpaca_url": "http://localhost:1"},
+            {"id": "guide-cam", "alpaca_url": "http://localhost:1"}
+        ],
+        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
+        "mount": {"alpaca_url": "http://localhost:1", "guiding": {"url": "http://127.0.0.1:1"}},
+        "optical_trains": [
+            {"id": "main", "devices": ["foc", "cam"]},
+            {"id": "guide", "purpose": "guiding", "devices": ["foc", "guide-cam"]}
+        ]
+    }))
+    .unwrap();
     let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
-        .with_trains(fixture_trains(true));
+        .with_trains(crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap());
     for (train_id, shared_with) in [("guide", "main"), ("main", "guide")] {
         let json = success_json(
             handler
@@ -7890,506 +7902,25 @@ async fn plate_solve_maps_internal_error_with_internal_prefix() {
     assert_tool_error(result, "internal");
 }
 
-// =======================================================================
-// auto_focus happy-path test
-//
-// Closes the coverage gap on lines 156-176 of
-// `mcp/built_in/auto_focus.rs` (the `Ok(result)` branch — `focus_complete`
-// emit + JSON success-result construction). Drives the full
-// `run_auto_focus` sweep against the canonical V-curve fixtures
-// under `tests/fixtures/auto_focus/`, asserts the JSON shape and the
-// `focus_complete` event payload.
-//
-// Why not OmniSim: the simulator's camera (`Camera.Simulator/Camera.cs`
-// in ASCOM.Alpaca.Simulators) loads a single JPG/PNG via ImageSharp's
-// `Image.Load<Rgba32>` and reuses it for every exposure with no
-// optics simulation — every focuser position would yield the same
-// HFR → singular fit → `monotonic_curve` error. We synthesize the
-// V-curve ourselves and inject the per-step images via `FixtureCamera`,
-// which implements `ascom_alpaca::api::Camera` directly (no HTTP) and
-// returns the fixtures in sweep order.
-// =======================================================================
-
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
-
-/// The 11 canonical V-curve fixtures embedded at compile time via
-/// `include_bytes!` so the test runs under both Cargo and Bazel
-/// without filesystem access. Bazel sandboxes test execution and
-/// would need explicit `data` declarations in `BUILD.bazel` to make
-/// `tests/fixtures/**` visible at runtime — `include_bytes!` sidesteps
-/// that, matching the precedent set by
-/// `services/plate-solver/src/bin/mock_astap.rs`. Order matches the
-/// natural sweep order (`-100, -80, …, +100`) `run_auto_focus`
-/// produces, so the `FixtureCamera` counter indexes directly into
-/// this slice. The twelfth entry is the in-focus frame once more:
-/// after the sweep `run_auto_focus` captures a confirmation frame at
-/// the fitted vertex, which for this symmetric V is the `pos_p000`
-/// offset.
-const AUTO_FOCUS_FIXTURE_BYTES: [&[u8]; 12] = [
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m100.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m080.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m060.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m040.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_m020.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p000.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p020.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p040.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p060.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p080.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p100.fits"),
-    include_bytes!("../../tests/fixtures/auto_focus/pos_p000.fits"),
-];
-
-/// Decode the embedded V-curve fixtures into `(width, height, 1)`
-/// `Array3<i32>` frames in sweep order. `ascom_alpaca`'s
-/// `ImageArray::from` expects that width-major shape for monochrome
-/// data, while FITS is row-major — so the decoded rows are transposed
-/// into it, exactly the inverse of what `capture` does on the way back.
-fn load_auto_focus_fixtures() -> Vec<ndarray::Array3<i32>> {
-    AUTO_FOCUS_FIXTURE_BYTES
-        .iter()
-        .map(|bytes| {
-            let (pixels, w, h) = rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(*bytes))
-                .expect("decode fixture");
-            ndarray::Array2::from_shape_vec((h, w), pixels)
-                .expect("fixture shape")
-                .reversed_axes()
-                .insert_axis(ndarray::Axis(2))
-                .as_standard_layout()
-                .into_owned()
-        })
-        .collect()
-}
-
-/// Mock camera that returns a sequence of pre-loaded `Array3<i32>`
-/// frames in order, one per `image_array()` call. Used to drive
-/// `auto_focus` end-to-end with a known V-curve.
-struct FixtureCamera {
-    images: Vec<ndarray::Array3<i32>>,
-    counter: AtomicUsize,
-}
-
-impl FixtureCamera {
-    fn new(images: Vec<ndarray::Array3<i32>>) -> Self {
-        Self {
-            images,
-            counter: AtomicUsize::new(0),
-        }
-    }
-}
-
-impl_mock_device!(FixtureCamera);
-
-#[async_trait::async_trait]
-impl ascom_alpaca::api::Camera for FixtureCamera {
-    async fn start_exposure(
-        &self,
-        _duration: Duration,
-        _light: bool,
-    ) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn image_ready(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(true)
-    }
-
-    async fn image_array(
-        &self,
-    ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::camera::ImageArray> {
-        let idx = self.counter.fetch_add(1, Ordering::SeqCst);
-        let img = self
-            .images
-            .get(idx)
-            .unwrap_or_else(|| {
-                panic!(
-                    "FixtureCamera exhausted: requested image {} of {}",
-                    idx,
-                    self.images.len()
-                )
-            })
-            .clone();
-        Ok(img.into())
-    }
-
-    async fn max_adu(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(65535)
-    }
-
-    async fn camera_x_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(200)
-    }
-
-    async fn camera_y_size(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(200)
-    }
-
-    async fn pixel_size_x(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        Ok(3.76)
-    }
-
-    async fn pixel_size_y(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        Ok(3.76)
-    }
-
-    async fn exposure_max(&self) -> ascom_alpaca::ASCOMResult<Duration> {
-        Ok(Duration::from_hours(1))
-    }
-
-    async fn exposure_min(&self) -> ascom_alpaca::ASCOMResult<Duration> {
-        Ok(Duration::from_millis(1))
-    }
-
-    async fn exposure_resolution(&self) -> ascom_alpaca::ASCOMResult<Duration> {
-        Ok(Duration::from_millis(1))
-    }
-
-    async fn has_shutter(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(true)
-    }
-
-    async fn start_x(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(0)
-    }
-
-    async fn set_start_x(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn start_y(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(0)
-    }
-
-    async fn set_start_y(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn bin_x(&self) -> ascom_alpaca::ASCOMResult<u8> {
-        Ok(1)
-    }
-
-    async fn bin_y(&self) -> ascom_alpaca::ASCOMResult<u8> {
-        Ok(1)
-    }
-
-    async fn set_bin_x(&self, _: u8) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn set_bin_y(&self, _: u8) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn set_num_x(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn set_num_y(&self, _: u32) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-}
-
-/// Mock focuser that tracks position across `move_(target)` calls
-/// via an interior `AtomicI32`. Returns a constant temperature.
-struct TrackingFocuser {
-    position: AtomicI32,
-    temperature_c: f64,
-}
-
-impl TrackingFocuser {
-    fn new(starting_position: i32, temperature_c: f64) -> Self {
-        Self {
-            position: AtomicI32::new(starting_position),
-            temperature_c,
-        }
-    }
-}
-
-impl_mock_device!(TrackingFocuser);
-
-#[async_trait::async_trait]
-impl ascom_alpaca::api::Focuser for TrackingFocuser {
-    async fn absolute(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(true)
-    }
-
-    async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn max_increment(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(100_000)
-    }
-
-    async fn max_step(&self) -> ascom_alpaca::ASCOMResult<u32> {
-        Ok(100_000)
-    }
-
-    async fn position(&self) -> ascom_alpaca::ASCOMResult<i32> {
-        Ok(self.position.load(Ordering::SeqCst))
-    }
-
-    async fn step_size(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        Err(ASCOMError::NOT_IMPLEMENTED)
-    }
-
-    async fn temp_comp(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn set_temp_comp(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
-        Err(ASCOMError::NOT_IMPLEMENTED)
-    }
-
-    async fn temp_comp_available(&self) -> ascom_alpaca::ASCOMResult<bool> {
-        Ok(false)
-    }
-
-    async fn temperature(&self) -> ascom_alpaca::ASCOMResult<f64> {
-        Ok(self.temperature_c)
-    }
-
-    async fn halt(&self) -> ascom_alpaca::ASCOMResult<()> {
-        Ok(())
-    }
-
-    async fn move_(&self, position: i32) -> ascom_alpaca::ASCOMResult<()> {
-        self.position.store(position, Ordering::SeqCst);
-        Ok(())
-    }
-}
-
-/// Build an `EquipmentRegistry` with a `FixtureCamera` (preloaded
-/// V-curve fixtures) and a `TrackingFocuser` (starting at
-/// `starting_position`). The IDs match the ones the test calls
-/// `auto_focus` with: `"cam"` and `"foc"`.
-fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentRegistry {
-    let camera = FixtureCamera::new(load_auto_focus_fixtures());
-    let focuser = TrackingFocuser::new(starting_position, 4.5);
-    crate::equipment::EquipmentRegistry {
-        safety_monitors: vec![],
-        cameras: vec![crate::equipment::CameraEntry::new(
-            "cam".to_string(),
-            crate::config::CameraConfig {
-                id: "cam".to_string(),
-                name: "fixture".to_string(),
-                alpaca_url: "http://localhost:1".to_string(),
-                device_type: String::new(),
-                device_number: 0,
-                unique_id: None,
-                cooler_targets_c: Vec::new(),
-                gain: None,
-                offset: None,
-                readout_time_estimate: None,
-                auth: None,
-            },
-            // FixtureCamera reports pixel_size=3.76 µm and
-            // sensor_*_size=200 px (see its impl); mirror those values
-            // here so `do_capture` (which consumes the cache rather than
-            // calling the device) behaves identically to a real connect.
-            crate::equipment::DeviceSession::connected_with(
-                Arc::new(camera),
-                crate::equipment::CameraInvariants {
-                    name: None,
-                    max_bin_x: Some(4),
-                    max_bin_y: Some(4),
-                    can_asymmetric_bin: Some(true),
-                    pixel_size_x_um: Some(3.76),
-                    pixel_size_y_um: Some(3.76),
-                    sensor_width_px: Some(200),
-                    sensor_height_px: Some(200),
-                    ..Default::default()
-                },
-            ),
-        )],
-        filter_wheels: vec![],
-        cover_calibrators: vec![],
-        focusers: vec![crate::equipment::FocuserEntry {
-            id: "foc".to_string(),
-            config: crate::config::FocuserConfig {
-                microns_per_step: None,
-                id: "foc".to_string(),
-                alpaca_url: "http://localhost:1".to_string(),
-                device_number: 0,
-                unique_id: None,
-                min_position: None,
-                max_position: None,
-                steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
-                backlash: None,
-                auth: None,
-            },
-            session: crate::equipment::DeviceSession::connected_with(
-                Arc::new(focuser),
-                crate::equipment::FocuserInvariants::default(),
-            ),
-            slot: crate::equipment::DeviceSlot::default(),
-        }],
-        mount: None,
-        ..Default::default()
-    }
-}
-
-#[tokio::test]
-async fn auto_focus_happy_path_emits_focus_complete_and_returns_curve() {
-    // starting_position pinned at a realistic focuser scale (QHY
-    // M-series, Pegasus FocusCube, Robofocus all operate in the
-    // 5_000–100_000 range). fit_parabola recenters x by the weighted
-    // mean before solving the normal equations, so the design matrix
-    // stays well-conditioned at any plausible focuser scale (#174).
-    // The fitted vertex must land near `starting_position` because
-    // the synthesised parabola in HFR is symmetric about d=0.
-    const STARTING_POSITION: i32 = 11_000;
-
-    // Sandbox the FITS writes do_capture performs in a per-test temp
-    // dir so successive runs don't pollute /tmp.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    // Sweep grid: 11 positions at step_size=20 over half_width=100,
-    // matching the eleven fixture offsets generated by
-    // `examples/gen_autofocus_fixtures.rs`.
-    let result = handler
-        .auto_focus_inner(
-            AutoFocusToolParams {
-                binning: None,
-                camera_id: Some("cam".to_string()),
-                focuser_id: Some("foc".to_string()),
-                train_id: None,
-                duration: Some(Duration::from_millis(100)),
-                step_size: Some(20),
-                half_width: Some(100),
-                min_area: Some(4),
-                max_area: Some(2000),
-                threshold_sigma: Some(5.0),
-                min_fit_points: None,
-                min_star_fraction: None,
-                confirmation_tolerance: None,
-                max_attempts: None,
-            },
-            None,
-            Cancel::never(),
-        )
-        .await;
-    let call_result = result.expect("auto_focus protocol error");
-    assert!(
-        !call_result.is_error.unwrap_or(false),
-        "expected success; got: {:?}",
-        call_result.content
-    );
-    let body: serde_json::Value = ok_text(call_result);
-
-    // Vertex of the synthesised parabola sits at the focuser's
-    // starting_position by construction (HFR(d) = 2.0 + 0.0005·d² is
-    // symmetric about d=0). The fitted best_position should land
-    // within a couple of steps of that — empirically the σ≈1 px
-    // measure_basic smoothing kernel introduces a small negative
-    // bias on HFRs around 3-4 px, but the symmetry of the curve
-    // keeps the fitted vertex within ±2 step_size of true minimum.
-    let best_position = body["best_position"].as_i64().expect("best_position i64");
-    assert!(
-        (best_position - i64::from(STARTING_POSITION)).abs() <= 2 * 20,
-        "best_position {best_position} not within ±2·step_size of starting {STARTING_POSITION}"
-    );
-
-    // best_hfr should be near the synthesised minimum (2.0 px). The
-    // measured curve at d=0 is essentially exact (2.0023 px); the
-    // parabolic fit on the 11 noisy samples lands very close.
-    let best_hfr = body["best_hfr"].as_f64().expect("best_hfr f64");
-    assert!(
-        (best_hfr - 2.0).abs() < 0.5,
-        "best_hfr {best_hfr} not near 2.0"
-    );
-
-    // Final focuser position must equal best_position — auto_focus
-    // moves the focuser to the fit's vertex at the end of the run.
-    let final_position = body["final_position"].as_i64().expect("final_position i64");
-    assert_eq!(final_position, best_position);
-
-    // All 11 sweep frames have detectable stars (the V-curve fixture
-    // generation pipeline ensures non-null HFR at every offset) and
-    // the same nine of them, so the sparse gate rejects nothing and
-    // `samples_used` must be 11 — every grid point contributes.
-    let samples_used = body["samples_used"].as_u64().expect("samples_used u64");
-    assert_eq!(samples_used, 11);
-
-    // curve_points must have one entry per grid point — the
-    // confirmation frame is not one of them.
-    let curve_points = body["curve_points"].as_array().expect("curve_points array");
-    assert_eq!(curve_points.len(), 11);
-    for entry in curve_points {
-        assert!(entry["position"].is_i64());
-        assert!(entry["hfr"].is_f64() || entry["hfr"].is_null());
-        assert!(entry["star_count"].is_u64());
-        assert!(entry["document_id"].is_string());
-        assert!(entry["rejected"].is_null(), "unexpected rejection: {entry}");
-    }
-
-    // The synthesised curve is an exact parabola, so the fit explains
-    // it; the confirmation frame is the in-focus fixture again, so it
-    // measures what the vertex predicts and the fit is trusted.
-    let fit_r_squared = body["fit_r_squared"].as_f64().expect("fit_r_squared f64");
-    assert!(fit_r_squared > 0.9, "fit_r_squared {fit_r_squared}");
-    assert_eq!(body["confirmed"], true);
-    assert_eq!(body["confirmation"]["accepted"], true);
-    assert!(body["confirmation"]["document_id"].is_string());
-    let final_hfr = body["final_hfr"].as_f64().expect("final_hfr f64");
-    assert!((final_hfr - 2.0).abs() < 0.5, "final_hfr {final_hfr}");
-
-    // The first fit held, so the run made one sweep; the synthesised
-    // V rises on both wings, so a slope is reported.
-    assert_eq!(body["attempts"], 1);
-    let wing_slope = body["wing_slope"].as_f64().expect("wing_slope f64");
-    assert!(wing_slope > 0.0, "wing_slope {wing_slope}");
-
-    // Temperature passes through from the focuser's `temperature()`
-    // read in `auto_focus`'s step-1 (recorded once before any sweep
-    // motion).
-    let temperature_c = body["temperature_c"].as_f64().expect("temperature_c f64");
-    assert!(
-        (temperature_c - 4.5).abs() < 1e-9,
-        "temperature_c {temperature_c} not 4.5"
-    );
-
-    // The handler emits `focus_complete` at the end of
-    // `run_auto_focus_step`'s success branch. The event_bus exposed by
-    // `test_handler` is an empty-config bus, so subscribers list is
-    // empty; the most readable assertion is that the whole pipeline
-    // produced an Ok result without an error, which is what the body
-    // checks above. The event itself is an outbound webhook
-    // side-effect and is exercised by the event_delivery BDD
-    // scenarios.
-}
-
 // -----------------------------------------------------------------------
-// Train addressing on auto_focus + the refocus_train expansion.
+// auto_focus, the guiding train's metric sweep.
 //
-// These pin the resolution and pre-motion validation paths that need
-// no live devices: addressing conflicts, unknown trains, the
-// guiding-train refusal, the config-block requirement, and the
-// train-block parameter fallback (proven by the error advancing past
-// "missing required parameter" to device resolution against an empty
-// registry). The full sweep-through-train path runs in
-// auto_focus.feature / refocus_train.feature against OmniSim.
+// The resolution and pre-motion paths need no live devices: an unknown
+// or imaging train, the train-block fallback, the active-guiding
+// precondition. The sweep itself runs against a mock focuser and a
+// mock guider scripting the HFD (`scripted_metrics_guider`).
 // -----------------------------------------------------------------------
 
 /// The reference-rig train shape: main = [main-focuser → main-cam]
-/// (imaging, with an `auto_focus` block unless `with_block` is false),
-/// guide = [main-focuser → guide-focuser → guide-cam] (guiding).
+/// (imaging), guide = [main-focuser → guide-focuser → guide-cam]
+/// (guiding, with a metric `auto_focus` block unless `with_block` is
+/// false).
 fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
-    let mut main = serde_json::json!({
+    let main = serde_json::json!({
         "id": "main",
         "focal_length_mm": 1000.0,
         "devices": ["main-focuser", "main-cam"]
     });
-    if with_block {
-        main["auto_focus"] = serde_json::json!({
-            "duration": "100ms", "step_size": 100, "half_width": 200,
-            "min_area": 5, "max_area": 65536
-        });
-    }
     let mut guide = serde_json::json!({
         "id": "guide", "purpose": "guiding",
         "devices": ["main-focuser", "guide-focuser", "guide-cam"]
@@ -8421,32 +7952,23 @@ fn reference_trains(with_block: bool) -> crate::equipment::trains::TrainModel {
 
 fn af_params_with_train(train_id: &str) -> AutoFocusToolParams {
     AutoFocusToolParams {
-        binning: None,
-        camera_id: None,
-        focuser_id: None,
         train_id: Some(train_id.to_string()),
-        duration: None,
         step_size: None,
         half_width: None,
-        min_area: None,
-        max_area: None,
-        threshold_sigma: None,
         min_fit_points: None,
-        min_star_fraction: None,
         confirmation_tolerance: None,
-        max_attempts: None,
     }
 }
 
 #[tokio::test]
-async fn auto_focus_rejects_train_id_combined_with_an_explicit_id() {
+async fn auto_focus_requires_a_train_id() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let mut params = af_params_with_train("main");
-    params.camera_id = Some("main-cam".to_string());
+    let mut params = af_params_with_train("guide");
+    params.train_id = None;
     let result = handler
         .auto_focus_inner(params, None, Cancel::never())
         .await;
-    assert_tool_error(result, "mutually exclusive");
+    assert_tool_error(result, "missing required parameter: train_id");
 }
 
 #[tokio::test]
@@ -8456,6 +7978,21 @@ async fn auto_focus_rejects_an_unknown_train() {
         .auto_focus_inner(af_params_with_train("nonexistent"), None, Cancel::never())
         .await;
     assert_tool_error(result, "train not found");
+}
+
+/// An imaging train is the focus-model provider's to focus: refused,
+/// naming the provider's tool, before any device or the guider is read.
+#[tokio::test]
+async fn auto_focus_refuses_an_imaging_train_naming_focus_train() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+    let result = handler
+        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
+        .await;
+    assert_tool_error(
+        result,
+        "auto_focus: train 'main' is an imaging train, which the focus-model provider's \
+         focus_train focuses; auto_focus sweeps only the guiding train",
+    );
 }
 
 #[tokio::test]
@@ -8479,51 +8016,14 @@ async fn auto_focus_on_a_blockless_guiding_train_requires_per_call_geometry() {
 }
 
 #[tokio::test]
-async fn auto_focus_rejects_capture_parameters_for_the_guiding_train() {
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
+async fn auto_focus_on_a_blockless_guiding_train_requires_a_per_call_half_width() {
+    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
     let mut params = af_params_with_train("guide");
-    params.duration = Some(Duration::from_secs(3));
+    params.step_size = Some(50);
     let result = handler
         .auto_focus_inner(params, None, Cancel::never())
         .await;
-    assert_tool_error(result, "capture-based");
-}
-
-#[tokio::test]
-async fn auto_focus_rejects_the_retry_budget_for_the_guiding_train() {
-    // The metric sweep makes one attempt; a budget cannot influence it.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let mut params = af_params_with_train("guide");
-    params.max_attempts = Some(2);
-    let result = handler
-        .auto_focus_inner(params, None, Cancel::never())
-        .await;
-    assert_tool_error(result, "capture-based");
-}
-
-#[tokio::test]
-async fn auto_focus_rejects_a_binning_for_the_guiding_train() {
-    // The metric sweep reads PHD2's HFD and never captures, so there
-    // is no frame for a binning to apply to.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let mut params = af_params_with_train("guide");
-    params.binning = Some(rp_vocabulary::Binning { x: 2, y: 2 });
-    let result = handler
-        .auto_focus_inner(params, None, Cancel::never())
-        .await;
-    assert_tool_error(result, "capture-based");
-}
-
-#[tokio::test]
-async fn auto_focus_rejects_the_sparse_gate_for_the_guiding_train() {
-    // A metric sweep has no star counts to gate on.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let mut params = af_params_with_train("guide");
-    params.min_star_fraction = Some(0.2);
-    let result = handler
-        .auto_focus_inner(params, None, Cancel::never())
-        .await;
-    assert_tool_error(result, "capture-based");
+    assert_tool_error(result, "missing required parameter: half_width");
 }
 
 /// Minimal mock rotator for the rotate-while-guiding ladder tests:
@@ -8644,22 +8144,95 @@ fn move_rot_params(angle: f64) -> MoveRotatorParams {
     }
 }
 
+/// The fixture camera entry under another id.
+fn camera_entry_named(id: &str) -> crate::equipment::CameraEntry {
+    let mut entry = camera_registry(Arc::new(MockCamera::default()))
+        .cameras
+        .remove(0);
+    entry.id = id.to_string();
+    entry.config.id = id.to_string();
+    entry
+}
+
+/// The ladder's rig: the rotator "rot", the guiding train's camera
+/// "gcam" and the mount, each a connected mock, so the devices check
+/// of a start finds rp's side of both identities.
+fn ladder_registry(rot: MockRotator) -> crate::equipment::EquipmentRegistry {
+    let mut registry = rotator_registry(Arc::new(rot));
+    registry.cameras = vec![camera_entry_named("gcam")];
+    registry.mount = mount_registry(Arc::new(MockTelescope::default()), None).mount;
+    registry
+}
+
+/// The `unique_id` every mock device lists (`impl_mock_device!`).
+const MOCK_UNIQUE_ID: &str = "mock-id";
+
+/// What a guider answers `devices` with.
+fn guider_devices(mount: Option<&str>, camera: Option<&str>) -> rp_guider::GuiderDevices {
+    let device = |id: Option<&str>| {
+        Some(rp_guider::GuiderDevice {
+            unique_id: id.map(str::to_string),
+        })
+    };
+    rp_guider::GuiderDevices {
+        camera: device(camera),
+        mount: device(mount),
+    }
+}
+
+fn stats_in(state: rp_guider::GuiderState) -> GuidingStats {
+    GuidingStats::in_state(state)
+}
+
+fn guider_down() -> GuiderError {
+    GuiderError::ServiceUnreachable("connection refused".to_string())
+}
+
+/// The names of the events on `rx` so far, oldest first.
+fn drain_event_names(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
+) -> Vec<String> {
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .map(|envelope| envelope.event)
+        .collect()
+}
+
 fn ladder_handler(rot: MockRotator, configure: impl FnOnce(&mut MockGuiderClient)) -> McpHandler {
     let mut mock = MockGuiderClient::new();
     configure(&mut mock);
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    test_handler(rotator_registry(Arc::new(rot)))
+    test_handler(ladder_registry(rot))
         .with_trains(rotator_guiding_trains())
         .with_guider(Some(client), GuiderDefaults::default())
+}
+
+/// A guider that guides and takes the ladder's pause.
+fn expect_guiding_and_pause(mock: &mut MockGuiderClient) {
+    mock.expect_guiding_stats()
+        .returning(|| Ok(stats_in(rp_guider::GuiderState::Guiding)));
+    mock.expect_pause_guiding()
+        .with(mockall::predicate::eq(false))
+        .times(1)
+        .returning(|_| Ok(rp_guider::GuiderState::Paused));
+}
+
+async fn ladder_result(handler: &McpHandler, angle: f64) -> serde_json::Value {
+    let json = ok_text(
+        handler
+            .move_rotator_inner(move_rot_params(angle), &Cancel::never())
+            .await
+            .unwrap(),
+    );
+    json["guiding_ladder"].clone()
 }
 
 #[tokio::test]
 async fn ladder_pause_failure_aborts_before_any_motion() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
         mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
+            .returning(|| Ok(stats_in(rp_guider::GuiderState::Guiding)));
         mock.expect_pause_guiding()
-            .returning(|_| Err(rp_guider::GuiderError::Internal("boom".to_string())));
+            .returning(|_| Err(GuiderError::Internal("boom".to_string())));
     });
     let mut rx = handler.event_bus.subscribe();
     let result = handler
@@ -8683,15 +8256,33 @@ async fn ladder_pre_move_read_failure_resumes_and_errors() {
         ..Default::default()
     };
     let handler = ladder_handler(rot, |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+        expect_guiding_and_pause(mock);
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
     let result = handler
         .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
     assert_tool_error(result, "failed to read the pre-move sky angle");
+}
+
+#[tokio::test]
+async fn ladder_pre_move_read_failure_names_a_failed_resume_too() {
+    let rot = MockRotator {
+        fail_position: true,
+        ..Default::default()
+    };
+    let handler = ladder_handler(rot, |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Err(guider_down()));
+    });
+    let result = handler
+        .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "also failed to resume guiding");
 }
 
 #[tokio::test]
@@ -8701,11 +8292,13 @@ async fn ladder_move_failure_still_reselects_and_resumes() {
         ..Default::default()
     };
     let handler = ladder_handler(rot, |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_reselect_star().times(1).returning(|| Ok(()));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Paused));
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
     let result = handler
         .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
@@ -8714,63 +8307,77 @@ async fn ladder_move_failure_still_reselects_and_resumes() {
 }
 
 #[tokio::test]
-async fn ladder_equipment_read_failure_resumes_and_errors() {
-    let handler = ladder_handler(MockRotator::default(), |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_current_equipment()
-            .returning(|| Err(rp_guider::GuiderError::Internal("down".to_string())));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+async fn ladder_move_failure_resumes_even_when_the_reselection_fails() {
+    let rot = MockRotator {
+        fail_move: true,
+        ..Default::default()
+    };
+    let handler = ladder_handler(rot, |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Err(guider_down()));
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
     let result = handler
         .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
-    assert_tool_error(result, "failed to read PHD2 equipment");
-}
-
-fn equipment_without_rotator() -> rp_guider::PhdEquipment {
-    rp_guider::PhdEquipment {
-        camera: None,
-        mount: None,
-        aux_mount: None,
-        ao: None,
-        rotator: None,
-    }
+    // The move's error leads; the re-selection's failure is only logged.
+    assert_tool_error(result, "failed to move rotator");
 }
 
 #[tokio::test]
-async fn ladder_clear_calibration_failure_resumes_and_errors() {
-    let handler = ladder_handler(MockRotator::default(), |mock| {
+async fn ladder_move_failure_sends_nothing_to_a_run_it_did_not_pause() {
+    let rot = MockRotator {
+        fail_move: true,
+        ..Default::default()
+    };
+    // No pause, re-selection or resume is expected: the mock panics on
+    // any of them.
+    let handler = ladder_handler(rot, |mock| {
         mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_current_equipment()
-            .returning(|| Ok(equipment_without_rotator()));
-        mock.expect_clear_calibration()
-            .returning(|| Err(rp_guider::GuiderError::Internal("rpc".to_string())));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+            .returning(|| Ok(stats_in(rp_guider::GuiderState::Paused)));
     });
     let result = handler
-        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .move_rotator_inner(move_rot_params(10.0), &Cancel::never())
         .await;
-    assert_tool_error(result, "failed to clear the PHD2 calibration");
+    assert_tool_error(result, "failed to move rotator");
 }
 
 #[tokio::test]
-async fn ladder_resume_failure_after_success_tail_is_a_hard_error() {
+async fn ladder_at_or_below_the_threshold_reselects_and_resumes() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding().returning(|_| Ok(()));
-        mock.expect_current_equipment()
-            .returning(|| Ok(equipment_without_rotator()));
-        mock.expect_reselect_star().returning(|| Ok(()));
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Paused));
         mock.expect_resume_guiding()
-            .returning(|| Err(rp_guider::GuiderError::Internal("gone".to_string())));
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
-    // A 2° move stays under the 5° threshold: no calibration clear,
-    // so the failure is isolated to the resume.
+    let mut rx = handler.event_bus.subscribe();
+    // A 2° turn stays under the 5° threshold: the calibrations are kept.
+    let ladder = ladder_result(&handler, 2.0).await;
+    assert_eq!(ladder["calibration_cleared"], false);
+    assert_eq!(ladder["guiding_restarted"], false);
+    assert!((ladder["delta_deg"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+    assert_eq!(
+        drain_event_names(&mut rx),
+        ["move_rotator_started", "move_rotator_complete"]
+    );
+}
+
+#[tokio::test]
+async fn ladder_resume_failure_at_or_below_the_threshold_is_a_hard_error() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .returning(|| Ok(rp_guider::GuiderState::Paused));
+        mock.expect_resume_guiding()
+            .returning(|| Err(GuiderError::Internal("gone".to_string())));
+    });
     let result = handler
         .move_rotator_inner(move_rot_params(2.0), &Cancel::never())
         .await;
@@ -8778,47 +8385,378 @@ async fn ladder_resume_failure_after_success_tail_is_a_hard_error() {
 }
 
 #[tokio::test]
-async fn ladder_runs_bare_when_the_stats_read_fails() {
+async fn ladder_reselect_failure_still_resumes_and_is_a_hard_error() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Err(rp_guider::GuiderError::Internal("down".to_string())));
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Err(GuiderError::Internal("no frame".to_string())));
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
     });
-    let json = ok_text(
-        handler
-            .move_rotator_inner(move_rot_params(45.0), &Cancel::never())
-            .await
-            .unwrap(),
-    );
-    assert!(json["guiding_ladder"].is_null());
+    let result = handler
+        .move_rotator_inner(move_rot_params(2.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "failed to re-select the guide stars");
 }
 
 #[tokio::test]
-async fn ladder_success_reports_the_calibration_decision() {
+async fn ladder_above_the_threshold_stops_clears_and_starts_again() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
-        mock.expect_guiding_stats()
-            .returning(|| Ok(guiding_stats_active()));
-        mock.expect_pause_guiding()
-            .with(mockall::predicate::eq(false))
+        expect_guiding_and_pause(mock);
+        let mut order = mockall::Sequence::new();
+        mock.expect_stop_guiding()
             .times(1)
-            .returning(|_| Ok(()));
-        mock.expect_current_equipment()
-            .returning(|| Ok(equipment_without_rotator()));
+            .in_sequence(&mut order)
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
         mock.expect_clear_calibration()
             .times(1)
-            .returning(|| Ok(()));
-        mock.expect_reselect_star().times(1).returning(|| Ok(()));
-        mock.expect_resume_guiding().times(1).returning(|| Ok(()));
+            .in_sequence(&mut order)
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_devices()
+            .times(1)
+            .in_sequence(&mut order)
+            .returning(|| Ok(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID))));
+        mock.expect_start_guiding()
+            .withf(|request| !request.recalibrate)
+            .times(1)
+            .in_sequence(&mut order)
+            .returning(|_| Ok(settled_outcome()));
     });
-    let json = ok_text(
-        handler
-            .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
-            .await
-            .unwrap(),
-    );
-    let ladder = &json["guiding_ladder"];
-    assert_eq!(ladder["phd2_has_rotator"], false);
+    let mut rx = handler.event_bus.subscribe();
+    let ladder = ladder_result(&handler, 90.0).await;
     assert_eq!(ladder["calibration_cleared"], true);
+    assert_eq!(ladder["guiding_restarted"], true);
     assert!((ladder["delta_deg"].as_f64().unwrap() - 90.0).abs() < 1e-9);
+    // The ladder's stop and its start emit what `stop_guiding` and
+    // `start_guiding` emit.
+    assert_eq!(
+        drain_event_names(&mut rx),
+        [
+            "move_rotator_started",
+            "guide_stopped",
+            "guide_started",
+            "guide_settled",
+            "move_rotator_complete"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn ladder_restart_carries_the_configured_settle_values() {
+    let mut mock = MockGuiderClient::new();
+    expect_guiding_and_pause(&mut mock);
+    mock.expect_stop_guiding()
+        .returning(|| Ok(rp_guider::GuiderState::Idle));
+    mock.expect_clear_calibration()
+        .returning(|| Ok(rp_guider::GuiderState::Idle));
+    mock.expect_devices()
+        .returning(|| Ok(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID))));
+    mock.expect_start_guiding()
+        .withf(|request| {
+            let settle = request.settle.as_ref().expect("settle expected");
+            settle.pixels == Some(0.8)
+                && settle.time == Some(Duration::from_secs(8))
+                && settle.timeout == Some(Duration::from_secs(40))
+        })
+        .times(1)
+        .returning(|_| Ok(settled_outcome()));
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let defaults = GuiderDefaults {
+        settle_pixels: Some(0.8),
+        settle_time: Some(Duration::from_secs(8)),
+        settle_timeout: Some(Duration::from_secs(40)),
+        ..GuiderDefaults::default()
+    };
+    let handler = test_handler(ladder_registry(MockRotator::default()))
+        .with_trains(rotator_guiding_trains())
+        .with_guider(Some(client), defaults);
+    let ladder = ladder_result(&handler, 90.0).await;
+    assert_eq!(ladder["guiding_restarted"], true);
+}
+
+#[tokio::test]
+async fn ladder_stop_failure_is_a_hard_error_and_clears_nothing() {
+    // No clear is expected: the mock panics on one.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_stop_guiding()
+            .times(1)
+            .returning(|| Err(guider_down()));
+    });
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .await;
+    assert_tool_error(
+        result,
+        "failed to stop guiding before clearing the calibrations",
+    );
+    // A stop the guider did not answer is no `guide_stopped`.
+    assert_eq!(
+        drain_event_names(&mut rx),
+        ["move_rotator_started", "move_rotator_failed"]
+    );
+}
+
+#[tokio::test]
+async fn ladder_clear_failure_is_a_hard_error_and_starts_nothing() {
+    // No start is expected: the mock panics on one.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_stop_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_clear_calibration()
+            .times(1)
+            .returning(|| Err(GuiderError::Internal("store".to_string())));
+    });
+    let result = handler
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "failed to clear the guider's calibrations");
+}
+
+#[tokio::test]
+async fn ladder_start_failure_is_a_hard_error_with_guide_failed() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_stop_guiding()
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_clear_calibration()
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_devices()
+            .returning(|| Ok(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID))));
+        mock.expect_start_guiding().times(1).returning(|_| {
+            Err(GuiderError::Service {
+                code: "no_stars".to_string(),
+                message: "no star to guide on".to_string(),
+                details: serde_json::Value::Null,
+            })
+        });
+    });
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "move_rotator: no_stars: no star to guide on");
+    assert_eq!(
+        drain_event_names(&mut rx),
+        [
+            "move_rotator_started",
+            "guide_stopped",
+            "guide_started",
+            "guide_failed",
+            "move_rotator_failed"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn ladder_start_refused_by_the_devices_check_asks_the_guider_for_no_start() {
+    // No start is expected: the mock panics on one.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_stop_guiding()
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_clear_calibration()
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+        mock.expect_devices()
+            .returning(|| Ok(guider_devices(Some("another-mount"), Some(MOCK_UNIQUE_ID))));
+    });
+    let mut rx = handler.event_bus.subscribe();
+    let result = handler
+        .move_rotator_inner(move_rot_params(90.0), &Cancel::never())
+        .await;
+    assert_tool_error(
+        result,
+        "move_rotator: the guider's mount 'another-mount' is not rp's mount 'mock-id'",
+    );
+    assert_eq!(
+        drain_event_names(&mut rx),
+        [
+            "move_rotator_started",
+            "guide_stopped",
+            "move_rotator_failed"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn ladder_stops_and_clears_a_run_it_did_not_pause_and_does_not_start_it() {
+    for state in [
+        rp_guider::GuiderState::Paused,
+        rp_guider::GuiderState::StarLost,
+        rp_guider::GuiderState::Calibrating,
+    ] {
+        // No pause and no start is expected: the mock panics on either.
+        let handler = ladder_handler(MockRotator::default(), |mock| {
+            mock.expect_guiding_stats()
+                .returning(move || Ok(stats_in(state)));
+            mock.expect_stop_guiding()
+                .times(1)
+                .returning(|| Ok(rp_guider::GuiderState::Idle));
+            mock.expect_clear_calibration()
+                .times(1)
+                .returning(|| Ok(rp_guider::GuiderState::Idle));
+        });
+        let mut rx = handler.event_bus.subscribe();
+        let ladder = ladder_result(&handler, 90.0).await;
+        assert_eq!(ladder["calibration_cleared"], true, "{state}");
+        assert_eq!(ladder["guiding_restarted"], false, "{state}");
+        let started = rx.try_recv().unwrap();
+        assert_eq!(started.event, "move_rotator_started");
+        assert_eq!(started.payload["guiding_paused"], false, "{state}");
+        assert_eq!(
+            drain_event_names(&mut rx),
+            ["guide_stopped", "move_rotator_complete"],
+            "{state}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ladder_leaves_a_run_it_did_not_pause_alone_at_or_below_the_threshold() {
+    // Nothing but the state read is expected: the mock panics on more.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats()
+            .returning(|| Ok(stats_in(rp_guider::GuiderState::Paused)));
+    });
+    let ladder = ladder_result(&handler, 2.0).await;
+    assert_eq!(ladder["calibration_cleared"], false);
+    assert_eq!(ladder["guiding_restarted"], false);
+}
+
+#[tokio::test]
+async fn ladder_clears_the_calibrations_of_a_guider_in_no_run_without_a_stop() {
+    for state in [
+        rp_guider::GuiderState::Idle,
+        rp_guider::GuiderState::Looping,
+    ] {
+        // No stop is expected: the mock panics on one.
+        let handler = ladder_handler(MockRotator::default(), |mock| {
+            mock.expect_guiding_stats()
+                .returning(move || Ok(stats_in(state)));
+            mock.expect_clear_calibration()
+                .times(1)
+                .returning(|| Ok(rp_guider::GuiderState::Idle));
+        });
+        let ladder = ladder_result(&handler, 90.0).await;
+        assert_eq!(ladder["calibration_cleared"], true, "{state}");
+        assert_eq!(ladder["guiding_restarted"], false, "{state}");
+    }
+}
+
+#[tokio::test]
+async fn ladder_goes_on_as_for_a_guider_in_no_run_when_the_state_read_fails() {
+    // At or below the threshold nothing is sent...
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats().returning(|| Err(guider_down()));
+    });
+    let mut rx = handler.event_bus.subscribe();
+    let ladder = ladder_result(&handler, 2.0).await;
+    assert_eq!(ladder["calibration_cleared"], false);
+    assert_eq!(ladder["guiding_restarted"], false);
+    let started = rx.try_recv().unwrap();
+    assert_eq!(started.payload["guiding_paused"], false);
+
+    // ...and above it the clear is still owed.
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats().returning(|| Err(guider_down()));
+        mock.expect_clear_calibration()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Idle));
+    });
+    let ladder = ladder_result(&handler, 45.0).await;
+    assert_eq!(ladder["calibration_cleared"], true);
+    assert_eq!(ladder["guiding_restarted"], false);
+}
+
+#[tokio::test]
+async fn ladder_guider_down_after_a_turn_above_the_threshold_is_a_failed_clear() {
+    let handler = ladder_handler(MockRotator::default(), |mock| {
+        mock.expect_guiding_stats().returning(|| Err(guider_down()));
+        mock.expect_clear_calibration()
+            .times(1)
+            .returning(|| Err(guider_down()));
+    });
+    let result = handler
+        .move_rotator_inner(move_rot_params(45.0), &Cancel::never())
+        .await;
+    assert_tool_error(result, "failed to clear the guider's calibrations");
+}
+
+use std::sync::atomic::{AtomicI32, Ordering};
+
+/// Mock focuser that tracks position across `move_(target)` calls
+/// via an interior `AtomicI32`. Returns a constant temperature.
+struct TrackingFocuser {
+    position: AtomicI32,
+    temperature_c: f64,
+}
+
+impl TrackingFocuser {
+    fn new(starting_position: i32, temperature_c: f64) -> Self {
+        Self {
+            position: AtomicI32::new(starting_position),
+            temperature_c,
+        }
+    }
+}
+
+impl_mock_device!(TrackingFocuser);
+
+#[async_trait::async_trait]
+impl ascom_alpaca::api::Focuser for TrackingFocuser {
+    async fn absolute(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(true)
+    }
+
+    async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn max_increment(&self) -> ascom_alpaca::ASCOMResult<u32> {
+        Ok(100_000)
+    }
+
+    async fn max_step(&self) -> ascom_alpaca::ASCOMResult<u32> {
+        Ok(100_000)
+    }
+
+    async fn position(&self) -> ascom_alpaca::ASCOMResult<i32> {
+        Ok(self.position.load(Ordering::SeqCst))
+    }
+
+    async fn step_size(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn temp_comp(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn set_temp_comp(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn temp_comp_available(&self) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn temperature(&self) -> ascom_alpaca::ASCOMResult<f64> {
+        Ok(self.temperature_c)
+    }
+
+    async fn halt(&self) -> ascom_alpaca::ASCOMResult<()> {
+        Ok(())
+    }
+
+    async fn move_(&self, position: i32) -> ascom_alpaca::ASCOMResult<()> {
+        self.position.store(position, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 /// A guiding train terminating in the mock-focuser fixture's "foc",
@@ -8852,17 +8790,7 @@ fn guide_sweep_focuser() -> MockFocuser {
 }
 
 fn guiding_stats_active() -> rp_guider::GuidingStats {
-    rp_guider::GuidingStats {
-        app_state: "Guiding".to_string(),
-        guiding: true,
-        rms_ra_px: None,
-        rms_dec_px: None,
-        total_rms_px: None,
-        snr: None,
-        star_mass: None,
-        sample_count: 0,
-        totals: None,
-    }
+    rp_guider::GuidingStats::in_state(rp_guider::GuiderState::Guiding)
 }
 
 /// A mock guider whose metrics responses follow `hfd_script` one call
@@ -8886,11 +8814,14 @@ fn scripted_metrics_guider(hfd_script: Vec<f64>) -> MockGuiderClient {
                 hfd: Some(hfd),
                 snr: Some(20.0),
                 star_mass: Some(1000.0),
+                star_count: 3,
                 star_lost: false,
             })
             .collect();
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames,
         })
     });
@@ -9045,39 +8976,6 @@ async fn guide_train_auto_focus_clamps_its_grid_at_zero_without_configured_bound
     assert!(foc.move_targets.lock().unwrap().is_empty());
 }
 
-/// The same floor clamps the capture sweep: from 0, the eleven-point
-/// grid over ±100 keeps the six points from 0 up.
-#[tokio::test]
-async fn auto_focus_clamps_its_grid_at_zero_without_configured_bounds() {
-    let handler = test_handler(auto_focus_registry(0));
-    let result = handler
-        .auto_focus_inner(
-            AutoFocusToolParams {
-                binning: None,
-                camera_id: Some("cam".to_string()),
-                focuser_id: Some("foc".to_string()),
-                train_id: None,
-                duration: Some(Duration::from_millis(100)),
-                step_size: Some(20),
-                half_width: Some(100),
-                min_area: Some(4),
-                max_area: Some(2000),
-                threshold_sigma: Some(5.0),
-                min_fit_points: Some(7),
-                min_star_fraction: None,
-                confirmation_tolerance: None,
-                max_attempts: None,
-            },
-            None,
-            Cancel::never(),
-        )
-        .await;
-    assert_tool_error(
-        result,
-        "sweep grid has 6 positions after clamping to focuser bounds; min_fit_points=7",
-    );
-}
-
 #[tokio::test]
 async fn guide_train_auto_focus_rejects_a_negative_confirmation_tolerance() {
     let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
@@ -9152,13 +9050,16 @@ async fn guide_train_auto_focus_fails_when_the_first_watermark_refresh_fails() {
             return Err(rp_guider::GuiderError::Internal("hiccup".to_string()));
         }
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames: (1..=3)
                 .map(|frame| rp_guider::FrameMetrics {
                     frame,
                     hfd: Some(2.5),
                     snr: Some(20.0),
                     star_mass: Some(1000.0),
+                    star_count: 3,
                     star_lost: false,
                 })
                 .collect(),
@@ -9203,11 +9104,14 @@ async fn guide_train_auto_focus_fails_when_the_confirmation_refresh_fails() {
                 hfd: Some(hfd),
                 snr: Some(20.0),
                 star_mass: Some(1000.0),
+                star_count: 3,
                 star_lost: false,
             })
             .collect();
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames,
         })
     });
@@ -9314,11 +9218,14 @@ async fn guide_train_auto_focus_bounds_the_minimum_by_the_positions_that_produce
                 hfd,
                 snr: Some(20.0),
                 star_mass: None,
+                star_count: 3,
                 star_lost: hfd.is_none(),
             })
             .collect();
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames,
         })
     });
@@ -9357,7 +9264,9 @@ async fn guide_train_auto_focus_fails_fast_when_guiding_stops_mid_sweep() {
         .returning(|| Ok(guiding_stats_active()));
     mock.expect_guiding_metrics().returning(|| {
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Idle,
             guiding: false,
+            epoch: "test-epoch".to_string(),
             frames: Vec::new(),
         })
     });
@@ -9375,6 +9284,48 @@ async fn guide_train_auto_focus_fails_fast_when_guiding_stops_mid_sweep() {
     assert_tool_error(result, "guiding stopped during the metric sweep");
 }
 
+#[tokio::test]
+async fn guide_train_auto_focus_goes_on_through_star_lost_frames() {
+    // At deep defocus the guider loses its star and reports `star_lost`
+    // with `guiding: false`. Those frames are null samples, not a
+    // stopped run: the sweep goes on, and with no valid sample at all
+    // it ends on too few samples rather than on "guiding stopped".
+    let mut mock = MockGuiderClient::new();
+    mock.expect_guiding_stats()
+        .returning(|| Ok(guiding_stats_active()));
+    let next_frame = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    mock.expect_guiding_metrics().returning(move || {
+        let start = next_frame.fetch_add(5, std::sync::atomic::Ordering::SeqCst);
+        Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::StarLost,
+            guiding: false,
+            epoch: "test-epoch".to_string(),
+            frames: (start + 1..=start + 5)
+                .map(|frame| rp_guider::FrameMetrics {
+                    frame,
+                    hfd: None,
+                    snr: None,
+                    star_mass: None,
+                    star_count: 0,
+                    star_lost: true,
+                })
+                .collect(),
+        })
+    });
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
+    let handler = test_handler(focuser_registry(
+        Arc::new(guide_sweep_focuser()),
+        None,
+        None,
+    ))
+    .with_trains(guide_sweep_trains())
+    .with_guider(Some(client), GuiderDefaults::default());
+    let result = handler
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
+        .await;
+    assert_tool_error(result, "not enough valid guide samples: 0 of");
+}
+
 #[tokio::test(start_paused = true)]
 async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
     // The mock always returns the same three frames: after the first
@@ -9385,13 +9336,16 @@ async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
         .returning(|| Ok(guiding_stats_active()));
     mock.expect_guiding_metrics().returning(|| {
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames: (1..=3)
                 .map(|frame| rp_guider::FrameMetrics {
                     frame,
                     hfd: Some(2.5),
                     snr: Some(20.0),
                     star_mass: Some(1000.0),
+                    star_count: 3,
                     star_lost: false,
                 })
                 .collect(),
@@ -9409,39 +9363,6 @@ async fn guide_train_auto_focus_times_out_when_frames_stop_flowing() {
         .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
     assert_tool_error(result, "timeout waiting for");
-}
-
-#[tokio::test]
-async fn refocus_train_runs_a_metric_step_and_reports_best_hfd() {
-    // The guide train's expansion is its single terminal focuser as a
-    // metric step; the scripted V gives a deterministic success
-    // payload with no camera involved.
-    let foc = guide_sweep_focuser();
-    let start = foc.position_value;
-    let mock = scripted_metrics_guider(vec![
-        9.0, 4.0, 9.0, 3.0, 9.0, 2.0, 9.0, 3.0, 9.0, 4.0, 9.0, 2.0,
-    ]);
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    let handler = test_handler(focuser_registry(Arc::new(foc), None, None))
-        .with_trains(guide_sweep_trains())
-        .with_guider(Some(client), GuiderDefaults::default());
-    let json = ok_text(
-        handler
-            .refocus_train_inner(refocus_params("guide"), None, Cancel::never())
-            .await
-            .unwrap(),
-    );
-    assert_eq!(json["guiding_paused"], false);
-    let steps = json["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0]["focuser_id"], "foc");
-    assert_eq!(steps[0]["train_id"], "guide");
-    assert!(steps[0]["camera_id"].is_null());
-    assert_eq!(steps[0]["best_position"], start);
-    assert!(steps[0]["best_hfd"].as_f64().is_some());
-    assert_eq!(steps[0]["final_position"], start);
-    assert_eq!(steps[0]["final_hfd"], 2.0);
-    assert_eq!(steps[0]["confirmed"], true);
 }
 
 #[tokio::test]
@@ -9478,11 +9399,14 @@ async fn guide_train_auto_focus_treats_star_lost_positions_as_null_samples() {
                 hfd: (!star_lost).then_some(3.0),
                 snr: Some(3.0),
                 star_mass: None,
+                star_count: 3,
                 star_lost,
             })
             .collect();
         Ok(rp_guider::GuidingMetrics {
+            state: rp_guider::GuiderState::Guiding,
             guiding: true,
+            epoch: "test-epoch".to_string(),
             frames,
         })
     });
@@ -9498,385 +9422,24 @@ async fn guide_train_auto_focus_treats_star_lost_positions_as_null_samples() {
 }
 
 #[tokio::test]
-async fn auto_focus_rejects_a_train_without_a_focuser() {
-    // `cam_trains` builds a camera-only train "main".
-    let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
-    let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "has no focuser");
-}
-
-#[tokio::test]
-async fn auto_focus_train_block_fills_the_sweep_parameters() {
-    // Against an empty registry the call must advance past every
-    // "missing required parameter" check (the block filled them all)
-    // and fail at device resolution instead.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "camera not found: main-cam");
-}
-
-#[tokio::test]
-async fn auto_focus_train_without_a_block_still_requires_sweep_parameters() {
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
-    let result = handler
-        .auto_focus_inner(af_params_with_train("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "missing required parameter: duration");
-}
-
-fn refocus_params(train_id: &str) -> super::built_in::auto_focus::RefocusTrainParams {
-    super::built_in::auto_focus::RefocusTrainParams {
-        train_id: Some(train_id.to_string()),
-        reason: None,
-    }
-}
-
-#[tokio::test]
-async fn refocus_train_rejects_an_unknown_train() {
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let result = handler
-        .refocus_train_inner(refocus_params("nonexistent"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "train not found");
-}
-
-#[tokio::test]
-async fn refocus_train_rejects_a_train_without_focusers() {
-    let handler = test_handler(empty_registry()).with_trains(cam_trains(200.0));
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "has no focusers");
-}
-
-#[tokio::test]
-async fn refocus_train_with_a_guiding_step_requires_active_guiding() {
-    // Refocusing the guiding train itself always expands to a
-    // guide-train metric step (its own terminal focuser); with no
-    // guider configured the expansion is refused before any motion.
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(true));
-    let result = handler
-        .refocus_train_inner(refocus_params("guide"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "guide-train step requires active guiding");
-}
-
-#[tokio::test]
-async fn refocus_train_requires_the_run_trains_auto_focus_block() {
-    let handler = test_handler(empty_registry()).with_trains(reference_trains(false));
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "auto_focus config block");
-}
-
-// The success-path and handshake tests below run real V-curve sweeps
-// over `auto_focus_registry`'s fixture devices — BDD cannot pin the
-// success payload because OmniSim's camera image is focuser-
-// independent (flat HFR, non-deterministic fit outcome).
-
-/// Trains over the fixture registry: main = [foc → cam] with an
-/// `auto_focus` block matching the fixture sweep (step 20, ±100), plus
-/// optionally a guiding train sharing "foc".
-fn fixture_trains(with_guiding: bool) -> crate::equipment::trains::TrainModel {
-    let mut trains = vec![serde_json::json!({
-        "id": "main",
-        "devices": ["foc", "cam"],
-        "auto_focus": {"duration": "100ms", "step_size": 20, "half_width": 100,
-                       "min_area": 4, "max_area": 2000}
-    })];
-    let mut equipment = serde_json::json!({
-        "cameras": [
-            {"id": "cam", "alpaca_url": "http://localhost:1"},
-            {"id": "guide-cam", "alpaca_url": "http://localhost:1"}
-        ],
-        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}]
-    });
-    if with_guiding {
-        trains.push(serde_json::json!({
-            "id": "guide", "purpose": "guiding", "devices": ["foc", "guide-cam"]
-        }));
-        equipment["mount"] = serde_json::json!({
+async fn auto_focus_rejects_a_guiding_train_without_a_focuser() {
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "guide-cam", "alpaca_url": "http://localhost:1"}],
+        "mount": {
             "alpaca_url": "http://localhost:1",
             "guiding": {"url": "http://localhost:1"}
-        });
-    }
-    equipment["optical_trains"] = serde_json::Value::Array(trains);
-    let equipment: crate::config::EquipmentConfig = serde_json::from_value(equipment).unwrap();
-    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
-}
-
-fn stats_with_guiding(guiding: bool) -> GuidingStats {
-    GuidingStats {
-        app_state: if guiding { "Guiding" } else { "Stopped" }.to_string(),
-        guiding,
-        rms_ra_px: None,
-        rms_dec_px: None,
-        total_rms_px: None,
-        snr: None,
-        star_mass: None,
-        sample_count: 0,
-        totals: None,
-    }
-}
-
-/// A `fixture_trains`-shaped model whose imaging train asks for a
-/// binning the fixture camera cannot do (its cached maximum is 4).
-fn fixture_trains_binned(binning: &str) -> crate::equipment::trains::TrainModel {
-    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
-        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
-        "focusers": [{"id": "foc", "alpaca_url": "http://localhost:1"}],
-        "optical_trains": [{
-            "id": "main",
-            "devices": ["foc", "cam"],
-            "auto_focus": {"duration": "100ms", "step_size": 20, "half_width": 100,
-                           "min_area": 4, "max_area": 2000, "binning": binning}
-        }]
+        },
+        "optical_trains": [
+            {"id": "guide", "purpose": "guiding", "devices": ["guide-cam"]}
+        ]
     }))
     .unwrap();
-    crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
-}
-
-#[tokio::test]
-async fn auto_focus_rejects_an_impossible_binning_before_the_focus_event() {
-    // Without the preflight the sweep would still fail — at the first
-    // frame, after `focus_started` and after the focuser moved. The
-    // point of the check is that neither happens.
-    const STARTING_POSITION: i32 = 11_000;
-    let handler = test_handler(auto_focus_registry(STARTING_POSITION));
-    let mut rx = handler.event_bus.subscribe();
-
-    let result = handler
-        .auto_focus_inner(
-            AutoFocusToolParams {
-                binning: Some("5x5".parse().unwrap()),
-                camera_id: Some("cam".into()),
-                focuser_id: Some("foc".into()),
-                train_id: None,
-                duration: Some(Duration::from_millis(100)),
-                step_size: Some(20),
-                half_width: Some(100),
-                min_area: Some(4),
-                max_area: Some(2000),
-                threshold_sigma: None,
-                min_fit_points: None,
-                min_star_fraction: None,
-                confirmation_tolerance: None,
-                max_attempts: Some(1),
-            },
-            None,
-            Cancel::never(),
-        )
-        .await;
-
-    assert_tool_error(result, "this camera bins at most 4 on x");
-    assert_no_more_events(&mut rx).await;
-}
-
-#[tokio::test]
-async fn refocus_train_rejects_a_train_binning_before_announcing_the_refocus() {
-    // Planning is the last point before `refocus_started` and the
-    // guiding pause. A train configured beyond its camera must not
-    // announce a refocus, or interrupt guiding, on its way to failing.
-    const STARTING_POSITION: i32 = 11_000;
-    let handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_trains(fixture_trains_binned("5x5"));
-    let mut rx = handler.event_bus.subscribe();
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-
-    assert_tool_error(result, "this camera bins at most 4 on x");
-    assert_no_more_events(&mut rx).await;
-}
-
-#[tokio::test]
-async fn refocus_train_refuses_a_leased_step_before_announcing_the_refocus() {
-    // A guiding-coupled refocus, with guiding live, over a focuser and
-    // camera a train lease holds: refused before `refocus_started` and
-    // before the guiding handshake, which has no expectations here, so
-    // any call to the guider fails the test.
-    const STARTING_POSITION: i32 = 11_000;
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(MockGuiderClient::new());
-    let handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-    let plan = crate::train_lease::LeasePlan {
-        train_id: "other".into(),
-        guiding: false,
-        camera_id: "cam".into(),
-        focuser_id: "foc".into(),
-        filter_wheel_ids: vec![],
-        held_focuser_ids: vec![],
-        held_rotator_ids: vec![],
-        drained_camera_ids: vec![],
-    };
-    let acquiring = handler.leases.reserve("held", plan).unwrap();
-    acquiring.lease().grant(Duration::from_mins(5)).unwrap();
-    let mut rx = handler.event_bus.subscribe();
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-
-    assert_tool_error(result, "lease 'held' reserves its camera or focuser");
-    assert_no_more_events(&mut rx).await;
-    drop(acquiring);
-}
-
-#[tokio::test]
-async fn refocus_train_success_payload_over_the_fixture_registry() {
-    const STARTING_POSITION: i32 = 11_000;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut handler =
-        test_handler(auto_focus_registry(STARTING_POSITION)).with_trains(fixture_trains(false));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    let call = result.expect("refocus_train protocol error");
-    assert!(
-        !call.is_error.unwrap_or(false),
-        "expected success; got: {:?}",
-        call.content
-    );
-    let body = ok_text(call);
-    assert_eq!(body["train_id"], "main");
-    assert_eq!(body["reason"], "manual");
-    assert_eq!(body["guiding_paused"], false);
-    let steps = body["steps"].as_array().expect("steps array");
-    assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0]["focuser_id"], "foc");
-    assert_eq!(steps[0]["train_id"], "main");
-    assert_eq!(steps[0]["camera_id"], "cam");
-    // The synthesised V-curve is symmetric about the starting
-    // position; the auto_focus happy-path test pins the ±2·step_size
-    // tolerance, so here presence + plausibility suffices.
-    assert!(steps[0]["best_position"].is_i64());
-    assert!(steps[0]["best_hfr"].is_f64());
-    assert!(steps[0]["samples_used"].is_u64());
-}
-
-#[tokio::test]
-async fn refocus_train_pauses_and_resumes_around_a_guiding_coupled_step() {
-    const STARTING_POSITION: i32 = 11_000;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut mock = MockGuiderClient::new();
-    mock.expect_guiding_stats()
-        // The handshake's check, then each sweep capture's two reads
-        // (rp.md § Rig state, `guiding`).
-        .times(1..)
-        .returning(|| Ok(stats_with_guiding(true)));
-    mock.expect_pause_guiding()
-        .with(mockall::predicate::eq(false))
-        .times(1)
-        .returning(|_| Ok(()));
-    mock.expect_resume_guiding().times(1).returning(|| Ok(()));
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    let call = result.expect("refocus_train protocol error");
-    assert!(
-        !call.is_error.unwrap_or(false),
-        "expected success; got: {:?}",
-        call.content
-    );
-    assert_eq!(ok_text(call)["guiding_paused"], true);
-}
-
-#[tokio::test]
-async fn refocus_train_skips_the_handshake_when_not_guiding() {
-    const STARTING_POSITION: i32 = 11_000;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut mock = MockGuiderClient::new();
-    mock.expect_guiding_stats()
-        // The handshake's check, then each sweep capture's two reads
-        // (rp.md § Rig state, `guiding`).
-        .times(1..)
-        .returning(|| Ok(stats_with_guiding(false)));
-    // No pause/resume expectations: reaching either would panic.
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    let call = result.expect("refocus_train protocol error");
-    assert!(!call.is_error.unwrap_or(false));
-    assert_eq!(ok_text(call)["guiding_paused"], false);
-}
-
-#[tokio::test]
-async fn refocus_train_step_failure_still_resumes_guiding() {
-    // Empty registry: the step fails at device resolution, after the
-    // pause. mockall's drop check enforces that resume still ran.
-    let mut mock = MockGuiderClient::new();
-    mock.expect_guiding_stats()
-        .times(1)
-        .returning(|| Ok(stats_with_guiding(true)));
-    mock.expect_pause_guiding().times(1).returning(|_| Ok(()));
-    mock.expect_resume_guiding().times(1).returning(|| Ok(()));
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     let handler = test_handler(empty_registry())
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-
+        .with_trains(crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap());
     let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
+        .auto_focus_inner(af_params_with_train("guide"), None, Cancel::never())
         .await;
-    assert_tool_error(
-        result,
-        "step 1 (focuser 'foc' in train 'main') failed: camera not found: cam",
-    );
-}
-
-#[tokio::test]
-async fn refocus_train_resume_failure_after_success_is_an_error() {
-    const STARTING_POSITION: i32 = 11_000;
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut mock = MockGuiderClient::new();
-    mock.expect_guiding_stats()
-        // The handshake's check, then each sweep capture's two reads
-        // (rp.md § Rig state, `guiding`).
-        .times(1..)
-        .returning(|| Ok(stats_with_guiding(true)));
-    mock.expect_pause_guiding().times(1).returning(|_| Ok(()));
-    mock.expect_resume_guiding()
-        .times(1)
-        .returning(|| Err(GuiderError::Internal("boom".to_string())));
-    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    let mut handler = test_handler(auto_focus_registry(STARTING_POSITION))
-        .with_guider(Some(client), GuiderDefaults::default())
-        .with_trains(fixture_trains(true));
-    handler.session_config = SessionConfig {
-        data_directory: dir.path().to_string_lossy().into_owned(),
-    };
-
-    let result = handler
-        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
-        .await;
-    assert_tool_error(result, "resuming guiding failed");
+    assert_tool_error(result, "train 'guide' has no focuser");
 }
 
 // -----------------------------------------------------------------------
@@ -11891,7 +11454,8 @@ async fn unpark_failure_emits_started_then_failed() {
 // merging (per-call > config default > omitted), the dither-amount
 // fallback, the per-code error mapping, and the guide/dither event
 // triples. End-to-end wire-format coverage lives in the BDD suite
-// (`guider.feature`) against `GuiderStub`.
+// (`guiding_tools.feature`, `guiding_dither.feature`) against
+// `GuiderStub`.
 // ---------------------------------------------------------------------------
 
 use crate::config::GuiderDefaults;
@@ -11903,10 +11467,13 @@ use rp_guider::{GuiderError, GuidingStats, MockGuiderClient, SettledOutcome};
 
 fn settled_outcome() -> SettledOutcome {
     SettledOutcome {
-        state: "guiding".to_string(),
+        state: rp_guider::GuiderState::Guiding,
         rms_ra_px: Some(0.3),
         rms_dec_px: Some(0.4),
         total_rms_px: Some(0.5),
+        rms_ra_arcsec: Some(1.2),
+        rms_dec_arcsec: Some(1.6),
+        total_rms_arcsec: Some(2.0),
         sample_count: 12,
     }
 }
@@ -12501,17 +12068,30 @@ async fn captures_through_different_cameras_do_not_wait_for_each_other() {
     assert_eq!(calls(&free.start_exposure_calls), 1);
 }
 
-/// Build a handler with a configured guider client. Pass
-/// `configure` to wire up mock expectations before the handler is
-/// built.
+/// The `unique_id` the guider of `handler_with_guider` reports for its
+/// camera: none of rp's, as the devices check wants of a rig with no
+/// guiding train.
+const GUIDER_CAMERA_ID: &str = "guider-cam-id";
+
+/// Build a handler with a configured guider client and a connected
+/// mount. Pass `configure` to wire up mock expectations before the
+/// handler is built.
+///
+/// The guider answers `devices` with rp's mount and a camera of its
+/// own, so a start passes the devices check; mockall takes the first
+/// matching expectation, so one `configure` sets on `devices` wins
+/// over this default.
 fn handler_with_guider(
     configure: impl FnOnce(&mut MockGuiderClient),
     defaults: GuiderDefaults,
 ) -> McpHandler {
     let mut mock = MockGuiderClient::new();
     configure(&mut mock);
+    mock.expect_devices()
+        .returning(|| Ok(guider_devices(Some(MOCK_UNIQUE_ID), Some(GUIDER_CAMERA_ID))));
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
-    test_handler(empty_registry()).with_guider(Some(client), defaults)
+    test_handler(mount_registry(Arc::new(MockTelescope::default()), None))
+        .with_guider(Some(client), defaults)
 }
 
 #[tokio::test]
@@ -12632,10 +12212,10 @@ async fn start_guiding_emits_started_and_settled_with_the_settle_deadline() {
     assert_no_more_events(&mut rx).await;
 
     assert_eq!(started.event, "guide_started");
-    // predicted = settle_time; max = settle_timeout + the service's
-    // 10 s backstop grace.
+    // predicted = settle_time; max = calibration_timeout (10 min) +
+    // settle_timeout + the 15 s the guider's answer gets past it.
     assert_eq!(started.predicted_duration_ms, Some(8_000));
-    assert_eq!(started.max_duration_ms, Some(50_000));
+    assert_eq!(started.max_duration_ms, Some(655_000));
     assert_eq!(settled.event, "guide_settled");
     assert_eq!(settled.payload["total_rms_px"], 0.5);
     assert_eq!(settled.payload["sample_count"], 12);
@@ -12670,9 +12250,10 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
 
     let started = next_event(&mut rx).await;
     // predicted clamps down to the timeout (40s), not the oversized
-    // settle_time (120s); max stays timeout + 10s backstop grace.
+    // settle_time (120s); max stays calibration_timeout + timeout +
+    // the 15 s margin.
     assert_eq!(started.predicted_duration_ms, Some(40_000));
-    assert_eq!(started.max_duration_ms, Some(50_000));
+    assert_eq!(started.max_duration_ms, Some(655_000));
     assert!(started.predicted_duration_ms <= started.max_duration_ms);
 }
 
@@ -12680,7 +12261,7 @@ async fn start_guiding_clamps_predicted_duration_to_the_timeout_when_settle_time
 async fn start_guiding_saturates_instead_of_overflowing_on_an_extreme_settle_timeout() {
     // An operator-configured settle_timeout near Duration::MAX must not
     // panic the process via `Duration`'s overflow-checked `Add` (the
-    // backstop-grace addition saturates instead), and the resulting
+    // additions on top of it saturate instead), and the resulting
     // millisecond count must saturate to u64::MAX rather than silently
     // truncating (as a bare `as u64` cast on the u128 millis would).
     let defaults = GuiderDefaults {
@@ -12786,7 +12367,7 @@ async fn dither_uses_the_pixels_parameter() {
     let handler = handler_with_guider(
         |mock| {
             mock.expect_dither()
-                .withf(|req| req.amount_px == 5.0 && req.ra_only)
+                .withf(|req| req.amount == rp_guider::DitherAmount::Px(5.0) && req.ra_only)
                 .returning(|_| Ok(settled_outcome()));
         },
         GuiderDefaults::default(),
@@ -12815,7 +12396,7 @@ async fn dither_falls_back_to_the_configured_dither_pixels() {
     let handler = handler_with_guider(
         |mock| {
             mock.expect_dither()
-                .withf(|req| req.amount_px == 3.5 && !req.ra_only)
+                .withf(|req| req.amount == rp_guider::DitherAmount::Px(3.5) && !req.ra_only)
                 .returning(|_| Ok(settled_outcome()));
         },
         defaults,
@@ -12922,10 +12503,19 @@ fn dither_trains(include_imaging: bool) -> crate::equipment::trains::TrainModel 
     crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
 }
 
-fn dither_handler_with_trains(expected_amount_px: f64, include_imaging: bool) -> McpHandler {
+/// A handler over the two dither cameras whose guider accepts only a
+/// dither of `expected` (within a rounding error).
+fn dither_handler_with_trains(
+    expected: rp_guider::DitherAmount,
+    include_imaging: bool,
+) -> McpHandler {
+    use rp_guider::DitherAmount::{Arcsec, Px};
     let mut mock = MockGuiderClient::new();
     mock.expect_dither()
-        .withf(move |req| (req.amount_px - expected_amount_px).abs() < 1e-9)
+        .withf(move |req| match (req.amount, expected) {
+            (Px(sent), Px(wanted)) | (Arcsec(sent), Arcsec(wanted)) => (sent - wanted).abs() < 1e-9,
+            _ => false,
+        })
         .returning(|_| Ok(settled_outcome()));
     let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(mock);
     test_handler(dither_dual_camera_registry())
@@ -12934,10 +12524,17 @@ fn dither_handler_with_trains(expected_amount_px: f64, include_imaging: bool) ->
 }
 
 #[tokio::test]
-async fn dither_converts_arcsec_at_the_guiding_train_pixel_scale() {
-    // 10″ at guide scale 206.265 × 3.76 µm / 200 mm ≈ 3.8778 ″/px.
-    let expected = 10.0 / (206.265 * 3.76 / 200.0);
-    let handler = dither_handler_with_trains(expected, false);
+async fn dither_sends_arcseconds_as_they_are() {
+    // The guider converts by its own pixel scale: rp's trains are not
+    // read, and none is needed.
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_dither()
+                .withf(|req| req.amount == rp_guider::DitherAmount::Arcsec(10.0))
+                .returning(|_| Ok(settled_outcome()));
+        },
+        GuiderDefaults::default(),
+    );
     let result = handler
         .dither_inner(
             DitherParams {
@@ -12953,10 +12550,10 @@ async fn dither_converts_arcsec_at_the_guiding_train_pixel_scale() {
 }
 
 #[tokio::test]
-async fn dither_converts_main_px_through_both_train_pixel_scales() {
-    // 10 main-camera px → arcsec at the imaging train's scale
-    // (206.265 × 2.9 / 1000) → guide px at the guiding train's scale.
-    let expected = 10.0 * (206.265 * 2.9 / 1000.0) / (206.265 * 3.76 / 200.0);
+async fn dither_sends_main_px_as_arcseconds_at_the_imaging_train_pixel_scale() {
+    // 10 main-camera px at the imaging train's scale,
+    // 206.265 × 2.9 µm / 1000 mm ≈ 0.5982 ″/px.
+    let expected = rp_guider::DitherAmount::Arcsec(10.0 * (206.265 * 2.9 / 1000.0));
     let handler = dither_handler_with_trains(expected, true);
     let result = handler
         .dither_inner(
@@ -12973,21 +12570,46 @@ async fn dither_converts_main_px_through_both_train_pixel_scales() {
 }
 
 #[tokio::test]
-async fn dither_arcsec_without_a_guiding_train_errors_without_an_rpc() {
-    // Trains default to empty on the test handler; no mock
-    // expectation — reaching the client would panic.
-    let handler = handler_with_guider(|_| {}, GuiderDefaults::default());
+async fn dither_sends_guide_px_as_they_are_whatever_the_trains() {
+    let handler = dither_handler_with_trains(rp_guider::DitherAmount::Px(4.0), true);
+    let result = handler
+        .dither_inner(
+            DitherParams {
+                pixels: Some(4.0),
+                unit: Some(DitherUnit::GuidePx),
+                ..dither_params_empty()
+            },
+            &Cancel::never(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn dither_main_px_without_an_imaging_train_errors_without_an_rpc() {
+    // A guiding train alone; no mock expectation — reaching the client
+    // would panic.
+    let handler = test_handler(dither_dual_camera_registry())
+        .with_guider(
+            Some(Arc::new(MockGuiderClient::new())),
+            GuiderDefaults::default(),
+        )
+        .with_trains(dither_trains(false));
     let result = handler
         .dither_inner(
             DitherParams {
                 pixels: Some(10.0),
-                unit: Some(DitherUnit::Arcsec),
+                unit: Some(DitherUnit::MainPx),
                 ..dither_params_empty()
             },
             &Cancel::never(),
         )
         .await;
-    assert_tool_error(result, "guiding train");
+    assert_tool_error(
+        result,
+        "dither: unit 'main_px' requires exactly one imaging train (found none)",
+    );
 }
 
 #[tokio::test]
@@ -13037,7 +12659,9 @@ async fn dither_emits_started_and_settled() {
     assert_no_more_events(&mut rx).await;
 
     assert_eq!(started.event, "dither_started");
-    assert_eq!(started.payload["pixels"], 5.0);
+    assert_eq!(started.payload["amount_px"], 5.0);
+    assert_eq!(started.payload["amount_arcsec"], serde_json::Value::Null);
+    assert_eq!(started.payload["ra_only"], false);
     assert_eq!(settled.event, "dither_settled");
     assert_end_mirrors_start(&started, &settled);
 }
@@ -13049,7 +12673,7 @@ async fn dither_failure_emits_dither_failed() {
             mock.expect_dither().returning(|_| {
                 Err(GuiderError::Service {
                     code: "not_guiding".to_string(),
-                    message: "PHD2 is not guiding".to_string(),
+                    message: "a dither needs a guiding run".to_string(),
                     details: serde_json::Value::Null,
                 })
             });
@@ -13079,7 +12703,8 @@ async fn dither_failure_emits_dither_failed() {
 async fn stop_guiding_emits_guide_stopped_with_reason_requested() {
     let handler = handler_with_guider(
         |mock| {
-            mock.expect_stop_guiding().returning(|| Ok(()));
+            mock.expect_stop_guiding()
+                .returning(|| Ok(rp_guider::GuiderState::Idle));
         },
         GuiderDefaults::default(),
     );
@@ -13090,12 +12715,13 @@ async fn stop_guiding_emits_guide_stopped_with_reason_requested() {
         .await
         .unwrap();
     let json = ok_text(result);
-    assert_eq!(json["state"], "stopped");
+    assert_eq!(json["state"], "idle");
 
     let stopped = next_event(&mut rx).await;
     assert_no_more_events(&mut rx).await;
     assert_eq!(stopped.event, "guide_stopped");
     assert_eq!(stopped.payload["reason"], "requested");
+    assert_eq!(stopped.payload["stop_reason"], serde_json::Value::Null);
     assert!(stopped.operation_id.is_none(), "point event, no operation");
 }
 
@@ -13106,7 +12732,7 @@ async fn stop_guiding_failure_errors_without_the_stopped_event() {
             mock.expect_stop_guiding().returning(|| {
                 Err(GuiderError::Service {
                     code: "stop_timeout".to_string(),
-                    message: "PHD2 did not confirm the stop".to_string(),
+                    message: "the stop took longer than stop_timeout".to_string(),
                     details: serde_json::Value::Null,
                 })
             });
@@ -13126,7 +12752,7 @@ async fn pause_guiding_forwards_full() {
         |mock| {
             mock.expect_pause_guiding()
                 .withf(|&full| full)
-                .returning(|_| Ok(()));
+                .returning(|_| Ok(rp_guider::GuiderState::Paused));
         },
         GuiderDefaults::default(),
     );
@@ -13139,19 +12765,54 @@ async fn pause_guiding_forwards_full() {
 }
 
 #[tokio::test]
-async fn resume_guiding_resumes() {
+async fn resume_guiding_answers_the_state_the_guider_resumed_into() {
+    for state in [
+        rp_guider::GuiderState::Guiding,
+        rp_guider::GuiderState::StarLost,
+    ] {
+        let handler = handler_with_guider(
+            |mock| {
+                mock.expect_resume_guiding().returning(move || Ok(state));
+            },
+            GuiderDefaults::default(),
+        );
+        let result = handler
+            .resume_guiding_inner(ResumeGuidingParams {}, &Cancel::never())
+            .await
+            .unwrap();
+        let json = ok_text(result);
+        assert_eq!(json["state"], state.as_str());
+    }
+}
+
+#[tokio::test]
+async fn pause_and_resume_failures_carry_the_guiders_refusal() {
+    let not_guiding = || GuiderError::Service {
+        code: "not_guiding".to_string(),
+        message: "no run to pause".to_string(),
+        details: serde_json::Value::Null,
+    };
     let handler = handler_with_guider(
         |mock| {
-            mock.expect_resume_guiding().returning(|| Ok(()));
+            mock.expect_pause_guiding()
+                .returning(move |_| Err(not_guiding()));
+            mock.expect_resume_guiding()
+                .returning(move || Err(not_guiding()));
         },
         GuiderDefaults::default(),
     );
-    let result = handler
-        .resume_guiding_inner(ResumeGuidingParams {}, &Cancel::never())
-        .await
-        .unwrap();
-    let json = ok_text(result);
-    assert_eq!(json["state"], "resumed");
+    assert_tool_error(
+        handler
+            .pause_guiding(Parameters(PauseGuidingParams { full: None }))
+            .await,
+        "pause_guiding: not_guiding: no run to pause",
+    );
+    assert_tool_error(
+        handler
+            .resume_guiding_inner(ResumeGuidingParams {}, &Cancel::never())
+            .await,
+        "resume_guiding: not_guiding: no run to pause",
+    );
 }
 
 #[tokio::test]
@@ -13160,15 +12821,16 @@ async fn get_guiding_stats_passes_the_snapshot_through() {
         |mock| {
             mock.expect_guiding_stats().returning(|| {
                 Ok(GuidingStats {
-                    app_state: "Guiding".to_string(),
-                    guiding: true,
                     rms_ra_px: Some(0.3),
                     rms_dec_px: Some(0.4),
                     total_rms_px: Some(0.5),
-                    snr: None,
-                    star_mass: None,
                     sample_count: 12,
-                    totals: None,
+                    last_stop: Some(rp_guider::LastStop {
+                        reason: "mount_slewing".to_string(),
+                        at: "2026-11-12T03:20:01Z".to_string(),
+                        message: "the mount slewed".to_string(),
+                    }),
+                    ..stats_in(rp_guider::GuiderState::Guiding)
                 })
             });
         },
@@ -13179,12 +12841,33 @@ async fn get_guiding_stats_passes_the_snapshot_through() {
         .await
         .unwrap();
     let json = ok_text(result);
-    assert_eq!(json["app_state"], "Guiding");
+    assert_eq!(json["state"], "guiding");
     assert_eq!(json["guiding"], true);
+    assert_eq!(json["settling"], false);
     assert_eq!(json["rms_ra_px"], 0.3);
+    assert_eq!(json["sample_count"], 12);
     // Never-sampled telemetry stays null, not stale numbers.
     assert_eq!(json["snr"], serde_json::Value::Null);
     assert_eq!(json["star_mass"], serde_json::Value::Null);
+    assert_eq!(json["last_stop"]["reason"], "mount_slewing");
+    // The running totals are the sidecar's, not the tool's.
+    assert!(json.get("totals").is_none(), "{json}");
+}
+
+#[tokio::test]
+async fn get_guiding_stats_failure_carries_the_guiders_error() {
+    let handler = handler_with_guider(
+        |mock| {
+            mock.expect_guiding_stats().returning(|| Err(guider_down()));
+        },
+        GuiderDefaults::default(),
+    );
+    assert_tool_error(
+        handler
+            .get_guiding_stats(Parameters(GetGuidingStatsParams {}))
+            .await,
+        "get_guiding_stats: service unreachable: connection refused",
+    );
 }
 
 #[tokio::test]
@@ -13553,17 +13236,20 @@ async fn set_tracking_inner_with_a_cancelled_handle_never_touches_the_drive() {
 // -----------------------------------------------------------------------
 // Dither cancellation (rp.md § Mount Motion Gate + § In-Flight Tool
 // Calls): a call cancelled while queued never reaches the guider; a
-// call cancelled mid-settle answers at once but its motion permit stays
-// held until the guider's settle RPC ends, bounded by the tail cap.
+// call cancelled mid-settle answers at once and sends the guider's
+// dither abort, but its motion permit stays held until the guider has
+// answered the dither request, bounded by the tail cap.
 // -----------------------------------------------------------------------
 
 /// A guider whose `dither` blocks until [`ReleasableDitherGuider::release`]
-/// is called — stands in for PHD2 still pulsing the mount towards the
-/// new lock position after rp stopped waiting.
+/// is called — stands in for a guider still pulsing the mount towards
+/// the new lock position after rp stopped waiting. Its `abort_dither`
+/// only counts the call, so a test decides when the dither answers.
 #[derive(Default)]
 struct ReleasableDitherGuider {
     release: tokio::sync::Notify,
     dither_calls: std::sync::atomic::AtomicU32,
+    abort_calls: std::sync::atomic::AtomicU32,
 }
 
 impl ReleasableDitherGuider {
@@ -13581,15 +13267,15 @@ impl rp_guider::GuiderClient for ReleasableDitherGuider {
         panic!("not exercised by these tests")
     }
 
-    async fn stop_guiding(&self) -> Result<(), GuiderError> {
+    async fn stop_guiding(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 
-    async fn pause_guiding(&self, _full: bool) -> Result<(), GuiderError> {
+    async fn pause_guiding(&self, _full: bool) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 
-    async fn resume_guiding(&self) -> Result<(), GuiderError> {
+    async fn resume_guiding(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 
@@ -13603,6 +13289,12 @@ impl rp_guider::GuiderClient for ReleasableDitherGuider {
         Ok(settled_outcome())
     }
 
+    async fn abort_dither(&self) -> Result<bool, GuiderError> {
+        self.abort_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(true)
+    }
+
     async fn guiding_stats(&self) -> Result<rp_guider::GuidingStats, GuiderError> {
         panic!("not exercised by these tests")
     }
@@ -13611,15 +13303,15 @@ impl rp_guider::GuiderClient for ReleasableDitherGuider {
         panic!("not exercised by these tests")
     }
 
-    async fn current_equipment(&self) -> Result<rp_guider::PhdEquipment, GuiderError> {
+    async fn devices(&self) -> Result<rp_guider::GuiderDevices, GuiderError> {
         panic!("not exercised by these tests")
     }
 
-    async fn clear_calibration(&self) -> Result<(), GuiderError> {
+    async fn clear_calibration(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 
-    async fn reselect_star(&self) -> Result<(), GuiderError> {
+    async fn reselect_star(&self) -> Result<rp_guider::GuiderState, GuiderError> {
         panic!("not exercised by these tests")
     }
 }
@@ -13716,11 +13408,16 @@ async fn dither_cancelled_mid_settle_keeps_the_gate_exclusive_until_the_guider_s
             .is_err(),
         "the motion permit must outlive the cancelled body while the guider is still settling"
     );
+    assert_eq!(
+        calls(&guider.abort_calls),
+        1,
+        "a cancelled dither sends the guider's dither abort"
+    );
 
     guider.release();
     let _shared = tokio::time::timeout(Duration::from_secs(5), handler.motion_gate.shared())
         .await
-        .expect("the permit must release once the guider's settle RPC ends");
+        .expect("the permit must release once the guider has answered the dither");
 }
 
 #[tokio::test(start_paused = true)]
@@ -13742,8 +13439,8 @@ async fn dither_tail_holder_releases_the_gate_at_the_cap_when_the_guider_never_s
         .await;
     assert_tool_error(result, "cancelled: safety");
 
-    // Held past the settle timeout itself (the guider may still be
-    // inside its own backstop margin)...
+    // Held past the settle timeout itself (the guider's answer gets
+    // a margin past it)...
     assert!(
         tokio::time::timeout(settle_timeout, handler.motion_gate.shared())
             .await
@@ -14005,6 +13702,31 @@ fn lease_capture(lease_id: Option<&str>) -> CaptureParams {
     }
 }
 
+/// A lease that holds the guiding train's camera refuses the sweep,
+/// naming the lease, before the guider is read: with no guider
+/// configured the guiding check would refuse it otherwise.
+#[tokio::test]
+async fn auto_focus_over_a_leased_guiding_train_is_refused_naming_the_lease() {
+    let handler = lease_handler(Arc::new(MockCamera::default()), "guiding");
+    let _granted = ok_text(acquire_lease(&handler, "a").await);
+
+    let result = handler
+        .auto_focus_inner(
+            AutoFocusToolParams {
+                train_id: Some("main".into()),
+                step_size: Some(50),
+                half_width: Some(200),
+                min_fit_points: None,
+                confirmation_tolerance: None,
+            },
+            None,
+            Cancel::never(),
+        )
+        .await;
+
+    assert_tool_error(result, "lease 'a' on train 'main' reserves camera 'cam'");
+}
+
 #[tokio::test]
 async fn an_imaging_trains_lease_answers_what_it_holds_and_holds_the_gate() {
     let handler = lease_handler(Arc::new(MockCamera::default()), "imaging");
@@ -14014,7 +13736,6 @@ async fn an_imaging_trains_lease_answers_what_it_holds_and_holds_the_gate() {
     assert_eq!(json["train_id"], "main");
     assert_eq!(json["focuser_id"], "foc");
     assert_eq!(json["cameras"], serde_json::json!(["cam"]));
-    assert_eq!(json["facade_lease"], false);
     chrono::DateTime::parse_from_rfc3339(json["ends_by"].as_str().unwrap()).unwrap();
 
     let slew = tokio::time::timeout(
@@ -14097,71 +13818,274 @@ async fn a_move_naming_no_lease_waits_for_the_lease_on_its_focuser() {
     ok_text(ordinary.await.unwrap().unwrap());
 }
 
+/// A fake guider, idle, whose camera is the fixture camera "cam".
+fn lease_guider() -> Arc<crate::guide_camera::test_support::FakeGuider> {
+    let guider = crate::guide_camera::test_support::FakeGuider::default();
+    *guider.devices.lock().unwrap() =
+        Some(guider_devices(Some(MOCK_UNIQUE_ID), Some(MOCK_UNIQUE_ID)));
+    Arc::new(guider)
+}
+
+/// [`lease_handler`] over a guiding train on `cam`, with `guider`
+/// configured.
+fn guided_handler(
+    cam: Arc<dyn ascom_alpaca::api::Camera>,
+    guider: &Arc<crate::guide_camera::test_support::FakeGuider>,
+) -> McpHandler {
+    let client: Arc<dyn rp_guider::GuiderClient> = guider.clone();
+    lease_handler(cam, "guiding").with_guider(Some(client), GuiderDefaults::default())
+}
+
+/// [`guided_handler`] over a mock camera.
+fn guided_lease_handler(guider: &Arc<crate::guide_camera::test_support::FakeGuider>) -> McpHandler {
+    guided_handler(Arc::new(MockCamera::default()), guider)
+}
+
+fn set_guider_stats(
+    guider: &crate::guide_camera::test_support::FakeGuider,
+    stats: crate::guide_camera::test_support::Stats,
+) {
+    *guider.stats.lock().unwrap() = stats;
+}
+
+/// Whether a start of guiding through `handler` finds the guide camera
+/// guard on "cam" free, giving it back at once when it does.
+fn guard_is_free(handler: &McpHandler) -> bool {
+    handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .is_ok()
+}
+
+/// Waits, at most 5 s, for the guide camera guard to be given back.
+async fn guard_given_back(handler: &McpHandler) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !guard_is_free(handler) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the guide camera guard stayed held");
+}
+
 #[tokio::test]
-async fn a_guiding_trains_lease_needs_the_camera_facade_and_keeps_nothing_when_refused() {
+async fn a_guiding_trains_lease_takes_no_guard_with_no_guider_configured() {
     let handler = lease_handler(Arc::new(MockCamera::default()), "guiding");
+
+    ok_text(acquire_lease(&handler, "a").await);
+
+    assert!(guard_is_free(&handler));
+}
+
+#[tokio::test]
+async fn a_guiding_trains_lease_holds_the_guard_after_an_idle_read_and_gives_it_back_with_the_lease(
+) {
+    let guider = lease_guider();
+    let handler = guided_lease_handler(&guider);
+
+    ok_text(acquire_lease(&handler, "a").await);
+    assert_eq!(guider.stats_reads(), 1);
+    assert_eq!(
+        handler
+            .guide_camera
+            .take_for_start("cam", "start_guiding")
+            .unwrap_err(),
+        "the guide camera 'cam' is in use by train lease 'a'"
+    );
+
+    release_lease(&handler, "a").await;
+    guard_given_back(&handler).await;
+}
+
+#[tokio::test]
+async fn a_guiding_trains_lease_checks_none_of_the_guiders_devices() {
+    let guider = lease_guider();
+    *guider.devices.lock().unwrap() = None;
+    let handler = guided_lease_handler(&guider);
+
+    ok_text(acquire_lease(&handler, "a").await);
+}
+
+#[tokio::test]
+async fn a_guider_that_is_not_idle_refuses_a_guiding_trains_lease_which_gives_back_what_it_took() {
+    use crate::guide_camera::test_support::Stats;
+    let guider = lease_guider();
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Looping));
+    let handler = guided_lease_handler(&guider);
 
     assert_tool_error(
         Ok(acquire_lease(&handler, "a").await),
-        "camera 'cam' of guiding train 'main' does not offer the sweep lease \
-         (rustyphoton:sweep-lease-acquire): it is not the PHD2 camera facade, \
-         or its phd2-guider predates the lease",
+        "acquire_train_lease: the guider is looping; rp uses the guide camera 'cam' only while the guider is idle",
     );
+
     let entry = handler.equipment.find_camera("cam").unwrap();
     tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
         .await
         .expect("a refused acquire kept the camera's slot");
+    guard_given_back(&handler).await;
 }
 
 #[tokio::test]
-async fn a_guiding_trains_lease_takes_the_facade_lease_and_releases_it_with_the_lease() {
-    let facade = Arc::new(crate::train_lease::test_support::FakeFacade::default());
-    let handler = lease_handler(facade.clone(), "guiding");
+async fn a_guiding_trains_lease_is_refused_at_once_while_a_start_holds_the_guard() {
+    let guider = lease_guider();
+    let handler = guided_lease_handler(&guider);
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .unwrap();
 
-    let json = ok_text(acquire_lease(&handler, "a").await);
-    assert_eq!(json["facade_lease"], true);
-    let acquires = facade.calls_of(crate::train_lease::facade::ACQUIRE);
-    let token = acquires[0]["token"].as_str().unwrap().to_string();
-    assert!(
-        token.len() == 32 && token.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-        "{token:?}"
-    );
-    assert_eq!(acquires[0]["ttl_s"], 60);
-
-    release_lease(&handler, "a").await;
-    let entry = handler.equipment.find_camera("cam").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
-        .await
-        .expect("the released lease kept the camera");
-    let releases = facade.calls_of(crate::train_lease::facade::RELEASE);
-    assert_eq!(releases.len(), 1);
-    assert_eq!(releases[0]["token"], token.as_str());
-}
-
-#[tokio::test]
-async fn a_facade_refusal_is_relayed_and_its_token_released() {
-    let facade = Arc::new(crate::train_lease::test_support::FakeFacade::default());
-    *facade.refuse_acquire.lock().unwrap() =
-        Some("PHD2 is Guiding; the camera facade captures only while PHD2 is Stopped".into());
-    let handler = lease_handler(facade.clone(), "guiding");
-
-    let result = acquire_lease(&handler, "a").await;
     assert_tool_error(
-        Ok(result),
-        "the camera facade 'cam' refused the sweep lease",
+        Ok(acquire_lease(&handler, "a").await),
+        "acquire_train_lease: the guide camera 'cam' is in use by start_guiding",
     );
-    let entry = handler.equipment.find_camera("cam").unwrap();
-    tokio::time::timeout(Duration::from_secs(5), entry.capture_slot())
+    assert_eq!(guider.stats_reads(), 0, "a refused acquire read the guider");
+    drop(start);
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_is_refused_unless_the_guider_reads_idle() {
+    use crate::guide_camera::test_support::Stats;
+    for (stats, expected) in [
+        (
+            Stats::In(rp_guider::GuiderState::Guiding),
+            "the guider is guiding; rp uses the guide camera 'cam' only while the guider is idle",
+        ),
+        (
+            Stats::Unreachable,
+            "could not read the guider's state before using the guide camera 'cam': \
+             service unreachable: connection refused",
+        ),
+    ] {
+        let cam = Arc::new(MockCamera::default());
+        let guider = lease_guider();
+        set_guider_stats(&guider, stats);
+        let handler = guided_handler(cam.clone(), &guider);
+
+        let err = handler
+            .do_capture(capture_request("cam", 1), None, &Cancel::never())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, expected);
+        assert_eq!(calls(&cam.start_exposure_calls), 0);
+        assert!(guard_is_free(&handler), "a refused capture kept the guard");
+    }
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_is_refused_at_once_while_a_start_holds_the_guard() {
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "move_rotator")
+        .unwrap();
+
+    let err = handler
+        .do_capture(capture_request("cam", 1), None, &Cancel::never())
         .await
-        .expect("a refused acquire kept the camera's slot");
-    // The token was named before the acquire, so it is released even
-    // though the facade said no: an answer lost in transit is never a
-    // lease left held.
-    let token = facade.calls_of(crate::train_lease::facade::ACQUIRE)[0]["token"].clone();
-    assert_eq!(
-        facade.calls_of(crate::train_lease::facade::RELEASE),
-        [serde_json::json!({ "token": token })]
+        .unwrap_err();
+
+    assert_eq!(err, "the guide camera 'cam' is in use by move_rotator");
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+    assert_eq!(guider.stats_reads(), 0, "a refused capture read the guider");
+    drop(start);
+}
+
+#[tokio::test]
+async fn a_capture_through_the_guide_camera_gives_the_guard_back_when_it_succeeds_or_fails() {
+    for cam in [
+        MockCamera::default(),
+        MockCamera {
+            fail_start_exposure: true,
+            ..Default::default()
+        },
+        MockCamera {
+            fail_image_array: true,
+            ..Default::default()
+        },
+    ] {
+        let guider = lease_guider();
+        let handler = guided_handler(Arc::new(cam), &guider);
+
+        let _ = handler
+            .do_capture(capture_request("cam", 1), None, &Cancel::never())
+            .await;
+
+        assert!(
+            guard_is_free(&handler),
+            "a capture that ended kept the guard"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_capture_through_the_guide_camera_keeps_the_guard_until_the_camera_idles() {
+    let cam = Arc::new(MockCamera {
+        never_ready: true,
+        ..Default::default()
+    });
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+
+    handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .expect_err("a cancelled capture must fail");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !guard_is_free(&handler),
+        "the guard went back while the camera was still exposing"
     );
+
+    cam.idle_now
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    guard_given_back(&handler).await;
+}
+
+#[tokio::test]
+async fn a_capture_under_a_guiding_trains_lease_reads_the_guider_too() {
+    use crate::guide_camera::test_support::Stats;
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    let handler = guided_handler(cam.clone(), &guider);
+    ok_text(acquire_lease(&handler, "a").await);
+
+    // Another client of the guider's started it after the lease's read.
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Guiding));
+    let result = handler
+        .capture_inner(lease_capture(Some("a")), None, &Cancel::never())
+        .await;
+
+    assert_tool_error(
+        result,
+        "the guider is guiding; rp uses the guide camera 'cam' only while the guider is idle",
+    );
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+}
+
+#[tokio::test]
+async fn a_capture_through_another_camera_takes_no_guard_whatever_the_guider_does() {
+    use crate::guide_camera::test_support::Stats;
+    let cam = Arc::new(MockCamera::default());
+    let guider = lease_guider();
+    set_guider_stats(&guider, Stats::In(rp_guider::GuiderState::Guiding));
+    let client: Arc<dyn rp_guider::GuiderClient> = guider.clone();
+    let handler =
+        lease_handler(cam, "imaging").with_guider(Some(client), GuiderDefaults::default());
+    let start = handler
+        .guide_camera
+        .take_for_start("cam", "start_guiding")
+        .unwrap();
+
+    handler
+        .do_capture(capture_request("cam", 1), None, &Cancel::never())
+        .await
+        .unwrap();
+    drop(start);
 }
 
 #[tokio::test(start_paused = true)]
@@ -14410,7 +14334,8 @@ fn rig_conditions(
 }
 
 /// Train "main": focusers "foc-a" and "foc-b", rotator "rot", camera
-/// "cam", in that optical order.
+/// "cam", in that optical order — a guiding train, the one train that
+/// may hold two focusers.
 fn rig_trains() -> crate::equipment::trains::TrainModel {
     let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
         "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
@@ -14419,8 +14344,9 @@ fn rig_trains() -> crate::equipment::trains::TrainModel {
             {"id": "foc-b", "alpaca_url": "http://localhost:1"}
         ],
         "rotators": [{"id": "rot", "alpaca_url": "http://localhost:1"}],
+        "mount": {"alpaca_url": "http://localhost:1", "guiding": {"url": "http://127.0.0.1:1"}},
         "optical_trains": [
-            {"id": "main", "devices": ["foc-a", "foc-b", "rot", "cam"]}
+            {"id": "main", "purpose": "guiding", "devices": ["foc-a", "foc-b", "rot", "cam"]}
         ]
     }))
     .unwrap();
@@ -14654,7 +14580,7 @@ async fn no_guider_means_no_guiding() {
 
 fn guiding_stats_with_steps(guide_steps: u64) -> rp_guider::GuidingStats {
     rp_guider::GuidingStats {
-        totals: Some(rp_guider::GuidingTotals {
+        totals: rp_guider::GuidingTotals {
             epoch: "e".to_string(),
             guide_steps,
             ra_samples: guide_steps,
@@ -14663,7 +14589,7 @@ fn guiding_stats_with_steps(guide_steps: u64) -> rp_guider::GuidingStats {
             dec_sum_sq_px2: 0.0,
             star_lost: 0,
             interruptions: 0,
-        }),
+        },
         ..guiding_stats_active()
     }
 }

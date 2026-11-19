@@ -27,7 +27,7 @@ rust_library(
     # documented: Bazel refuses to let a non-testonly target depend on this,
     # so the staged inventory cannot reach a shipped binary even by an
     # accidental dep edit. It propagates to consumers, which is right — the
-    # driver sim libraries that will stage inventories are testonly already.
+    # driver sim libraries that stage inventories are testonly already.
     testonly = True,
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
@@ -81,4 +81,21 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

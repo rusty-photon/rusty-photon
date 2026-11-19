@@ -25,9 +25,7 @@ Every package is named `rusty-photon-<svc>` and installs
 `rusty-photon-<svc>.service` unit that is enabled and started on install.
 All daemons run as the shared system user `rusty-photon` (home
 `/var/lib/rusty-photon`, no login shell), created by the first package
-installed. (`phd2-guider` was originally the one plain CLI package; it
-gained a unit when its HTTP service mode landed — issue #464. Its binary
-doubles as the PHD2 CLI via subcommands.)
+installed.
 
 | Service | Port | Notes |
 |---------|------|-------|
@@ -49,7 +47,6 @@ doubles as the PHD2 CLI via subcommands.)
 | planetarium-bridge | 11126 | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | serial (dialout; deb adds plugdev) |
 | gemini-powerbox-adv3-driver | 11132 | serial (dialout; deb adds plugdev) |
-| phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below); its opt-in camera facade adds 11128 on loopback only ([below](#phd2-guider-the-camera-facade)) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
 | session-runner | 11171 | config-gated |
@@ -335,7 +332,7 @@ daemon to supervise.
 Packages ship no config files. Daemons self-create their config on first
 start at `/var/lib/rusty-photon/.config/rusty-photon/<svc>.json` (the
 shared user's XDG path), reachable via the `/etc/rusty-photon` symlink.
-Exceptions: the config-gated five (above) never write one. To change
+Exceptions: the config-gated six (above) never write one. To change
 settings:
 
 ```sh
@@ -365,6 +362,17 @@ rule up on install with no reload step. The restart commands themselves are
 derived from the discovered unit names — the rule's scope and the discovery
 scope are the same set (see
 [sentinel.md §Service discovery](services/sentinel.md#service-discovery)).
+
+## Start the services with every device powered
+
+Start, restart or reload the services, whether at install, upgrade or
+reboot, by hand, or by saving a setup page (which reloads its service),
+with every device powered, USB and 12 V. A start or a reload looks for each
+service's devices then. A camera that is off at that moment is not served
+until the service is restarted or reloaded with the camera powered (a
+listed camera is a placeholder meanwhile). A serial device that is off
+fails its service's start, or ends its process on a reload, and the service
+restarts every 5 s until the device answers.
 
 ## Camera specifics
 
@@ -449,10 +457,13 @@ unit stays inert until `plate-solver.json` exists.
    Gaia-derived to a similar depth, at increasing star density (and
    size: D05 ≈ 100 MB up to D80 ≈ 1.25 GB). D05 is plenty for typical
    deg-class refractor fields (the reference rig's 360 mm + IMX178
-   ≈ 1.2° × 0.8° solves with it; it is also what CI pins). Go denser
-   (D50/D80) only below ~0.6°, and to W08 for very wide fields
-   (> 20°). Either install the database `.deb` from the same site
-   (confirm where it lands with `dpkg -L`) or unzip the database zip
+   ≈ 1.2° × 0.8° solves with it). Go denser (D20 and up) below ~0.6°,
+   and to W08 for very wide fields (> 20°). Below ~0.6° the choice
+   matters with ASTAP CLI-2026.10.30 and later: their more sensitive
+   star detection does not solve CI's 0.42° M101 crop with D05, and does
+   with D20, which is why CI pins D20. Either install the database
+   `.deb` from the same site (confirm where it lands with `dpkg -L`)
+   or unzip the database zip
    into a directory of your choice. Whichever way, `astap_db_directory`
    must point at the *specific* directory holding that database's
    files — the examples here and in the
@@ -490,227 +501,6 @@ unit stays inert until `plate-solver.json` exists.
    a `message` with the offending path. Sentinel shows a `503` as
    *degraded* (amber, message displayed) rather than restart-looping
    a service whose problem a restart cannot cure.
-
-## phd2-guider: PHD2
-
-PHD2 is an external runtime dependency, deliberately not a package
-dependency (bring-your-own, same posture as ASTAP above): `phd2-guider`
-connects to an already-running PHD2 on `localhost:4400` and never spawns
-it — the operator owns the PHD2 process (see
-[phd2-guider.md §HTTP Service Mode](services/phd2-guider.md#http-service-mode-serve)).
-The service itself needs no setup: it runs on built-in defaults and
-keeps retrying the PHD2 connection in the background, so the install
-order does not matter and no service restart is ever needed.
-
-Debian and Raspberry Pi OS ship no `phd2` package, so on a rig host you
-build it from source (upstream's supported route — minutes, not hours,
-on a Pi 5 class machine). PHD2 is a GUI application, so a headless host
-also needs a persistent virtual display; TigerVNC provides that and
-remote viewing in one.
-
-1. **Build and install PHD2.**
-
-   ```sh
-   sudo apt-get install -y build-essential git cmake pkg-config \
-     libwxgtk3.2-dev wx-common wx3.2-i18n gettext zlib1g-dev libx11-dev \
-     libcurl4-gnutls-dev libcfitsio-dev libnova-dev libusb-1.0-0-dev \
-     libeigen3-dev libopencv-dev libgtest-dev
-   git clone --depth 1 --branch v2.6.14 https://github.com/OpenPHDGuiding/phd2.git
-   cmake -S phd2 -B phd2/tmp -DCMAKE_BUILD_TYPE=Release
-   make -C phd2/tmp -j"$(nproc)"
-   sudo make -C phd2/tmp install  # lands at /usr/bin/phd2 (PHD2's cmake sets the /usr prefix itself)
-   ```
-
-   Do **not** pass `-DUSE_SYSTEM_LIBINDI=1` on Debian or Raspberry Pi
-   OS: their `libindi-dev` is 1.9.x and PHD2 requires INDI ≥ 2.0, so
-   the default configure — which downloads and builds PHD2's own INDI
-   client — is the working path. The default build also includes the
-   bundled vendor camera backends (QHY, ZWO, and friends), so guide
-   cameras connect natively with no INDI server involved.
-
-2. **Run PHD2 headless under TigerVNC.**
-
-   ```sh
-   sudo apt-get install -y tigervnc-standalone-server
-   tigervncpasswd                     # one-time: set the viewing password
-   printf '#!/bin/sh\nexport GDK_BACKEND=x11\nexec phd2\n' > ~/.vnc/xstartup
-   chmod +x ~/.vnc/xstartup
-   tigervncserver :1 -localhost yes -geometry 1280x800
-   ```
-
-   PHD2 *is* the VNC session: quitting PHD2 ends the session, and
-   `tigervncserver -kill :1` is the other way down. The
-   `GDK_BACKEND=x11` line is load-bearing — on a host where any Wayland
-   session exists (a Raspberry Pi OS console, for example), GTK prefers
-   the Wayland socket over `DISPLAY` and PHD2 would come up invisible
-   on the physical console instead of the VNC display. The password
-   tool must be `tigervncpasswd`: on Raspberry Pi OS plain `vncpasswd`
-   is RealVNC's unrelated utility and writes a password file TigerVNC
-   cannot read. If `tigervncserver` reports the server "cleanly exited"
-   right after starting, PHD2 crashed on launch (`~/.vnc/<host>:1.log`
-   shows it) — a one-off on the very first start after installation has
-   been observed; starting the session again recovers.
-
-3. **Create the equipment profile (first run only).** Tunnel the
-   display to your workstation and point any VNC viewer at
-   `localhost:5901`:
-
-   ```sh
-   ssh -L 5901:127.0.0.1:5901 <rig-host>
-   ```
-
-   Complete PHD2's first-light wizard. Equipment choices are
-   site-specific and out of scope here; the built-in camera/mount
-   simulator makes a fine smoke-test profile. Afterwards quit PHD2
-   cleanly once (File → Exit — this ends the VNC session) and start it
-   again with the `tigervncserver` line above: PHD2 persists its
-   profile to `~/.PHDGuidingV2` on clean exit, not while running, and
-   an unsaved profile would be lost to a power cut.
-
-4. **Verify.**
-
-   ```sh
-   curl -s -w '\n%{http_code}\n' http://127.0.0.1:11130/health
-   ```
-
-   `200` with `{"status":"ok"}` means phd2-guider holds a live
-   connection to PHD2. `503` with `{"status":"unavailable"}` (plus a
-   human-readable `message`) means it does not — PHD2 is not running,
-   or its event server is disabled (PHD2's Tools → Enable Server, a
-   per-profile setting that defaults to on). The service reconnects on
-   its own within seconds of PHD2 appearing.
-
-Like every other daemon (see [Configuration](#configuration)),
-phd2-guider self-creates its config on first start, which also gives
-sentinel a health-probe URL to derive — the guider is supervised from
-then on. While PHD2 is off — the normal daytime state of a rig — the
-guider's `503` counts as **alive but degraded** under
-[sentinel's health supervision](services/sentinel.md#service-health-supervision):
-no restarts, no notifications, an amber dashboard row showing the
-guider's own `message` (issue #595). Supervision still restarts the
-guider the moment it stops answering HTTP at all.
-
-## phd2-guider: the camera facade
-
-The guider can also serve the guide camera as an ASCOM Alpaca Camera,
-its frames captured by PHD2 itself
-([phd2-guider.md § Camera facade](services/phd2-guider.md#camera-facade-camera)).
-It is off by default. It listens on `127.0.0.1:11128`, loopback only, so
-the host firewall needs no change. It needs PHD2 2.6.14 or later on the
-same host, and one directory that PHD2 can write and the service can read
-and delete in.
-
-Before you enable it, take the guide camera off its vendor driver: give
-that driver (`qhy-camera`, `zwo-camera` or `svbony-camera`) a
-`usb_devices` list without the guide camera's port. Otherwise the driver
-and PHD2 both open it.
-
-1. **Give PHD2 the guide camera's port** (Linux). Every camera package's
-   udev rule, and `rusty-photon-zwo-focuser`'s (ZWO's id, 03c3, which its
-   cameras share), gives its vendor's whole USB id to the `rusty-photon`
-   group, mode 0660, and PHD2, running as you, is not in it. Any one of
-   them installed for the guide camera's vendor, a camera package or not,
-   takes the camera from PHD2. PHD2 then reports
-   no camera at all ("QHY: found 0 cameras" in its debug log). A rule
-   keyed on the guide camera's port gives that one socket to your group
-   instead. Take the port from the vendor driver's `doctor --devices`
-   (its `Port` column), the same port you left off its `usb_devices`
-   list:
-
-   ```sh
-   PORT='platform-xhci-hcd.1-usbv3-0:1'   # the guide camera's port
-   echo "SUBSYSTEM==\"usb\", ENV{DEVTYPE}==\"usb_device\", ENV{ID_PATH_WITH_USB_REVISION}==\"$PORT\", GROUP=\"$(id -gn)\"" \
-     | sudo tee /etc/udev/rules.d/91-rusty-photon-phd2-guide-camera.rules
-   sudo udevadm control --reload
-   sudo udevadm trigger --action=change --settle --property-match=ID_PATH_WITH_USB_REVISION="$PORT"
-   ```
-
-   The file sorts after the packages' `90-` rules, so its group wins for
-   that port, whichever camera is plugged into it. A `change` event
-   re-applies the group without loading a QHY camera's firmware again,
-   since `85-qhyccd.rules` acts only on `add`. `ls -l /dev/bus/usb/*/*`
-   shows the camera's node with your group. Start PHD2 after this, or
-   restart it: its QHY support looks for cameras once, and does not look
-   again after finding none.
-
-   On a board whose USB controller udev names `xhci-hcd.N.auto`
-   (Rockchip, i.MX), doctor's port and udev's differ
-   ([device-claims plan, D2](plans/archive/device-claims-and-phd2-camera.md)),
-   and udev's cannot key this rule. The kernel numbers `.auto`
-   controllers in probe order, so after a reboot the same name can
-   belong to the other controller, and the rule would then give your
-   group whatever camera sits on that socket of it, perhaps the imaging
-   camera. The bus number is no better, since buses are numbered in the
-   order their root hubs register. There the rule must rest on what
-   doctor's port spells: the stable platform node above the controller,
-   the root hub's USB revision and the port chain. A `DEVPATH` pattern
-   with the bus number wildcarded drops the revision, and port 1 of a
-   controller's USB 2 root hub need not be the socket of port 1 of its
-   USB 3 root hub. Write the rule from `udevadm info --attribute-walk`
-   on the camera's node, and check after a reboot that the node still
-   has your group. This recipe has not been worked out on such a board.
-
-2. **Create the shared directory** (Linux). PHD2 runs as you, under your
-   VNC session. The service runs as `rusty-photon` and may write only
-   under `/var/lib/rusty-photon`, which is closed to other accounts. So
-   grant your account a way through, and give the service's group read
-   and write on every file PHD2 creates there:
-
-   ```sh
-   OPERATOR=$(id -un)        # the account PHD2 runs as
-   sudo install -d -o rusty-photon -g rusty-photon -m 0770 /var/lib/rusty-photon/phd2-images
-   sudo setfacl -m u:"$OPERATOR":x /var/lib/rusty-photon                # pass through, no listing
-   sudo setfacl -m u:"$OPERATOR":rwx /var/lib/rusty-photon/phd2-images  # create the frames
-   sudo setfacl -d -m g:rusty-photon:rwx /var/lib/rusty-photon/phd2-images  # service reads + deletes them
-   ```
-
-   The default ACL on the last line matters. Without it, a PHD2 started
-   under `umask 077` creates frames only their owner can read, and the
-   service fails every capture with "permission denied". `setfacl` comes
-   with the `acl` package.
-
-   On Windows, create `%PROGRAMDATA%\rusty-photon\phd2-images` and grant
-   the account PHD2 runs as the right to modify files there:
-
-   ```powershell
-   New-Item -ItemType Directory "$env:ProgramData\rusty-photon\phd2-images"
-   icacls "$env:ProgramData\rusty-photon\phd2-images" /grant "${env:USERNAME}:(OI)(CI)M"
-   ```
-
-   The service runs as `LocalSystem`. This recipe has not yet been run on
-   a Windows host, so check step 4 there with particular care.
-
-3. **Enable the facade** in `phd2-guider.json` and restart the service:
-
-   ```json
-   "camera": {
-     "enabled": true,
-     "pixel_size_x_um": 2.9,
-     "pixel_size_y_um": 2.9,
-     "image_dir": "/var/lib/rusty-photon/phd2-images"
-   }
-   ```
-
-   The pixel sizes come from the guide camera's datasheet; PHD2 does not
-   report them. The first start with `enabled: true` mints the camera's
-   `unique_id` into the file. A wrong `camera` block, or a directory the
-   service cannot write, stops the service with a message naming the
-   field. `journalctl -u rusty-photon-phd2-guider` shows it.
-
-4. **Verify**, with PHD2 running and its camera connected:
-
-   ```sh
-   curl -s -X PUT -d 'Connected=true' http://127.0.0.1:11128/api/v1/camera/0/connected
-   curl -s -X PUT -d 'Duration=1&Light=true' http://127.0.0.1:11128/api/v1/camera/0/startexposure
-   sleep 3
-   curl -s http://127.0.0.1:11128/api/v1/camera/0/imageready
-   ```
-
-   `"Value":true` means a frame PHD2 wrote as you was read by the
-   service account, and then deleted: `ls /var/lib/rusty-photon/phd2-images`
-   shows nothing left behind. An `ErrorNumber` on `startexposure` usually
-   means PHD2 is guiding or looping, since the facade captures only from
-   a stopped PHD2.
 
 ## Removing
 

@@ -37,8 +37,9 @@ pub const SERIAL: &[&str] = &[
 
 /// Services with no config they can default.
 ///
-/// Nothing starts them until an operator writes one: systemd waits for it, the MSI installs them
-/// demand-start, and on macOS nothing runs until `brew services start`.
+/// Nothing runs them until an operator writes one: systemd waits for it, on Windows each stops
+/// itself while it is absent (`ServiceRunner::condition_path_exists`), and on macOS nothing runs
+/// until `brew services start`.
 pub const GATED: &[&str] = &[
     "sky-survey-camera",
     "plate-solver",
@@ -49,14 +50,13 @@ pub const GATED: &[&str] = &[
 ];
 
 /// Services that run on built-in defaults and write no config file.
-pub const NO_CONFIG_FILE: &[&str] = &["qhy-camera", "zwo-camera", "zwo-focuser", "phd2-guider"];
+pub const NO_CONFIG_FILE: &[&str] = &["qhy-camera", "zwo-camera", "zwo-focuser"];
 
 /// Services that answer `/health` rather than the Alpaca management API.
 pub const HEALTH_PROBED: &[&str] = &[
     "sentinel",
     "rp",
     "ui-htmx",
-    "phd2-guider",
     "session-runner",
     "polar-align",
     "focus-model",
@@ -82,7 +82,6 @@ pub const PORTS: &[(&str, u16)] = &[
     ("svbony-camera", 11125),
     ("planetarium-bridge", 11126),
     ("upbv2-driver", 11127),
-    ("phd2-guider", 11130),
     ("plate-solver", 11131),
     ("gemini-powerbox-adv3-driver", 11132),
     ("calibrator-flats", 11170),

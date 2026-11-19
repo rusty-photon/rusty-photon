@@ -23,10 +23,12 @@
 //! [`MountType::from_motor_board_version`] is the whitelist gate used by the
 //! `star-adventurer-gti` driver's connect handshake to refuse to talk to a
 //! device that isn't a Sky-Watcher motor controller before any mount-specific
-//! command (`:F`, `:a`, `:b`, `:g`, …) goes on the wire. See
-//! [issue #254][issue] for the hardware session that motivated this.
-//!
-//! [issue]: https://github.com/rusty-photon/rusty-photon/issues/254
+//! command (`:F`, `:a`, `:b`, `:g`, …) goes on the wire. It rejects every
+//! mount code outside the whitelist: a configured port that names another
+//! device — a focuser's `/dev/serial/by-id` link, say — is an easy mistake,
+//! and with the gate that device sees the one `:e` inquiry and nothing
+//! else. See
+//! [§"Initialisation sequence"](../../../docs/services/star-adventurer-gti.md#initialisation-sequence).
 
 /// Sky-Watcher motor-controller mount families, keyed off the mount code of
 /// the `:e` motor-board-version reply.

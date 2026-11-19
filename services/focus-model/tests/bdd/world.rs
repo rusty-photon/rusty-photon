@@ -12,9 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, FacadeCameraStub, FilterWheelConfig, FocuserConfig, GuiderConfig, GuiderStub,
-    McpTestClient, MountConfig, OpticalTrainConfig, ReceivedEvent, RpConfigBuilder,
-    WebhookReceiver,
+    CameraConfig, FilterWheelConfig, FocuserConfig, GuiderConfig, GuiderStub, McpTestClient,
+    MountConfig, OpticalTrainConfig, ReceivedEvent, RpConfigBuilder, WebhookReceiver,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -66,6 +65,10 @@ fn starless_train() -> Value {
     })
 }
 
+/// The site `OmniSim`'s mount reports, as latitude and longitude in
+/// degrees.
+const SIMULATOR_SITE: (f64, f64) = (51.0786, -0.2944);
+
 #[derive(World, derive_more::Debug)]
 #[debug("FocusModelWorld {{ .. }}")]
 pub struct FocusModelWorld {
@@ -75,9 +78,6 @@ pub struct FocusModelWorld {
     pub focus_model: Option<ServiceHandle>,
     pub webhook_receiver: Option<WebhookReceiver>,
     pub guider_stub: Option<GuiderStub>,
-    /// The guiding train's PHD2 camera facade, a stub over the
-    /// simulator's camera.
-    pub facade_stub: Option<FacadeCameraStub>,
     /// The scenario's MCP client to rp. Dropped in the `after` hook
     /// *before* rp stops (testing.md §5.4).
     pub mcp_client: Option<McpTestClient>,
@@ -140,7 +140,6 @@ impl Default for FocusModelWorld {
             focus_model: None,
             webhook_receiver: None,
             guider_stub: None,
-            facade_stub: None,
             mcp_client: None,
             cameras: Vec::new(),
             filter_wheels: Vec::new(),
@@ -293,12 +292,38 @@ impl FocusModelWorld {
         // The sweep captures through the train, which rp files under
         // its `directory_pattern` — whose default renders
         // `{night_date}` from the site's local night, so rp needs a
-        // site. No mount is rostered, so any site will do.
-        builder.with_site(47.6062, -122.3321);
+        // site. It is the simulator's mount's: a guiding-train rig
+        // rosters that mount, and rp refuses to start on a mount whose
+        // site disagrees with the configured one.
+        builder.with_site(SIMULATOR_SITE.0, SIMULATOR_SITE.1);
         if let Some(port) = self.rp_port {
             builder.with_port(port);
         }
         builder.build()
+    }
+
+    /// The `UniqueID` the simulator lists for its first device of
+    /// `device_type` (`Camera`, `Telescope`, ...): device 0, the one rp
+    /// binds.
+    pub async fn simulator_unique_id(&self, device_type: &str) -> String {
+        let url = format!("{}/management/v1/configureddevices", self.omnisim_url());
+        let body: Value = reqwest::get(&url)
+            .await
+            .expect("failed to GET the simulator's configureddevices")
+            .json()
+            .await
+            .expect("configureddevices is not JSON");
+        body["Value"]
+            .as_array()
+            .expect("configureddevices has no Value array")
+            .iter()
+            .find(|device| device["DeviceType"] == device_type)
+            .and_then(|device| device["UniqueID"].as_str())
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| {
+                panic!("the simulator lists no {device_type} with a UniqueID: {body}")
+            })
+            .to_string()
     }
 
     /// Wait for rp's `/health` endpoint to return 200.

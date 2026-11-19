@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::ObservingConditions;
 use tracing::{debug, error};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
@@ -32,8 +33,9 @@ impl ObservingConditionsEntry {
 pub(super) async fn establish_observing_conditions(
     config: &config::ObservingConditionsConfig,
     ca_cert_path: Option<&std::path::Path>,
+    budget: ConnectBudget,
 ) -> Result<Arc<dyn ObservingConditions>, EstablishError> {
-    establish_listed(config, ca_cert_path).await
+    establish_listed(config, ca_cert_path, budget).await
 }
 
 pub(super) async fn connect_observing_conditions(
@@ -42,7 +44,7 @@ pub(super) async fn connect_observing_conditions(
 ) -> ObservingConditionsEntry {
     debug!(oc_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to observing conditions");
 
-    match establish_observing_conditions(config, ca_cert_path).await {
+    match establish_observing_conditions(config, ca_cert_path, ConnectBudget::Full).await {
         Ok(oc) => {
             debug!(oc_id = %config.id, "observing conditions connected successfully");
             ObservingConditionsEntry {

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::Rotator;
 use tracing::{debug, error};
 
+use super::alpaca::ConnectBudget;
 use super::binding::{establish_listed, reported_name, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
@@ -62,8 +63,9 @@ fn step_size_read(rotator_id: &str, read: ascom_alpaca::ASCOMResult<f64>) -> Opt
 pub(super) async fn establish_rotator(
     config: &config::RotatorConfig,
     ca_cert_path: Option<&std::path::Path>,
+    budget: ConnectBudget,
 ) -> Result<(Arc<dyn Rotator>, RotatorInvariants), EstablishError> {
-    let rot = establish_listed(config, ca_cert_path).await?;
+    let rot = establish_listed(config, ca_cert_path, budget).await?;
     let invariants = RotatorInvariants {
         name: reported_name(&config.id, rot.name().await),
         step_size_degrees: step_size_read(&config.id, rot.step_size().await),
@@ -77,7 +79,7 @@ pub(super) async fn connect_rotator(
 ) -> RotatorEntry {
     debug!(rotator_id = %config.id, alpaca_url = %config.alpaca_url, device_number = config.device_number, "connecting to rotator");
 
-    match establish_rotator(config, ca_cert_path).await {
+    match establish_rotator(config, ca_cert_path, ConnectBudget::Full).await {
         Ok((rot, invariants)) => {
             debug!(rotator_id = %config.id, ?invariants, "rotator connected successfully; cached its name and step size");
             RotatorEntry {

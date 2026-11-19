@@ -16,9 +16,7 @@
 //! - a [`SERIAL`] driver exits on its absent device and systemd restarts
 //!   it: it is checked for its handshake attempt in the journal and its
 //!   config, and held to serving only if it settles active;
-//! - the cameras, zwo-focuser and phd2-guider create no config
-//!   ([`NO_CONFIG_FILE`]), and phd2-guider's `/health` answers 503 with no
-//!   PHD2 to talk to;
+//! - the cameras and zwo-focuser create no config ([`NO_CONFIG_FILE`]);
 //! - svbony-camera's package does not ship the SDK it links (ADR-018): the
 //!   run checks it is absent and installs it with the helper the package
 //!   carries, as an operator would, before the ordinary checks;
@@ -496,44 +494,14 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         let url = format!("http://127.0.0.1:{port}{path}");
         // `--max-time`: a service that binds its port and never answers is
         // what the probe is for.
-        if service == "phd2-guider" {
-            // No PHD2 in the container, so its `/health` answers 503, which
-            // still shows the listener serves.
-            let mut last = String::new();
-            let answered = self.wait_until(30, |run| {
-                let code = run.read(&[
-                    "curl",
-                    "-s",
-                    "--max-time",
-                    "5",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    &url,
-                ]);
-                last = if code.is_empty() {
-                    "000".to_owned()
-                } else {
-                    code
-                };
-                last == "200" || last == "503"
-            });
-            self.require(
-                answered,
-                service,
-                &format!("no HTTP response on port {port} ({path}; last code {last})"),
-            )?;
-        } else {
-            let answered = self.wait_until(30, |run| {
-                run.ok(&["curl", "-fsS", "--max-time", "5", "-o", "/dev/null", &url])
-            });
-            self.require(
-                answered,
-                service,
-                &format!("no HTTP response on port {port} ({path})"),
-            )?;
-        }
+        let answered = self.wait_until(30, |run| {
+            run.ok(&["curl", "-fsS", "--max-time", "5", "-o", "/dev/null", &url])
+        });
+        self.require(
+            answered,
+            service,
+            &format!("no HTTP response on port {port} ({path})"),
+        )?;
         match service {
             "sentinel" => self.sentinel(service)?,
             "zwo-camera" => {
@@ -1414,24 +1382,9 @@ mod tests {
     }
 
     #[test]
-    fn phd2_guider_passes_on_a_503_and_fails_on_no_answer() {
-        let linux = Linux::new(&["phd2-guider"]);
-        let mut runner = container_script().on(&c("curl -s "), || Ok("503".to_owned()));
-        linux.verify(&mut runner, &request(None, false)).unwrap();
-        let mut runner = container_script().on(&c("curl -s "), || Err(()));
-        let error = linux
-            .verify(&mut runner, &request(None, false))
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "FAIL [phd2-guider]: no HTTP response on port 11130 (/health; last code 000)"
-        );
-    }
-
-    #[test]
-    fn phd2_guider_writes_no_config() {
-        let linux = Linux::new(&["phd2-guider"]);
-        let mut runner = container_script().on(&c("curl -s "), || Ok("200".to_owned()));
+    fn qhy_camera_writes_no_config() {
+        let linux = Linux::new(&["qhy-camera"]);
+        let mut runner = container_script();
         linux.verify(&mut runner, &request(None, false)).unwrap();
         // Nor waits for one; its purge still checks none is left.
         assert!(

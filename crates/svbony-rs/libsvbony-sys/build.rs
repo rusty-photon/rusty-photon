@@ -5,8 +5,9 @@
 //! script's main job is emitting the native link directives for the
 //! system-installed `libSVBCameraSDK` (+ `libusb-1.0`). On macOS/Linux it
 //! also emits the `svbony_keep_libusb` cfg, which turns on a `#[used]`
-//! keep-alive reference in `lib.rs` — see that cfg's doc comment there for
-//! why `-lusb-1.0` alone is not enough (issue #681).
+//! keep-alive reference in `lib.rs` — see the doc comment of the
+//! `libusb_keepalive` module it gates for why `-lusb-1.0` alone is not
+//! enough.
 //!
 //! Two env overrides, mirroring `libqhyccd-sys`/`libzwo-sys`:
 //! - `SVBONY_SDK_LIB_DIR=/path/to/lib` — add an explicit SDK search path.
@@ -20,11 +21,10 @@
 //! covers Linux/macOS only. Its `.lib`/`.dll` (x86 + x64) export plain,
 //! undecorated `cdecl` names matching this crate's `extern "C"` bindings, and
 //! reference no `libusb` — the DLL drives the camera through Windows' in-box
-//! `WinUSB`. Like the Linux/macOS blob it ships no license text (ADR-018). The
-//! vendor download is captcha-gated (not scriptable), so CI provisions it
-//! from the project's private token-gated mirror instead
-//! (`install-svbony-sdk` on Windows, ADR-018 §7); builds without mirror
-//! access set `SVBONY_SKIP_NATIVE_LINK`.
+//! `WinUSB`. Like the Linux/macOS blob it ships no license text. The vendor
+//! download is captcha-gated (not scriptable), so CI provisions it from the
+//! project's private token-gated mirror instead (`install-svbony-sdk` on
+//! Windows); builds without mirror access set `SVBONY_SKIP_NATIVE_LINK`.
 
 use std::env;
 
@@ -78,12 +78,11 @@ fn main() {
 
     match target_os.as_str() {
         "macos" => {
-            // Best-effort only: indi-3rdparty's libsvbony packaging carries
-            // just a `mac64` (Intel) blob. No `mac_arm64` blob has been
-            // confirmed via that source as of SDK 1.13.4 (SVBony's own direct
-            // SDK download has not yet been byte-verified — see
-            // docs/plans/archive/svbony-camera.md "Packaging"), so this link may fail
-            // on Apple Silicon until that is checked/staged.
+            // Best-effort only: indi-3rdparty's libsvbony packaging of SDK
+            // 1.13.4 carries just a `mac64` (Intel) blob, and no Apple
+            // Silicon build from SVBony's own SDK download has been
+            // verified, so this link fails on Apple Silicon unless one is
+            // provisioned (docs/services/svbony-camera.md "Packaging").
             println!("cargo:rustc-link-search=native=/usr/local/lib");
             let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
             if arch == "aarch64" {
@@ -116,7 +115,8 @@ fn main() {
             // `libSVBCameraSDK.so` linker name in an ldconfig-scanned prefix
             // (how CI installs it) resolves `-lSVBCameraSDK` with no RUNPATH
             // trick; the packaged binary instead resolves the blob through
-            // RUNPATH=/usr/lib/rusty-photon (ADR-018 §4).
+            // RUNPATH=/usr/lib/rusty-photon (docs/services/svbony-camera.md
+            // "Packaging").
             println!("cargo:rustc-link-search=native=/usr/local/lib");
             println!("cargo:rustc-link-lib=dylib=SVBCameraSDK");
             println!("cargo:rustc-link-lib=dylib=usb-1.0");

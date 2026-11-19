@@ -26,12 +26,11 @@ one implementation.
   callers that run an operator's line — renewal hooks, restart commands — do
   not each carry their own copy of `cmd`'s quoting rules.
 
-Out of scope: long-lived supervised children — `phd2-guider` holding the PHD2
-process, `bdd-infra`'s `ServiceHandle`, OmniSim. Those need lifecycle state,
-health and restart, which is a different problem; folding them in would give
-the crate two unrelated jobs. Commands whose answer is immediate and whose
-failure is harmless (`id -G` in `rusty-photon-config`, `which phd2`) do not
-need it either.
+Out of scope: long-lived supervised children — `bdd-infra`'s `ServiceHandle`,
+OmniSim. Those need lifecycle state, health and restart, which is a different
+problem; folding them in would give the crate two unrelated jobs. Commands
+whose answer is immediate and whose failure is harmless (`id -G` in
+`rusty-photon-config`) do not need it either.
 
 ## The contract
 
@@ -109,6 +108,21 @@ A graceful signal that cannot be delivered skips the grace period and goes
 straight to the force-kill: there is nothing to wait for. On Windows that is
 the normal case for a service, which has no console for `CTRL_BREAK_EVENT`
 to travel through. A grace of zero does the same deliberately.
+
+**A child still starting up answers late.** On Windows, a `CTRL_BREAK_EVENT`
+that reaches a child still starting up (its loader running, before `main`)
+is held until that start-up ends, and is then answered by whatever handler
+the child has by then — the default one, which exits, if `main` has not
+installed its own yet. So the grace runs from the signal, but a child can
+answer only from the end of its start-up: one that takes longer to start
+than deadline plus grace is `Stop::Killed` though it would have answered.
+Measured on a 32-vCPU Windows 11 guest, with a sleeping child whose
+start-up was stretched by a TLS callback, a 100 ms deadline and a 2 s grace:
+a 500 ms or 1.5 s start-up ends `Terminated`, answered as start-up ends; a
+3 s one ends `Killed` at 2.12 s. Production deadlines are tens of seconds,
+so only a run with a deadline of a fraction of a second meets this, and a
+test of the graceful stop gives its child a deadline that leaves start-up
+room on a loaded runner.
 
 **A kill that does not land at once.** `SIGKILL` ends a running process at
 once, but one in uninterruptible sleep — a read from a wedged USB device, the

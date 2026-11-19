@@ -48,11 +48,11 @@ For custom monitors/notifiers (e.g. in an astrophotography app), use `with_monit
 
 ### State Flow
 
-1. Engine starts, connects each monitor (PUT `connected=true`)
+1. Engine starts, connects each monitor (PUT `connected=true`), and connects a monitor again whenever its device answers a poll with `NotConnected` ([Monitor Types](#monitor-types))
 2. Engine spawns a tokio polling task per monitor at configured interval
-3. Each poll: GET `issafe`, compare with stored state, if transition matches a configured rule, dispatch to notifiers
+3. Each poll: GET `issafe`. A reading that differs from the monitor's last known reading is a state change, and so are the monitor becoming unreadable and its first reading afterwards ([What counts as a change](#what-counts-as-a-change)); a change that matches a configured rule is dispatched to the rule's notifiers
 4. SharedState updated on every poll, dashboard reads from it
-5. On shutdown: disconnect monitors (PUT `connected=false`)
+5. On shutdown: abandon any poll in flight, then disconnect monitors (PUT `connected=false`)
 
 ## Configuration
 
@@ -153,10 +153,11 @@ never carry fails config load with the field named.
 Sentinel has **no configured service registry**. It discovers the services it
 supervises from the platform service manager: at startup and every 60 s
 thereafter it enumerates the installed `rusty-photon-*` service units
-(excluding its own, and excluding scheduled-job units — currently
+(excluding its own; excluding scheduled-job units — currently
 `rusty-photon-renew`, the TLS renewal oneshot its own package ships:
 supervising a job would restart-loop a failed run, and a dashboard row
-for it would be noise) and derives everything the retired `services` map
+for it would be noise) and derives
+everything the retired `services` map
 used to spell out. The rule (ADR-016 decision 8) is not "static vs. dynamic" but
 *whether the source of truth can be down when you need it*: asking a dead
 driver how to restart itself fails that test; asking the service manager —
@@ -235,12 +236,16 @@ The probe path follows the service's **probe class**:
 - **Alpaca drivers** answer `GET {base}/management/v1/configureddevices` — no
   device number needed, so no device knowledge leaks into sentinel.
 - **Non-Alpaca services** (`rp`, `plate-solver`, `session-runner`,
-  `calibrator-flats`, `focus-model`, `polar-align`, `phd2-guider`,
-  `ui-htmx`) answer `GET {base}/health`.
+  `calibrator-flats`, `focus-model`, `polar-align`, `ui-htmx`) answer
+  `GET {base}/health`.
   These are exactly the services that define a `/health` route; the Alpaca
   drivers have none, by design. The set is a compile-time constant; a new
   non-Alpaca service must be added to it (a unit test asserts every listed
   name exists under `services/*/pkg`).
+
+**Designed and not yet built.** `guider` joins the non-Alpaca set with
+its package
+([guider.md § Supervision and recovery](guider.md#supervision-and-recovery)).
 
 A missing or unreadable `<svc>.json` means no probe URL can be derived: the
 service's health reports `unknown`, nothing is restarted because of it, and
@@ -289,7 +294,9 @@ no privilege boundary is crossed.
 
 ### Monitor Types
 
-- `alpaca_safety_monitor` — Polls an ASCOM Alpaca SafetyMonitor device. Supports optional `auth` section with `username` and `password` (plaintext) for connecting to auth-enabled services. See [ADR-003](../decisions/003-authentication-for-device-access.md).
+- `alpaca_safety_monitor` — Polls an ASCOM Alpaca SafetyMonitor device. Supports optional `auth` section with `username` and `password` (plaintext) for connecting to auth-enabled services. See [ADR-003](../decisions/003-authentication-for-device-access.md). Every request to the device (the `issafe` poll and the `connected` PUTs at start-up and shutdown) is bounded at 5 s. A poll the device has not answered by then reads `Unknown`, as an unreachable device does, so a host that drops the request, or a server that accepts the connection and never answers, costs a poll 5 s instead of holding the poll loop, and start-up, for as long as the operating system keeps the connection open. A LAN Alpaca server answers in milliseconds.
+
+  A device that answers a poll with `NotConnected` (ASCOM error `0x407`) is connected again within that poll: sentinel PUTs `Connected=true` and asks `issafe` once more, and the second answer is the poll's reading. A SafetyMonitor answers that way after its service restarts, including a restart by sentinel's own [health supervision](#service-health-supervision), when it came up after sentinel, or after another client disconnected it. Without the reconnect it would read `Unknown` until sentinel restarted. If the PUT fails or the device still answers `NotConnected`, the poll reads `Unknown` and the next poll tries again. Connecting a SafetyMonitor actuates nothing.
 
 In addition to the polled monitors above, the optional `operation_watchdog` block configures the push-based [Operation Watchdog](#operation-watchdog), which subscribes to an rp event stream rather than polling a device.
 
@@ -299,6 +306,11 @@ In addition to the polled monitors above, the optional `operation_watchdog` bloc
   optional `api_url` field that overrides the endpoint
   (`https://api.pushover.net/1/messages.json` by default); set it to point at a
   self-hosted Pushover-compatible relay, or at a local stub in tests.
+  Each POST is bounded at 10 s. One the endpoint has not answered by then
+  fails and is recorded in the notification history as failed, as an error
+  status is. A monitor's notifications are sent from its poll loop, so the
+  bound is what keeps a Pushover endpoint that accepts the connection and
+  stalls from stopping that monitor's polling.
 
 ### Environment Variable Overrides
 
@@ -332,12 +344,63 @@ op run --env-file .env -- cargo run -p sentinel -- -c services/sentinel/examples
 
 Transitions define when notifications should be sent. Each rule specifies:
 - Which monitor to watch (`monitor_name`)
-- Which direction of change (`safe_to_unsafe`, `unsafe_to_safe`, or `both`)
+- Which change it fires on (`direction`: `safe_to_unsafe`, `unsafe_to_safe`, `both` or `unreadable`, [below](#directions))
 - Which notifiers to use
-- A message template with `%monitor_name%` and `%new_state%` placeholders
+- A message template with `%monitor_name%` and `%new_state%` placeholders. Without one, a rule uses `%monitor_name% changed to %new_state%`, and an `unreadable` rule `%monitor_name% is now %new_state%`: its first reading after an outage can be the reading the monitor had before, which is no change
 - Optional priority and sound overrides
 
 Empty transitions config means no notifications are sent.
+
+#### What counts as a change
+
+A poll reads the monitor as `Safe`, `Unsafe` or `Unknown`. `Unknown` means
+sentinel could not read it: the device is unreachable, or it answered with a
+non-200 status, an ASCOM error or a body sentinel cannot parse.
+
+Sentinel compares a `Safe` or `Unsafe` reading with the monitor's **last
+known reading**, the last `Safe` or `Unsafe` it gave, not with the poll
+before. Polls that read `Unknown` in between change nothing: `Safe`,
+`Unknown`, `Unsafe` is a change from `Safe` to `Unsafe`, and `Safe`,
+`Unknown`, `Safe` is no change. A notifier therefore hears of a roof that
+closed while its monitor dropped one poll. The first reading after sentinel
+starts has no last known reading to differ from and is no change.
+
+A monitor that has failed five polls in a row is **unreadable**. The fifth
+failure is a change to `Unknown`, once per outage however long it lasts,
+and the first `Safe` or `Unsafe` reading after it is a change too: the
+monitor is readable again. Sentinel waits one `polling_interval` after
+each poll returns, so the fifth failure comes five intervals after the
+monitor's last reading, plus the time the five failed polls took to fail:
+none for a refused connection, at most 5 s each for a device that does not
+answer ([Monitor Types](#monitor-types)).
+An outage of fewer than five polls is not one. The fifth failure is also
+where sentinel logs its consecutive-errors warning.
+
+#### Directions
+
+| `direction` | Fires on |
+|-------------|----------|
+| `safe_to_unsafe` | An `Unsafe` reading whose last known reading is `Safe` |
+| `unsafe_to_safe` | A `Safe` reading whose last known reading is `Unsafe` |
+| `both` | Either of the two above |
+| `unreadable` | The monitor becoming unreadable (`%new_state%` is `Unknown`), and its first reading afterwards (`%new_state%` is `Safe` or `Unsafe`) |
+
+Each rule matches on its own, so one change can fire several rules. A
+monitor last read `Safe` that comes back from an outage reading `Unsafe`
+fires a `safe_to_unsafe` rule and an `unreadable` rule.
+
+```json
+{
+  "transitions": [
+    {
+      "monitor_name": "Roof Monitor",
+      "direction": "unreadable",
+      "notifiers": ["pushover"],
+      "message_template": "%monitor_name% is now %new_state%"
+    }
+  ]
+}
+```
 
 ### Authentication
 
@@ -611,8 +674,9 @@ auth when `service_auth` is configured. Alive means a `200`, **or a
 on the pair matching; `doctor` diagnoses a mismatched pair as
 `auth.mismatch`) — **or a `503`**, which is alive but **degraded**: a
 service that deliberately answers `503` has a live HTTP loop and is
-reporting that an external dependency is unavailable (phd2-guider without
-a running PHD2, plate-solver without its ASTAP binary or star database) —
+reporting that an external dependency is unavailable (a guider whose
+devices are switched off, plate-solver without its ASTAP binary or star
+database) —
 a condition a service restart cannot cure, so supervision must not try
 (issue #595). A degraded answer resets the outage exactly like a healthy
 one: no failure counting, no restart, no notification; the dashboard shows
@@ -638,7 +702,7 @@ sentinel makes a best-effort attempt to read an optional top-level
 opaque** to the dashboard next to the amber badge, truncated to 200
 characters and HTML-escaped at render (bodies over 4 KiB are not parsed
 at all — the supervision loop does bounded work per probe). The message lets a service say
-*why* it is degraded (`"no connection to PHD2 on localhost:4400"`) in the
+*why* it is degraded (`"the camera is not connected"`) in the
 operator's face without sentinel understanding or acting on a word of it.
 A missing, non-JSON, or message-less body simply shows no message.
 
@@ -719,10 +783,14 @@ one restart of a given service runs at any time:
 
 ## Service Restart API
 
-Sentinel owns **process restart** for the rest of the stack (`rp.md`
-§Sentinel Watchdog Integration; the service-lifecycle split: drivers
-reload *themselves* after a setup-page save, sentinel restarts
-*processes*). The dashboard router exposes one endpoint:
+Sentinel restarts a process when supervision or an operator calls for it
+(`rp.md` §Sentinel Watchdog Integration). Two paths change a running
+service without sentinel: a driver reloads *itself* after a setup-page
+save, and an ASCOM driver service ends itself when a client asks it to
+restart, for its service manager to start again, which is how `rp`'s
+`restart_service` restarts a driver
+([rusty-photon-service-lifecycle § Restart on request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
+The dashboard router exposes one endpoint:
 
 ```
 POST /api/services/{name}/restart
@@ -868,11 +936,15 @@ services/sentinel/src/
 
 | Scenario | Behavior |
 |----------|----------|
-| Initial state (first poll) | Unknown to Safe/Unsafe. No notification by default. |
-| Device unreachable | Returns MonitorState::Unknown. No notification. Increments error counter. |
-| Device recovers | Unknown to Safe/Unsafe can trigger notification if configured. Error counter resets. |
-| Pushover failure | Log warn, record failure in history. No retry. |
+| Initial state (first poll) | No last known reading to differ from: no change, no notification. |
+| Device unreachable | The poll reads `Unknown` and the error counter goes up. No change until the fifth failure in a row, which makes the monitor unreadable (`unreadable` rules fire). |
+| Device recovers | The error counter resets. A reading that differs from the last known one fires `safe_to_unsafe` / `unsafe_to_safe` / `both` rules; after an unreadable outage the first reading also fires `unreadable` rules. |
+| Unknown between two readings | Ignored: the reading after it is compared with the one before it. |
+| Pushover failure | Log warn, record failure in history. No retry. A POST unanswered after 10 s is a failure. |
 | ASCOM error response | Treated as Unknown (same as unreachable). |
+| Device does not answer | The request is abandoned after 5 s and the poll reads Unknown (same as unreachable). A connect that times out at start-up is logged, as a refused one is, and start-up goes on. |
+| Device rejects the connect (a non-200 status, or an ASCOM error in the answer) | Logged as a failed connect, as a refused one is; start-up goes on. |
+| Device answers `NotConnected` (its service restarted, or came up after sentinel) | Sentinel connects it again and reads it in the same poll. |
 | Rapid flapping | Every real transition triggers notification. |
 | Empty transitions | Valid config. Monitors run, dashboard works, no notifications. |
 | Dashboard port conflict | Log error, continue without dashboard. |

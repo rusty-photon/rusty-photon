@@ -1,6 +1,6 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
 //! `bdd-infra`, plus the Givens that start this service as a process in each
-//! shape and the steps on its (now empty) action lists.
+//! shape and the steps on its empty action lists.
 
 use std::sync::Arc;
 

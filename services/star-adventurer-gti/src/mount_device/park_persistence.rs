@@ -59,8 +59,8 @@ pub fn probe_park_file_writability(config_path: &Path) -> std::io::Result<()> {
 /// — `SetPark` will still attempt the write against the path as given,
 /// surfacing the real error there.
 ///
-/// Extracted from `main.rs` so the warn-on-failure branch is unit
-/// testable; the binary calls this from `main()`.
+/// Lives here rather than in `main.rs` so the warn-on-failure branch
+/// is unit testable; the binary calls this from `main()`.
 #[must_use]
 pub fn canonicalise_config_path(config_path: &Path) -> PathBuf {
     std::fs::canonicalize(config_path).unwrap_or_else(|e| {
@@ -81,8 +81,8 @@ pub fn canonicalise_config_path(config_path: &Path) -> PathBuf {
 /// not affected; the capability still advertises support and the actual
 /// `SetPark` will surface a structured error if the probe was correct.
 ///
-/// Extracted from `main.rs` so the warn-on-failure branch is unit
-/// testable.
+/// Lives here rather than in `main.rs` so the warn-on-failure branch
+/// is unit testable.
 pub fn warn_if_park_path_unwritable(config_path: &Path) {
     if let Err(e) = probe_park_file_writability(config_path) {
         tracing::warn!(
@@ -95,14 +95,16 @@ pub fn warn_if_park_path_unwritable(config_path: &Path) {
 
 /// Decode an optional park-tick JSON value:
 ///
-/// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (caller
-///   falls back to the handshake-captured value).
+/// - Absent (`None`) or explicit `Value::Null` → `Ok(None)` (the
+///   axis takes the `preferred_ap_park` pose when the frame is
+///   anchored, and otherwise has no park target, so a park stops in
+///   place).
 /// - A JSON integer in the signed-24-bit encoder range
 ///   `[POSITION_MIN, POSITION_MAX]` → `Ok(Some(n))`.
 /// - Anything else (string, float, boolean, array/object, integer
 ///   outside the i24 encoder range) → `Err(StarAdvError::Config)`.
 ///   Loud failure on operator typo is the whole reason this helper
-///   exists — silently falling back to handshake would mask the
+///   exists — silently treating a typo as absent would mask the
 ///   misconfiguration, and silently accepting an out-of-range value
 ///   would only defer the failure to `MountManager::send`'s
 ///   pre-encode validation at the first park attempt.
@@ -279,8 +281,6 @@ pub(super) fn write_mount_fields_to_config(
     config_path: &Path,
     updates: &[(&str, serde_json::Value)],
 ) -> crate::error::Result<()> {
-    use std::io::Write;
-
     let content = std::fs::read_to_string(config_path)
         .map_err(|e| StarAdvError::Config(format!("read config {}: {e}", config_path.display())))?;
     let mut root: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
@@ -305,29 +305,40 @@ pub(super) fn write_mount_fields_to_config(
     // operators editing the file later don't trip POSIX "no newline at
     // end of file" warnings in diffs.
     pretty.push('\n');
+    write_atomically(config_path, &pretty)
+}
+
+/// Replace `path` with `contents` atomically and durably: a temp file in
+/// the same directory, `fsync`'d, renamed over `path`, then (on unix) the
+/// directory `fsync`'d so the rename itself survives a crash.
+///
+/// # Errors
+///
+/// Returns [`StarAdvError::Config`] naming the step that failed.
+pub fn write_atomically(path: &Path, contents: &str) -> crate::error::Result<()> {
+    use std::io::Write;
 
     // Temp file must live in the **same directory** as the destination
     // so `persist` can use POSIX `rename` (atomic on the same
     // filesystem) rather than copy-and-delete. Fall back to the
     // current dir if the path has no parent (e.g. a bare filename),
     // which is what Path::parent returns Some("") for — coerce to ".".
-    let parent = config_path
+    let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
         StarAdvError::Config(format!("create temp file in {}: {e}", parent.display()))
     })?;
-    tmp.write_all(pretty.as_bytes())
+    tmp.write_all(contents.as_bytes())
         .map_err(|e| StarAdvError::Config(format!("write temp file: {e}")))?;
     // fsync the file data so a crash after rename cannot surface a
     // renamed-but-zero-length sidecar.
     tmp.as_file()
         .sync_all()
         .map_err(|e| StarAdvError::Config(format!("fsync temp file: {e}")))?;
-    tmp.persist(config_path).map_err(|e| {
-        StarAdvError::Config(format!("atomic rename to {}: {e}", config_path.display()))
-    })?;
+    tmp.persist(path)
+        .map_err(|e| StarAdvError::Config(format!("atomic rename to {}: {e}", path.display())))?;
     // fsync the parent directory so the rename itself is durable.
     // Windows can't open a directory as a regular file handle, so this
     // is unix-only. Mirrors `services/rp/src/persistence/document.rs`.

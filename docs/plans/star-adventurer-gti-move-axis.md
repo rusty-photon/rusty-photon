@@ -56,7 +56,9 @@ plan has the shape it has:
 - **The fastest rate is unknown, and a stall is invisible.** The GTi
   answers the high-speed-ratio query with `1` on both axes, so the
   spec's formula for the fast regime gives sidereal, and the driver
-  stopped relying on it (design doc, §Phase 4 findings). The only
+  stopped relying on it
+  ([the phase record, §Phase 4 findings](archive/star-adventurer-gti-phase-record.md#phase-4-findings-hardware-bringup)).
+  The only
   rate-controlled motion ever run on the hardware on purpose is
   Tracking-**Slow**, up to 8× sidereal (the #1299 probe's return leg).
   Tracking-**Fast** has run once, by accident: the Phase 4 codec bug
@@ -65,7 +67,9 @@ plan has the shape it has:
   no encoder: `:j` is the firmware's **commanded** step counter, a
   stalled motor keeps counting at exactly the commanded rate, and the
   one stall ever seen on the rig was heard, with the counter still
-  advancing (design doc, §Phase 4 driver-logic changes). So the
+  advancing
+  ([the phase record, §Phase 4 driver-logic changes](archive/star-adventurer-gti-phase-record.md#phase-4-driver-logic-changes-that-real-hardware-required)).
+  So the
   ceiling cannot be read off the wire at all; it is measured against
   an independent reference, by an operator. `AxisRates` is a promise to
   clients; it is made from that measurement, not from a formula.
@@ -277,9 +281,11 @@ Experiments, per axis:
 
 Outputs: `exchanges.jsonl` and `summary.json` as the existing probe
 writes them, attached to the tracking issue with the tables (the probe
-is not a ConformU run, so there is **no** `docs/validation/` record —
-the 2026-09-28 entry in the design doc's §Real-hardware validation is
-the shape: a dated entry that says so); the measured facts into
+is not a ConformU run, so there is **no** `docs/validation/` record,
+and the dated row in this plan's Decisions table says so — the
+2026-09-28 entry in
+[the log of the runs on the rig](archive/star-adventurer-gti-rig-runs-2026.md#the-runs-newest-first)
+is the shape); the measured facts into
 `docs/references/skywatcher-motor-controller-command-set.md` under
 "Empirically verified"; and the decision inputs into this plan's
 Decisions table with the date.
@@ -674,7 +680,8 @@ that lands M2.
    this; a ConformU pass that TPPA cannot use is not done. Results go
    in the record's README, as the exposure-path tests do in the camera
    records.
-3. The design doc's §Real-hardware validation gets the entry.
+3. The design doc's §Real-hardware validation lists the record, with
+   what it settled.
 
 ## Phase M4 — the fast regime, only if M0 finds one
 
@@ -784,8 +791,10 @@ doc's commands table and `AxisRates` text follow.
 - [`docs/services/star-adventurer-gti.md`](../services/star-adventurer-gti.md)
   §PulseGuide lifecycle (the restore ladder and lock discipline this
   reuses), §Tracking-time safety guard, §Safety envelope, §Altitude
-  floor, §Phase 4 findings (the high-speed ratio, the runaway, the
-  audible stall), §Encoder samples and the read instant.
+  floor, §Encoder samples and the read instant.
+- [`docs/plans/archive/star-adventurer-gti-phase-record.md`](archive/star-adventurer-gti-phase-record.md)
+  §Phase 4 findings and §Phase 4 driver-logic changes (the high-speed
+  ratio, the runaway, the audible stall).
 - [`docs/references/skywatcher-motor-controller-command-set.md`](../references/skywatcher-motor-controller-command-set.md)
   — where M0's measurements go.
 - [`docs/skills/hardware-validation.md`](../skills/hardware-validation.md)

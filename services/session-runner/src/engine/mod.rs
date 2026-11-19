@@ -5,14 +5,14 @@
 //! The normative execution contract — instruction semantics, `result`
 //! scoping, error propagation, the re-entrancy contract, safety behavior —
 //! is `docs/services/session-runner.md`; this module implements it against
-//! two seams so unit tests need no `rp`: a [`ToolClient`] (the real MCP
-//! client arrives with the Phase C service wiring) and a [`Clock`].
+//! two seams so unit tests need no `rp`: a [`ToolClient`] (the service
+//! wires in `mcp_client::McpClient`) and a [`Clock`].
 //!
-//! Phase boundary (`docs/plans/archive/workflow-dsl.md`): the Phase C engine core
-//! plus the Phase D event intake (`wait` `until_event` against the SSE
-//! stream) and trigger engine — the safe-point pump, `when`/`while`
-//! gates, `once`/`cooldown` bookkeeping, poll sources, and synthetic
-//! `correction_requested` events (design § Triggers).
+//! The module holds the engine core, the event intake (`wait`
+//! `until_event` against the SSE stream) and the trigger engine — the
+//! safe-point pump, `when`/`while` gates, `once`/`cooldown` bookkeeping,
+//! poll sources, and synthetic `correction_requested` events (design
+//! § Triggers).
 
 mod exec;
 mod io;

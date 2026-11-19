@@ -7,9 +7,9 @@
 //! [`crate::Session::request`]; it discriminates a transport error from a
 //! codec error so callers can pattern-match without parsing strings.
 //!
-//! Per the design plan, no implicit `From<TransportError>` bound is placed
-//! on `Codec::Error`. Each service flattens `SessionError<C::Error>` into
-//! its own service-wide error enum at the `Manager` public-API boundary.
+//! No implicit `From<TransportError>` bound is placed on `Codec::Error`.
+//! Each service flattens `SessionError<C::Error>` into its own
+//! service-wide error enum at the `Manager` public-API boundary.
 
 use std::io;
 
@@ -49,16 +49,19 @@ pub enum TransportError {
 
     /// The shared transport is currently reconnecting after a transient
     /// transport-loss event (USB drop / replug, cable jostle, peer
-    /// reset). Returned from `Session::request` while the supervisor
-    /// is mid-recovery so callers don't queue against the dying
-    /// transport's command lock. The retry shape is caller-defined;
-    /// the reconnect supervisor recovers the transport on its next
-    /// attempt once the hardware reappears.
+    /// reset), or a stop is owed to the device. Returned from
+    /// `Session::request` while the supervisor is mid-recovery so
+    /// callers don't queue against the dying transport's command lock,
+    /// and while the debt stands so nothing commands a device whose stop
+    /// is not confirmed
+    /// ([§ The request gate](../../../docs/crates/rusty-photon-shared-transport.md#the-request-gate)).
+    /// The retry shape is caller-defined; the reconnect supervisor
+    /// recovers the transport on its next attempt once the hardware
+    /// reappears.
     ///
-    /// `SharedTransport::acquire()` does **not** short-circuit on this
-    /// state in the current implementation — the on-acquire eager
-    /// reconnect path is a follow-up (see the plan doc's reconnect
-    /// triggers table).
+    /// `SharedTransport::acquire()` does **not** return it: during a
+    /// reconnect it hands out a session, and that session's requests
+    /// answer `Reconnecting`.
     #[error("transport is reconnecting")]
     Reconnecting,
 }
@@ -108,10 +111,10 @@ mod tests {
 
     #[test]
     fn codec_error_does_not_implicitly_coerce_from_transport() {
-        // Confirms the discriminated-union design: a codec error has to
-        // be constructed explicitly. If a future change adds a blanket
-        // `From<TransportError> for E` impl on someone's codec error,
-        // this test still passes — it only documents the shape today.
+        // Documents the discriminated-union design: a codec error has to
+        // be constructed explicitly. It pins nothing — a blanket
+        // `From<TransportError> for E` impl on someone's codec error
+        // would leave it passing.
         let err: SessionError<StubCodecError> = SessionError::Codec(StubCodecError);
         assert!(matches!(err, SessionError::Codec(_)));
     }

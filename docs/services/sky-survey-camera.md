@@ -22,17 +22,20 @@ dependencies — same posture as `filemonitor`.
 
 ## MVP Scope
 
-**In scope (v0).** This is the boundary that drives BDD scenario
+**In scope.** This is the boundary that drives BDD scenario
 selection in `tests/features/`. Anything outside this list is deferred
 to *Future Work*.
 
-- ASCOM Alpaca Camera ICameraV3 implementation, monochrome,
+- ASCOM Alpaca Camera implementation (`ICameraV4`), monochrome,
   16-bit-equivalent ADU range.
 - Single survey/band per device instance, fixed at startup by config.
 - Fixed simulated optics from config: focal length, pixel size,
   sensor pixel count.
 - Initial pointing from config; runtime updates via
   `POST /sky-survey/position`.
+- Telescope-following mode: RA/Dec read from an ASCOM Telescope plus
+  a configured offset, and optionally rotation from an ASCOM Rotator
+  (*Telescope follow mode*).
 - `StartExposure` pipeline: derive cutout geometry → fetch from
   SkyView → cache FITS on disk → expose as `ImageArray`.
 - Sub-frame and binning honoured at readout (`NumX`/`NumY`/`StartX`/
@@ -58,14 +61,16 @@ to *Future Work*.
 
 The service uses the `ascom-alpaca` crate already pinned in the workspace.
 The `Camera` trait covers the standard ASCOM Camera surface; this service
-implements the V3 interface (`InterfaceVersion = 3`).
+reports the crate's default `InterfaceVersion`, 4 (`ICameraV4`).
 
 For the survey backend the service uses **NASA SkyView** at
 `https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl`. SkyView accepts an
 exact pixel grid and angular size, returning a FITS cutout with WCS
-headers. v0 ships with a single concrete `SkyViewClient` (in `src/
-survey.rs`) — a `SurveyClient` trait abstraction is deferred until a
-second backend (e.g. CDS `hips2fits`) is added; see *Future Work*.
+headers. The backend sits behind the `SurveyClient` trait (`health_check`,
+`fetch`; in `src/survey.rs`): `SkyViewClient` is its production
+implementation, the unit tests plug stubs into the same seam, and a
+second backend (e.g. CDS `hips2fits`; see *Future Work*) would be one
+more implementation.
 
 ## Configuration
 
@@ -109,7 +114,7 @@ keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a
 schema change fails loudly at load instead of being silently ignored.
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -126,7 +131,7 @@ Configuration sections:
   overrides them. Stored as plain `f64` degrees in J2000. The optional
   `telescope` sub-block (next bullet) switches the camera into
   *telescope-following mode*; when absent, the camera operates in
-  *static-pointing mode* (the v0 behaviour).
+  *static-pointing mode*.
 - **pointing.telescope** *(optional)* — When present, switches the
   camera into telescope-following mode: `StartExposure` reads RA/Dec
   from the configured ASCOM Telescope (over Alpaca) instead of from
@@ -220,15 +225,18 @@ the operator to hand-write a unique string.
   overwritten, and a run that fills nothing performs no write. The
   next load then reads the stable, persisted id.
 - **A missing config file remains a hard error.** Unlike services that
-  have a `Config::default()`, this camera has none — the `optics`
-  fields (focal length, pixel size, sensor dimensions) are mandatory
-  and have no sensible default. Identity materialization therefore
-  runs **only when the config file already exists**; it never
-  scaffolds an identity-only file, because `load_config` would then
-  immediately fail on the missing `optics` section anyway. Operators
-  must supply a config file with at least the `optics` (and the other
-  required) sections; the `device.unique_id` is the one field they may
-  safely leave out and let the service generate.
+  have a `Config::default()`, this camera has none — the `optics` fields
+  (focal length, pixel size, sensor dimensions) are mandatory and have
+  no sensible default. Identity materialization therefore runs **only
+  when the config file already exists**; it never scaffolds an
+  identity-only file, because `load_config` would then immediately fail
+  on the missing `optics` section anyway. Operators must supply a config
+  file with at least the `optics` (and the other required) sections; the
+  `device.unique_id` is the one field they may safely leave out and let
+  the service generate. Run by the Windows SCM without the file, the
+  service stops at once with exit code 0, which the failure actions
+  leave alone (`ServiceRunner::condition_path_exists`;
+  [ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
 - **The file is written only when the result loads.** The minted id is
   applied in memory first, and the file is saved only if the result
   parses as `Config` and passes the same rules `load_config` applies
@@ -245,15 +253,13 @@ This is shared behaviour provided by the `rusty-photon-config` crate,
 identical across the rusty-photon drivers (see
 [docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md)).
 
-> **`--config` default change.** The `--config` flag previously
-> defaulted to the CWD-relative string `config.json`. It is now an
-> optional argument: when omitted, the path is resolved via
-> `rusty_photon_config::resolve_config_path("sky-survey-camera", …)`
-> to the platform config directory
-> (`~/.config/rusty-photon/sky-survey-camera.json` on Linux,
-> `%PROGRAMDATA%\rusty-photon\sky-survey-camera.json` on Windows). **Operators who relied on a
-> CWD-local `config.json` must now pass `--config config.json`
-> explicitly.**
+`--config` is optional. When it is omitted, the path resolves through
+`rusty_photon_config::resolve_config_path("sky-survey-camera", …)` to
+the platform config directory
+(`~/.config/rusty-photon/sky-survey-camera.json` on Linux,
+`%PROGRAMDATA%\rusty-photon\sky-survey-camera.json` on Windows); a
+`config.json` in the working directory is read only when passed as
+`--config config.json`.
 
 `sky-survey-camera doctor [--config <file>] [--json]` diagnoses this
 service's own config read-only without starting it — see
@@ -300,8 +306,8 @@ so `Overrides = ()` and no field is ever pinned. The camera's
   Security section and never shown, and the follow-mode client passwords
   `/pointing/telescope/auth/password` and `/pointing/rotator/auth/password`.
   The follow-mode blocks are not rendered, so those two passwords reach no
-  page today; a save leaves the blocks, passwords included, as the file
-  has them.
+  page; a save leaves the blocks, passwords included, as the file has
+  them.
 - **Validation** on every save applies the load-time rules, the one list
   `config::field_errors` behind `config::validate` (optics `> 0` and
   finite, `survey.request_timeout` `> 0`, telescope offsets finite,
@@ -329,7 +335,7 @@ enum:
 
 ```rust
 enum PointingSource {
-    Static(Arc<SharedPointing>),   // pointing.telescope absent (v0 default)
+    Static(Arc<SharedPointing>),   // pointing.telescope absent (default)
     Telescope(TelescopeFollow),    // pointing.telescope present
 }
 ```
@@ -339,8 +345,8 @@ enum PointingSource {
   so `POST /sky-survey/position` writes are immediately visible to
   the exposure pipeline and to `GET /sky-survey/position`. It starts
   from `pointing.initial_*`. `StartExposure` reads the current value
-  at the moment the exposure begins. This is the v0 behaviour and
-  the default when `pointing.telescope` is absent.
+  at the moment the exposure begins. This is the default, the mode
+  when `pointing.telescope` is absent.
 - **`Telescope`** — Wraps a `TelescopeFollow` whose `reader: Arc<dyn
   MountReader>` is the production `AlpacaMountReader` in deployed
   builds and a `mockall`-generated double in unit tests.
@@ -357,13 +363,13 @@ enum PointingSource {
   position angle when `pointing.rotator` is set (F8), read on every
   light exposure alongside RA/Dec; otherwise it stays at the static
   `pointing.initial_rotation_deg` (ASCOM Telescope itself has no
-  rotation property). `POST /sky-survey/position` is rejected
-  with `409 Conflict` in this mode (F6) — any write would be
-  silently overwritten by the next mount read.
+  rotation property). `POST /sky-survey/position` does not write
+  this source: it arms a one-shot override that the next light
+  exposure uses in place of the mount read (F6, F7).
 
-The mode is fixed for the life of the device. Switching at runtime
-would require teaching `POST /sky-survey/position` to "fall back" or
-"override," which is feature creep without a driving use case.
+The mode is fixed for the life of the device: nothing switches a
+running device between static and telescope pointing. A follow-mode
+POST overrides the pointing of one exposure, not the source.
 
 ### `StartExposure` Pipeline
 
@@ -385,19 +391,20 @@ would require teaching `POST /sky-survey/position` to "fall back" or
    cache using those full-frame binned parameters. On miss, request
    SkyView with them, parse the response, and (only on successful
    parse) store the FITS bytes in the cache.
-6. Parse the FITS primary HDU into `(width, height, Vec<i32>)`,
-   without scaling, noise, or bias (decision #4 in the design
-   discussion: raw survey data passes through). Apply the sub-frame
-   crop using `(StartX, StartY, NumX, NumY)` to produce the final
-   `NumX × NumY` array.
+6. Parse the FITS primary HDU into `(width, height, Vec<i32>)`, with
+   the payload's `BSCALE`/`BZERO` applied and values saturated into
+   `i32`, and nothing else: no exposure scaling, noise, or bias — raw
+   survey data passes through. Apply the sub-frame crop using
+   `(StartX, StartY, NumX, NumY)` to produce the final `NumX × NumY`
+   array.
 7. Update `LastExposureStartTime` and `LastExposureDuration`, mark
    `ImageReady = true`, surface the array via `ImageArray` /
    `ImageArrayVariant`.
 
 The exposure `Duration` parameter is accepted and logged but does not
-scale the signal in v0. We can add linear scaling and noise later when
-the simulator needs to feed downstream tools (e.g. flat calibration)
-that depend on signal-vs-time behaviour.
+scale the signal: there is no signal model (*Future Work*), which a
+downstream tool that depends on signal-vs-time behaviour, such as flat
+calibration, would need.
 
 ### Connection Management
 
@@ -474,17 +481,13 @@ exposure is not interrupted.
 These endpoints are added by composing the `ascom-alpaca` server's
 axum router with our own router, the same pattern `rp` uses to mount
 `/mcp` alongside its narrow technical HTTP routes (see `docs/workspace.md` →
-"HTTP gateway services"). If composition turns out to be impractical
-with the current `ascom-alpaca` API, the fallback is to expose the
-same operation via ASCOM's standard `Action` mechanism
-(`PUT /api/v1/camera/0/action` with `Action=setposition`); the JSON
-shape stays the same.
+"HTTP gateway services").
 
 ### Static mode and follow mode coexist
 
 Both modes are first-class:
 
-- **Static mode** (`pointing.telescope` absent) is the v0 default. It
+- **Static mode** (`pointing.telescope` absent) is the default. It
   keeps the camera decoupled from any mount, lets test harnesses set
   position deterministically via `POST /sky-survey/position`, and
   keeps the simulator usable in setups without a Telescope at all
@@ -499,6 +502,13 @@ Both modes are first-class:
 The custom endpoint stays useful in both modes: in static mode for
 runtime pointing updates, in follow mode for read-back of the
 most-recently-snapshotted state via `GET`.
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## Behavioral Contracts
 
@@ -539,9 +549,9 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
   `AbortExposure` / `StopExposure` answer `NOT_CONNECTED` here too
   (A4). They cannot lean on A2 to cover the disconnected case the
   way the rest of this contract leans on C4: ASCOM makes an idle
-  cancel a *success*, so a refusal no longer says "nothing is in
-  flight" — the only thing it can still say is that there is no
-  session to be idle in.
+  cancel a *success*, so a refusal cannot say "nothing is in
+  flight" — the only thing it can say is that there is no session
+  to be idle in.
 - **C6.** Session **settings** answer the same way as session state:
   `BinX` / `BinY`, `NumX` / `NumY`, `StartX` / `StartY` and every one
   of their setters, plus `SetReadoutMode` and `SetGain`, return
@@ -587,7 +597,7 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
   it cancels itself. The SDK drivers must refuse the equivalent
   members, because theirs describe a camera on the other end of a
   cable nobody is holding open (`qhy-camera`'s E11, `zwo-camera`'s
-  E12, `svbony-camera`'s state-machine step 10) (#1281).
+  E12, `svbony-camera`'s state-machine step 10).
 
 ### Pointing API
 
@@ -604,8 +614,7 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
 - **P5.** A malformed JSON body or a missing required field returns
   `400 Bad Request`.
 - **P6.** `POST /sky-survey/position` while disconnected returns
-  `409 Conflict` and the pointing state is unchanged. (Follow-mode
-  produces a separate 409; see F6.)
+  `409 Conflict` and the pointing state is unchanged, in either mode.
 - **P7.** A pointing update issued during an in-flight exposure does
   not affect the in-flight exposure's snapshotted pointing; it takes
   effect on the next `StartExposure`.
@@ -778,12 +787,12 @@ do not apply in static mode.
   sky position angle, in degrees) fresh alongside the mount RA/Dec
   and uses it, wrapped into `[0, 360)`, as `PointingState::rotation`.
   Without `pointing.rotator`, rotation stays at the static
-  `pointing.initial_rotation_deg` and today's behaviour is preserved
-  verbatim. A failed rotator read (transport error, ASCOM error, or a
-  read exceeding `pointing.rotator.request_timeout`) aborts the
-  snapshot and surfaces via the same `UNSPECIFIED_ERROR` path as F2:
-  `last_error` is set, `image_ready` stays `false`, logged at
-  `warn!`, and the next `StartExposure` retries with a fresh read.
+  `pointing.initial_rotation_deg`. A failed rotator read (transport
+  error, ASCOM error, or a read exceeding
+  `pointing.rotator.request_timeout`) aborts the snapshot and
+  surfaces via the same `UNSPECIFIED_ERROR` path as F2: `last_error`
+  is set, `image_ready` stays `false`, logged at `warn!`, and the
+  next `StartExposure` retries with a fresh read.
   Like the mount (F3/F4), the rotator is read on every light exposure
   with no client-side cache, and `set_connected(true)` does not probe
   it. Dark exposures skip the rotator read (per F1, they skip the
@@ -811,7 +820,7 @@ graph TD;
     L --> B;
 ```
 
-## ASCOM Camera Surface — v0 Behaviour
+## ASCOM Camera Surface
 
 Unlike the SDK-backed siblings, the **default here is the other way round**:
 with no hardware behind it, this service's fixed optics, sensor description
@@ -824,11 +833,11 @@ exposure state (C5) and its settings (C6) — and those rows say so.
 | `CameraXSize` / `CameraYSize` | From `optics.sensor_width_px` / `sensor_height_px` |
 | `PixelSizeX` / `PixelSizeY` | From `optics.pixel_size_*_um` |
 | `BinX` / `BinY` | One settable value behind both members: a write to either sets both (E8); integer, capped by `MaxBinX` / `MaxBinY` at the setter (E3); getters and setters `NOT_CONNECTED` while disconnected, and back to `1` at the start of a connect (C6) |
-| `MaxBinX` / `MaxBinY` | `4` (configurable later) |
+| `MaxBinX` / `MaxBinY` | `4` |
 | `CanAsymmetricBin` | `false` — `BinX` and `BinY` are one value (E8) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5); getters and setters `NOT_CONNECTED` while disconnected, and back to the configured full frame at the start of a connect (C6) |
 | `MaxADU` | `65535` (16-bit equivalent) |
-| `ElectronsPerADU` | `1.0` placeholder (no signal model in v0) |
+| `ElectronsPerADU` | `1.0` placeholder (no signal model) |
 | `FullWellCapacity` | `65535.0` (= `MaxADU * ElectronsPerADU`) |
 | `ExposureMin` / `ExposureMax` / `ExposureResolution` | `1µs` / `3600s` / `1µs`; the spawned exposure task sleeps for `min(Duration, 5s)` so clients can observe `CameraState = Exposing` |
 | `Gain` / `GainMin` / `GainMax` | Single fixed value `0`; the getters answer whether or not a client is connected, since the value is fixed (C6) |
@@ -867,7 +876,7 @@ with floating-point fields rounded (RA/Dec to 1e-4 deg, sizes to
 `<cache_dir>/<hex>.fits`. The cache is local-only and the operator
 clears `cache_dir` manually — `DefaultHasher` is non-cryptographic and
 not stable across Rust versions, but neither property is needed here.
-No sidecar metadata in v0. No eviction; manual cleanup.
+There is no sidecar metadata and no eviction.
 
 ## Module Sketch (informative)
 
@@ -912,10 +921,11 @@ split, or rename modules so long as the BDD scenarios pass.
 7. **`mock.rs`** (gated by the `mock` feature) — `MockSurveyClient`
    plus the `synthetic_fits` helper used by the ConformU
    integration test's stub backend.
-8. **`fits.rs`** — Thin shim over `rp_fits::reader::read_primary_as_i32`.
+8. **`fits.rs`** — Thin shim over `rp_fits::reader::read_primary_as_i32`,
+   which applies `BSCALE`/`BZERO`; the shim hands it the response bytes
+   as a `Cursor<&[u8]>`, so the HTTP path needs no temporary file.
    Returns `(Vec<i32>, width, height)` for SkyView responses. The
-   workspace's FITS surface lives in `crates/rp-fits` per ADR-001
-   Amendment A.
+   workspace's FITS surface lives in `crates/rp-fits`.
 9. **`camera.rs`** — `Device` + `Camera` trait impl, the camera's setup
    page (`setup_request`) included.
    - **`setup.rs`** — the `ConfigurableDriver` impl behind the setup
@@ -965,21 +975,13 @@ Layered per `docs/skills/testing.md`:
 
 ## Future Work
 
-- **Telescope-following mode.** *(Done — see Configuration §
-  `pointing.telescope`, *Pointing Offset Simulation*, and the F1–F6
-  Behavioral Contracts.)*
-- **Rotator-driven `rotation_deg`.** *(Done — see Configuration §
-  `pointing.rotator` and the F8 Behavioral Contract.)* When
-  `pointing.rotator` is set, `TelescopeFollow` sources `rotation_deg`
-  from the ASCOM Rotator's `Position` (read on every light exposure)
-  instead of the static `pointing.initial_rotation_deg`.
 - **Non-linear pointing models.** Az/alt-dependent pointing residuals,
   polar misalignment, atmospheric refraction. The constant offset of
   *Pointing Offset Simulation* is enough to make the centering loop
   non-vacuous; richer error models stress-test convergence under
   realistic conditions.
 - **Sidereal drift during exposure.** Snapshot mount position at start
-  *and* end, interpolate. Today's pipeline snapshots only at start.
+  *and* end, interpolate. The pipeline snapshots only at start.
 - **Local resampling.** Request a slightly oversized cutout and
   resample with the requested rotation, removing the dependency on
   SkyView's resampler.
@@ -989,7 +991,3 @@ Layered per `docs/skills/testing.md`:
   by an attached ASCOM FilterWheel.
 - **Additional backends.** `hips2fits` for faster cutouts, local
   HiPS tiles for fully offline operation.
-- **Workspace FITS consolidation.** *(Done — ADR-001 Amendment A.)*
-  sky-survey-camera now delegates to `rp_fits::reader::read_primary_as_i32`,
-  which applies `BSCALE`/`BZERO` correctly and accepts a
-  `Cursor<&[u8]>` so the HTTP-bytes path doesn't need a tempfile.

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  rusty-photon-calibrator-flats — Windows service fragment (suite MSI; ADR-015).
-  Port 11170/tcp; demand-start (gated: no defaultable config). The fragment contract (service name, exe rename,
-  failure actions + failure-actions flag, firewall port, demand-start set) is
+  rusty-photon-calibrator-flats — Windows service fragment (suite MSI).
+  Port 11170/tcp; gated: no defaultable config. The fragment contract (service name, exe rename,
+  failure actions + failure-actions flag, firewall port, start and stop) is
   checked by tools/rusty-photon-ci/src/pkg_assets.rs.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
@@ -16,15 +16,15 @@
                         Name="rusty-photon-calibrator-flats"
                         DisplayName="rusty-photon-calibrator-flats"
                         Description="Flat-field tool provider: train_flats / take_flats / get_flat_training served through rp."
-                        Start="demand"
+                        Start="auto"
                         Type="ownProcess"
                         ErrorControl="normal"
                         Account="LocalSystem"
                         Arguments="--service"
                         Vital="yes">
-          <!-- systemd Restart=on-failure / RestartSec=5 translation (ADR-015
-               decision 2): restart after 5 s on every failure, indefinitely
-               (failure count resets daily). -->
+          <!-- systemd Restart=on-failure / RestartSec=5 translation: restart
+               after 5 s on every failure, indefinitely (failure count resets
+               daily). -->
           <util:ServiceConfig FirstFailureActionType="restart"
                               SecondFailureActionType="restart"
                               ThirdFailureActionType="restart"
@@ -40,15 +40,23 @@
                          OnInstall="yes"
                          OnReinstall="yes" />
         </ServiceInstall>
-        <!-- Demand-start (no Start on install): the ConditionPathExists=
-             translation (ADR-015 decision 2). This service has no defaultable
-             config; the operator writes %ProgramData%\rusty-photon\calibrator-flats.json
-             and then starts the service (sc start / Services.msc). -->
+        <!-- Started on install and at boot like every other service, which
+             does itself what the Linux unit's ConditionPathExists= does.
+             Without %ProgramData%\rusty-photon\calibrator-flats.json it stops at
+             once with exit code 0, which the failure actions leave alone:
+             the operator writes the file, then starts the service (sc start /
+             Services.msc) or reboots. The start does not wait for the service
+             to run, which without its config it never does; the stop waits,
+             so the exe is not replaced or removed while it runs. -->
         <ServiceControl Id="CalibratorFlatsServiceControl"
                         Name="rusty-photon-calibrator-flats"
                         Stop="both"
                         Remove="uninstall"
                         Wait="yes" />
+        <ServiceControl Id="CalibratorFlatsServiceStart"
+                        Name="rusty-photon-calibrator-flats"
+                        Start="install"
+                        Wait="no" />
         <!-- Alpaca/HTTP over the LAN is the service's whole point; Windows
              Firewall blocks inbound by default. Scope=any, not localSubnet:
              multi-subnet observatory networks are the norm here (Linux ships

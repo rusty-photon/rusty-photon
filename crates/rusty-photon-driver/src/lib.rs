@@ -17,6 +17,10 @@
 //! - [`overrides`] — the own part of the setup pages of a driver whose hardware
 //!   names its devices and whose configuration only renames them, through a
 //!   `devices` map of overrides: a page per device, editing its override.
+//! - [`restart`] — the HTTP routes that take a restart request
+//!   (`POST /service/v1/restart`) and name the process serving
+//!   (`GET /service/v1/instance`), which every driver merges into its router
+//!   (docs/crates/rusty-photon-service-lifecycle.md § Restart on request).
 //! - `claims` (the `claims` feature) — a camera driver's device claims at
 //!   runtime: the placeholder Camera that holds a listed device number whose
 //!   camera cannot be served, and the failed USB scan's background re-scan.
@@ -59,6 +63,7 @@ pub mod connection;
 pub mod discovery;
 mod macros;
 pub mod overrides;
+pub mod restart;
 pub mod setup;
 
 pub use connection::{connected_transition, ConnectedTransition};

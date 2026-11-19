@@ -244,7 +244,7 @@ impl Device for ZwoFocuser {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// No custom action: the configuration moved to the setup pages.
+    /// No custom action: the device is configured on its setup pages.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
         Ok(Vec::new())
     }

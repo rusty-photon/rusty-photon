@@ -1,12 +1,8 @@
-//! Issue #250 / #251 (and the umbrella #257) dissolve here: two
-//! concurrent `acquire()` calls on a brand-new transport must result in
-//! exactly **one** call to `TransportFactory::open` and both callers
-//! must end up with a valid `Session` whose `request` round-trips.
-//!
-//! This was the bug class where each per-service `SerialManager` had
-//! its own copy of the open/handshake/refcount dance and a check-modify
-//! window in `set_connected` let two callers both think they were the
-//! first.
+//! Two concurrent `acquire()` calls on a brand-new transport must
+//! result in exactly **one** call to `TransportFactory::open`, and both
+//! callers must end up with a valid `Session` whose `request`
+//! round-trips. `acquire_lock` spans the whole 0→1, so a second caller
+//! waits for the first one's slot instead of racing its open.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -94,8 +90,8 @@ async fn many_concurrent_acquires_open_exactly_once() {
 
 #[tokio::test]
 async fn handshake_runs_exactly_once_for_concurrent_acquires() {
-    // The race fix is structural — handshake fires on the 0→1 path,
-    // and no second caller racing in can trigger a second handshake.
+    // The handshake runs on the 0→1 path only, so no second caller
+    // racing in can trigger a second handshake.
     let counting = CountingHooks::default();
     let hs_calls = counting.handshake_calls.clone();
     let factory: Arc<dyn rusty_photon_shared_transport::TransportFactory> = Arc::new(

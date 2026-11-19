@@ -11,8 +11,8 @@ use qhyccd_rs::{
 
 /// Bytes in a frame with the given [`FrameInfo`] — mirrors the simulated
 /// backend's `calculate_buffer_size` (`width * height * channels *
-/// bytes_per_pixel`, 1 byte per pixel at ≤8-bit, 2 otherwise). Since the download
-/// now writes into a caller-owned buffer and returns only `FrameInfo`, assertions
+/// bytes_per_pixel`, 1 byte per pixel at ≤8-bit, 2 otherwise). The download
+/// writes into a caller-owned buffer and returns only `FrameInfo`, so assertions
 /// use this to check the frame the download *reports*, not the caller's
 /// fixed-length buffer (whose `len()` is always `get_image_size()`).
 const fn frame_bytes(info: &FrameInfo) -> usize {
@@ -341,10 +341,9 @@ fn test_simulated_camera_live_mode() {
 #[test]
 fn test_simulated_camera_binning() {
     // This test verifies that setting binning alone does NOT automatically
-    // change image dimensions. This matches real QHYCCD SDK behavior and
-    // ensures we don't have the double-binning bug where ROI dimensions
-    // (which may already be in binned coordinates from ASCOM Alpaca)
-    // get binned again by the simulation.
+    // change image dimensions. This matches real QHYCCD SDK behavior: ROI
+    // dimensions (which may already be in binned coordinates from ASCOM
+    // Alpaca) are not binned a second time by the simulation.
     let config = SimulatedCameraConfig::default();
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
@@ -369,7 +368,6 @@ fn test_simulated_camera_binning() {
     let image = camera.get_live_frame(&mut buf).unwrap();
 
     // Dimensions should NOT change - binning alone doesn't affect ROI.
-    // This proves we fixed the double-binning bug.
     assert_eq!(image.width, 3072);
     assert_eq!(image.height, 2048);
 
@@ -788,7 +786,7 @@ fn test_simulated_filter_wheel() {
 
 #[test]
 fn test_sdk_shares_one_handle_between_camera_and_filter_wheel() {
-    // Phase 1(B): the SDK builds the filter wheel from a CLONE of the camera, so
+    // The SDK builds the filter wheel from a CLONE of the camera, so
     // both share ONE backend state (a real QHY CFW is driven through the camera
     // handle). Opening the camera therefore also opens the wheel, and the wheel
     // position is one shared value visible through the camera's CFW control.
@@ -1251,7 +1249,8 @@ fn test_camera_clone() {
     assert!(camera1.is_simulated());
     assert!(camera2.is_simulated());
 
-    // Opening one should not affect the other's state query
+    // A clone shares the original's device state (one `Arc`), so opening
+    // either opens both.
     camera1.open().unwrap();
     assert!(camera1.is_open().unwrap());
 
@@ -1642,7 +1641,7 @@ fn test_cooler_controls() {
 
 /// The typed accessors are the routine surface over the generic
 /// `get_parameter`/`set_parameter` controls, so exercise the full set against
-/// the simulation backend (Phase 2 of the convention-alignment plan).
+/// the simulation backend.
 #[test]
 fn test_camera_typed_accessors() {
     let config = SimulatedCameraConfig::default()
@@ -1685,9 +1684,9 @@ fn test_camera_typed_accessors() {
     camera.close().unwrap();
 }
 
-/// Audit #2: reading `CurTemp` after a set-point drives the reported sensor
-/// temperature toward it, one poll-step at a time (advance-on-poll, like the
-/// sibling `svbony-rs` sim), instead of staying frozen at ambient.
+/// Reading `CurTemp` after a set-point drives the reported sensor temperature
+/// toward it, one poll-step at a time (advance-on-poll, like the sibling
+/// `svbony-rs` sim); a reading that stayed at ambient fails it.
 #[test]
 fn cooling_ramps_toward_target_over_polls() {
     let config = SimulatedCameraConfig::default().with_cooler();
@@ -1711,15 +1710,15 @@ fn cooling_ramps_toward_target_over_polls() {
         (camera.current_temperature_celsius().unwrap() - (-10.0)).abs() < f64::EPSILON,
         "temperature should reach the set-point after enough polls"
     );
-    // Auto-cooling now reports a nonzero cooler PWM (was frozen at 0 before).
+    // Auto-cooling reports a nonzero cooler PWM.
     assert!(camera.cooler_power_raw().unwrap() > 0.0);
 
     camera.close().unwrap();
 }
 
-/// Audit #11: a `close()` -> `open()` cycle presents a clean device. Real
-/// `CloseQHYCCD` destroys the handle, so retained live/exposure/frame state must
-/// not survive to make a frame call falsely succeed without re-arming.
+/// A `close()` -> `open()` cycle presents a clean device. Real `CloseQHYCCD`
+/// destroys the handle, so live mode left engaged across the cycle would let a
+/// frame call succeed on the fresh device without `begin_live()`.
 #[test]
 fn close_then_open_clears_session_state() {
     let config = SimulatedCameraConfig::default();
@@ -1744,8 +1743,8 @@ fn close_then_open_clears_session_state() {
     camera.close().unwrap();
 }
 
-/// Audit #3: the CFW position is carried on `CONTROL_CFWPORT` as a HEX ASCII
-/// digit, so slot 10 encodes to 'A' (65), not ':' (58). Exercise a >= 10 slot.
+/// The CFW position is carried on `CONTROL_CFWPORT` as a HEX ASCII digit, so
+/// slot 10 encodes to 'A' (65), not ':' (58). Exercise a >= 10 slot.
 #[test]
 fn cfw_position_uses_hex_ascii_for_high_slots() {
     let config = SimulatedCameraConfig::default().with_filter_wheel(16);
@@ -1763,9 +1762,9 @@ fn cfw_position_uses_hex_ascii_for_high_slots() {
     camera.close().unwrap();
 }
 
-/// Audit #4: the simulated CFW move is NOT instantaneous — the first read after a
-/// command reports the wheel moving (a consumer must poll to arrival), unlike
-/// the former synchronous update that hid the real hardware settle time.
+/// The simulated CFW move is NOT instantaneous — the first read after a command
+/// reports the wheel moving, so a consumer must poll to arrival, as it must on
+/// hardware that takes time to settle.
 #[test]
 fn cfw_move_is_not_instantaneous() {
     let config = SimulatedCameraConfig::default().with_filter_wheel(7);
@@ -1833,7 +1832,7 @@ fn cfw_command_rejects_a_slot_the_wheel_could_not_report() {
     camera.close().unwrap();
 }
 
-/// Audit #6: with a configured not-ready probability, live-mode reads
+/// With a configured not-ready probability, live-mode reads
 /// intermittently return the retryable error (as real `GetQHYCCDLiveFrame` does
 /// between frames), so a consumer must poll/retry. Over 200 reads at p=0.5 both
 /// outcomes are effectively certain (P(all one outcome) = 0.5^200).
@@ -1980,15 +1979,13 @@ fn test_filter_wheel_close_then_reopen() {
     fw.close().unwrap();
 }
 
-// The tests below preserve coverage of behaviour formerly reached only through
-// the deleted FFI-mock unit tests (src/tests/), re-expressed against the
-// simulated backend (the mock layer is gone — see the convention plan, Phase 4).
+// The simulated SDK version, frame calls made before they are armed, a short
+// frame buffer, and a wheel on a camera with no CFW control.
 
 #[test]
 fn test_simulated_sdk_version_is_the_targeted_release() {
     // The simulated `Sdk::version()` returns the synthetic SDK release this crate
-    // targets — previously only asserted (on the FFI byte-decode) by the deleted
-    // `sdk_tests::version_success`.
+    // targets.
     let sdk = Sdk::new_simulated();
     assert_eq!(
         sdk.version().unwrap(),
@@ -2004,7 +2001,7 @@ fn test_simulated_sdk_version_is_the_targeted_release() {
 #[test]
 fn test_get_live_frame_without_begin_live_errors() {
     // Open + init in live mode but never call `begin_live`: `get_live_frame`
-    // must fail (formerly `camera_tests::get_live_frame_fail`).
+    // must fail.
     let config = SimulatedCameraConfig::default();
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
@@ -2021,8 +2018,7 @@ fn test_get_live_frame_without_begin_live_errors() {
 #[test]
 fn test_get_single_frame_without_exposure_errors() {
     // Open + init in single-frame mode but never start an exposure: no image is
-    // captured, so `get_single_frame` must fail (formerly
-    // `camera_tests::get_single_frame_fail`).
+    // captured, so `get_single_frame` must fail.
     let config = SimulatedCameraConfig::default();
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
@@ -2039,7 +2035,7 @@ fn test_get_single_frame_without_exposure_errors() {
 #[test]
 fn test_get_live_frame_rejects_undersized_buffer() {
     // A buffer smaller than the frame is rejected with `BufferTooSmall` before any
-    // pixels are written — the caller-owned-buffer bounds check (Phase 5).
+    // pixels are written — the caller-owned-buffer bounds check.
     let config = SimulatedCameraConfig::default();
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
@@ -2066,8 +2062,7 @@ fn test_get_live_frame_rejects_undersized_buffer() {
 fn test_filter_wheel_methods_error_when_camera_has_no_cfw_control() {
     // A `FilterWheel` wrapping an OPEN camera whose config has no CFW control:
     // every wheel method must fail on the control-unavailable branch — distinct
-    // from the not-open branch. Preserves the three deleted
-    // `filter_wheel_tests::*_fail_no_filter_wheel` cases.
+    // from the not-open branch.
     let config = SimulatedCameraConfig::default(); // no `.with_filter_wheel(..)`
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
@@ -2078,8 +2073,9 @@ fn test_filter_wheel_methods_error_when_camera_has_no_cfw_control() {
     assert!(fw.set_fw_position(1).is_err());
 }
 
-/// A departure file no other test names: unique per process and test, so tests
-/// running side by side cannot take each other's camera away, and under Bazel's
+/// A scripted-state file (departure, close failure, temperature) no other test
+/// names: unique per process and test, so tests running side by side cannot
+/// take each other's camera away, and under Bazel's
 /// per-action `TEST_TMPDIR` when there is one, so a run that fails leaves nothing
 /// on the machine. This crate takes no temp-dir dependency.
 fn departure_file(test: &str) -> std::path::PathBuf {
@@ -2158,4 +2154,47 @@ fn a_failed_close_keeps_the_handle_and_a_reopen_is_a_no_op_on_it() {
     std::fs::remove_file(&file).unwrap();
     camera.close().unwrap();
     assert!(!camera.is_open().unwrap());
+}
+
+#[test]
+fn a_temperature_file_is_the_reading_while_it_exists() {
+    let file = departure_file("temperature_reading");
+    let camera = Camera::new_simulated(
+        SimulatedCameraConfig::default()
+            .with_cooler()
+            .with_temperature_file(&file),
+    );
+    camera.open().unwrap();
+    let ambient = camera.current_temperature_celsius().unwrap();
+
+    std::fs::write(&file, b"-5005.8\n").unwrap();
+    assert_eq!(camera.current_temperature_celsius().unwrap(), -5005.8);
+
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(camera.current_temperature_celsius().unwrap(), ambient);
+}
+
+#[test]
+fn a_temperature_file_that_holds_no_number_fails_the_read() {
+    let file = departure_file("temperature_not_a_number");
+    let camera = Camera::new_simulated(
+        SimulatedCameraConfig::default()
+            .with_cooler()
+            .with_temperature_file(&file),
+    );
+    camera.open().unwrap();
+    std::fs::write(&file, b"warm").unwrap();
+
+    let error = camera.current_temperature_celsius().unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            QHYError::GetParameter {
+                control: ControlType::CurTemp
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+    std::fs::remove_file(&file).unwrap();
 }

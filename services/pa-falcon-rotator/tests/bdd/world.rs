@@ -14,9 +14,10 @@
 //! auth credential gate is covered by the shared smoke scenario in
 //! `auth.feature` via the `TlsAuthSmokeWorld` impl below.
 //!
-//! The setup-page scenarios (`setup_pages.feature`) are the exception:
-//! a save reloads the process that served it, which only the binary's
-//! `main` can do, so they spawn the mock-feature binary through
+//! The setup-page, restart and auth scenarios are the exception. A save
+//! reloads the process that served it, and the restart routes the auth
+//! scenarios probe exist only where the binary's `main` wires them, so
+//! these scenarios spawn the mock-feature binary through
 //! [`ServiceHandle`] (`start_process`) like the other serial drivers'
 //! suites.
 
@@ -35,9 +36,9 @@ use rusty_photon_shared_transport::TransportFactory;
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
-// Several `*_result` fields below are still wired up by Phase 3e step bodies
-// (status switch) — they live here so the struct's shape is stable across the
-// remaining sub-phases.
+// No step uses `step_size_result`, `can_reverse_result`, `name_result`,
+// `unique_id_result` or `interface_version_result`: the metadata steps
+// assert on the value they read.
 #[allow(dead_code)]
 #[derive(Debug, Default, World)]
 pub struct FalconRotatorWorld {
@@ -80,13 +81,16 @@ pub struct FalconRotatorWorld {
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
 
-    /// The service as a spawned process, for the setup-page scenarios: a
-    /// save reloads the process, which the in-process server cannot do.
+    /// The service as a spawned process, for the setup-page, restart and
+    /// auth scenarios: a save reloads the process, and the restart routes
+    /// exist only where the binary's `main` wires them, neither of which
+    /// the in-process server can do.
     pub process: Option<ServiceHandle>,
     /// The spawned process's config directory, alive for the scenario.
     pub process_dir: Option<TempDir>,
     /// State for the shared setup-page steps (`setup_pages.feature`).
     pub setup_pages: SetupPagesState,
+    pub service_restart: bdd_infra::service_restart::ServiceRestartState,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
@@ -121,35 +125,33 @@ impl TlsAuthSmokeWorld for FalconRotatorWorld {
     }
 
     async fn start_with_tls_auth(&mut self, config: serde_json::Value) {
-        // Deserialize through the typed `Config` so the smoke exercises the
-        // real config-load path: the shared `server` block (port 0 + `tls` +
-        // `auth`) maps onto `AlpacaServerConfig`.
-        let config: Config = serde_json::from_value(config).unwrap();
-
-        let mock = Arc::new(MockFalconTransportFactory::default());
-        let factory: Arc<dyn TransportFactory> = Arc::clone(&mock) as _;
-        let bound = ServerBuilder::new()
-            .with_config(config)
-            .with_factory(factory)
-            .build()
-            .await
-            .expect("build in-process Alpaca server with TLS + auth");
-        let local_addr = bound.listen_addr();
-
-        let server_handle = tokio::spawn(async move {
-            let _ = bound.start(std::future::pending::<()>()).await;
-        });
-        self.mock = Some(mock);
-        // Torn down by `World::shutdown` from the cucumber `after` hook.
-        self.server_handle = Some(server_handle);
-        self.server_addr = Some(SocketAddr::from(([127, 0, 0, 1], local_addr.port())));
-        self.tls_auth.port = Some(bdd_infra::BoundPort::fixed(local_addr.port()));
+        let handle = bdd_infra::tls_auth::spawn_service_handle(
+            &mut self.tls_auth,
+            env!("CARGO_PKG_NAME"),
+            &config,
+        )
+        .await;
+        self.process = Some(handle);
     }
 }
 
 impl SetupPagesWorld for FalconRotatorWorld {
     fn setup_pages(&mut self) -> &mut SetupPagesState {
         &mut self.setup_pages
+    }
+}
+
+impl bdd_infra::service_restart::ServiceRestartWorld for FalconRotatorWorld {
+    fn service_restart(&mut self) -> &mut bdd_infra::service_restart::ServiceRestartState {
+        &mut self.service_restart
+    }
+
+    fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
+        self.process.as_mut().expect("the service was not started")
+    }
+
+    fn service_behind_auth(&self) -> (u16, &bdd_infra::tls_auth::PkiFixture) {
+        (self.tls_auth.port(), self.tls_auth.pki())
     }
 }
 
@@ -207,18 +209,17 @@ impl FalconRotatorWorld {
         let local_addr = bound.listen_addr();
 
         let server_handle = tokio::spawn(async move {
-            // BoundServer::start returns `Result<(), Box<dyn Error>>`; the
-            // error type is `!Send` so we collapse it to `()` here before
-            // letting the spawn machinery see the output. The shutdown
-            // future never resolves; the test tears the task down by
-            // aborting the JoinHandle in `World::shutdown`.
+            // The world holds a `JoinHandle<()>`, so the serve result is
+            // collapsed to `()` here. The shutdown future never resolves;
+            // the test tears the task down by aborting the JoinHandle in
+            // `World::shutdown`.
             if bound.start(std::future::pending::<()>()).await.is_err() {
                 // tear-down on shutdown is normal; nothing to log.
             }
         });
 
         // Park the spawned task on `self` immediately so a panic inside
-        // `acquire_devices` (it currently `panic!`s after a 5s timeout) does
+        // `acquire_devices` (it `panic!`s after a 5 s timeout) does
         // not drop the `JoinHandle` and detach the in-process server. The
         // cucumber `after` hook calls `World::shutdown`, which aborts the
         // handle — but only if it's visible on the world.

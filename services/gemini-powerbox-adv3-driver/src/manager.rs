@@ -11,6 +11,13 @@
 //! * The cached state both devices share (the last frame, the firmware,
 //!   the three sensor sliding-window means).
 //!
+//! Every frame is stored with the instant it was read off the wire, and the
+//! cache keeps the frame read last ([`Stamped`]). Requests take turns on
+//! the wire, but each stores its frame after its turn ends, so a poll's
+//! store can land after that of a write that went on the wire behind it;
+//! the poll's frame is then the older one and is dropped
+//! ([`apply_status`]).
+//!
 //! Both the handshake and the poll loop are **read-only by construction**:
 //! the only [`GeminiCommand`] variants either one sends are the three
 //! queries. That is what tenet 3 (no actuation on connect) demands of a box
@@ -20,8 +27,8 @@
 //!
 //! The hub streams a frame every 3 s once asked. The poll does not consume
 //! that stream; it discards it and asks for a fresh frame
-//! ([`GeminiCodec::discard_before_send`]), so a frame that sat in the buffer
-//! never answers a later request.
+//! ([`GeminiCodec::discard_before_send`](crate::codec::GeminiCodec#method.discard_before_send)),
+//! so a frame that sat in the buffer never answers a later request.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,11 +36,11 @@ use std::time::Duration;
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportError,
-    TransportFactory, WhileOpen,
+    Connection, Hooks, Session, SessionError, SharedTransport, Stamped, StateAssertion,
+    TransportError, TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
-use tokio::time::interval;
+use tokio::time::{interval, Instant};
 use tracing::debug;
 
 use crate::codec::{GeminiCodec, GeminiCodecError, GeminiResponse};
@@ -52,13 +59,14 @@ pub const IDENTITY_RETRY_DELAY: Duration = Duration::from_secs(2);
 /// Cached device state shared between the switch device and the
 /// observing-conditions device.
 ///
-/// The frame stays `None` until the handshake seeds it, so a read that
+/// The cache holds no frame until the handshake seeds it, so a read that
 /// arrives before the first successful poll can be answered `NOT_CONNECTED`
 /// rather than with a fabricated zero.
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
-    /// The last `*G` frame.
-    pub status: Option<StatusFrame>,
+    /// The `*G` frame read last, with the instant it was read:
+    /// [`apply_status`] offers it each incoming frame.
+    pub status: Stamped<StatusFrame>,
     /// The firmware `>V#` reported, kept for `DriverInfo`.
     pub firmware: Option<u16>,
     pub temp_mean: SensorMean,
@@ -74,6 +82,17 @@ pub struct CachedState {
     /// something else — and a client that set exactly the instantaneous
     /// window's length would be told 0.
     pub average_period_hours: f64,
+}
+
+/// A `*G` frame and the instant it was read off the wire.
+#[derive(Debug, Clone)]
+pub struct DatedFrame {
+    pub frame: StatusFrame,
+    /// The end of the request that brought the frame
+    /// ([`WireTiming::received_at`](rusty_photon_shared_transport::WireTiming::received_at)).
+    /// Requests take turns on the wire, so this puts every frame in the
+    /// order the hub produced them.
+    pub read_at: Instant,
 }
 
 /// Manager that wraps the shared transport plus the hub's cached state.
@@ -98,9 +117,9 @@ impl GeminiManager {
         let mut state = CachedState::default();
         let period_hours = config.observingconditions.averaging_period.as_secs_f64() / 3600.0;
         let window = effective_window(period_hours, poll_interval);
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        state.temp_mean = SensorMean::new(window);
+        state.humidity_mean = SensorMean::new(window);
+        state.dewpoint_mean = SensorMean::new(window);
         state.average_period_hours = period_hours;
         let cached_state = Arc::new(RwLock::new(state));
 
@@ -121,8 +140,8 @@ impl GeminiManager {
         &self.transport
     }
 
-    /// Cheap, non-blocking snapshot — true between handshake completion
-    /// and the start of teardown.
+    /// Cheap, non-blocking snapshot — true from a successful handshake
+    /// until a teardown or a reconnect takes the transport out of service.
     #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()
@@ -151,9 +170,10 @@ impl GeminiManager {
         }
         let window = effective_window(period_hours, self.poll_interval);
         let mut state = self.cached_state.write().await;
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        let now = Instant::now().into_std();
+        state.temp_mean.set_window(window, now);
+        state.humidity_mean.set_window(window, now);
+        state.dewpoint_mean.set_window(window, now);
         state.average_period_hours = period_hours;
         drop(state);
         debug!(period_hours, ?window, "sensor averaging period updated");
@@ -172,8 +192,8 @@ impl GeminiManager {
     /// transport error, a frame the codec cannot parse, or an exhausted skip
     /// budget. The cache is left untouched on failure.
     pub async fn refresh_status(&self, session: &Session<GeminiCodec>) -> Result<StatusFrame> {
-        let resp = session
-            .request(GeminiCommand::Status)
+        let (resp, timing) = session
+            .request_timed(GeminiCommand::Status)
             .await
             .map_err(GeminiError::from)?;
         let GeminiResponse::Status(frame) = resp else {
@@ -181,8 +201,12 @@ impl GeminiManager {
                 ">G# was answered by something other than a status frame".to_string(),
             ));
         };
-        self.store_status(&frame).await;
-        Ok(frame)
+        let dated = DatedFrame {
+            frame,
+            read_at: timing.received_at,
+        };
+        self.store_status(&dated).await;
+        Ok(dated.frame)
     }
 
     /// Send a set command — the input discarded first, then the set and a
@@ -197,23 +221,27 @@ impl GeminiManager {
         &self,
         session: &Session<GeminiCodec>,
         set: SetCommand,
-    ) -> Result<StatusFrame> {
-        let resp = session
-            .request(GeminiCommand::Set(set))
+    ) -> Result<DatedFrame> {
+        let (resp, timing) = session
+            .request_timed(GeminiCommand::Set(set))
             .await
             .map_err(GeminiError::from)?;
         match resp {
-            GeminiResponse::Status(frame) => Ok(frame),
+            GeminiResponse::Status(frame) => Ok(DatedFrame {
+                frame,
+                read_at: timing.received_at,
+            }),
             _ => Err(GeminiError::InvalidResponse(
                 "a set was answered by something other than a status frame".to_string(),
             )),
         }
     }
 
-    /// Store `frame` as the hub's current state and feed the sensor windows.
-    pub async fn store_status(&self, frame: &StatusFrame) {
+    /// Store `dated` as the hub's current state and feed the sensor windows,
+    /// unless the cache holds a frame read after it ([`apply_status`]).
+    pub async fn store_status(&self, dated: &DatedFrame) {
         let mut state = self.cached_state.write().await;
-        apply_status(&mut state, frame);
+        apply_status(&mut state, dated);
     }
 }
 
@@ -231,8 +259,8 @@ fn build_hooks(
             Box::pin(handshake(conn, cs, port))
         }),
         on_last_disconnect: Box::new(|_| {
-            // Nothing to assert: this service holds no state that must
-            // survive a no-client gap, so the answer is trivially yes.
+            // Nothing to assert: no device state has to hold while no
+            // client is attached, so the answer is trivially yes.
             Box::pin(async { StateAssertion::Asserted })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -244,8 +272,11 @@ fn build_hooks(
 }
 
 /// Whether a failed `>H#` is one the retry covers: no `*H` reply inside the
-/// timeout, or only frames without the prefix. A port that errored or a
-/// frame that will not decode is not.
+/// timeout, or only frames without the prefix. A port that errored is not.
+/// A frame that does not decode never ends `>H#`: the codec has it skipped
+/// like a frame without the prefix ([`GeminiCodec::skip_undecodable`]), so
+/// a garbled reply comes out here as the timeout or the exhausted budget
+/// that follows it.
 const fn is_no_identity_reply(err: &SessionError<GeminiCodecError>) -> bool {
     matches!(
         err,
@@ -293,8 +324,9 @@ async fn request_identity(
 /// Read-only connect sequence: identify the box, gate the firmware, and
 /// seed the cache from one frame.
 ///
-/// Runs on every transition into `Open`, reconnects included. Nothing here
-/// may write device state.
+/// Runs on every open — the cold start, every reconnect attempt, and the
+/// first connect where nothing started the transport. Nothing here may
+/// write device state.
 async fn handshake(
     conn: &Connection<GeminiCodec>,
     cached_state: Arc<RwLock<CachedState>>,
@@ -326,9 +358,12 @@ async fn handshake(
         debug!(firmware = %FirmwareVersion(firmware), "hub firmware");
     }
 
-    let frame = match conn.request(GeminiCommand::Status).await? {
-        GeminiResponse::Status(frame) => frame,
-        other => {
+    let dated = match conn.request_timed(GeminiCommand::Status).await? {
+        (GeminiResponse::Status(frame), timing) => DatedFrame {
+            frame,
+            read_at: timing.received_at,
+        },
+        (other, _) => {
             return Err(GeminiCodecError::Parse(format!(
                 ">G# was answered by {other:?}"
             )))
@@ -337,7 +372,7 @@ async fn handshake(
 
     let mut state = cached_state.write().await;
     state.firmware = Some(firmware);
-    apply_status(&mut state, &frame);
+    apply_status(&mut state, &dated);
     drop(state);
     debug!("Gemini hub handshake complete");
     Ok(())
@@ -365,12 +400,16 @@ async fn poll_loop(
         // The codec discards the input before `>G#` goes out, so the frame
         // read here is the one the hub produced for this request, not one it
         // streamed earlier.
-        match ctx.request(GeminiCommand::Status).await {
-            Ok(GeminiResponse::Status(frame)) => {
+        match ctx.request_timed(GeminiCommand::Status).await {
+            Ok((GeminiResponse::Status(frame), timing)) => {
+                let dated = DatedFrame {
+                    frame,
+                    read_at: timing.received_at,
+                };
                 let mut state = cached_state.write().await;
-                apply_status(&mut state, &frame);
+                apply_status(&mut state, &dated);
             }
-            Ok(other) => debug!(?other, "poll: >G# answered by an unexpected frame"),
+            Ok((other, _)) => debug!(?other, "poll: >G# answered by an unexpected frame"),
             // A frame that will not parse leaves the cache untouched; a
             // transport error has already woken the reconnect supervisor.
             Err(e) => debug!(error = %e, "poll request failed; cache left as it was"),
@@ -378,23 +417,37 @@ async fn poll_loop(
     }
 }
 
-/// Store `frame` and feed the sensor windows — only while the AHT20 says it
-/// is attached, and only from a field that carries a reading. The first
-/// frame whose flag reads `0` clears the three windows, so the readings go
-/// `VALUE_NOT_SET` at once rather than serving a mean of samples taken
-/// before the sensor went away; a field with no reading while the flag is
-/// `1` adds no sample and clears nothing, and the window ages out on its
-/// own if that persists.
-fn apply_status(state: &mut CachedState, frame: &StatusFrame) {
-    state.status = Some(frame.clone());
+/// Store `dated` and feed the sensor windows, unless the cache holds a
+/// frame read after it.
+///
+/// A frame read before the held one shows the hub as it was before the
+/// held one was produced: stored, a poll's frame read ahead of a write
+/// would report the written switch at its old value after the write was
+/// confirmed. It is dropped, samples and all ([`Stamped::offer`]).
+///
+/// The windows are fed only while the AHT20 says it is attached, and only
+/// from a field that carries a reading. A sample is dated by the frame's
+/// read instant, so `TimeSinceLastUpdate` counts from the moment the frame
+/// came off the wire, not from this write. The first frame whose flag reads
+/// `0` clears the three windows, so the readings go `VALUE_NOT_SET` at once
+/// rather than serving a mean of samples taken before the sensor went away;
+/// a field with no reading while the flag is `1` adds no sample and clears
+/// nothing, and the window ages out on its own if that persists.
+fn apply_status(state: &mut CachedState, dated: &DatedFrame) {
+    let frame = &dated.frame;
+    if !state.status.offer(frame.clone(), dated.read_at) {
+        debug!("dropping a frame read before the cached one");
+        return;
+    }
     if frame.ambient_sensor_attached {
+        let at = dated.read_at.into_std();
         for (mean, reading) in [
             (&mut state.temp_mean, frame.ambient_temperature),
             (&mut state.humidity_mean, frame.humidity),
             (&mut state.dewpoint_mean, frame.dew_point),
         ] {
             if let Some(value) = reading {
-                mean.add_sample(value);
+                mean.add_sample(value, at);
             }
         }
     } else {
@@ -481,7 +534,7 @@ mod tests {
         assert!(manager.is_available());
 
         let state = manager.get_cached_state().await;
-        let frame = state.status.expect("frame seeded by handshake");
+        let frame = state.status.get().expect("frame seeded by handshake");
         assert_eq!(frame.ambient_temperature, Some(24.47));
         assert_eq!(state.firmware, Some(308));
         assert_eq!(state.temp_mean.sample_count(), 1);
@@ -514,7 +567,7 @@ mod tests {
         assert!(message.contains("GeminiFlatPanelV3"), "{message}");
         assert!(!manager.is_available());
         assert_eq!(factory.sent_commands().await, [">H#"]);
-        assert!(manager.get_cached_state().await.status.is_none());
+        assert!(manager.get_cached_state().await.status.get().is_none());
     }
 
     #[tokio::test]
@@ -571,6 +624,27 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_garbled_identity_reply_and_then_silence_is_asked_once_more() {
+        // The garbled frame is skipped, the request reads on into the
+        // silence, and the timeout draws the retry as silence alone does.
+        let factory = Arc::new(
+            MockGeminiTransportFactory::default()
+                .with_line_noise(b"*H\xffGeminiPowerBoxPlusAdv3#")
+                .with_ignored_first_identity(),
+        );
+        let manager = make_manager_with(dyn_factory(&factory));
+
+        let session = manager.transport().acquire().await.unwrap();
+
+        assert_eq!(
+            factory.sent_commands().await,
+            [">H#", ">H#", ">V#", ">G#"],
+            "one retry, then the rest of the handshake"
+        );
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_unit_that_never_identifies_fails_the_connect_naming_the_port() {
         let factory = Arc::new(MockGeminiTransportFactory::default().with_ignored_identity());
         let mut config = Config::default();
@@ -587,9 +661,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_hub_still_streaming_from_an_earlier_session_connects_past_the_frame_it_cuts_short() {
-        // The dev box's unit at the first connect of the implementation: left
-        // armed by the design session, it cut its periodic frame short to
-        // answer `>H#`, and the reply arrived glued to the cut frame.
+        // A hub left armed by an earlier session cuts its periodic frame
+        // short to answer `>H#`, and the reply arrives glued to the cut
+        // frame, as the dev box's unit does.
         let factory = Arc::new(
             MockGeminiTransportFactory::default()
                 .with_stream_running_at_start()
@@ -602,7 +676,7 @@ mod tests {
         wait_for_cache(&manager, "a poll past a cut frame", |state| {
             state
                 .status
-                .as_ref()
+                .get()
                 .is_some_and(|f| (f.input_voltage - 12.9).abs() < f64::EPSILON)
         })
         .await;
@@ -616,6 +690,78 @@ mod tests {
         let err = GeminiError::from(manager.transport().acquire().await.unwrap_err());
         assert!(matches!(err, GeminiError::ParseError(_)), "{err:?}");
         assert!(!manager.is_available());
+    }
+
+    // ---- frame order -----------------------------------------------------
+
+    /// The pinned frame's payload, then the same with DC3 off.
+    const DC3_ON: &str =
+        "1111D111111U1A1T1A1M1B1M100C100C 23.25S 24.47T 67.76H 18.12D12.2V 0.02C  0.36P";
+    const DC3_OFF: &str =
+        "1011D111111U1A1T1A1M1B1M100C100C 23.25S 24.47T 67.76H 18.12D12.2V 0.02C  0.36P";
+
+    fn dated(payload: &str, read_at: tokio::time::Instant) -> DatedFrame {
+        DatedFrame {
+            frame: payload.parse().unwrap(),
+            read_at,
+        }
+    }
+
+    fn dc3_on(state: &CachedState) -> bool {
+        state.status.get().unwrap().dc_on(DcOutput::Dc3)
+    }
+
+    #[test]
+    fn a_frame_read_before_the_cached_one_is_dropped_samples_and_all() {
+        let mut state = CachedState::default();
+        let earlier = tokio::time::Instant::now();
+        let later = earlier + Duration::from_millis(1);
+
+        apply_status(&mut state, &dated(DC3_OFF, later));
+        apply_status(&mut state, &dated(DC3_ON, earlier));
+
+        assert!(!dc3_on(&state), "the older frame replaced the newer one");
+        assert_eq!(state.status.read_at(), Some(later));
+        assert_eq!(
+            state.temp_mean.sample_count(),
+            1,
+            "the older frame fed the window"
+        );
+    }
+
+    #[test]
+    fn a_frame_read_at_the_cached_ones_instant_replaces_it() {
+        let mut state = CachedState::default();
+        let read_at = tokio::time::Instant::now();
+
+        apply_status(&mut state, &dated(DC3_ON, read_at));
+        apply_status(&mut state, &dated(DC3_OFF, read_at));
+
+        assert!(!dc3_on(&state), "the frame stored second was dropped");
+        assert_eq!(state.temp_mean.sample_count(), 2);
+    }
+
+    #[test]
+    fn a_frame_dates_its_samples_by_its_read_instant() {
+        // An hour from the clock's own reading, so a sample dated by a
+        // clock read cannot pass for one dated by the frame.
+        let mut state = CachedState::default();
+        let read_at = tokio::time::Instant::now() + Duration::from_hours(1);
+        let asked_at = (read_at + Duration::from_secs(7)).into_std();
+
+        apply_status(&mut state, &dated(DC3_ON, read_at));
+
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.time_since_last_update(asked_at),
+                Some(Duration::from_secs(7)),
+                "the {sensor} sample is not dated by the frame's read instant"
+            );
+        }
     }
 
     // ---- poll loop -------------------------------------------------------
@@ -633,7 +779,7 @@ mod tests {
         let state = wait_for_cache(&manager, "the new input voltage", |state| {
             state
                 .status
-                .as_ref()
+                .get()
                 .is_some_and(|frame| (frame.input_voltage - 13.1).abs() < f64::EPSILON)
         })
         .await;
@@ -663,7 +809,7 @@ mod tests {
             |state| {
                 state
                     .status
-                    .as_ref()
+                    .get()
                     .is_some_and(|frame| (frame.input_voltage - 13.4).abs() < f64::EPSILON)
             },
         )
@@ -689,34 +835,38 @@ mod tests {
         let state = wait_for_cache(&manager, "the AHT20 reading absent", |state| {
             state
                 .status
-                .as_ref()
+                .get()
                 .is_some_and(|frame| !frame.ambient_sensor_attached)
         })
         .await;
+        let now = tokio::time::Instant::now().into_std();
         assert_eq!(
-            state.temp_mean.get_mean(),
+            state.temp_mean.get_mean(now),
             None,
             "temperature window cleared"
         );
         assert_eq!(
-            state.humidity_mean.get_mean(),
+            state.humidity_mean.get_mean(now),
             None,
             "humidity window cleared"
         );
         assert_eq!(
-            state.dewpoint_mean.get_mean(),
+            state.dewpoint_mean.get_mean(now),
             None,
             "dewpoint window cleared"
         );
         assert!(
-            state.status.as_ref().is_some_and(|f| f.lens_probe_attached),
+            state.status.get().is_some_and(|f| f.lens_probe_attached),
             "the probe's flag is untouched"
         );
 
         // Plugging it back in starts fresh windows.
         factory.set_sensors(true, true).await;
         let state = wait_for_cache(&manager, "the AHT20 back", |state| {
-            state.temp_mean.get_mean().is_some()
+            state
+                .temp_mean
+                .get_mean(tokio::time::Instant::now().into_std())
+                .is_some()
         })
         .await;
         assert!(state.temp_mean.sample_count() >= 1);
@@ -751,6 +901,7 @@ mod tests {
                 .get_cached_state()
                 .await
                 .status
+                .get()
                 .unwrap()
                 .input_voltage,
             11.9
@@ -765,16 +916,20 @@ mod tests {
         let manager = make_manager_with(dyn_factory(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        let frame = manager
+        let readback = manager
             .send_set(&session, SetCommand::Dc(DcOutput::Dc3, false))
             .await
             .unwrap();
-        assert!(!frame.dc_on(DcOutput::Dc3), "the readback shows the write");
+        assert!(
+            !readback.frame.dc_on(DcOutput::Dc3),
+            "the readback shows the write"
+        );
         assert!(
             manager
                 .get_cached_state()
                 .await
                 .status
+                .get()
                 .unwrap()
                 .dc_on(DcOutput::Dc3),
             "the cache is the caller's to update"
@@ -795,14 +950,14 @@ mod tests {
         let manager = make_manager_with(dyn_factory(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        let frame = manager
+        let readback = manager
             .send_set(
                 &session,
                 SetCommand::DewMode(DewChannel::Dew6, DewMode::Switch),
             )
             .await
             .unwrap();
-        assert_eq!(frame.dew(DewChannel::Dew6).mode, DewMode::Switch);
+        assert_eq!(readback.frame.dew(DewChannel::Dew6).mode, DewMode::Switch);
 
         session.close().await.unwrap();
     }
@@ -880,93 +1035,93 @@ mod tests {
 
     // ---- wire failures ---------------------------------------------------
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::FrameTransport;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use transport_doubles::FailingFactory;
 
-    /// Wraps the canonical mock factory but gates `send_frame` behind a
-    /// shared atomic — flipping it makes the very next send return EOF.
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockGeminiTransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-
-        async fn discard_input(&mut self) -> std::result::Result<(), TransportError> {
-            self.inner.discard_input().await
-        }
-    }
-
-    /// Manager built with the `InjectableFactory` and a long poll interval
-    /// so the poll loop can't consume the armed failure before the test's
+    /// Manager built with a `FailingFactory` and a long poll interval so the
+    /// poll loop can't consume the armed failure before the test's
     /// foreground request does.
-    fn make_manager_with_injectable(factory: Arc<InjectableFactory>) -> Arc<GeminiManager> {
+    fn make_manager_with_failing(
+        factory: Arc<FailingFactory<MockGeminiTransportFactory>>,
+    ) -> Arc<GeminiManager> {
         make_manager_polling_every(Duration::from_mins(5), factory)
     }
 
     #[tokio::test]
     async fn send_set_and_refresh_propagate_a_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let manager = make_manager_with_injectable(Arc::clone(&factory));
+        let factory = Arc::new(FailingFactory::new(MockGeminiTransportFactory::default()));
+        let manager = make_manager_with_failing(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        factory.fail_next_send.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .send_set(&session, SetCommand::Dc(DcOutput::Dc2, false))
             .await
             .unwrap_err();
         assert!(matches!(err, GeminiError::Communication(_)), "{err:?}");
 
-        factory.fail_next_send.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager.refresh_status(&session).await.unwrap_err();
         assert!(matches!(err, GeminiError::Communication(_)), "{err:?}");
 
         session.close().await.unwrap();
     }
 
+    // ---- a poll against a write -----------------------------------------
+
+    use transport_doubles::HoldingFactory;
+
+    #[tokio::test]
+    async fn a_poll_read_before_a_write_does_not_replace_the_written_frame() {
+        let factory = Arc::new(HoldingFactory::new(MockGeminiTransportFactory::default()));
+        let manager = make_manager_polling_every(
+            Duration::from_millis(20),
+            Arc::clone(&factory) as Arc<dyn TransportFactory>,
+        );
+        let session = manager.transport().acquire().await.unwrap();
+
+        // A poll is on the wire: the hub has its `>G#`, DC3 still on.
+        factory.hold_next_reply();
+        factory.reply_held().await;
+
+        // With the cache held, the poll reads its frame and cannot store
+        // it; the write goes on the wire behind it, and its confirmed frame
+        // lands first — what a poll task slow to run again on a loaded host
+        // does.
+        let mut cache = manager.cached_state.write().await;
+        factory.release_reply();
+        let readback = manager
+            .send_set(&session, SetCommand::Dc(DcOutput::Dc3, false))
+            .await
+            .unwrap();
+        assert!(!readback.frame.dc_on(DcOutput::Dc3), "the write took");
+        apply_status(&mut cache, &readback);
+
+        // The poll stores next, and its next request is the sign it has.
+        factory.hold_next_reply();
+        drop(cache);
+        factory.reply_held().await;
+
+        let state = manager.get_cached_state().await;
+        assert!(
+            !state.status.get().unwrap().dc_on(DcOutput::Dc3),
+            "a poll's frame read before the write replaced the write's"
+        );
+
+        factory.release_reply();
+        session.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn acquire_returns_err_and_keeps_cache_empty_when_the_handshake_send_fails() {
-        let factory = Arc::new(InjectableFactory::default());
-        let manager = make_manager_with_injectable(Arc::clone(&factory));
+        let factory = Arc::new(FailingFactory::new(MockGeminiTransportFactory::default()));
+        let manager = make_manager_with_failing(Arc::clone(&factory));
 
-        factory.fail_next_send.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = GeminiError::from(manager.transport().acquire().await.unwrap_err());
         assert!(matches!(err, GeminiError::Communication(_)), "{err:?}");
         assert!(!manager.is_available());
         let state = manager.get_cached_state().await;
-        assert!(state.status.is_none());
+        assert!(state.status.get().is_none());
         assert!(state.firmware.is_none());
     }
 }

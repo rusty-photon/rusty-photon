@@ -3,7 +3,7 @@
 //! Each scenario spawns the zwo-camera binary (built with the `simulation`
 //! backend so the SDK yields one `ASI2600MM-Pro-Simulated` camera) and drives it
 //! through the typed `ascom-alpaca` Camera client over real HTTP — mirroring the
-//! qhy-camera / qhy-focuser pattern. The EFW filter wheel is Phase F (`@wip`).
+//! qhy-camera / qhy-focuser pattern.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -29,8 +29,8 @@ use tempfile::TempDir;
 /// BDD suites share the same 3-core macOS runner. Measured there: the bin-3
 /// frame took 5.4 s and bin 2 was still going at 7.5 s.
 ///
-/// Matching `star-adventurer-gti`'s `DEBUG_RETRY_WINDOW`, the other in-repo
-/// budget written for a starved runner.
+/// Matching `star-adventurer-gti`'s `DEBUG_RETRY_WINDOW`, also written for a
+/// starved runner.
 const IMAGE_READY_BUDGET: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Default, World)]
@@ -71,6 +71,7 @@ pub struct CameraWorld {
 
     /// State for the shared setup-page steps (`setup_pages.feature`).
     pub setup_pages: SetupPagesState,
+    pub service_restart: bdd_infra::service_restart::ServiceRestartState,
 
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
@@ -89,6 +90,20 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for CameraWorld {
 impl SetupPagesWorld for CameraWorld {
     fn setup_pages(&mut self) -> &mut SetupPagesState {
         &mut self.setup_pages
+    }
+}
+
+impl bdd_infra::service_restart::ServiceRestartWorld for CameraWorld {
+    fn service_restart(&mut self) -> &mut bdd_infra::service_restart::ServiceRestartState {
+        &mut self.service_restart
+    }
+
+    fn restarted_service(&mut self) -> &mut bdd_infra::ServiceHandle {
+        self.handle.as_mut().expect("the service was not started")
+    }
+
+    fn service_behind_auth(&self) -> (u16, &bdd_infra::tls_auth::PkiFixture) {
+        (self.tls_auth.port(), self.tls_auth.pki())
     }
 }
 
@@ -344,15 +359,15 @@ impl CameraWorld {
     ///
     /// The budget is wall-clock, not a poll count. Each iteration is a full
     /// Alpaca round trip, so a fixed count of naps promises a budget it cannot
-    /// keep: the loop this replaced advertised 6 s as 240 x 25 ms and actually
-    /// fired at ~7.5 s on a loaded runner, because the round trips are not
-    /// free. A deadline says what it means on every machine.
+    /// keep: 240 naps of 25 ms read as 6 s and were measured firing at ~7.5 s
+    /// on a loaded runner, because the round trips are not free. A deadline
+    /// says what it means on every machine.
     ///
     /// The budget is checked after each poll, so a wait can overshoot it by
     /// the round trip that was in flight when it expired, and a frame landing
     /// inside that round trip still passes. Both are deliberate: this is a
     /// generosity floor, not a stopwatch. Failing a frame that arrived a few
-    /// milliseconds late would reintroduce the flake the budget exists to
+    /// milliseconds late would be the very flake the budget exists to
     /// remove, and bounding the final poll by the remaining time would
     /// surface a transport error in place of this message — see
     /// `docs/skills/testing.md` §5.9 rule 2. The panic reports the wait it

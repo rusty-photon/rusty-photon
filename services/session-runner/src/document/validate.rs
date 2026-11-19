@@ -1052,7 +1052,7 @@ impl Builder {
         // prefix-stack scan rather than a pairwise loop: `/validate`
         // takes untrusted input, and in Vec-lexicographic order a prefix
         // sorts immediately before its extensions, so O(n log n) covers
-        // what the pairwise scan did in O(n²). Each entry reports its
+        // what a pairwise scan does in O(n²). Each entry reports its
         // nearest prefix ancestor, bounding the issues at one per entry.
         let mut sorted: Vec<&SetEntry> = out.iter().collect();
         sorted.sort_by(|a, b| a.path.cmp(&b.path));

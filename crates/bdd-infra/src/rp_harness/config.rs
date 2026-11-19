@@ -116,6 +116,9 @@ pub struct SwitchConfig {
     pub id: String,
     pub alpaca_url: String,
     pub device_number: u32,
+    /// The power map's `outputs` entries, passed through as written;
+    /// left out of the config when empty.
+    pub outputs: Vec<Value>,
 }
 
 /// Rotator equipment entry.
@@ -180,12 +183,18 @@ pub struct GuiderConfig {
     /// Default `dither` amount when the per-call `pixels` parameter
     /// is omitted.
     pub dither_pixels: Option<f64>,
-    /// Rotation threshold above which rp clears the PHD2 calibration
-    /// when rotating a guide-coupled train. `None` ⇒ rp's default (5°).
+    /// Rotation above which rp empties the guider's calibration store
+    /// when it turns a guiding train's rotator. `None` ⇒ rp's default
+    /// (5°).
     pub recalibrate_above_deg: Option<f64>,
     /// The `focus_watch` sub-block (rp.md § Guide Focus Watch),
     /// passed through as raw JSON. `None` ⇒ omit (watch disabled).
     pub focus_watch: Option<Value>,
+    /// Keys of the block given as raw JSON, written last: each one
+    /// replaces what a field above emitted under the same key, and
+    /// reaches the keys that have no field (`calibration_timeout`,
+    /// `star_lost_after`).
+    pub overrides: Vec<(String, Value)>,
 }
 
 impl GuiderConfig {
@@ -201,6 +210,7 @@ impl GuiderConfig {
             dither_pixels: None,
             recalibrate_above_deg: None,
             focus_watch: None,
+            overrides: Vec::new(),
         }
     }
 }
@@ -232,8 +242,9 @@ pub struct OpticalTrainConfig {
     /// angle). `None` ⇒ omit the field.
     pub default_position_angle_degrees: Option<f64>,
     pub devices: Vec<String>,
-    /// Per-train V-curve sweep parameters (`optical_trains[].auto_focus`).
-    /// `None` ⇒ omit the block.
+    /// The guiding train's metric-sweep parameters
+    /// (`optical_trains[].auto_focus`). `None` ⇒ omit the block, which
+    /// every imaging train does: rp refuses a block on one.
     pub auto_focus: Option<TrainAutoFocusConfig>,
 }
 
@@ -253,40 +264,18 @@ pub struct OpticalTrainConfig {
 /// frame reads as starless on every platform.
 pub const STARLESS_THRESHOLD_SIGMA: f64 = 1000.0;
 
-/// The `optical_trains[].auto_focus` block (rp.md § Optical Trains).
+/// The guiding train's `optical_trains[].auto_focus` block (rp.md
+/// § Optical Trains).
 ///
-/// Which fields rp accepts depends on the train's purpose — imaging
-/// blocks carry the capture fields, the guiding train's block the
-/// metric-sweep ones — so everything but the geometry is optional
-/// here and `None` fields are omitted from the emitted JSON.
-/// The optional `min_fit_points` is omitted — scenarios that need it
-/// can grow this struct.
+/// Its metric sweep's geometry, and the fresh guide frames per position
+/// (`None` is omitted, leaving rp's default of 3). The optional
+/// `min_fit_points` and `confirmation_tolerance` are omitted —
+/// scenarios that need them can grow this struct.
 #[derive(Debug, Clone)]
 pub struct TrainAutoFocusConfig {
-    /// Per-frame exposure, humantime string (e.g. `"100ms"`).
-    /// Capture sweeps only.
-    pub duration: Option<String>,
     pub step_size: i64,
     pub half_width: i64,
-    /// Capture sweeps only.
-    pub min_area: Option<i64>,
-    /// Capture sweeps only.
-    pub max_area: Option<i64>,
-    /// Binning for every sweep frame, `"AxB"`. Capture sweeps only;
-    /// `None` leaves rp's default (`"1x1"`) in force.
-    pub binning: Option<String>,
-    /// Per-frame detection threshold in sigma units. Capture sweeps
-    /// only — rp refuses it on a guiding train's block, whose metric
-    /// sweep never measures stars — so a guiding block leaves it
-    /// `None`. A capture sweep that wants the simulator's frames to
-    /// read as starless pins [`STARLESS_THRESHOLD_SIGMA`]; `None`
-    /// leaves rp's default (5.0) in force.
-    pub threshold_sigma: Option<f64>,
-    /// Metric (guiding-train) sweeps only.
     pub frames_per_step: Option<i64>,
-    /// Sweeps a run may make before it errors. Capture sweeps only;
-    /// `None` leaves rp's default (2) in force.
-    pub max_attempts: Option<i64>,
 }
 
 /// Overrides for rp's top-level `cooling` block (rp.md § Camera
@@ -326,15 +315,16 @@ pub struct RpConfigBuilder {
     pub filter_wheels: Vec<FilterWheelConfig>,
     pub cover_calibrators: Vec<CoverCalibratorConfig>,
     pub focusers: Vec<FocuserConfig>,
-    /// Safety monitors gating the session (see rp.md § Safety).
+    /// Safety monitors rp polls to gate its tools (see rp.md § Safety).
     pub safety_monitors: Vec<SafetyMonitorConfig>,
-    /// Switches — roster membership + connectivity status only (rp.md §
-    /// Equipment Integration); no MCP tool integration yet.
+    /// Switches — power boxes whose outputs rp reads and switches through
+    /// each entry's power map (rp.md § Power Switching).
     pub switches: Vec<SwitchConfig>,
-    /// Rotators — roster membership + connectivity status only.
+    /// Rotators — moved and read through `move_rotator` /
+    /// `get_rotator_position` (rp.md § Rotator Tool Details).
     pub rotators: Vec<RotatorConfig>,
-    /// `ObservingConditions` devices — roster membership + connectivity
-    /// status only.
+    /// `ObservingConditions` devices — read into each frame's rig state
+    /// (rp.md § Rig state); no MCP tool reads them.
     pub observing_conditions: Vec<ObservingConditionsConfig>,
     /// Domes — roster membership + connectivity status only.
     pub domes: Vec<DomeConfig>,
@@ -402,7 +392,8 @@ pub struct RpConfigBuilder {
     /// kills and restarts rp pins the first instance's port so a client
     /// configured with rp's URL — session-runner's `mcp_server_url` —
     /// finds the restarted instance where it left the old one, as a
-    /// real restart would.
+    /// real restart would. A tool provider's suite pins it too, so the
+    /// provider's config can name rp before rp starts.
     pub port: Option<u16>,
 }
 
@@ -561,8 +552,7 @@ impl RpConfigBuilder {
         self
     }
 
-    /// Pin `server.port` (see the field). Used by the rp-outage BDD
-    /// scenarios to restart rp on the port the run was configured for.
+    /// Pin `server.port` (see the field).
     pub const fn with_port(&mut self, port: u16) -> &mut Self {
         self.port = Some(port);
         self
@@ -647,7 +637,7 @@ impl RpConfigBuilder {
                 "filter_wheels": self.filter_wheels_value(),
                 "cover_calibrators": self.cover_calibrators_value(),
                 "safety_monitors": device_list(self.safety_monitors.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
-                "switches": device_list(self.switches.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
+                "switches": self.switches_value(),
                 "rotators": device_list(self.rotators.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
                 "observing_conditions": device_list(self.observing_conditions.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number))),
                 "domes": device_list(self.domes.iter().map(|d| (&d.id, &d.alpaca_url, d.device_number)))
@@ -656,7 +646,7 @@ impl RpConfigBuilder {
             // Target-store settings (`config["target_store"]`) are injected
             // by rp's own BDD world when a scenario needs them; targets
             // themselves are seeded post-boot via the `add_target` MCP tool
-            // (the legacy `targets[]` config array was retired).
+            // — rp's config has no `targets` key, and its load refuses one.
             "planner": {
                 "min_altitude_degrees": 20,
                 "dawn_buffer_minutes": 30,
@@ -714,6 +704,23 @@ impl RpConfigBuilder {
         }
 
         config
+    }
+
+    fn switches_value(&self) -> Vec<Value> {
+        self.switches
+            .iter()
+            .map(|d| {
+                let mut entry = serde_json::json!({
+                    "id": d.id,
+                    "alpaca_url": d.alpaca_url,
+                    "device_number": d.device_number,
+                });
+                if !d.outputs.is_empty() {
+                    set_key(&mut entry, "outputs", Value::Array(d.outputs.clone()));
+                }
+                entry
+            })
+            .collect()
     }
 
     fn cameras_value(&self) -> Vec<Value> {
@@ -868,26 +875,8 @@ impl RpConfigBuilder {
                         "step_size": af.step_size,
                         "half_width": af.half_width,
                     });
-                    if let Some(d) = &af.duration {
-                        set_key(&mut block, "duration", serde_json::json!(d));
-                    }
-                    if let Some(v) = af.min_area {
-                        set_key(&mut block, "min_area", serde_json::json!(v));
-                    }
-                    if let Some(v) = af.max_area {
-                        set_key(&mut block, "max_area", serde_json::json!(v));
-                    }
-                    if let Some(v) = &af.binning {
-                        set_key(&mut block, "binning", serde_json::json!(v));
-                    }
-                    if let Some(v) = af.threshold_sigma {
-                        set_key(&mut block, "threshold_sigma", serde_json::json!(v));
-                    }
                     if let Some(v) = af.frames_per_step {
                         set_key(&mut block, "frames_per_step", serde_json::json!(v));
-                    }
-                    if let Some(v) = af.max_attempts {
-                        set_key(&mut block, "max_attempts", serde_json::json!(v));
                     }
                     set_key(&mut obj, "auto_focus", block);
                 }
@@ -1010,6 +999,9 @@ fn guiding_block(g: &GuiderConfig) -> Value {
     }
     if let Some(w) = &g.focus_watch {
         set_key(&mut block, "focus_watch", w.clone());
+    }
+    for (key, value) in &g.overrides {
+        set_key(&mut block, key, value.clone());
     }
     block
 }
@@ -1183,17 +1175,7 @@ mod tests {
             focal_length_mm: Some(1000.0),
             default_position_angle_degrees: None,
             devices: vec!["main-focuser".to_string(), "main-cam".to_string()],
-            auto_focus: Some(TrainAutoFocusConfig {
-                duration: Some("100ms".to_string()),
-                step_size: 100,
-                half_width: 200,
-                min_area: Some(5),
-                max_area: Some(65_536),
-                binning: None,
-                threshold_sigma: Some(STARLESS_THRESHOLD_SIGMA),
-                frames_per_step: None,
-                max_attempts: Some(1),
-            }),
+            auto_focus: None,
         });
         b.add_optical_train(OpticalTrainConfig {
             telescope: None,
@@ -1204,7 +1186,11 @@ mod tests {
             focal_length_mm: None,
             default_position_angle_degrees: None,
             devices: vec!["guide-cam".to_string()],
-            auto_focus: None,
+            auto_focus: Some(TrainAutoFocusConfig {
+                step_size: 50,
+                half_width: 100,
+                frames_per_step: Some(2),
+            }),
         });
         let cfg = b.build();
         let trains = cfg["equipment"]["optical_trains"].as_array().unwrap();
@@ -1216,17 +1202,13 @@ mod tests {
             trains[0]["devices"],
             serde_json::json!(["main-focuser", "main-cam"])
         );
+        assert!(
+            trains[0].get("auto_focus").is_none(),
+            "a None auto_focus must omit the block"
+        );
         assert_eq!(
-            trains[0]["auto_focus"],
-            serde_json::json!({
-                "duration": "100ms",
-                "step_size": 100,
-                "half_width": 200,
-                "min_area": 5,
-                "max_area": 65_536,
-                "threshold_sigma": STARLESS_THRESHOLD_SIGMA,
-                "max_attempts": 1,
-            })
+            trains[1]["auto_focus"],
+            serde_json::json!({ "step_size": 50, "half_width": 100, "frames_per_step": 2 })
         );
         assert!(
             trains[1].get("purpose").is_none(),
@@ -1239,10 +1221,6 @@ mod tests {
         assert!(
             trains[1].get("obstruction_mm").is_none(),
             "a None obstruction must omit the field (unobstructed)"
-        );
-        assert!(
-            trains[1].get("auto_focus").is_none(),
-            "a None auto_focus must omit the block"
         );
     }
 
@@ -1421,6 +1399,7 @@ mod tests {
             dither_pixels: Some(5.0),
             recalibrate_above_deg: Some(10.0),
             focus_watch: Some(serde_json::json!({ "window": 5 })),
+            overrides: Vec::new(),
         });
         let cfg = b.build();
         let g = &cfg["equipment"]["mount"]["guiding"];
@@ -1432,6 +1411,27 @@ mod tests {
         assert_eq!(g["dither_pixels"], 5.0);
         assert_eq!(g["recalibrate_above_deg"], 10.0);
         assert_eq!(g["focus_watch"]["window"], 5);
+    }
+
+    #[test]
+    fn with_guider_writes_the_raw_overrides_last() {
+        let mut b = RpConfigBuilder::new();
+        b.with_mount(MountConfig {
+            alpaca_url: "http://127.0.0.1:11122".to_string(),
+            device_number: 0,
+            settle_after_slew: None,
+        });
+        let mut guider = GuiderConfig::url_only("http://127.0.0.1:11130".to_string());
+        guider.settle_time = Some(std::time::Duration::from_secs(8));
+        guider.overrides = vec![
+            ("star_lost_after".to_string(), serde_json::json!("2s")),
+            ("settle_time".to_string(), serde_json::json!("3s")),
+        ];
+        b.with_guider(guider);
+        let cfg = b.build();
+        let g = &cfg["equipment"]["mount"]["guiding"];
+        assert_eq!(g["star_lost_after"], "2s");
+        assert_eq!(g["settle_time"], "3s");
     }
 
     #[test]
@@ -1516,10 +1516,10 @@ mod tests {
 
     #[test]
     fn build_omits_the_retired_targets_key() {
-        // The legacy `targets[]` planner array is gone; targets live in
-        // the redb store (seeded post-boot via the `add_target` MCP
-        // tool). The shared builder emits no `targets` key, and rp opens
-        // the store with defaults when `target_store` is absent — the
+        // rp's load refuses a `targets` key: targets live in the redb
+        // store (seeded post-boot via the `add_target` MCP tool). The
+        // shared builder emits no `targets` key, and rp opens the store
+        // with defaults when `target_store` is absent — the
         // store-settings override is injected by rp's own BDD world.
         let cfg = RpConfigBuilder::new().build();
         assert!(
@@ -1564,8 +1564,8 @@ mod tests {
 
     /// The default data directory lives in this process's scratch
     /// directory and differs from build to build. No `session_state_file`
-    /// is minted: rp keeps no session registry (mcp-sessionless D6), and
-    /// a config carrying the key would fail rp's load.
+    /// is minted: rp keeps no session registry, and a config carrying the
+    /// key fails rp's load.
     #[test]
     fn default_data_directory_is_distinct_and_inside_the_scratch_dir() {
         let first = RpConfigBuilder::new().build();

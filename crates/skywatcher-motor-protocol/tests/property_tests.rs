@@ -56,7 +56,7 @@ proptest! {
     }
 
     /// Any signed encoder-tick value in the representable range round-trips
-    /// through encode_position → decode_position.
+    /// through `encode_position` → `decode_position`.
     #[test]
     fn position_roundtrip(ticks in POSITION_MIN..=POSITION_MAX) {
         let bytes = encode_position(ticks).unwrap();

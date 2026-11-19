@@ -69,9 +69,11 @@ Monitors poll ASCOM Alpaca devices at a configured interval.
 | `device_number` | `0` | ASCOM device number. |
 | `polling_interval` | `"30s"` | How often to poll the device (humantime: `"30s"`, `"500ms"`, `"1m"`, …). |
 
+Each request to the device is bounded at 5 s: a poll the device has not answered by then reads `Unknown`, as an unreachable device does. A device that answers `NotConnected`, as one does after its service restarts, is connected again within that poll.
+
 ### Notifiers
 
-Notifiers deliver alerts when transitions occur.
+Notifiers deliver alerts when transitions occur. A Pushover POST the endpoint has not answered within 10 s fails and is recorded in the notification history as failed.
 
 ```json
 {
@@ -99,7 +101,7 @@ Notifiers deliver alerts when transitions occur.
 
 ### Transitions
 
-Transitions define *when* to send notifications. Each rule watches a monitor and fires when the state changes in the specified direction.
+Transitions define *when* to send notifications. Each rule watches a monitor and fires when the state changes in the specified direction. A reading is compared with the monitor's last known `Safe` or `Unsafe` reading, so a poll that fails in between does not hide a change. A monitor that fails five polls in a row is unreadable; an `unreadable` rule fires then (`%new_state%` is `Unknown`) and again at its first reading afterwards. See [the design doc](../../docs/services/sentinel.md#transition-rules).
 
 ```json
 {
@@ -119,9 +121,9 @@ Transitions define *when* to send notifications. Each rule watches a monitor and
 | Field | Default | Description |
 |-------|---------|-------------|
 | `monitor_name` | *(required)* | Name of the monitor to watch (must match a monitor's `name`). |
-| `direction` | *(required)* | `safe_to_unsafe`, `unsafe_to_safe`, or `both`. |
+| `direction` | *(required)* | `safe_to_unsafe`, `unsafe_to_safe`, `both` (either of those two), or `unreadable`. |
 | `notifiers` | *(required)* | List of notifier type names to dispatch to. |
-| `message_template` | `%monitor_name% changed to %new_state%` | Template with `%monitor_name%` and `%new_state%` placeholders. |
+| `message_template` | `%monitor_name% changed to %new_state%`; for `unreadable`, `%monitor_name% is now %new_state%` | Template with `%monitor_name%` and `%new_state%` placeholders. |
 | `priority` | *(none)* | Override the notifier's default priority for this rule. |
 | `sound` | *(none)* | Override the notifier's default sound for this rule. |
 

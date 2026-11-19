@@ -13,11 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, DomeConfig, FacadeCameraStub,
-    FilterWheelConfig, FocuserConfig, GuiderConfig, GuiderStub, McpTestClient, MountConfig,
-    ObservingConditionsConfig, OmniSimHandle, OpticalTrainConfig, PlateSolverConfig,
-    PlateSolverStub, ReceivedEvent, RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient,
-    SwitchConfig, ToolProviderStub, WebhookReceiver,
+    AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, DomeConfig, FilterWheelConfig,
+    FocuserConfig, GuiderConfig, GuiderStub, McpTestClient, MountConfig, ObservingConditionsConfig,
+    OmniSimHandle, OpticalTrainConfig, PlateSolverConfig, PlateSolverStub, PowerBoxStub,
+    ReceivedEvent, RotatorConfig, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig,
+    ToolProviderStub, WebhookReceiver,
 };
 use bdd_infra::sky_survey_camera_harness::SkyViewStub;
 use bdd_infra::ServiceHandle;
@@ -92,10 +92,6 @@ pub struct RpWorld {
     /// Handle to the in-process stub guider server (same lifecycle
     /// rationale as `plate_solver_stub`).
     pub guider_stub: Option<GuiderStub>,
-    /// Stub of phd2-guider's camera facade, as far as rp's train lease
-    /// reaches it (`train_lease.feature`): the three sweep-lease
-    /// Actions, scripted and recorded.
-    pub facade_stub: Option<FacadeCameraStub>,
     /// Optional `(latitude_degrees, longitude_degrees)` site for
     /// ephemeris-driven scenarios; emitted as the `site` block in
     /// the generated rp config. Used by `target_catalog`,
@@ -133,6 +129,9 @@ pub struct RpWorld {
     /// downstream device service the scenario can stop and bring back
     /// on the same port with its `Connected` state gone.
     pub alpaca_stub: Option<AlpacaDeviceStub>,
+    /// Stub power box (power-switching scenarios): one Alpaca `Switch`
+    /// with named outputs whose writes the scenario observes.
+    pub power_box: Option<PowerBoxStub>,
     /// Override rp's `cooling` timing knobs; the camera-cooling
     /// scenarios pin these short so a cooldown pass completes in
     /// test time (`camera_cooling.feature`).
@@ -182,10 +181,10 @@ pub struct RpWorld {
     pub last_detect_stars_result: Option<Value>,
     /// Last `measure_stars` result
     pub last_measure_stars_result: Option<Value>,
+    /// The `stars` the last `measure_stars` call passed, when it passed any
+    pub last_listed_stars: Option<Value>,
     /// Last `compute_snr` result
     pub last_compute_snr_result: Option<Value>,
-    /// Last `auto_focus` result
-    pub last_auto_focus_result: Option<Value>,
     /// Last successful rotator-tool result (`move_rotator`,
     /// `get_rotator_position`)
     pub last_rotator_result: Option<Value>,

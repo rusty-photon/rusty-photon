@@ -457,11 +457,11 @@ own slug. See rp.md § Capture Tool Details for the full resolution
 rules, including the `"NA"`/`0` fallback `{filter}`/`{filter_position}`
 render when no filter wheel is present (or, for `Dark`/`Bias`, always).
 
-**Deferred, not yet decided:** organizing `auto_focus`'s and
+**Deferred, not yet decided:** organizing a focus sweep's captures and
 `center_on_target`'s internal diagnostic captures through this same
 mechanism. They can run multiple times against one target in a night,
 which `{night_date}`-granularity directories can't disambiguate — a
-`{time}` token doesn't exist in the shape table below. Both tools keep
+`{time}` token doesn't exist in the shape table below. Both keep
 calling `capture` with `frame_type` omitted (today's flat-file
 behavior) until this is designed; see rp.md § Capture Tool Details.
 

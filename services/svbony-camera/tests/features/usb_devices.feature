@@ -71,7 +71,7 @@ Feature: Device claims -- the usb_devices list
     When I try to connect camera device 0
     Then the connect is rejected with ASCOM error 0x540
     And the rejection says "no working camera is enumerated on simulated-usbv3-0:9"
-    And the rejection says "reload or restart svbony-camera"
+    And the rejection says "fixed, restart svbony-camera"
     And camera device 0 reports a Description containing "no working camera is enumerated on simulated-usbv3-0:9"
     And camera device 0 reports Connected as false
 

@@ -267,10 +267,10 @@ fn config_at_dead_port(world: &mut DoctorWorld, file: String) {
     // Port 1 (tcpmux) sits outside every OS's dynamic port range and is
     // privileged on Unix, so no test process here can occupy it and
     // nothing on a CI or dev host listens there — the probe reliably gets
-    // a refusal. Binding an ephemeral port and dropping it raced the
-    // other suites — under high test parallelism another suite's port-0
-    // server re-bound the freed port and answered the probe, which is an
-    // answer, not "does not answer".
+    // a refusal. An ephemeral port bound and dropped would race the other
+    // suites: under high test parallelism another suite's port-0 server
+    // can re-bind the freed port and answer the probe, which is an answer,
+    // not "does not answer".
     world.write_config(&file, r#"{ "server": { "port": 1 } }"#);
 }
 

@@ -78,8 +78,8 @@ does not report. Its boot-state field is parsed and discarded.
 
 ### Commands the driver deliberately does not send
 
-These stay with the Pegasus Astro desktop software for now. Excluding them
-is a scope decision, not an oversight; each has a reason to stay out.
+These stay with the Pegasus Astro desktop software. Excluding them is a
+scope decision, not an oversight; each has a reason to stay out.
 
 | Command | Why excluded |
 |---------|--------------|
@@ -148,15 +148,15 @@ The UPBv2 has an onboard stepper driver (`SA`, `SP`, `SM:`, `SG:`, `SH`,
 temperature probe and no onboard temperature compensation. It is deferred
 from the MVP for one reason: **there is no motor on the UPBv2 in the fleet
 to validate against.** rig2's focuser is an Optec FocusLynx on its own
-serial port, exposed through the Optec Alpaca driver. Shipping a focuser
-whose only evidence is a mock repeats the mistake recorded against the QHY
-connect path — never ship a device path on mock evidence alone.
+serial port, exposed through the Optec Alpaca driver. A device path is
+never shipped on mock evidence alone: a mock written from the vendor table
+agrees with the driver on everything the table gets wrong, as the `PS`
+field under [What the wire actually does](#what-the-wire-actually-does)
+shows.
 
-The protocol is documented above so the phase is cheap to pick up when a
-Pegasus stepper is actually attached. When it lands it belongs in *this*
-service (same serial port, same command stream), config-gated
-`focuser.enabled` defaulting to `false`, with `SA` joining the poll loop
-only when enabled.
+The Focuser belongs in *this* service (same serial port, same command
+stream), config-gated `focuser.enabled` defaulting to `false`, with `SA`
+joining the poll loop only when enabled.
 
 ## Switch mapping
 
@@ -313,10 +313,12 @@ a reply the driver already parses.
 The same value is surfaced as read-only switch 34 so a client can *explain*
 a false `CanWrite` rather than just observe it.
 
-**ConformU consequence:** as with the PPBA, a compliance run against real
-hardware needs auto-dew set to `0` beforehand, or the dew-heater write tests
-fail on a read-only switch. That is now done in the Pegasus software rather
-than through the driver.
+**ConformU consequence:** as with the PPBA, ConformU passes in either
+auto-dew state. A channel under auto-dew control is found read-only and its
+`SetSwitch` / `SetSwitchValue` are checked for `NotImplemented`; only a
+channel the device is not driving has its duty written across 0-255.
+Turning auto-dew off, to have every heater written, is done in the Pegasus
+software, since the driver never sends `PD:`.
 
 ## Connect, handshake and polling
 
@@ -330,7 +332,11 @@ explicitly. Therefore:
   construction.
 - The poll loop refreshes `PA` + `PC` + `PS` every `polling_interval`
   (default 5 s) into the shared cache. Reads are served from cache; a write
-  refreshes on demand.
+  refreshes on demand. Each frame is stored with the instant it was read
+  off the wire, and one read before the cached frame is dropped, so a
+  poll's `PA` or `PS` read just before a write cannot land after the
+  write's refresh and put an output or the variable-output setpoint back
+  ([the shared pattern](../workspace.md#serial-based-services)).
 - A setup-page save never pushes output states to hardware.
 - The excluded `PE:`/`US:` boot-state commands would have been the one place
   a config-driven output state could leak onto the hardware. Their exclusion
@@ -347,8 +353,10 @@ the loop rebuilds — including a fresh eager handshake on the same serial port.
 The port therefore has to be released before the rebuild asks for it, which is
 what `shutdown()`'s explicit close guarantees, and the re-open has to tolerate a
 handle Windows has not finished closing, which is what
-`rusty_photon_shared_transport::open_serial_port`'s bounded retry covers. Both
-are described in [dsd-fp2's In-process reload
+`rusty_photon_shared_transport::open_serial_port`'s bounded retry covers
+([Lifecycles](../crates/rusty-photon-shared-transport.md#lifecycles),
+[Opening a serial port](../crates/rusty-photon-shared-transport.md#opening-a-serial-port)).
+The reload itself is described in [dsd-fp2's In-process reload
 section](dsd-fp2.md#in-process-reload); every serial driver shares the shape.
 `tests/reload_port_release.rs` drives build → serve → rebuild against a factory
 that refuses a second concurrent open, which is the property the BDD mock does
@@ -383,8 +391,8 @@ not have.
 ```
 
 Shape, defaults and semantics follow [`ppba-driver`](ppba-driver.md#configuration)
-exactly: the shared `AlpacaServerConfig` from `rusty-photon-server-config`
-(ADR-016), `deny_unknown_fields` on every block, empty `unique_id` meaning
+exactly: the shared `AlpacaServerConfig` from `rusty-photon-server-config`,
+`deny_unknown_fields` on every block, empty `unique_id` meaning
 "mint a UUIDv4 on first run" via `rusty_photon_config::resolve_and_init`,
 and humantime durations. That includes the bootstrap: a `switch` or
 `observingconditions` section left out of the file is filled in from the
@@ -426,8 +434,7 @@ everything else with `INVALID_VALUE` — including `NaN`, which an Alpaca client
 can send because `f64::from_str` parses `"NaN"`. The check is one range test
 rather than a pair of ordered comparisons on purpose: every ordered comparison
 against `NaN` is false, so `NaN` would otherwise pass validation and reach the
-seconds-to-`Duration` conversion, which panics on a non-finite value
-([#1247](https://github.com/rusty-photon/rusty-photon/issues/1247)).
+seconds-to-`Duration` conversion, which panics on a non-finite value.
 
 The manager holds the same line for callers that do not come through the
 device: `set_averaging_period` leaves every sensor window *and* the recorded
@@ -441,7 +448,11 @@ All three checks — the device, the manager, and the setup page's bound
 below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant, so the
 runtime range and the persisted range cannot drift apart.
 
-`TimeSinceLastUpdate` with an empty sensor name is the freshest of the three
+`TimeSinceLastUpdate` counts from the instant the status frame that carried
+the newest sample was read off the wire, on the monotonic clock, so a step
+of the wall clock does not move it
+([Values that carry their time](../workspace.md#values-that-carry-their-time)).
+With an empty sensor name it is the freshest of the three
 windows. While all three are empty it answers what one empty window
 answers, the no-data value, not zero: a client asking whether the readings
 are fresh must not be told "updated just now" when there are none.
@@ -462,8 +473,7 @@ change to the policy reaches all three drivers at once.
 ### Setup pages
 
 The driver configures itself through the HTML pages the Alpaca Management
-API defines, served by the driver itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
+API defines, served by the driver itself behind its own TLS and Basic Auth:
 
 | Path | Holds |
 |------|-------|
@@ -512,7 +522,7 @@ its first start.
 
 | Condition | Result |
 |-----------|--------|
-| Serial port absent at startup | Startup handshake fails; the service restart-loops. Same behavior as the other serial drivers, and the same open design question — see [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) slice 1b. |
+| Serial port absent at startup | Startup handshake fails; the service restart-loops until the device answers. Same behavior as the other serial drivers, which is why the services start with every device powered (packaging guides ([Linux](../packaging.md#start-the-services-with-every-device-powered), [Windows](../packaging-windows.md#start-the-services-with-every-device-powered))). |
 | `P#` answers `PPBA_OK` | Connect fails with a message naming `ppba-driver` as the right service. The prefix check is the model guard. |
 | `PA` token count != 21 | `InvalidResponse` naming the count; cache untouched. |
 | Any field unparseable | `ParseError` naming the wire field; cache untouched. |
@@ -535,19 +545,24 @@ poll loop, setup pages, TLS/auth, doctor, packaging, BDD and ConformU.
 master off; auto-dew *writes*; boot-state (`PE:`/`US:`) configuration; the
 `XS:` external motor controller.
 
-## Relationship to issue #1173
+## Relationship to the daily power cycle plan
 
-[#1173](https://github.com/rusty-photon/rusty-photon/issues/1173) (daily
-power cycling) names "UPBv2 unsupported" as one of the facts its design
-rests on, and lists `set_switch`/`get_switch` + UPBv2 as slice 2. This
-service is that slice's driver half. Note the tenet-3 boundary the issue
-already draws: this driver *exposes* the outputs; deciding to flip one at
-dusk is a workflow decision that belongs in a session-runner document, not
-in any connect or supervisory path here.
+The [daily power cycle plan](../plans/daily-power-cycle.md) switches
+outputs at dusk and dawn through rp's switch tools. This driver
+*exposes* the outputs; deciding to flip one at dusk is a workflow decision
+that belongs in a session-runner document, not in any connect or
+supervisory path here (tenet 3).
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## What the wire actually does
 
-Answered by a read-only probe of rig2's unit
+Measured with a read-only probe of rig2's unit
 (`FTDIBUS\VID_0403+PID_6015+UPB248E11MA`, firmware `2.4`) sending only
 `P#`, `PV`, `PA`, `PC` and `PS`.
 
@@ -569,11 +584,10 @@ zeros. The field is therefore read **right-aligned**: `110` is `0110`, `1`
 is `0001`, `0` is `0000` — the only reading consistent with the flags being
 printed as a number.
 
-This mattered: a fixed-width parse of that field made the handshake fail on
-the real device, so the driver could not connect at all. Mock-only testing
-could not have caught it, because the mock was written from the same vendor
-table. The mock now reproduces the firmware's formatting rather than the
-document's.
+A fixed-width parse of that field fails the handshake on the real device,
+so the driver cannot connect at all, and a mock written from the same
+vendor table agrees with that parse. The mock therefore reproduces the
+firmware's formatting rather than the table's.
 
 **Replies are CRLF-terminated**, though the table documents LF. The frame
 transport splits on `\n` and the codec trims, so the trailing `\r` costs
@@ -591,7 +605,8 @@ temporary directory — nothing installed.
 The connect handshake succeeds, both devices register, and every Alpaca read
 agrees with the raw frames: 12.7 V in, outputs and USB ports matching the
 `PA` bit fields, and the variable-output setpoint of 6 V, which is carried
-only by `PS` — the frame whose parse used to fail.
+only by `PS` — the frame a fixed-width parse fails on
+([What the wire actually does](#what-the-wire-actually-does)).
 
 All four ConformU suites pass with **zero errors, issues or alerts**:
 
@@ -607,9 +622,9 @@ Two results are worth keeping:
 - The **auto-dew gate is confirmed on hardware.** rig2's box runs auto-dew
   mask `1`, so all three dew channels report `CanWrite = false`, and
   ConformU records `SetSwitch`/`SetSwitchValue` correctly raising
-  `NotImplemented` for each. The mock's default has auto-dew off, so this
-  path only ever ran under the deliberately-gated ConformU pass — on the
-  real box it is the *only* path.
+  `NotImplemented` for each. The mock's default has auto-dew off, so
+  under ConformU on the mock this path runs only in the pass that gates
+  channels deliberately — on the real box it is the *only* path.
 - **Writes round-trip through a real 5 s poll interval.** Every set is
   followed by a cache refresh, so a read straight after a write reflects the
   device rather than the last poll.
@@ -629,8 +644,7 @@ counters moved.
 
 Per [testing.md](../skills/testing.md) and the `ppba-driver` precedent:
 feature files under `tests/features/`, steps under `tests/bdd/steps/`, the
-binary spawned with `--features mock`. 11 features, 234 scenarios, plus 237
-unit tests in `src/`.
+binary spawned with `--features mock`, unit tests inline in `src/`.
 
 ### The mock's pinned frame
 
@@ -640,7 +654,7 @@ its values exactly — a scaling or field-order regression has to fail there:
 ```
 PA  UPB2:12.5:2.4:30:25.0:60:16.5:1101:111101:128:64:0:480:960:0:240:240:96:350:0000000:0
 PC  1.85:0.42:5.1:3600000          (bare tuple, no prefix)
-PS  PS:1101:12
+PS  PS:110:12                      (boot flags unpadded, as the firmware prints them)
 ```
 
 The current fields are raw sense counts, so output 1 reads 1.0 A (480/480)
@@ -659,5 +673,9 @@ on an unparseable value. `MockUpbv2TransportFactory::with_auto_dew` /
 `with_overcurrent` are the in-process equivalents for unit tests, which must
 not mutate process-global environment.
 
-ConformU runs against both devices, with auto-dew set to 0 on the hardware
-first.
+ConformU runs against both devices on the mock, the Switch twice: once
+with auto-dew off, so every dew channel is writable, and once with auto-dew
+on channels A and B (`UPBV2_MOCK_AUTO_DEW=5`), so one run covers both sides
+of the per-channel `CanWrite` gate. On rig2's box, whose auto-dew drives
+all three channels, it passes clean
+([Hardware validation](#hardware-validation)).

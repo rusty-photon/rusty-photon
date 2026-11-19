@@ -140,7 +140,7 @@ async fn mcp_call_close_cover_no_id(world: &mut RpWorld) {
 /// Train-addressed call of a calibrator tool or `get_train_info` —
 /// the tools that take `train_id` alone. The tool set is closed in the
 /// regex so this never shadows the literal-tool steps other features
-/// define (`get_next_target`, `refocus_train`).
+/// define (`get_next_target`).
 #[when(
     regex = r#"^the MCP client calls "(get_cover_state|close_cover|open_cover|calibrator_on|calibrator_off|get_train_info)" with train "([^"]*)"$"#
 )]

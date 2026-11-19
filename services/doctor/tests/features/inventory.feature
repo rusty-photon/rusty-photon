@@ -6,7 +6,9 @@ Feature: Install inventory diagnosis
   somewhere unexpected. A config file for a catalog service with no unit is
   a leftover or a hand-copied stray. A .json file matching no catalog
   service is a typo a service will silently never read. Known non-service
-  files (acme.json, the pki tree) are exempt. On a dev checkout with no
+  files (acme.json, the pki tree) are exempt, and so is a file a service
+  declares as its state file (star-adventurer-gti's mount state record),
+  which renaming or removing would destroy. On a dev checkout with no
   units, none of these mismatches are meaningful and the inventory checks do
   not run.
 
@@ -41,6 +43,16 @@ Feature: Install inventory diagnosis
       { "provider": "letsencrypt" }
       """
     And platform facts with an enabled unit "rusty-photon-qhy-focuser"
+    When I run doctor with --json
+    Then the report has no checks named "inventory.unknown-config"
+
+  Scenario: A service's state file beside the configs is not flagged
+    Given a config directory with a valid "star-adventurer-gti.json" on port 11117
+    And a config file "star-adventurer-gti.mount-state.json" containing:
+      """
+      { "state": "at_rest", "ra_ticks": -907200, "dec_ticks": 725760 }
+      """
+    And platform facts with an enabled unit "rusty-photon-star-adventurer-gti"
     When I run doctor with --json
     Then the report has no checks named "inventory.unknown-config"
 

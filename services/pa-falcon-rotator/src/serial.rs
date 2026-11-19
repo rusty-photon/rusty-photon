@@ -5,10 +5,7 @@
 //! 8N1 (tokio-serial's default — the Falcon firmware doesn't speak
 //! anything else and the driver doesn't expose framing knobs), with
 //! `\n` as the line terminator in both directions. The stream is
-//! wrapped in a [`SerialFrameTransport`] with `b'\n'` framing, replacing
-//! the legacy `SerialReader` / `SerialWriter` / `SerialPortPair`
-//! abstraction — that layer now lives in
-//! [`rusty_photon_shared_transport`].
+//! wrapped in a [`SerialFrameTransport`] with `b'\n'` framing.
 
 use std::time::Duration;
 
@@ -60,8 +57,7 @@ impl FalconTransportFactory {
 impl TransportFactory for FalconTransportFactory {
     /// Coverage off: the success path requires a real serial device. The
     /// open-failure path is covered by
-    /// `factory_open_nonexistent_port_returns_open_error` below, which
-    /// exercises the `map_err` branch.
+    /// `factory_open_nonexistent_port_returns_open_error` below.
     #[cfg_attr(coverage_nightly, coverage(off))]
     async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
         debug!(

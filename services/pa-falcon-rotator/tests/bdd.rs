@@ -1,12 +1,12 @@
 //! BDD entry point for pa-falcon-rotator.
 //!
-//! Tests run in-process: each scenario builds a `BoundServer` on an
+//! Most scenarios run in-process: each builds a `BoundServer` on an
 //! ephemeral port, holds a shared `Arc<MockFalconTransportFactory>` so
 //! steps can drive mock state and inspect the wire-level command log,
 //! and drives the Rotator / Switch trait surface via in-process Alpaca
-//! HTTP clients. The `bdd_infra::bdd_main!` macro is **not** used here
-//! — it's a Miri shim for BDD suites that spawn child processes via
-//! `ServiceHandle`, which we don't.
+//! HTTP clients. The setup-page, restart and auth scenarios spawn the
+//! mock-feature binary through `ServiceHandle` instead, so the entry point
+//! is `bdd_infra::bdd_main!` (docs/skills/testing.md §5.2).
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -42,16 +42,9 @@ mod world;
 #[path = "bdd/steps/mod.rs"]
 mod steps;
 
-#[tokio::main]
-async fn main() {
+bdd_infra::bdd_main! {
     use cucumber::World as _;
     use world::FalconRotatorWorld;
-
-    // Mirror the `bdd_main!` macro's first step: chdir to `BDD_PACKAGE_DIR`
-    // when running under Bazel so `tests/features` resolves relative to the
-    // package directory rather than the Bazel runfiles root. No-op under
-    // `cargo test`, which doesn't set the env var.
-    bdd_infra::__bdd_bazel_chdir();
 
     FalconRotatorWorld::cucumber()
         // A step that matches no definition is `Skipped`, and a skipped
@@ -65,13 +58,9 @@ async fn main() {
                 }
             })
         })
-        // Skip scenarios tagged `@wip` so an in-flight scenario can ride
-        // on the branch without breaking the green-suite invariant; the tag
-        // gets stripped in the commit that turns the scenario green. We use
-        // `filter_run_and_exit` (NOT the bare `filter_run`) per
-        // docs/skills/testing.md §2.7 — without `_and_exit` the binary
-        // returns 0 even on scenario failures and CI silently passes on
-        // broken scenarios (see issue #171).
+        // Skip `@wip` scenarios so an in-flight feature can ride the branch
+        // without breaking the green-suite invariant; `_and_exit` makes a
+        // scenario failure a non-zero exit (testing.md §2.7).
         .filter_run_and_exit("tests/features", |feat, _rule, sc| {
             let is_wip = feat.tags.iter().any(|t| t == "wip" || t == "@wip")
                 || sc.tags.iter().any(|t| t == "wip" || t == "@wip");

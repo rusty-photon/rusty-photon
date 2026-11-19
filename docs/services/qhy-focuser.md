@@ -8,9 +8,10 @@ The Q-Focuser is a standalone USB serial device - it does **not** use the QHYCCD
 
 ## Architecture
 
-The service is built on `rusty-photon-shared-transport`. The shared crate
-owns the refcount, slot, command-lock, and poll-task lifetime; this
-service contributes the protocol-specific pieces:
+The service is built on
+[`rusty-photon-shared-transport`](../crates/rusty-photon-shared-transport.md).
+The shared crate owns the refcount, slot, command-lock, and poll-task
+lifetime; this service contributes the protocol-specific pieces:
 
 - **Codec**: `QhyCodec` translates `Command` ↔ JSON bytes, dispatches
   decoded responses by `idx`, and matches replies to requests via
@@ -18,25 +19,34 @@ service contributes the protocol-specific pieces:
   can discard up to five unsolicited position frames before erroring
   (the device emits these mid-move). See `src/codec.rs`.
 - **Transport factory**: `QhyTransportFactory` opens the port through
-  the shared crate's `open_serial_port` (one opener for every serial
-  driver: builder settings, error mapping, and the bounded retry that
-  rides out a Windows handle still closing) and wraps the stream in a
+  the shared crate's
+  [`open_serial_port`](../crates/rusty-photon-shared-transport.md#opening-a-serial-port)
+  and wraps the stream in a
   `SerialFrameTransport` with `b'}'` as the frame terminator (responses
   are flat JSON objects terminated by the closing brace). See
   `src/serial.rs`.
 - **Manager**: `FocuserManager` wraps `Arc<SharedTransport<QhyCodec>>`
   plus the cached state, and constructs the
-  `Hooks { handshake, teardown, while_open }` that the shared transport
-  runs across the connection lifecycle. The handshake seeds firmware,
-  position, and temperature; the `while_open` poll loop refreshes
-  position + temperature on the configured interval. See `src/manager.rs`.
+  `Hooks { handshake, on_last_disconnect, shutdown, while_open }` that
+  the shared transport runs across the connection lifecycle. The
+  handshake seeds firmware, position, and temperature; the `while_open`
+  poll loop refreshes position + temperature on the configured interval.
+  Each reading is stored with the instant it was read off the wire, and
+  one read before the cached reading is dropped
+  ([stamped values](../crates/rusty-photon-shared-transport.md#stamped-values)):
+  a poll's position read on the way to a
+  target cannot replace the one `IsMoving`'s refresh read at the target,
+  which would report the focuser stopped short of where it says it
+  arrived. The instant the device last answered a move is kept beside
+  the move, and only a position read from then on ends it
+  ([Connection Lifecycle](#connection-lifecycle), step 5). See
+  `src/manager.rs`.
 - **Protocol layer**: JSON command serialization and value-level
   response parsers (`src/protocol.rs`).
 - **ASCOM device**: `QhyFocuserDevice` holds an
   `Arc<RwLock<Option<Session<QhyCodec>>>>` — the session existing **is**
-  the "Connected" state, so the `requested_connection` bool that the
-  legacy driver kept separately is gone by construction. Implements
-  `Device` + `Focuser` traits (`src/focuser_device.rs`).
+  the "Connected" state, so no separate flag can disagree with it.
+  Implements `Device` + `Focuser` traits (`src/focuser_device.rs`).
 - **Mock mode**: `MockQhyTransportFactory` implements `TransportFactory`
   directly and runs an in-memory Q-Focuser state machine. Feature-gated
   on `mock` for binaries, and `#[cfg(any(feature = "mock", test))]` so
@@ -80,7 +90,7 @@ The Q-Focuser uses JSON objects over serial. Commands include a `cmd_id` field; 
 | 16 | SetHoldCurrent | ihold, irun | — | Motor current (0-31 each) |
 | 19 | SetPdnMode | pdn_d | — | Motor power-down mode |
 
-**Not implemented:** cmd_id 12 (SetHoldForce) controls motor holding torque when idle. It exists in the INDI reference driver but is not currently implemented in this service.
+**Not implemented:** cmd_id 12 (SetHoldForce) controls motor holding torque when idle. It exists in the INDI reference driver; this service does not implement it.
 
 Responses are JSON objects terminated by `}` (no newline). Commands are sent as raw JSON without any terminator.
 
@@ -92,7 +102,7 @@ Responses are JSON objects terminated by `}` (no newline). Commands are sent as 
 | IsMoving | Cached state, detected via position polling |
 | MaxIncrement | From config `max_step` |
 | MaxStep | From config `max_step` |
-| Position | Cached from polling (i64 → i32 cast) |
+| Position | Cached from polling (checked i64 → i32 conversion; a position beyond the i32 range is an error, never wrapped) |
 | StepSize | NOT_IMPLEMENTED |
 | TempComp | `false` (not supported) |
 | TempCompAvailable | `false` |
@@ -135,7 +145,7 @@ a UUIDv4 on first run and persists it (see [Device identity
 (UniqueID)](#device-identity-uniqueid) below).
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -191,8 +201,7 @@ combined with the subcommand (the mixed form would silently ignore them).
 ### Setup pages
 
 The driver configures itself through the HTML pages the Alpaca Management
-API defines, served by the driver itself behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
+API defines, served by the driver itself behind its own TLS and Basic Auth:
 
 | Path | Holds |
 |------|-------|
@@ -290,30 +299,50 @@ cargo run -p qhy-focuser --features mock
    `QhyTransportFactory`, handshaken and given its `while_open` poll
    task at service start — `ServerBuilder::build()` calls `start()`
    before binding — and stays open until shutdown.
-3. Handshake: GetVersion → SetSpeed → GetPosition → ReadTemperature, all
-   issued through `Connection::request` so they go through the same
-   request-arbitration lock as steady-state commands.
+3. Handshake, at service start and on every reconnect: GetVersion →
+   SetSpeed → GetPosition → ReadTemperature, all issued through the
+   handshake's `Connection` (`request_timed` for the two readings it
+   dates) so they take the same
+   [command lock](../crates/rusty-photon-shared-transport.md#the-command-lock)
+   as steady-state commands.
 4. Background polling refreshes position + temperature at the configured
    interval.
 5. Move detection: polling compares position to target and clears
    `is_moving` when reached (`is_moving` also force-refreshes position
    on the device's session so the ASCOM property doesn't have to wait
-   up to one polling interval).
+   up to one polling interval). The position that ends a move is one
+   read after the device answered that move. Requests take turns on the
+   wire, but each reader stores its position after its turn, so a
+   position read before a move was sent can be stored after it. When
+   it equals the new target (a poll's reading held up on a loaded host
+   while a client sends the focuser to that very step) it says where
+   the focuser was, not that it has arrived: it is stored as the
+   position and ends nothing. While a move is sent and not yet
+   answered, no position ends it. A move whose client stopped waiting
+   before the answer came no longer counts as unanswered, so it cannot
+   hold `IsMoving` at true: the next position at its target ends it.
 6. On disconnect, the device calls `Session::close().await`. In
    `ServiceLifetime` mode that is a refcount release and the
-   (currently noop) last-disconnect hook — the poll task keeps running
+   last-disconnect hook, which sends nothing — the poll task keeps running
    and the serial port stays open, ready for the next client. Only
    `transport().shutdown()`, at service stop or between the two runs
    of a reload, cancels the poll task and closes the port.
 
 **Failure recovery.** If `factory.open()` or the handshake hook errors
 during `start()`, the service fails to come up rather than binding with
-a dead transport. Once running, a transport error puts the supervisor
-into recovery, and it re-attempts open + handshake at the configured
-cadence — the device does not wedge on a transient failure
-(unplugged USB during handshake, slow-to-boot firmware, bad serial
-path, etc.). This bug class is now eliminated structurally by the
-shared crate (issue #258 closes for qhy-focuser with this migration).
+a dead transport. Once running, a transport error puts the
+[reconnect supervisor](../crates/rusty-photon-shared-transport.md#reconnect)
+into recovery, and it re-attempts open + handshake at the shared
+crate's reconnect cadence — the device does not wedge on a transient
+failure (unplugged USB during handshake, slow-to-boot firmware, bad
+serial path, etc.).
+
+**Restart on request.** The service serves `POST /service/v1/restart`
+and `GET /service/v1/instance` beside the Alpaca API, behind the same
+auth and TLS. A restart request stops the service as a shutdown does: it
+closes its devices within 10 s and exits with code 75, which its service
+manager restarts it on ([rusty-photon-service-lifecycle § Restart on
+request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 
 ## References
 

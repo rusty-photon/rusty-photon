@@ -6,9 +6,16 @@
 //! [`rusty_photon_shared_transport::SharedTransport`]. What stays here:
 //!
 //! * The PPBA handshake (ping → PA → PS, seed the cache).
-//! * The 5s poll loop body that refreshes PA + PS into the cache.
+//! * The poll loop body that refreshes PA + PS into the cache every
+//!   `polling_interval` (5 s by default).
 //! * The cached state both devices share (status, power stats, USB hub
 //!   tracking, sensor sliding-window means).
+//!
+//! Each frame is stored with the instant it was read off the wire, and the
+//! cache keeps the frame read last ([`Stamped`]). Requests take turns on
+//! the wire, but each stores its frame after its turn ends, so a poll's
+//! store can land after the refresh that follows a write; the poll's frame
+//! is then the older one and is dropped.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,11 +23,11 @@ use std::time::Duration;
 use rusty_photon_rolling_stats::observing_conditions::{average_period_hours, effective_window};
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportFactory,
-    WhileOpen,
+    Connection, Hooks, Session, SessionError, SharedTransport, Stamped, StateAssertion,
+    TransportFactory, WhileOpen,
 };
 use tokio::sync::RwLock;
-use tokio::time::interval;
+use tokio::time::{interval, Instant};
 use tracing::{debug, warn};
 
 use crate::codec::{PpbaCodec, PpbaCodecError, PpbaResponse};
@@ -32,8 +39,10 @@ use crate::protocol::{PpbaCommand, PpbaPowerStats, PpbaStatus};
 /// observing-conditions device.
 #[derive(Debug, Clone, Default)]
 pub struct CachedState {
-    pub status: Option<PpbaStatus>,
-    pub power_stats: Option<PpbaPowerStats>,
+    /// The `PA` frame read last.
+    pub status: Stamped<PpbaStatus>,
+    /// The `PS` frame read last.
+    pub power_stats: Stamped<PpbaPowerStats>,
     /// USB hub state — not part of the PA reply, tracked separately.
     pub usb_hub_enabled: bool,
     pub temp_mean: SensorMean,
@@ -70,9 +79,9 @@ impl PpbaManager {
         let mut state = CachedState::default();
         let period_hours = config.observingconditions.averaging_period.as_secs_f64() / 3600.0;
         let window = effective_window(period_hours, poll_interval);
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        state.temp_mean = SensorMean::new(window);
+        state.humidity_mean = SensorMean::new(window);
+        state.dewpoint_mean = SensorMean::new(window);
         state.average_period_hours = period_hours;
         let cached_state = Arc::new(RwLock::new(state));
 
@@ -92,8 +101,8 @@ impl PpbaManager {
         &self.transport
     }
 
-    /// Cheap, non-blocking snapshot — true between handshake completion
-    /// and the start of teardown.
+    /// Cheap, non-blocking snapshot — true from a successful open to the
+    /// start of a teardown or a reconnect.
     #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()
@@ -128,9 +137,10 @@ impl PpbaManager {
         }
         let window = effective_window(period_hours, self.poll_interval);
         let mut state = self.cached_state.write().await;
-        state.temp_mean.set_window(window);
-        state.humidity_mean.set_window(window);
-        state.dewpoint_mean.set_window(window);
+        let now = Instant::now().into_std();
+        state.temp_mean.set_window(window, now);
+        state.humidity_mean.set_window(window, now);
+        state.dewpoint_mean.set_window(window, now);
         state.average_period_hours = period_hours;
         drop(state);
         debug!(period_hours, ?window, "sensor averaging period updated");
@@ -166,12 +176,11 @@ impl PpbaManager {
     ///
     /// Devices use this on-demand (e.g. before validating an auto-dew
     /// write, or after a successful set command). The poll loop does the
-    /// same thing internally while a session is alive.
+    /// same on its own cadence, whether or not a client is connected.
     ///
     /// No analogous `refresh_power_stats` exists: the power-stats cache
     /// is seeded by the handshake and kept fresh by the poll loop, and
-    /// no caller needs an on-demand PS refresh today. Add one back if a
-    /// future caller materialises.
+    /// no caller needs an on-demand PS refresh.
     ///
     /// # Errors
     ///
@@ -181,8 +190,8 @@ impl PpbaManager {
     /// wrong variant is consumed by the skip budget rather than returned.
     /// The cache is left untouched on failure.
     pub async fn refresh_status(&self, session: &Session<PpbaCodec>) -> Result<()> {
-        let resp = session
-            .request(PpbaCommand::Status)
+        let (resp, timing) = session
+            .request_timed(PpbaCommand::Status)
             .await
             .map_err(PpbaError::from)?;
         let PpbaResponse::Status(status) = resp else {
@@ -191,7 +200,7 @@ impl PpbaManager {
             ));
         };
         let mut state = self.cached_state.write().await;
-        apply_status(&mut state, &status);
+        apply_status(&mut state, &status, timing.received_at);
         Ok(())
     }
 }
@@ -208,8 +217,8 @@ fn build_hooks(
             Box::pin(handshake(conn, cs))
         }),
         on_last_disconnect: Box::new(|_| {
-            // Nothing to assert: this service holds no state that must
-            // survive a no-client gap, so the answer is trivially yes.
+            // Nothing to assert: no device state has to hold while no
+            // client is attached, so the answer is trivially yes.
             Box::pin(async { StateAssertion::Asserted })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -232,14 +241,14 @@ async fn handshake(
         ));
     }
 
-    let status_resp = conn.request(PpbaCommand::Status).await?;
+    let (status_resp, status_timing) = conn.request_timed(PpbaCommand::Status).await?;
     let PpbaResponse::Status(status) = status_resp else {
         return Err(PpbaCodecError::InvalidResponse(
             "handshake PA returned non-status frame".to_string(),
         ));
     };
 
-    let power_resp = conn.request(PpbaCommand::PowerStats).await?;
+    let (power_resp, power_timing) = conn.request_timed(PpbaCommand::PowerStats).await?;
     let PpbaResponse::PowerStats(power_stats) = power_resp else {
         return Err(PpbaCodecError::InvalidResponse(
             "handshake PS returned non-power-stats frame".to_string(),
@@ -247,8 +256,8 @@ async fn handshake(
     };
 
     let mut state = cached_state.write().await;
-    apply_status(&mut state, &status);
-    state.power_stats = Some(power_stats);
+    apply_status(&mut state, &status, status_timing.received_at);
+    apply_power_stats(&mut state, power_stats, power_timing.received_at);
     drop(state);
     Ok(())
 }
@@ -272,21 +281,21 @@ async fn poll_loop(
             }
         }
 
-        match ctx.request(PpbaCommand::Status).await {
-            Ok(PpbaResponse::Status(status)) => {
+        match ctx.request_timed(PpbaCommand::Status).await {
+            Ok((PpbaResponse::Status(status), timing)) => {
                 let mut state = cached_state.write().await;
-                apply_status(&mut state, &status);
+                apply_status(&mut state, &status, timing.received_at);
             }
-            Ok(other) => warn!("ppba poll: PA returned unexpected frame variant: {other:?}"),
+            Ok((other, _)) => warn!("ppba poll: PA returned unexpected frame variant: {other:?}"),
             Err(e) => session_err_to_warn("PA", &e),
         }
 
-        match ctx.request(PpbaCommand::PowerStats).await {
-            Ok(PpbaResponse::PowerStats(power_stats)) => {
+        match ctx.request_timed(PpbaCommand::PowerStats).await {
+            Ok((PpbaResponse::PowerStats(power_stats), timing)) => {
                 let mut state = cached_state.write().await;
-                state.power_stats = Some(power_stats);
+                apply_power_stats(&mut state, power_stats, timing.received_at);
             }
-            Ok(other) => warn!("ppba poll: PS returned unexpected frame variant: {other:?}"),
+            Ok((other, _)) => warn!("ppba poll: PS returned unexpected frame variant: {other:?}"),
             Err(e) => session_err_to_warn("PS", &e),
         }
     }
@@ -296,11 +305,30 @@ fn session_err_to_warn(op: &str, err: &SessionError<PpbaCodecError>) {
     warn!(op, error = %err, "ppba poll request failed");
 }
 
-fn apply_status(state: &mut CachedState, status: &PpbaStatus) {
-    state.status = Some(status.clone());
-    state.temp_mean.add_sample(status.temperature);
-    state.humidity_mean.add_sample(status.humidity);
-    state.dewpoint_mean.add_sample(status.dewpoint);
+/// Store a PA frame read at `read_at` and feed the sensor windows a sample
+/// each, dated `read_at`, unless the cache holds one read after it: that one
+/// is newer, and stored, this one would put a switch the box has since
+/// changed back to its old value.
+///
+/// The read instant dates the samples, so `TimeSinceLastUpdate` counts from
+/// the moment the frame came off the wire, not from this write.
+fn apply_status(state: &mut CachedState, status: &PpbaStatus, read_at: Instant) {
+    if !state.status.offer(status.clone(), read_at) {
+        debug!("dropping a PA frame read before the cached one");
+        return;
+    }
+    let at = read_at.into_std();
+    state.temp_mean.add_sample(status.temperature, at);
+    state.humidity_mean.add_sample(status.humidity, at);
+    state.dewpoint_mean.add_sample(status.dewpoint, at);
+}
+
+/// Store a PS frame read at `read_at`, unless the cache holds one read
+/// after it.
+fn apply_power_stats(state: &mut CachedState, power_stats: PpbaPowerStats, read_at: Instant) {
+    if !state.power_stats.offer(power_stats, read_at) {
+        debug!("dropping a PS frame read before the cached one");
+    }
 }
 
 #[cfg(test)]
@@ -308,11 +336,12 @@ fn apply_status(state: &mut CachedState, status: &PpbaStatus) {
 mod tests {
     //! Behaviour-level tests for the manager, driven through the mock
     //! transport factory. Race / refcount / rollback invariants are
-    //! tested once for everyone in `rusty-photon-shared-transport` —
-    //! they don't get re-tested here per the migration plan.
+    //! tested once for everyone in `rusty-photon-shared-transport` and
+    //! are not re-tested here.
 
     use super::*;
     use crate::mock::MockPpbaTransportFactory;
+    use crate::protocol::PpbaSwitches;
     use rusty_photon_rolling_stats::observing_conditions::instantaneous_window;
 
     fn make_manager() -> Arc<PpbaManager> {
@@ -327,9 +356,12 @@ mod tests {
         assert!(manager.is_available());
 
         let state = manager.get_cached_state().await;
-        let status = state.status.expect("status seeded by handshake");
+        let status = state.status.get().expect("status seeded by handshake");
         assert!((status.temperature - 25.0).abs() < f64::EPSILON);
-        let stats = state.power_stats.expect("power stats seeded by handshake");
+        let stats = state
+            .power_stats
+            .get()
+            .expect("power stats seeded by handshake");
         assert!((stats.average_amps - 2.5).abs() < f64::EPSILON);
 
         session.close().await.unwrap();
@@ -348,7 +380,7 @@ mod tests {
         manager.refresh_status(&session).await.unwrap();
 
         let state = manager.get_cached_state().await;
-        assert!(!state.status.unwrap().switches.quad_12v);
+        assert!(!state.status.get().unwrap().switches.quad_12v);
 
         session.close().await.unwrap();
     }
@@ -478,68 +510,20 @@ mod tests {
 
     // ========================================================================
     // Transport-failure error branches: send_command, refresh_status, and
-    // the acquire/handshake rollback path. Mirrors the InjectableFactory
-    // pattern used in qhy-focuser; the canonical race / refcount / rollback
-    // invariants remain tested once in rusty-photon-shared-transport.
+    // the acquire/handshake rollback path, reached through a
+    // `FailingFactory`. The shared transport's race / refcount / rollback
+    // invariants are tested once, in rusty-photon-shared-transport.
     // ========================================================================
 
-    use async_trait::async_trait;
-    use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use rusty_photon_shared_transport::TransportFactory;
+    use transport_doubles::FailingFactory;
 
-    /// Wraps the canonical mock factory but gates `send_frame` behind a
-    /// shared atomic — flipping it makes the very next send return EOF.
-    /// Used to inject a wire-level failure after handshake has succeeded
-    /// (or, by arming the flag *before* acquire, during handshake).
-    #[derive(Default, Clone)]
-    struct InjectableFactory {
-        inner: MockPpbaTransportFactory,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    impl InjectableFactory {
-        fn fail_next_send(&self) -> Arc<AtomicBool> {
-            Arc::clone(&self.fail_next_send)
-        }
-    }
-
-    #[async_trait]
-    impl TransportFactory for InjectableFactory {
-        async fn open(&self) -> std::result::Result<Box<dyn FrameTransport>, TransportError> {
-            let inner = self.inner.open().await?;
-            Ok(Box::new(InjectableTransport {
-                inner,
-                fail_next_send: Arc::clone(&self.fail_next_send),
-            }))
-        }
-    }
-
-    struct InjectableTransport {
-        inner: Box<dyn FrameTransport>,
-        fail_next_send: Arc<AtomicBool>,
-    }
-
-    #[async_trait]
-    impl FrameTransport for InjectableTransport {
-        async fn send_frame(&mut self, bytes: &[u8]) -> std::result::Result<(), TransportError> {
-            if self.fail_next_send.swap(false, Ordering::SeqCst) {
-                return Err(TransportError::Eof);
-            }
-            self.inner.send_frame(bytes).await
-        }
-
-        async fn recv_frame(
-            &mut self,
-            buf: &mut Vec<u8>,
-        ) -> std::result::Result<(), TransportError> {
-            self.inner.recv_frame(buf).await
-        }
-    }
-
-    /// Manager built with the `InjectableFactory` and a long poll interval
+    /// Manager built with a `FailingFactory` and a long poll interval
     /// (300s) so the poll loop can't consume the armed failure before the
     /// test's foreground request does.
-    fn make_manager_with_factory(factory: Arc<InjectableFactory>) -> Arc<PpbaManager> {
+    fn make_manager_with_factory(
+        factory: Arc<FailingFactory<MockPpbaTransportFactory>>,
+    ) -> Arc<PpbaManager> {
         let mut config = Config::default();
         config.serial.polling_interval = Duration::from_mins(5);
         PpbaManager::new(&config, factory)
@@ -547,17 +531,17 @@ mod tests {
 
     #[tokio::test]
     async fn send_command_propagates_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockPpbaTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .send_command(&session, PpbaCommand::SetQuad12V(false))
             .await
             .expect_err("send_command should propagate the transport failure");
-        // TransportError::Eof routes through transport_to_ppba to
+        // TransportError::Eof routes through the macro-generated
+        // `From<TransportError>` to
         // PpbaError::Communication("Connection closed").
         assert!(
             matches!(err, PpbaError::Communication(_)),
@@ -569,12 +553,11 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_status_propagates_transport_failure() {
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockPpbaTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
         let session = manager.transport().acquire().await.unwrap();
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .refresh_status(&session)
             .await
@@ -587,6 +570,132 @@ mod tests {
         session.close().await.unwrap();
     }
 
+    // ---- a poll against a write -----------------------------------------
+
+    use transport_doubles::HoldingFactory;
+
+    #[tokio::test]
+    async fn a_poll_read_before_a_write_does_not_replace_the_refreshed_status() {
+        let factory = Arc::new(HoldingFactory::new(MockPpbaTransportFactory::default()));
+        let mut config = Config::default();
+        config.serial.polling_interval = Duration::from_millis(20);
+        let manager = PpbaManager::new(&config, Arc::clone(&factory) as Arc<dyn TransportFactory>);
+        let session = manager.transport().acquire().await.unwrap();
+
+        // A poll's PA is on the wire: the box has it, the quad still on.
+        factory.hold_next_reply_to(b"PA");
+        factory.reply_held().await;
+
+        // With the cache held, the poll reads its frame and cannot store
+        // it; the write and its refresh go on the wire behind it, and the
+        // refreshed frame lands first — what a poll task slow to run again
+        // on a loaded host does.
+        let mut cache = manager.cached_state.write().await;
+        factory.release_reply();
+        manager
+            .send_command(&session, PpbaCommand::SetQuad12V(false))
+            .await
+            .unwrap();
+        let (refreshed, timing) = session.request_timed(PpbaCommand::Status).await.unwrap();
+        let PpbaResponse::Status(refreshed) = refreshed else {
+            panic!("PA answered by {refreshed:?}");
+        };
+        assert!(!refreshed.switches.quad_12v, "the write took");
+        apply_status(&mut cache, &refreshed, timing.received_at);
+
+        // The poll stores next, and its next PA is the sign it has.
+        factory.hold_next_reply_to(b"PA");
+        drop(cache);
+        factory.reply_held().await;
+
+        let state = manager.get_cached_state().await;
+        assert!(
+            !state.status.get().unwrap().switches.quad_12v,
+            "a poll's frame read before the write replaced the refreshed one"
+        );
+
+        factory.release_reply();
+        session.close().await.unwrap();
+    }
+
+    #[test]
+    fn a_pa_frame_read_before_the_cached_one_is_dropped_samples_and_all() {
+        let mut state = CachedState::default();
+        let earlier = Instant::now();
+        let later = earlier + Duration::from_millis(1);
+        let quad = |quad_12v| PpbaStatus {
+            switches: PpbaSwitches {
+                quad_12v,
+                ..PpbaSwitches::default()
+            },
+            ..PpbaStatus::default()
+        };
+
+        apply_status(&mut state, &quad(false), later);
+        apply_status(&mut state, &quad(true), earlier);
+
+        assert!(
+            !state.status.get().unwrap().switches.quad_12v,
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.status.read_at(), Some(later));
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.sample_count(),
+                1,
+                "the older frame fed the {sensor} window"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pa_frame_dates_its_samples_by_its_read_instant() {
+        // An hour from the clock's own reading, so a sample dated by a
+        // clock read cannot pass for one dated by the frame.
+        let mut state = CachedState::default();
+        let read_at = Instant::now() + Duration::from_hours(1);
+        let asked_at = (read_at + Duration::from_secs(7)).into_std();
+
+        apply_status(&mut state, &PpbaStatus::default(), read_at);
+
+        for (sensor, mean) in [
+            ("temperature", &state.temp_mean),
+            ("humidity", &state.humidity_mean),
+            ("dewpoint", &state.dewpoint_mean),
+        ] {
+            assert_eq!(
+                mean.time_since_last_update(asked_at),
+                Some(Duration::from_secs(7)),
+                "the {sensor} sample is not dated by the frame's read instant"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ps_frame_read_before_the_cached_one_is_dropped() {
+        let mut state = CachedState::default();
+        let earlier = Instant::now();
+        let later = earlier + Duration::from_millis(1);
+        let up_for = |uptime| PpbaPowerStats {
+            uptime,
+            ..PpbaPowerStats::default()
+        };
+
+        apply_power_stats(&mut state, up_for(Duration::from_secs(2)), later);
+        apply_power_stats(&mut state, up_for(Duration::from_secs(1)), earlier);
+
+        assert_eq!(
+            state.power_stats.get().unwrap().uptime,
+            Duration::from_secs(2),
+            "the older frame replaced the newer one"
+        );
+        assert_eq!(state.power_stats.read_at(), Some(later));
+    }
+
     #[tokio::test]
     async fn acquire_returns_err_and_keeps_cache_empty_when_handshake_send_fails() {
         // Failing the first handshake send (Ping) must:
@@ -594,11 +703,10 @@ mod tests {
         // - leave is_available() == false (the RollbackGuard fired),
         // - leave the cache untouched (no PA / PS seeded from a partial
         //   handshake).
-        let factory = Arc::new(InjectableFactory::default());
-        let fail_switch = factory.fail_next_send();
+        let factory = Arc::new(FailingFactory::new(MockPpbaTransportFactory::default()));
         let manager = make_manager_with_factory(Arc::clone(&factory));
 
-        fail_switch.store(true, Ordering::SeqCst);
+        factory.fail_next_send();
         let err = manager
             .transport()
             .acquire()
@@ -617,11 +725,11 @@ mod tests {
 
         let state = manager.get_cached_state().await;
         assert!(
-            state.status.is_none(),
+            state.status.get().is_none(),
             "handshake should not have seeded status"
         );
         assert!(
-            state.power_stats.is_none(),
+            state.power_stats.get().is_none(),
             "handshake should not have seeded power stats"
         );
     }

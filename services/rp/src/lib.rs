@@ -38,6 +38,8 @@ pub mod doctor;
 pub mod equipment;
 pub mod error;
 pub mod events;
+pub mod guide_camera;
+pub mod guide_run_watch;
 pub mod guiding_watch;
 pub mod imaging;
 pub mod mcp;
@@ -156,7 +158,7 @@ impl ServerBuilder {
             .mount
             .as_ref()
             .and_then(|m| m.guiding.as_ref());
-        let (guider_client, guider_defaults) = build_guider(&config, guiding_config)?;
+        let (guider_client, guider_defaults) = build_guider(&config, guiding_config, &event_bus)?;
         spawn_focus_watch_if_configured(
             &trains,
             guider_client.clone(),
@@ -329,7 +331,9 @@ fn build_class_table(
 }
 
 /// How long shutdown waits for the train leases to give everything back
-/// (rp.md § Train Lease): a facade release is one bounded Alpaca call.
+/// (rp.md § Train Lease): a lease gives back once the last call under it
+/// has ended, and the bound keeps a call still winding down from holding
+/// the process.
 const LEASE_SHUTDOWN_BOUND: std::time::Duration = std::time::Duration::from_secs(12);
 
 /// Safety enforcement (rp.md § Safety): the enforcer writes the safety
@@ -633,10 +637,14 @@ fn build_image_cache(
 /// Build the guider HTTP client when the operator configured one
 /// (`equipment.mount.guiding`) — same aborts-loud posture as the plate
 /// solver. The client Arc is shared between the MCP tools and the
-/// safety enforcer's stop-guiding-on-unsafe step.
+/// safety enforcer's stop-guiding-on-unsafe step, and it carries the
+/// Guide Run Watch (rp.md § Guide Run Watch): every start and stop rp
+/// sends the guider goes through it, so the watch knows which stops
+/// are rp's own.
 fn build_guider(
     config: &Config,
     guiding_config: Option<&crate::config::guiding::GuidingConfig>,
+    event_bus: &Arc<EventBus>,
 ) -> Result<(
     Option<Arc<dyn rp_guider::GuiderClient>>,
     crate::config::GuiderDefaults,
@@ -646,14 +654,20 @@ fn build_guider(
             let client = rp_guider::GuiderServiceClient::new(
                 g_cfg.url.clone(),
                 g_cfg.timeout,
+                g_cfg.calibration_timeout,
                 g_cfg.auth.as_ref(),
                 config.ca_cert_path(),
             )
             .map_err(|e| {
                 crate::error::RpError::Config(format!("guider: failed to build HTTP client: {e}"))
             })?;
-            let arc: Arc<dyn rp_guider::GuiderClient> = Arc::new(client);
-            Ok((Some(arc), g_cfg.defaults()))
+            let watched: Arc<dyn rp_guider::GuiderClient> =
+                Arc::new(crate::guide_run_watch::WatchedGuider::new(
+                    Arc::new(client),
+                    Arc::clone(event_bus),
+                    g_cfg.star_lost_after,
+                ));
+            Ok((Some(watched), g_cfg.defaults()))
         }
         None => Ok((None, crate::config::GuiderDefaults::default())),
     }
@@ -800,7 +814,7 @@ pub struct BoundServer {
     temperature_watch: Option<crate::temperature_watch::TemperatureWatch>,
     /// The train leases (rp.md § Train Lease), shared with the MCP
     /// handler: shutdown ends every one and waits, bounded, for each to
-    /// give everything back and release its facade lease.
+    /// give everything back.
     leases: Arc<crate::train_lease::TrainLeases>,
 }
 
@@ -889,9 +903,8 @@ impl BoundServer {
         if let Some(task) = temperature_task {
             let _ = task.await;
         }
-        // Each ended lease releases its facade lease once nothing runs
-        // under it; one still giving back at the bound is left to the
-        // facade's TTL.
+        // Each ended lease gives everything back once nothing runs under
+        // it; one still giving back at the bound ends with the process.
         self.leases.settle(LEASE_SHUTDOWN_BOUND).await;
 
         debug!("rp service shut down");

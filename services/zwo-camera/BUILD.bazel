@@ -10,28 +10,26 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-# zwo-camera links the native ZWO ASI/EFW SDK transitively via
-# zwo-rs → libzwo-sys (see docs/services/zwo-camera.md "Native dependency & build
-# gating" and ADR-008). Unlike a pure-Rust crate it cannot link without the SDK
-# present, so every Bazel runner that builds `//...` must provision it first:
-# `.github/workflows/bazel.yml` and `bazel-coverage.yml` run the
-# `./.github/actions/install-zwo-sdk` composite action exactly like they install
-# OmniSim. With the SDK on the link path the library, binary, and unit test are
-# first-class `//...` targets — verified on Linux via
-# `bazel test //services/zwo-camera:zwo-camera_unit_test` — so they carry NO
-# `manual` gating. The "all workspace crates build and test under Bazel" contract
-# applies here: the Bazel job is the required gate, so a `manual`-excluded target
-# would silently carry zero CI. Build locally with the SDK ldconfig'd on the link
-# path (`/usr/local/lib`). bindgen needs libclang; macOS/Windows additionally
-# forward `LIBCLANG_PATH` / `ZWO_SDK_LIB_DIR` to the build-script action via
-# `.bazelrc` (Linux finds both on the default paths).
+# zwo-camera links the native ZWO SDKs transitively via zwo-rs → libzwo-sys,
+# whose Bazel targets build every device feature (docs/services/zwo-camera.md
+# "Native dependency & build gating"). Unlike a pure-Rust crate it cannot link
+# without the SDKs present, so every Bazel runner that builds `//...` must
+# provision them first: `.github/workflows/bazel.yml` and `bazel-coverage.yml`
+# run the `./.github/actions/install-zwo-sdk` composite action exactly like they
+# install OmniSim. With the SDKs on the link path the library, binary, and unit
+# test are first-class `//...` targets, so they carry NO `manual` gating. The
+# "all workspace crates build and test under Bazel" contract applies here: the
+# Bazel job is the required gate, so a `manual`-excluded target would silently
+# carry zero CI. Build locally with the SDKs ldconfig'd on the link path
+# (`/usr/local/lib`). bindgen needs libclang; macOS/Windows additionally forward
+# `LIBCLANG_PATH` / `ZWO_SDK_LIB_DIR` to the build-script action via `.bazelrc`
+# (Linux finds both on the default paths).
 #
 # The BDD + ConformU suites RUN under Bazel (no `requires-cargo`): `bdd` via the
 # `bazel.yml` BDD step (`--test_tag_filters=bdd,-requires-cargo`) spawning the sim
 # binary like every other service, and `conformu_integration` via
 # `bazel test --config=conformu` (CI runs ConformU through the Cargo `conformu.yml`,
-# matching the other services). Only `//crates/bdd-infra:bdd-infra_unit_test`
-# stays `requires-cargo` — it genuinely exercises Cargo itself.
+# matching the other services).
 #
 # NOTE on features: Bazel `crate_features` is LITERAL — it does NOT expand Cargo's
 # `mock = ["simulation"]`. zwo-camera gates its sim backend on
@@ -248,12 +246,29 @@ rust_test(
 
 # pkg/, which the tools crate's packaging guard reads
 # (tools/rusty-photon-ci/src/pkg_assets.rs). pkg/lib/ is not in git: the
-# packaging build stages the SDK blobs the package ships there.
+# packaging build stages the SDK blob the package ships there.
 filegroup(
     name = "pkg",
     srcs = glob(
         ["pkg/**"],
         exclude = ["pkg/lib/**"],
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
     ),
     visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )

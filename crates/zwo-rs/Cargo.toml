@@ -6,29 +6,24 @@ rust-version.workspace = true
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-# Canonical development home is the rusty-photon monorepo (ADR-010); the crate is
-# still published to crates.io from crates/zwo-rs (dual-home).
 repository = "https://github.com/rusty-photon/rusty-photon"
 documentation = "https://docs.rs/zwo-rs"
 homepage = "https://github.com/rusty-photon/rusty-photon"
 description = "Safe Rust bindings for the ZWO ASI camera, EFW filter wheel, and EAF focuser SDK"
 keywords = ["zwo", "asi", "astronomy", "camera", "filter-wheel"]
 categories = ["api-bindings", "hardware-support"]
-# Vendored into the rusty-photon workspace as a first-party, dual-homed member
-# (ADR-010 / docs/plans/vendor-zwo-rs.md): the monorepo is the canonical
-# development home, and this crate is still published to crates.io from here. The
-# package identity metadata above (version, edition, license, ...) stays explicit
-# (NOT `*.workspace = true`) so the crate releases on its own cadence. Its
-# `rust-version` and `[lints]` follow the workspace, and shared *dependencies*
-# inherit from it per AGENTS.md Rule 10; `cargo publish` inlines the concrete
-# values of all three.
+# Dual-homed: the manifest keeps what publishing the crate to crates.io from
+# this directory needs, so the package identity above (version, edition,
+# license, ...) stays explicit (NOT `*.workspace = true`) and the crate releases
+# on its own cadence. What it inherits from the workspace, and why that survives
+# `cargo publish`: docs/workspace.md, "Dual-homed crates inherit shared deps too".
 
 [features]
-# Default to the full device surface so a bare/external build behaves like the
-# pre-split crate; rusty-photon's services narrow to their own device via
-# `default-features = false` (ADR-014).
+# Default to the full device surface, so a bare build wraps and links every
+# device; rusty-photon's services narrow to their own device via
+# `default-features = false`.
 default = ["camera", "efw", "focuser"]
-# Per-device surface + native link (ADR-014): each feature compiles this crate's
+# Per-device surface + native link: each feature compiles this crate's
 # module for that device and forwards to the matching libzwo-sys link feature.
 # The three ZWO SDKs are independent libraries, so a camera-only consumer never
 # links (nor ships) libEFWFilter/libEAFFocuser, and vice versa.
@@ -38,7 +33,7 @@ focuser = ["libzwo-sys/focuser"]
 # Mirrors qhyccd-rs: a hardware-free, in-Rust simulated environment for
 # development and tests. NOTE: like qhyccd-rs, this removes the *camera*, not the
 # SDK *link* — the native SDK is still linked when this feature is enabled.
-simulation = ["rand", "rayon"]
+simulation = ["rand"]
 
 [dependencies]
 # default-features = false: the device features above forward explicitly, so a
@@ -46,12 +41,7 @@ simulation = ["rand", "rayon"]
 libzwo-sys = { version = "0.1.0", path = "libzwo-sys", default-features = false }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# rand/rayon are simulation-only (behind the `simulation` feature) and shared with
-# qhyccd-rs's sim backend, so their version is pinned once in the workspace
-# (Rule 10); only the `optional` flag stays crate-local. `cargo publish` flattens
-# the inherited version, so the dual-home release is unaffected.
 rand = { workspace = true, optional = true }
-rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 mockall = { workspace = true }
