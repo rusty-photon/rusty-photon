@@ -69,8 +69,9 @@ impl Default for StarParams {
 /// Why no guide star was selected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SelectError {
-    /// No detection in the frame passed the tests.
-    #[error("the frame has no star to guide on")]
+    /// Fewer detections passed the tests than `stars.min`, which a run
+    /// could not guide on.
+    #[error("the frame has fewer stars to guide on than the fewest a frame needs")]
     NoStars,
 }
 
@@ -166,7 +167,8 @@ impl GuideStars {
     ///
     /// # Errors
     ///
-    /// [`SelectError::NoStars`] when no detection passes the tests.
+    /// [`SelectError::NoStars`] when no detection passes the tests, or
+    /// fewer than `params.min`.
     pub fn select(
         frame: &Frame,
         params: StarParams,
@@ -229,7 +231,7 @@ impl GuideStars {
             ?passed_over,
             "guide stars selected"
         );
-        if candidates.is_empty() {
+        if candidates.is_empty() || candidates.len() < params.min {
             return Err(SelectError::NoStars);
         }
         let stars: Vec<GuideStar> = candidates
@@ -700,6 +702,29 @@ mod tests {
             GuideStars::select(&frame, StarParams::default()).unwrap_err(),
             SelectError::NoStars
         );
+    }
+
+    #[test]
+    fn a_frame_with_fewer_stars_than_the_fewest_selects_none() {
+        let mut sim = simulator(field(), |_| {});
+        let (frame, _) = expose(&mut sim);
+        let params = StarParams {
+            min: 5,
+            ..StarParams::default()
+        };
+        assert_eq!(
+            GuideStars::select(&frame, params).unwrap_err(),
+            SelectError::NoStars
+        );
+        let (stars, _) = GuideStars::select(
+            &frame,
+            StarParams {
+                min: 4,
+                ..StarParams::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(stars.references().len(), 4);
     }
 
     #[test]
