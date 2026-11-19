@@ -160,12 +160,16 @@ pub fn default_config_dir() -> Result<PathBuf, ConfigError> {
     Ok(program_data_root(std::env::var_os("ProgramData")).join("rusty-photon"))
 }
 
-/// Pure resolution of the Windows `ProgramData` root from the value of the `ProgramData`
-/// environment variable: the value verbatim when present and non-empty, else the fixed
-/// `C:\ProgramData` fallback. Parameterized over the env value, and compiled on Windows and in
-/// test builds on every platform, so the logic is unit-testable on non-Windows hosts.
-#[cfg(any(windows, test))]
-fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
+/// The Windows `ProgramData` root, from the value of the `ProgramData` environment variable.
+///
+/// The value verbatim when present and non-empty, else the fixed `C:\ProgramData` fallback.
+/// Every `%PROGRAMDATA%` path a service uses resolves its root through it — the Windows
+/// config directory above, the service lifecycle's SCM-mode log directory, rp's session data
+/// directory and filemonitor's default watch path — so all of them sit under the same one.
+/// Parameterized over the env value, and compiled on every platform, so the logic is
+/// unit-testable on non-Windows hosts.
+#[must_use]
+pub fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
     match program_data {
         Some(v) if !v.is_empty() => PathBuf::from(v),
         _ => PathBuf::from(r"C:\ProgramData"),

@@ -165,25 +165,10 @@ fn default_watch_path() -> PathBuf {
 }
 #[cfg(windows)]
 fn default_watch_path() -> PathBuf {
-    program_data_root(std::env::var_os("ProgramData"))
+    rusty_photon_config::program_data_root(std::env::var_os("ProgramData"))
         .join("rusty-photon")
         .join("filemonitor")
         .join("RoofStatusFile.txt")
-}
-
-/// Pure resolution of the Windows `ProgramData` root from the value of the
-/// `ProgramData` environment variable: the value verbatim when present and
-/// non-empty, else the fixed `C:\ProgramData` fallback. A private copy of the
-/// same rule `rusty-photon-config` applies to the config path (each crate
-/// keeps its own — see the W2 note in `docs/plans/archive/windows-packaging.md`);
-/// compiled on Windows and in test builds on every platform, so the logic
-/// is unit-testable on non-Windows hosts.
-#[cfg(any(windows, test))]
-fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
-    match program_data {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => PathBuf::from(r"C:\ProgramData"),
-    }
 }
 
 impl Default for Config {
@@ -1686,25 +1671,6 @@ mod property_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod default_config_tests {
     use super::*;
-
-    #[test]
-    fn program_data_root_uses_env_value_verbatim() {
-        let root = program_data_root(Some(std::ffi::OsString::from(r"D:\CustomData")));
-        assert_eq!(root, PathBuf::from(r"D:\CustomData"));
-    }
-
-    #[test]
-    fn program_data_root_falls_back_when_env_absent() {
-        assert_eq!(program_data_root(None), PathBuf::from(r"C:\ProgramData"));
-    }
-
-    #[test]
-    fn program_data_root_falls_back_when_env_empty() {
-        assert_eq!(
-            program_data_root(Some(std::ffi::OsString::new())),
-            PathBuf::from(r"C:\ProgramData")
-        );
-    }
 
     #[test]
     fn default_watch_path_is_platform_dependent() {

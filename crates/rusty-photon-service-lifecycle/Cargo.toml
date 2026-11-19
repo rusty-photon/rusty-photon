@@ -27,14 +27,18 @@ tracing-appender = { version = "0.2.3", optional = true }
 tracing-error = "0.2.1"
 tracing-subscriber = { workspace = true }
 windows-service = { version = "0.8", optional = true }
+# The Windows `ProgramData` root the SCM-mode log directory sits under, resolved
+# once, in the crate that resolves the config directory under it.
+rusty-photon-config = { workspace = true, optional = true }
 
 [features]
 default = []
 # Enables Windows Service Control Manager dispatch via `ServiceRunner::scm_mode(true)`
 # and the SCM-mode rolling-file logging in `init_service_tracing`. Pulls in the
-# `windows-service` and `tracing-appender` crates. Adopters: every service binary,
+# `windows-service`, `tracing-appender` and `rusty-photon-config` crates.
+# Adopters: every service binary,
 # via `[target.'cfg(windows)'.dependencies]` (see any service's Cargo.toml).
-scm = ["dep:windows-service", "dep:tracing-appender"]
+scm = ["dep:windows-service", "dep:tracing-appender", "dep:rusty-photon-config"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

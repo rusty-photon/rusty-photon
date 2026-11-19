@@ -40,6 +40,18 @@
     )
 )]
 
+// The workspace's little-endian target guard (docs/workspace.md § Supported
+// targets). Every service binary gets it from rusty-photon-service-lifecycle;
+// doctor depends on no lifecycle code, so it carries its own copy and a
+// big-endian build of it fails as theirs do.
+#[cfg(not(target_endian = "little"))]
+compile_error!(
+    "Rusty Photon supports little-endian targets only. Wire protocols, the star \
+     catalog, and camera buffers are all decoded natively without byte-swapping, \
+     so a big-endian build would misread them silently. If you need big-endian \
+     support, open an issue — the decoders need auditing first."
+);
+
 pub mod aggregate;
 pub mod catalog;
 pub mod checks;

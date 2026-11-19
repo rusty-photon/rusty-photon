@@ -155,24 +155,10 @@ pub fn init_service_tracing(
 #[cfg_attr(not(windows), allow(dead_code))]
 mod scm_file {
     use super::{build_env_filter, init_tracing, Level, SubscriberExt, SubscriberInitExt};
-    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
     /// How many rotated daily log files to retain per service.
     const MAX_LOG_FILES: usize = 14;
-
-    /// Resolve the Windows `ProgramData` directory from the given environment
-    /// value: the `ProgramData` env var when set and non-empty, otherwise the
-    /// stock `C:\ProgramData`.
-    ///
-    /// Private to this crate; `rusty-photon-config` has its own, for the
-    /// Windows config path.
-    fn program_data_dir(env_value: Option<OsString>) -> PathBuf {
-        match env_value {
-            Some(v) if !v.is_empty() => PathBuf::from(v),
-            _ => PathBuf::from(r"C:\ProgramData"),
-        }
-    }
 
     /// The service log directory under a `ProgramData` root:
     /// `<program_data>\rusty-photon\logs`.
@@ -181,9 +167,12 @@ mod scm_file {
     }
 
     /// The real SCM-mode log directory:
-    /// `%PROGRAMDATA%\rusty-photon\logs`.
+    /// `%PROGRAMDATA%\rusty-photon\logs`, under the `ProgramData` root
+    /// `rusty-photon-config` resolves for the config directory.
     pub(super) fn default_log_dir() -> PathBuf {
-        log_dir_under(&program_data_dir(std::env::var_os("ProgramData")))
+        log_dir_under(&rusty_photon_config::program_data_root(std::env::var_os(
+            "ProgramData",
+        )))
     }
 
     /// Build the non-blocking rolling-file writer for a service: daily
@@ -278,24 +267,6 @@ mod scm_file {
     #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use super::*;
-
-        #[test]
-        fn program_data_dir_uses_env_value_when_set() {
-            let dir = program_data_dir(Some(OsString::from(r"D:\CustomData")));
-            assert_eq!(dir, PathBuf::from(r"D:\CustomData"));
-        }
-
-        #[test]
-        fn program_data_dir_falls_back_when_unset() {
-            let dir = program_data_dir(None);
-            assert_eq!(dir, PathBuf::from(r"C:\ProgramData"));
-        }
-
-        #[test]
-        fn program_data_dir_falls_back_when_empty() {
-            let dir = program_data_dir(Some(OsString::new()));
-            assert_eq!(dir, PathBuf::from(r"C:\ProgramData"));
-        }
 
         #[test]
         fn log_dir_is_rusty_photon_logs_under_program_data() {

@@ -54,11 +54,13 @@ in `services/` consumes it directly.
   chain-preserving [`report_from_boxed`] conversion are re-exported, never
   the `eyre!`/`bail!` macros.
 - Carry the workspace's **little-endian target guard**. This crate is not
-  about endianness, but it is the one crate every binary depends on, and
-  Cargo.toml cannot express a target restriction — so the
+  about endianness, but every service binary depends on it, and Cargo.toml
+  cannot express a target restriction — so the
   `#[cfg(not(target_endian = "little"))] compile_error!` in its crate root is
-  what makes a big-endian build fail everywhere rather than silently
-  byte-reverse a star catalog. See
+  what makes a big-endian build of a service fail rather than silently
+  byte-reverse a star catalog. Doctor, the one shipped binary that does not
+  depend on this crate, carries a copy of the guard in its own crate root.
+  See
   [workspace.md § Supported targets](../workspace.md#supported-targets).
 
 Out of scope:
@@ -454,8 +456,10 @@ passing their `--service` flag value:
   rolling file `%PROGRAMDATA%\rusty-photon\logs\<svc>.<date>.log` —
   daily rotation, 14 files retained, ANSI disabled. The ProgramData
   root resolves from the `ProgramData` environment variable with a
-  `C:\ProgramData` fallback (the resolver is private to this crate;
-  `rusty-photon-config` has its own, for the config path). The writer
+  `C:\ProgramData` fallback, through
+  `rusty_photon_config::program_data_root` — the same resolution the
+  Windows config directory uses, so the logs and the configs cannot end up
+  under different roots. The writer
   is non-blocking: the returned [`TracingGuard`] owns the worker guard
   and **must be held in `main` until process exit**
   (`let _tracing_guard = ...`) so the
@@ -671,17 +675,18 @@ crates/rusty-photon-service-lifecycle/src/
 ├── lib.rs       # crate root: //! docs, module decls, re-exports
 ├── logging.rs   # init_tracing / init_service_tracing + TracingGuard;
 │                # `mod scm_file` (feature `scm`) holds the rolling-file
-│                # writer + ProgramData/log-dir resolution — compiled on
-│                # every OS so its helpers are unit-tested cross-platform
+│                # writer + log-dir resolution — compiled on every OS so
+│                # its helpers are unit-tested cross-platform
 ├── shutdown.rs  # Shutdown — thin wrapper over CancellationToken
 ├── reload.rs    # ReloadSignal — thin wrapper over Arc<Notify>
 ├── restart.rs   # Restart — the request, its exit code, and the close
 │                # deadline's watchdog thread
-└── runner.rs    # ServiceRunner — builder + run/run_with_reload
+├── runner.rs    # ServiceRunner — builder + run/run_with_reload
+└── runner/
+    └── scm.rs   # SCM dispatch: the service entry point, the control
+                 # handler and the status reports, behind
+                 # #[cfg(all(windows, feature = "scm"))]
 ```
-
-There is no `scm.rs` module: the SCM dispatch code is the inline
-`mod scm` in `runner.rs`, behind `#[cfg(all(windows, feature = "scm"))]`.
 
 ## Testing
 
@@ -692,10 +697,14 @@ There is no `scm.rs` module: the SCM dispatch code is the inline
   resolves on `notify()`, `is_cancelled()` flips after `cancel()`.
 - **Signal-install integration tests** drive the full
   `ServiceRunner::run` / `run_with_reload` path on Unix: spawn a
-  task that `libc::raise`s `SIGTERM` or `SIGINT` (or `SIGHUP`
-  followed by `SIGTERM`) after a brief delay, then assert that
+  task that `libc::raise`s `SIGTERM` (or `SIGHUP` followed by
+  `SIGTERM`) after a brief delay, then assert that
   `shutdown.cancelled()` resolves (and that `reload.recv()` fires
-  at least once for the SIGHUP variant). Tokio's signal handlers
+  at least once for the SIGHUP variant). The SIGINT test raises
+  from the closure itself, before it awaits `shutdown.cancelled()`,
+  so it also pins that the handlers are registered before the
+  closure runs: a SIGINT raised there with no handler would kill
+  the test process. Tokio's signal handlers
   are reference-counted, but raising signals to self affects the
   whole process, so the test module serializes runs via a
   `std::sync::Mutex<()>`. `libc` is a `cfg(unix)` dev-dependency
@@ -741,8 +750,9 @@ There is no `scm.rs` module: the SCM dispatch code is the inline
   MSI](../packaging-windows.md#building-and-verifying-the-msi)).
 - **SCM logging** — the rolling-file helpers in `mod scm_file` are
   gated on the `scm` feature alone (not `cfg(windows)`), so their
-  unit tests run cross-platform: ProgramData resolution is
-  parameterized over the env value (set / unset / empty), the rolling
+  unit tests run cross-platform: the log directory under a
+  `ProgramData` root is pinned (the root's own resolution, set / unset /
+  empty, is `rusty-photon-config`'s and tested there), the rolling
   writer is exercised against a temp dir (file named
   `<svc>.<date>.log`, content flushed on guard drop), and the
   fallback path is provoked by pointing the log dir under a regular
@@ -773,6 +783,7 @@ There is no `scm.rs` module: the SCM dispatch code is the inline
 | `color-eyre` | panic hook + `Report` formatting at the binary boundary |
 | `tracing-error` | `ErrorLayer` so panic reports carry the active `SpanTrace` |
 | `tracing-appender` (opt, feature `scm`) | SCM-mode rolling log file + non-blocking writer |
+| `rusty-photon-config` (opt, feature `scm`) | the Windows `ProgramData` root the SCM-mode log directory sits under |
 | `windows-service` (opt, feature `scm`) | Windows Service Control Manager dispatch + control handler |
 
 Workspace-pinned versions live in the workspace `Cargo.toml` — except

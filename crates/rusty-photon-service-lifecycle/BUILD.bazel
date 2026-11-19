@@ -33,6 +33,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True) + select({
         "@platforms//os:windows": [
+            "//crates/rusty-photon-config",
             "@cr//:tracing-appender",
             "@cr//:windows-service",
         ],
@@ -84,7 +85,10 @@ rust_test(
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
-    ) + ["@cr//:tracing-appender"] + select({
+    ) + [
+        "//crates/rusty-photon-config",
+        "@cr//:tracing-appender",
+    ] + select({
         "@platforms//os:windows": ["@cr//:windows-service"],
         "//conditions:default": [],
     }),
