@@ -110,7 +110,7 @@ The driver does not bundle it.
 
 | Item | Value | Source |
 |------|-------|--------|
-| Serial | 19200 baud, 8N1, DTR and RTS asserted. This driver sets neither line: Linux raises both as the port opens, which is where it was measured; Windows leaves both low | both drivers; measured |
+| Serial | 19200 baud, 8N1, DTR and RTS asserted. This driver sets neither line: Linux raises both as the port opens, Windows leaves both low, and the hub answers either way ([What the wire actually does](#what-the-wire-actually-does)) | both drivers; measured |
 | Command | ASCII `>X…#` followed by `\n` | both drivers (the vendor's uses `SerialPort.WriteLine`; INDI sends `\r\n`); measured with `\n` |
 | Reply | ASCII `*X…#` where `X` echoes the command letter; **no line ending after `#`** | measured: frames arrive back to back, `…P#*G…` |
 | Frame terminator for `SerialFrameTransport` | `#` | follows from the above |
@@ -234,6 +234,11 @@ observation; the drivers' claims it confirms or contradicts are named.
   the phase would have moved. The driver therefore does nothing special
   with DTR or `HUPCL`; the `>H#` retry below is the only concession to a
   unit that might behave differently.
+- **The hub answers with DTR and RTS low.** Measured on 2026-11-18 on
+  Windows 11, the dev box's unit's CH340 passed through to a virtual
+  machine (WCH's CH341SER driver, 3.9.2024.9), where the port opens with
+  both lines low: the startup handshake, every Switch and ObservingConditions
+  read and 30 s of a connected client's polls all answered, with no error.
 - **A command interrupts a periodic frame.** Measured when the driver
   first connected to the same unit, later on 2026-10-26, with the hub
   still streaming from the probe above: the first

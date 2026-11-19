@@ -104,10 +104,6 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    # rules_rust sets CARGO_MANIFEST_DIR to the runfiles location at runtime,
-    # but the test computes its own path via env!("CARGO_MANIFEST_DIR")
-    # which is fixed at compile time to the package source dir.
-    rustc_env = {"CARGO_PKG_NAME": "gemini-powerbox-adv3-driver"},
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,

@@ -1867,19 +1867,10 @@ Hand-written test doubles (ppba-driver's `FailingPpbaTransportFactory`, upbv2-dr
 
 Tests that touch process-global state cannot run concurrently in the same
 process. Guard each one with a shared static `Mutex<()>` held for the whole
-test body. Three cases occur in this repo:
-
-**Server tests that bind to ports** conflict with the discovery service:
-
-```rust
-static SERVER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[tokio::test]
-async fn test_server_starts() {
-    let _lock = SERVER_LOCK.lock().unwrap();
-    // ... start server on port 0 ...
-}
-```
+test body. Two cases occur in this repo, below. A server test is not one of
+them: it binds port 0, builds its own mock, and leaves Alpaca discovery off
+(`discovery_port: None`, the default), so it shares nothing with another,
+and a ConformU run spawns its own driver on its own port.
 
 **mockall static-function / `#[automock]`-on-a-module mocks** (e.g. the FFI
 mocks in `qhyccd-rs`, where `OpenQHYCCD_context()` and friends are generated

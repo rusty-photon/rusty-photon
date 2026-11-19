@@ -5,10 +5,7 @@
 //! running in mock mode. Each test enables only the device it exercises so
 //! the conformance run targets a single ASCOM class — mirroring the
 //! ppba-driver split between its Switch and `ObservingConditions` tests.
-// The std::Mutex is intentional here: held across each whole test, awaits
-// included, it runs the two ConformU tests one at a time.
 #![cfg(feature = "conformu")]
-#![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -33,17 +30,10 @@
 )]
 
 use bdd_infra::{FullRunSettings, ServiceHandle};
-use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
-
-// Static mutex ensures the two conformu tests run sequentially, each a
-// full ConformU pass against its own spawned driver.
-static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = CONFORMU_LOCK.lock().unwrap();
-
     let _ = fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -129,8 +119,6 @@ async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::E
 
 #[tokio::test]
 async fn conformu_compliance_tests_switch() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = CONFORMU_LOCK.lock().unwrap();
-
     let _ = fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

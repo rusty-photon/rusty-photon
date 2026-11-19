@@ -58,9 +58,10 @@ impl TransportFactory for GeminiTransportFactory {
 
         // The shared opener owns the builder settings, the error mapping,
         // and the retry that rides out a handle the OS has not finished
-        // releasing — see `open_serial_port`. It leaves DTR and RTS alone;
+        // releasing — see `open_serial_port`. It leaves DTR and RTS alone:
         // Linux raises both as the port opens, an edge the dev box's unit
-        // was measured not to mind.
+        // was measured not to mind, and Windows leaves both low, which the
+        // unit answers too.
         let stream = open_serial_port(&self.port, BAUD_RATE).await?;
 
         let transport = SerialFrameTransport::new(stream, FRAME_TERMINATOR, MAX_FRAME_SIZE)
