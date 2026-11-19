@@ -237,6 +237,7 @@ rusty-photon/
     rp-ephemeris/                    Astronomical math (Ephemeris + ERFA wrapper + Site)
     rp-fits/                         FITS reader/writer wrapper
     rp-plate-solver/                 HTTP client for the plate-solver service
+    rp-guiding/                      The guider's core: frames in, guide stars measured, offsets out
     rusty-photon-tls/                TLS serving for inter-service comms (issuance lives in doctor)
     rusty-photon-config/             Config-path + first-run UniqueID + the ConfigurableDriver trait the setup pages use
     rusty-photon-setup/              The setup pages a service serves for its own configuration

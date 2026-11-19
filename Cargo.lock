@@ -4480,6 +4480,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-guiding"
+version = "0.1.0"
+dependencies = [
+ "guide-simulator",
+ "ndarray",
+ "num-traits",
+ "rp-image-analysis",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "rp-image-analysis"
 version = "0.1.0"
 dependencies = [

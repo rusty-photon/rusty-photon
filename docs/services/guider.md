@@ -9,7 +9,8 @@ with `PulseGuide` on one ASCOM Alpaca Telescope. `rp` commands it over
 an HTTP API.
 
 **The service is designed and not yet built.** This document is the
-design the implementation is written against.
+design the implementation is written against. Of the guiding core,
+`crates/rp-guiding`, the star selection and measurement are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
 records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
@@ -383,6 +384,19 @@ After `mount.max_failures` consecutive such cycles the run stops with
 
 ### Star selection and measurement
 
+**The frame's background.** Selection and measurement both measure
+against the frame's background, estimated from a sample of its pixels:
+every *s*-th pixel of every *s*-th row, *s* the whole square root of the
+frame's pixels over 50,000 and at least 1, so the sample holds at least
+50,000 pixels, or every pixel of a smaller frame. The sample is sigma-clipped as `rp`'s background is, at 3
+standard deviations for at most five rounds. Its mean is the level
+detection measures above, and its standard deviation the noise a
+signal-to-noise ratio is measured against. The whole frame would take
+most of the time a frame's measurement takes on a Raspberry Pi 5
+([native-guider.md § Staging](../plans/native-guider.md#staging), "What
+G1 found"), and 50,000 pixels fix the standard deviation to a fraction
+of a percent.
+
 **Selection.** The guider detects the stars of one frame and keeps up
 to `stars.max` of them as its guide stars, ranked by signal-to-noise
 ratio. A detection is passed over when it is saturated, when it is
@@ -393,6 +407,28 @@ confused. A frame that yields no guide star refuses `calibrate`,
 `guiding/start` and `star/reselect` with `no_stars`. `loop` is not
 refused: it answers with a `star_count` of 0, and the guider selects
 again on each frame of `looping` until one has stars.
+
+**How selection detects.** The guider detects stars as `rp`'s measuring
+tools do ([rp.md § `measure_stars` Contract](rp.md#measure_stars-contract)):
+in the frame smoothed by a Gaussian of 1 px, at 5 standard deviations
+above the background, in components of at least 5 pixels. It then
+measures each detection in an aperture that follows it, one star per
+aperture; a star whose half-flux disc is larger than 1,000 px² is no
+star. A star's signal-to-noise ratio is its aperture's flux against the
+frame's standard deviation σ, `flux / √(flux + π·radius²·σ²)`. A
+detection is passed over when:
+
+- **it is saturated:** its aperture holds a pixel at full scale
+  ([Sensor handling](#sensor-handling));
+- **it is close to the edge:** its aperture's centre is nearer an edge
+  of the frame than `calibration.distance_px` plus
+  `stars.search_region_px`;
+- **it is too sharp:** its half-flux radius is under 0.25 px, the floor
+  below which detection admits nothing, since such a component carries
+  its light in one pixel;
+- **it would be confused:** another star detected in the frame, a guide
+  star or not, lies within `stars.search_region_px` of it, where a
+  search for either could settle on the other. Both are passed over.
 
 Selection happens on the first frame of `looping` and on each later one
 until a frame has stars, when a run begins from `idle` or `looping`,
@@ -410,6 +446,22 @@ is its first usable frame. The frame's offset is the median, on each
 sensor axis, of the usable stars' offsets from their reference
 positions.
 
+**How a frame is measured.** Each guide star is measured in an aperture
+that starts at its position in the last frame in which it was usable,
+with the radius it was measured in there, and follows its light, as
+`rp`'s `measure_stars` measures a listed star. The star is found when its
+aperture settles as a star no further than `stars.search_region_px` from
+where it started, and not inside a brighter guide star's aperture.
+Nothing is detected after selection: the hot pixels selection found are
+left out of every measurement until the next selection. A star that is
+found is usable or not by the tests above.
+
+- A usable star's reference position is its position in the frame it
+  was selected in, and its offset is its position less that one.
+- With an even number of usable stars, the median of an axis is the
+  mean of the middle two.
+- A star's half-flux diameter is twice its aperture's half-flux radius.
+
 **A change of brightness that lasts.** A frame that fails the flux test
 adds nothing to the reference, so a change larger than
 `stars.mass_change` that lasts, as when haze clears or thin cloud
@@ -422,7 +474,9 @@ sharpness test keeps a hot pixel from becoming the reference while the
 star is behind cloud, and ten frames in a row keep out noise that
 reaches `stars.min_snr` in a frame now and then. Ten is a starting
 value of this design, for the frames the reference is taken over and
-for the frames in a row alike.
+for the frames in a row alike. The tenth frame is judged against the
+new reference, and a frame in which the star is usable, not found or
+too faint ends the row.
 
 **A star-lost frame** is one with fewer than `stars.min` usable stars.
 It gives no offset and is followed by no pulse. In `guiding` it moves
