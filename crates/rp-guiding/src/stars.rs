@@ -96,10 +96,8 @@ pub struct Offset {
 /// A usable star in a frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Usable {
-    /// Its position along a row.
-    pub x: f64,
-    /// Its position along a column.
-    pub y: f64,
+    /// Its position.
+    pub position: Position,
     /// Its position less its position in the frame it was selected in.
     pub offset: Offset,
     /// Its half-flux diameter, in pixels.
@@ -242,8 +240,10 @@ impl GuideStars {
             .iter()
             .map(|(star, snr)| {
                 StarReading::Usable(Usable {
-                    x: star.x,
-                    y: star.y,
+                    position: Position {
+                        x: star.x,
+                        y: star.y,
+                    },
                     offset: Offset::default(),
                     hfd: 2.0 * star.hfr,
                     snr: *snr,
@@ -265,17 +265,30 @@ impl GuideStars {
     pub fn measure(&mut self, frame: &Frame) -> FrameMeasurement {
         let params = self.params;
         let sigma = frame.background().stddev;
-        let listed: Vec<Listed> = self.stars.iter().map(|star| star.last).collect();
+        let view = frame.pixels();
+        // Each star is measured on its own, so that a lost star's aperture,
+        // growing as it looks for its star, never takes another star out.
         // The kernel's own threshold is left at zero: the guider judges a
         // star's signal-to-noise ratio itself.
-        let found = measure_listed(
-            &frame.pixels(),
-            &listed,
-            &self.hot,
-            sigma,
-            MAX_HALF_FLUX_AREA,
-            0.0,
-        );
+        let mut found: Vec<Option<MeasuredStar>> = self
+            .stars
+            .iter()
+            .map(|star| {
+                measure_listed(
+                    &view,
+                    &[star.last],
+                    &self.hot,
+                    sigma,
+                    MAX_HALF_FLUX_AREA,
+                    0.0,
+                )
+                .into_iter()
+                .next()
+                .flatten()
+                .filter(|measured| star.within_region(measured, &params))
+            })
+            .collect();
+        drop_inside_brighter(&mut found);
         let readings: Vec<StarReading> = self
             .stars
             .iter_mut()
@@ -346,9 +359,7 @@ impl GuideStar {
         sigma: f64,
         params: &StarParams,
     ) -> StarReading {
-        let found = found.filter(|star| {
-            distance(star.x, star.y, self.last.x, self.last.y) <= params.search_region_px
-        });
+        let found = found.filter(|star| self.within_region(star, params));
         let Some(star) = found else {
             self.flux_failures.clear();
             return StarReading::NotFound;
@@ -388,6 +399,12 @@ impl GuideStar {
         }
     }
 
+    /// Whether `star` lies within the search region around where this star
+    /// was last usable.
+    fn within_region(&self, star: &MeasuredStar, params: &StarParams) -> bool {
+        distance(star.x, star.y, self.last.x, self.last.y) <= params.search_region_px
+    }
+
     /// Records `star` as where the star was last usable, and reads it.
     fn usable(&mut self, star: &MeasuredStar, snr: f64) -> StarReading {
         self.last = Listed {
@@ -396,8 +413,10 @@ impl GuideStar {
             radius: star.radius,
         };
         StarReading::Usable(Usable {
-            x: star.x,
-            y: star.y,
+            position: Position {
+                x: star.x,
+                y: star.y,
+            },
             offset: Offset {
                 x: star.x - self.reference.x,
                 y: star.y - self.reference.y,
@@ -411,6 +430,30 @@ impl GuideStar {
     /// The median of the flux of the star's last usable frames.
     fn reference_flux(&self) -> f64 {
         median(self.fluxes.iter().copied().collect()).unwrap_or(0.0)
+    }
+}
+
+/// Leaves out of `found` each star whose centre lies inside the aperture
+/// of a brighter one, as the kernel keeps one star per aperture.
+fn drop_inside_brighter(found: &mut [Option<MeasuredStar>]) {
+    let mut order: Vec<(usize, MeasuredStar)> = found
+        .iter()
+        .enumerate()
+        .filter_map(|(index, star)| star.map(|star| (index, star)))
+        .collect();
+    order.sort_by(|a, b| b.1.flux.total_cmp(&a.1.flux).then(a.0.cmp(&b.0)));
+    let mut kept: Vec<MeasuredStar> = Vec::new();
+    for (index, star) in order {
+        if kept
+            .iter()
+            .any(|brighter| distance(star.x, star.y, brighter.x, brighter.y) <= brighter.radius)
+        {
+            if let Some(slot) = found.get_mut(index) {
+                *slot = None;
+            }
+        } else {
+            kept.push(star);
+        }
     }
 }
 
@@ -927,6 +970,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_star_that_vanishes_beside_another_does_not_take_it_out() {
+        // A star 20 to 45 px from another, gone from the next frame: its
+        // aperture grows as it looks for it, over the star that stays.
+        for spacing_arcsec in [40.0, 60.0, 90.0] {
+            for seed in 1..=12 {
+                let both = vec![
+                    star(-spacing_arcsec / 2.0, 0.0, 40_000.0),
+                    star(spacing_arcsec / 2.0, 0.0, 40_000.0),
+                ];
+                let mut sim = simulator(both, |config| config.seed = seed);
+                let (frame, _) = expose(&mut sim);
+                let (mut stars, _) = GuideStars::select(&frame, StarParams::default()).unwrap();
+                assert_eq!(stars.references().len(), 2);
+                let mut one =
+                    simulator(vec![star(-spacing_arcsec / 2.0, 0.0, 40_000.0)], |config| {
+                        config.seed = seed;
+                    });
+                let measured = stars.measure(&expose(&mut one).0);
+                assert_eq!(
+                    measured.usable, 1,
+                    "{spacing_arcsec}″ apart, seed {seed}: {:?}",
+                    measured.stars
+                );
+                close(measured.offset.unwrap().x, 0.0, 0.05);
+            }
+        }
+    }
+
+    #[test]
+    fn two_guide_stars_that_find_one_star_count_it_once() {
+        let mut sim = simulator(vec![star(0.0, 0.0, 40_000.0)], |_| {});
+        let (frame, shot) = expose(&mut sim);
+        let (x, y) = truth_of(&shot, 0);
+        let at = |x: f64| MeasuredStar {
+            y,
+            ..measured(x, 80_000.0)
+        };
+        let mut stars = GuideStars {
+            params: StarParams::default(),
+            stars: vec![GuideStar::new(&at(x)), GuideStar::new(&at(x + 4.0))],
+            hot: Vec::new(),
+        };
+        let measured = stars.measure(&frame);
+        assert_eq!(measured.usable, 1, "{:?}", measured.stars);
+        assert!(matches!(measured.stars[0], StarReading::Usable(_)));
+        assert_eq!(measured.stars[1], StarReading::NotFound);
+    }
+
+    #[test]
+    fn of_two_stars_found_in_one_aperture_the_fainter_is_left_out() {
+        let bright = MeasuredStar {
+            radius: 6.0,
+            ..measured(50.0, 1000.0)
+        };
+        let mut found = [
+            Some(measured(54.0, 400.0)),
+            Some(bright),
+            Some(measured(70.0, 300.0)),
+        ];
+        drop_inside_brighter(&mut found);
+        assert_eq!(found[0], None);
+        assert_eq!(found[1], Some(bright));
+        assert_eq!(found[2], Some(measured(70.0, 300.0)));
+    }
+
     fn measured(x: f64, flux: f64) -> MeasuredStar {
         MeasuredStar {
             x,
@@ -986,8 +1095,7 @@ mod tests {
     #[test]
     fn a_frame_with_fewer_usable_stars_than_the_fewest_is_star_lost() {
         let usable = StarReading::Usable(Usable {
-            x: 1.0,
-            y: 1.0,
+            position: Position { x: 1.0, y: 1.0 },
             offset: Offset { x: 0.5, y: -0.5 },
             hfd: 2.0,
             snr: 10.0,

@@ -456,7 +456,10 @@ that starts at its position in the last frame in which it was usable,
 with the radius it was measured in there, and follows its light, as
 `rp`'s `measure_stars` measures a listed star. The star is found when its
 aperture settles as a star no further than `stars.search_region_px` from
-where it started, and not inside a brighter guide star's aperture.
+where it started, and not inside the aperture of a brighter guide star
+found in the frame. Each star is measured on its own and only then held
+against the others, so that a lost star's aperture, growing as it looks
+for its star, never takes another star out.
 Nothing is detected after selection: the hot pixels selection found are
 left out of every measurement until the next selection. A star that is
 found is usable or not by the tests above.
