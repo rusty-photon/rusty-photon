@@ -232,6 +232,32 @@ Per-class endpoints (all support both `/reset` and `/restart`):
 
 Response format mirrors the standard Alpaca pattern (`ClientTransactionID`, `ServerTransactionID`, `ErrorNumber`, `ErrorMessage`).
 
+## The fork's slew engine
+
+The fork's `TelescopeHardware` fixes three faults of upstream's slew
+engine, which on an upstream build hang rp's park poll and wedge
+`center_on_target` on `IsSlewing`:
+
+- **The slew state is read and written under `hardwareLock`.** The slew
+  engine's writers and the `IsSlewing`, RA, Dec, `AtPark` and
+  `SlewState` readers all take the lock; upstream's do not.
+- **`Init()` disposes the slew timer it replaces**, and resets the slew
+  state, the `slewing` flag included, under `hardwareLock`. Upstream's
+  `Init()` leaves the old timer running, so every
+  `/simulator/v1/telescope/0/restart` adds one more live tick source,
+  all of them racing the one static slew engine.
+- **A goto turns the way that stays inside the hour-angle limit.**
+  Upstream's GEM goto takes the shortest-path rotation of the primary
+  axis even where it crosses the hour-angle software limit
+  (`180 + hourAngleLimit`). `CheckAxisLimits` then undoes the move on
+  every tick, so the slew never finishes and `IsSlewing` stays `true`.
+  `center_on_target`'s sync followed by a slew to nearly the same
+  coordinates is such a goto at some sidereal times, which is why the
+  hang is intermittent. The fork's `DoSlew` takes the rotation that
+  avoids the limit, to the same target with the pier side unchanged,
+  so ConformU stays clean, and adds a guard against a slew that makes
+  no progress.
+
 ## Behaviors that mirror real hardware
 
 These are not bugs. They reflect how real ASCOM mounts (especially GEMs) behave, and OmniSim faithfully simulates them.
@@ -366,6 +392,15 @@ let which_scenario: WhichScenarioFn = |feature, rule, scenario| {
 Scenarios with `@serial` (on scenario, rule, or feature level) run sequentially. Untagged scenarios run concurrent (up to 64 by default). All BDD feature files in this repo that touch OmniSim are tagged `@serial`, because the scenarios of one test process share its instance and every scenario's `before` hook restarts its devices (§ Integration in this repo).
 
 ## Integration in this repo
+
+- `.github/actions/install-omnisim/omnisim.mjs` — `REPO` and `VERSION`
+  name the fork release CI installs and `bazel run
+  //.github/actions:install -- omnisim` installs locally
+  (`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-467.3`). Upstream
+  `v0.5.0` cannot stand in for it: it has neither `--multi-instance`
+  nor `OMNISIM_SETTINGS_DIR`, which the harness passes on every spawn,
+  and its slew engine has the faults § "The fork's slew engine"
+  describes.
 
 - `crates/bdd-infra/src/rp_harness/omnisim.rs` — process management.
   `OmniSimHandle::start` spawns the test process's private instance on

@@ -405,8 +405,8 @@ matching Rule-2 update. The authoritative home for these contracts is
    `"NGC 7000"` → `ngc-7000` and a custom add on the operator's name,
    `"Comet Test"` → `comet-test`.
 2. Probe `get_target(base)`. **Absent** → use `base`.
-3. **Present and the same object** (same `catalog_ref`, or coordinates
-   within a small tolerance) → treat as an in-place edit: reuse the slug
+3. **Present and the same object** (coordinates within 10′ of each
+   other; `catalog_ref` is not compared) → treat as an in-place edit: reuse the slug
    and `upsert` (the rename / re-add path).
 4. **Present and a different object** → allocate the lowest unused
    `"{base}-{n}"` for `n` from 2 (`ngc-7000-2`, `ngc-7000-3`, …), taking
@@ -586,9 +586,10 @@ is rejected. Unknown tokens are rejected with the offending token named.
 
 Step 1 takes each frame's target and sub-spec from its file and
 directory names, not from its sidecar, which is the frame's record.
-[rp.md § Ground rules](../services/rp.md#ground-rules) lists that as a
-gap: a frame whose name the current patterns no longer parse is not
-counted.
+That is deliberate ([rp.md § Ground rules](../services/rp.md#ground-rules)):
+a frame renamed by hand, or named under a pattern since edited, is the
+operator's own act, so a frame whose name the current patterns no longer
+parse is not counted.
 
 **Night-date rollover.** `{night_date}` is the date the *observing night*
 began — it rolls at local noon, so a frame captured at 01:30 belongs to
@@ -610,9 +611,8 @@ culls. This hand-off mechanism is deferred and out of scope for the MVP.
 Because actuals are filesystem-derived, `record_exposure(target, filter)`
 (rp.md § Planner Tools) does not increment a stored counter — capture
 already wrote the frame. It survives as the orchestrator's per-frame
-progress readback, and as the carrier of the one planner fact the
-filesystem cannot supply: which filter the last frame used, the input
-to the filter-batching tie-break. `get_session_progress` and
+progress readback; the filter-batching tie-break reads the filter in
+the imaging train's wheel, not a recorded one. `get_session_progress` and
 `get_target_status.progress` are computed from the store (goals) + the
 derivation above (actuals).
 
