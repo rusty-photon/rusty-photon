@@ -697,10 +697,14 @@ crates/rusty-photon-service-lifecycle/src/
   resolves on `notify()`, `is_cancelled()` flips after `cancel()`.
 - **Signal-install integration tests** drive the full
   `ServiceRunner::run` / `run_with_reload` path on Unix: spawn a
-  task that `libc::raise`s `SIGTERM` or `SIGINT` (or `SIGHUP`
-  followed by `SIGTERM`) after a brief delay, then assert that
+  task that `libc::raise`s `SIGTERM` (or `SIGHUP` followed by
+  `SIGTERM`) after a brief delay, then assert that
   `shutdown.cancelled()` resolves (and that `reload.recv()` fires
-  at least once for the SIGHUP variant). Tokio's signal handlers
+  at least once for the SIGHUP variant). The SIGINT test raises
+  from the closure itself, before it awaits `shutdown.cancelled()`,
+  so it also pins that the handlers are registered before the
+  closure runs: a SIGINT raised there with no handler would kill
+  the test process. Tokio's signal handlers
   are reference-counted, but raising signals to self affects the
   whole process, so the test module serializes runs via a
   `std::sync::Mutex<()>`. `libc` is a `cfg(unix)` dev-dependency

@@ -38,8 +38,11 @@ on:
       - ".github/actions/plate-solver-times/**"
       - ".github/workflows/plate-solver-smoke.yml"
 
+# A newer push to a ref cancels that ref's older push run. The event name
+# keeps a push to main from cancelling the scheduled run, which alone opens
+# or updates the tracking issue.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
