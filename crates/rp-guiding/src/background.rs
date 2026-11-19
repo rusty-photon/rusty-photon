@@ -43,7 +43,7 @@ mod tests {
     use rp_image_analysis::background::estimate_background;
 
     #[test]
-    fn a_small_frame_is_sampled_whole() {
+    fn the_stride_grows_with_the_square_root_of_the_frame() {
         assert_eq!(sample_stride(0), 1);
         assert_eq!(sample_stride(640 * 480), 2);
         assert_eq!(sample_stride(99_999), 1);

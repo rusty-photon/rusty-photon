@@ -426,9 +426,14 @@ detection is passed over when:
 - **it is too sharp:** its half-flux radius is under 0.25 px, the floor
   below which detection admits nothing, since such a component carries
   its light in one pixel;
-- **it would be confused:** another star detected in the frame, a guide
-  star or not, lies within `stars.search_region_px` of it, where a
-  search for either could settle on the other. Both are passed over.
+- **it is too faint:** its signal-to-noise ratio is under
+  `stars.min_snr`, so that it would not be usable in the frame it is
+  selected in;
+- **it would be confused:** another star the apertures keep in the
+  frame, a guide star or not, lies within `stars.search_region_px` of
+  it, where a search for either could settle on the other. Both are
+  passed over. A fainter star inside a brighter one's aperture is part
+  of that star's measurement, as it is in every later frame.
 
 Selection happens on the first frame of `looping` and on each later one
 until a frame has stars, when a run begins from `idle` or `looping`,

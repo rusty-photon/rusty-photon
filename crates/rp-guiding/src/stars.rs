@@ -8,14 +8,15 @@ use num_traits::ToPrimitive;
 use rp_image_analysis::aperture::{
     aperture_snr, measure_in_apertures, measure_listed, Listed, MeasuredStar,
 };
-use rp_image_analysis::stars::{detect, DetectionParams, MIN_STAR_HFR};
+use rp_image_analysis::stars::{detect, DetectionParams};
 use tracing::debug;
 
 use crate::frame::Frame;
 
-/// Detection's threshold above the background, in standard deviations,
-/// its smoothing and its smallest component: the defaults of `rp`'s
-/// measuring tools.
+/// The guider's detection (`docs/services/guider.md`, How selection
+/// detects): the threshold above the background in standard deviations
+/// and the smoothing `rp`'s measuring tools default to, and the smallest
+/// component.
 const THRESHOLD_SIGMA: f64 = 5.0;
 const SMOOTHING_SIGMA: f64 = 1.0;
 const MIN_AREA: usize = 5;
@@ -71,6 +72,16 @@ pub enum SelectError {
     /// No detection in the frame passed the tests.
     #[error("the frame has no star to guide on")]
     NoStars,
+}
+
+/// A position on the sensor, in pixels of the measured frame: the centre
+/// of the pixel in row `r` and column `c` lies at `x = c`, `y = r`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Position {
+    /// Pixels along a row.
+    pub x: f64,
+    /// Pixels along a column.
+    pub y: f64,
 }
 
 /// An offset on the sensor, in pixels of the measured frame.
@@ -180,15 +191,23 @@ impl GuideStars {
         let (rows, cols) = view.dim();
         let margin = params.calibration_distance_px + params.search_region_px;
         let mut passed_over = PassedOver::default();
+        // A star too sharp to be one never reaches the tests: the aperture
+        // measurement keeps none under detection's half-flux floor.
         let mut candidates: Vec<(MeasuredStar, f64)> = measured
             .iter()
-            .filter(|star| {
-                let verdict = if holds_full_scale(frame, star) {
+            .map(|star| {
+                (
+                    *star,
+                    aperture_snr(star.flux, star.radius, background.stddev),
+                )
+            })
+            .filter(|(star, snr)| {
+                let verdict = if holds_full_scale(frame, star, &detection.hot) {
                     Some(&mut passed_over.saturated)
                 } else if near_edge(star, margin, rows, cols) {
                     Some(&mut passed_over.edge)
-                } else if star.hfr < MIN_STAR_HFR {
-                    Some(&mut passed_over.sharp)
+                } else if *snr < params.min_snr {
+                    Some(&mut passed_over.faint)
                 } else if measured.iter().any(|other| {
                     other.detection != star.detection
                         && distance(other.x, other.y, star.x, star.y) <= params.search_region_px
@@ -201,12 +220,6 @@ impl GuideStars {
                     *count = count.saturating_add(1);
                     false
                 })
-            })
-            .map(|star| {
-                (
-                    *star,
-                    aperture_snr(star.flux, star.radius, background.stddev),
-                )
             })
             .collect();
         candidates.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -281,7 +294,7 @@ impl GuideStars {
     /// Where each guide star was selected, highest signal-to-noise ratio
     /// first.
     #[must_use]
-    pub fn references(&self) -> Vec<Offset> {
+    pub fn references(&self) -> Vec<Position> {
         self.stars.iter().map(|star| star.reference).collect()
     }
 }
@@ -291,7 +304,7 @@ impl GuideStars {
 struct PassedOver {
     saturated: usize,
     edge: usize,
-    sharp: usize,
+    faint: usize,
     confused: usize,
 }
 
@@ -299,7 +312,7 @@ struct PassedOver {
 #[derive(Debug, Clone)]
 struct GuideStar {
     /// Where it was selected.
-    reference: Offset,
+    reference: Position,
     /// Where it was last usable, and the aperture it was measured in.
     last: Listed,
     /// Its flux in its last usable frames, up to [`REFERENCE_FRAMES`].
@@ -311,7 +324,7 @@ struct GuideStar {
 impl GuideStar {
     fn new(star: &MeasuredStar) -> Self {
         Self {
-            reference: Offset {
+            reference: Position {
                 x: star.x,
                 y: star.y,
             },
@@ -464,8 +477,9 @@ fn near_edge(star: &MeasuredStar, margin: f64, rows: usize, cols: usize) -> bool
         || star.y > last(rows) - margin
 }
 
-/// Whether `star`'s aperture holds a pixel at full scale.
-fn holds_full_scale(frame: &Frame, star: &MeasuredStar) -> bool {
+/// Whether `star`'s aperture holds a pixel at full scale that is not one
+/// of `hot`, detection's hot pixels in row-major order.
+fn holds_full_scale(frame: &Frame, star: &MeasuredStar, hot: &[(usize, usize)]) -> bool {
     let (rows, cols) = frame.pixels().dim();
     let span = |centre: f64, len: usize| {
         let first = (centre - star.radius)
@@ -485,6 +499,7 @@ fn holds_full_scale(frame: &Frame, star: &MeasuredStar) -> bool {
             let at = |index: usize| f64::from(u32::try_from(index).unwrap_or(u32::MAX));
             frame.at_full_scale(row, col)
                 && distance(at(col), at(row), star.x, star.y) <= star.radius
+                && hot.binary_search(&(row, col)).is_err()
         })
     })
 }
@@ -814,20 +829,68 @@ mod tests {
     }
 
     #[test]
-    fn a_star_below_the_lowest_snr_is_faint() {
+    fn selection_passes_over_a_star_below_the_lowest_snr() {
+        // The 10,000 e/s star's signal-to-noise ratio is about 140, the
+        // others' 200 and above.
         let mut sim = simulator(field(), |_| {});
-        let (frame, _) = expose(&mut sim);
+        let (frame, shot) = expose(&mut sim);
         let params = StarParams {
-            min_snr: 1.0e6,
+            min_snr: 170.0,
             ..StarParams::default()
         };
-        let (mut stars, _) = GuideStars::select(&frame, params).unwrap();
+        let (selected, first) = GuideStars::select(&frame, params).unwrap();
+        let (x, y) = truth_of(&shot, 3);
+        assert_eq!(selected.references().len(), 3);
+        assert!(selected
+            .references()
+            .iter()
+            .all(|r| distance(r.x, r.y, x, y) > 5.0));
+        assert_eq!(first.usable, 3);
+    }
+
+    #[test]
+    fn a_star_dimmed_below_the_lowest_snr_is_faint() {
+        let mut sim = simulator(field(), |config| {
+            config.sky.clouds = vec![Cloud {
+                start: Duration::from_secs(2),
+                duration: Duration::from_hours(1),
+                ramp: Duration::ZERO,
+                transmission: 0.02,
+            }];
+        });
+        let (frame, _) = expose(&mut sim);
+        let params = StarParams {
+            min_snr: 60.0,
+            ..StarParams::default()
+        };
+        let (mut stars, first) = GuideStars::select(&frame, params).unwrap();
+        assert_eq!(first.usable, 4);
         let measured = stars.measure(&expose(&mut sim).0);
         assert!(measured.star_lost);
         assert!(measured
             .stars
             .iter()
             .all(|r| matches!(r, StarReading::Faint { .. })));
+    }
+
+    #[test]
+    fn a_hot_pixel_at_full_scale_in_a_star_s_aperture_does_not_saturate_it() {
+        let mut pixels = ndarray::Array2::<u16>::from_elem((40, 40), 500);
+        pixels[[20, 25]] = 65_535;
+        let frame = Frame::new(&pixels.view(), SensorType::Monochrome, Some(65_535)).unwrap();
+        let star = MeasuredStar {
+            radius: 6.0,
+            ..measured(20.0, 1000.0)
+        };
+        let star = MeasuredStar { y: 20.0, ..star };
+        assert!(holds_full_scale(&frame, &star, &[]));
+        assert!(!holds_full_scale(
+            &frame,
+            &star,
+            &[(3, 7), (20, 25), (30, 1)]
+        ));
+        let far = MeasuredStar { x: 10.0, ..star };
+        assert!(!holds_full_scale(&frame, &far, &[]));
     }
 
     #[test]

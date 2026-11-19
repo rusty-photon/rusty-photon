@@ -48,5 +48,5 @@ mod stars;
 pub use background::{sampled_background, MIN_SAMPLE};
 pub use frame::{Frame, FrameError, SensorType};
 pub use stars::{
-    FrameMeasurement, GuideStars, Offset, SelectError, StarParams, StarReading, Usable,
+    FrameMeasurement, GuideStars, Offset, Position, SelectError, StarParams, StarReading, Usable,
 };
