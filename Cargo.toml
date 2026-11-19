@@ -184,11 +184,12 @@ rand = "0.10.1"
 # `libqhyccd-sys` links the proprietary static `qhyccd` lib and `libusb-1.0`:
 # docs/services/qhy-camera.md "Native dependency & build gating".
 qhyccd-rs = { path = "crates/qhyccd-rs" }
-# Our fork of RReverser/ascom-alpaca-rs, with two server-side fixes: `Connecting`
-# counts in-flight operations, and the setup pages sit on the specification's
-# paths. Drop the fork for upstream once both are merged there
-# (docs/workspace.md "Build Notes").
-ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "feature/spec-setup-pages", default-features = false }
+# Our fork of RReverser/ascom-alpaca-rs, with two server-side fixes and one
+# client fix: `Connecting` counts in-flight operations, the setup pages sit on
+# the specification's paths, and the client matches a listed `DeviceType`
+# without regard to case. Drop the fork for upstream once all three are merged
+# there (docs/workspace.md "Build Notes").
+ascom-alpaca = { git = "https://github.com/rusty-photon/ascom-alpaca-rs.git", branch = "fix/device-type-case-insensitive", default-features = false }
 # default-features = false: the device SDKs link per feature, and each service
 # enables only its own device (`camera` / `focuser`) so its binary links — and
 # its package ships — only the SDK blob it talks to.
