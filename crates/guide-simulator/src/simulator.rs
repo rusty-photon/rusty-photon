@@ -151,9 +151,7 @@ fn random_stars(camera: &Camera, random: RandomStars, seed: u64) -> Vec<Star> {
 mod tests {
     use super::*;
     use crate::geometry::SkyOffset;
-    use crate::mount::{
-        DecDelivery, GuideDirection, PierSide, PulseDelivery, SIDEREAL_ARCSEC_PER_S,
-    };
+    use crate::mount::{GuideDirection, PierSide, PulseDelivery, SIDEREAL_ARCSEC_PER_S};
     use crate::sky::RandomStars;
 
     /// The default guide rate, 0.5 × sidereal, in arcseconds a second.
@@ -209,31 +207,40 @@ mod tests {
 
     #[test]
     fn a_bigger_frame_leaves_the_mount_s_draws_as_they_were() {
-        let stepped = MountConfig {
-            delivery: PulseDelivery {
-                dec: DecDelivery {
-                    step_arcsec: Some(0.5),
-                    late_last_step: None,
-                },
-                ..PulseDelivery::default()
-            },
+        let gti = MountConfig {
+            delivery: PulseDelivery::star_adventurer_gti(),
             ..MountConfig::default()
         };
-        let mut moved = Vec::new();
-        for width in [160, 320] {
+        // When the late last step of a pulse rendered after a frame lands:
+        // the mount draws its delay after the camera has drawn the frame's
+        // noise, so a stream the two shared would move it.
+        let late_step = |width: usize| {
             let mut sim = simulator(SimConfig {
-                mount: stepped.clone(),
+                mount: gti.clone(),
                 camera: CameraConfig { width, ..small() },
                 ..base()
             });
             sim.expose(Duration::from_secs(1));
+            let ended = sim.now().after(Duration::from_millis(100));
             sim.mount_mut()
-                .pulse(GuideDirection::North, Duration::from_millis(30))
+                .pulse(GuideDirection::North, Duration::from_millis(100))
                 .unwrap();
-            sim.advance(Duration::from_secs(1));
-            moved.push(sim.mount().pointing());
-        }
-        assert_eq!(moved[0], moved[1]);
+            let mut landed = sim.now();
+            let mut last = sim.mount().pointing();
+            for _ in 0..250 {
+                sim.advance(Duration::from_millis(10));
+                if sim.mount().pointing() != last {
+                    last = sim.mount().pointing();
+                    landed = sim.now();
+                }
+            }
+            assert!(
+                landed > ended.after(Duration::from_millis(90)),
+                "{landed:?}"
+            );
+            landed
+        };
+        assert_eq!(late_step(160), late_step(320));
     }
 
     #[test]
@@ -335,12 +342,14 @@ mod tests {
         let mut sim = simulator(config);
         let still = simulator(base()).expose(Duration::from_secs(1));
         let seen = sim.expose(Duration::from_secs(1));
-        let moves: Vec<f64> = still
+        let moves: Vec<f64> = seen
             .truth
             .stars
             .iter()
-            .zip(&seen.truth.stars)
-            .map(|(a, b)| b.position.x - a.position.x)
+            .filter_map(|b| {
+                let a = still.truth.stars.iter().find(|a| a.index == b.index)?;
+                Some(b.position.x - a.position.x)
+            })
             .collect();
         let spread = moves.iter().map(|m| m * m).sum::<f64>() / moves.len() as f64;
         assert!(moves.windows(2).any(|pair| pair[0] != pair[1]));

@@ -94,9 +94,10 @@ time as the clock moves.
 - **Periodic error** is a sum of sine terms on the RA axis. Each term has
   an amplitude in arcseconds (half the peak-to-peak), a period and a phase.
   Its time is tracked time: the worm turns only while the mount tracks.
-- **With tracking off**, the pointing moves West at the sidereal rate,
-  15.041″ of RA axis a second, so the stars leave the field as they do on a
-  mount that has stopped. Drift and periodic error stand still.
+- **With tracking off**, the pointing moves East at the sidereal rate,
+  15.041″ of RA axis a second: its hour angle stands still while the sky
+  turns, so its RA rises. The stars drift West out of the field, as they
+  do on a mount that has stopped. Drift and periodic error stand still.
 
 ### Guide pulses
 
@@ -111,9 +112,11 @@ time as the clock moves.
   including the steps below. `set_rate_factors` changes both factors for
   the pulses that follow, as when a mount stops following its pulses
   part way through a run.
-- **Tracking off.** An East pulse moves the pointing East whether tracking
-  is on or off; with tracking off, the sidereal motion adds to it. The GTi
-  likewise accepts a pulse with tracking off.
+- **Tracking off.** A pulse moves the pointing the same way whether
+  tracking is on or off; with tracking off, the sidereal motion comes on
+  top. An East pulse slows the drive, and stopping it is the limit of
+  slowing it, so both move the pointing East. The GTi likewise accepts a
+  pulse with tracking off.
 - **Refusals.** A pulse is refused while the mount is parked (`Parked`),
   while it slews (`Slewing`), and while a pulse on the same axis is in
   progress (`AxisBusy`). A pulse on the other axis runs alongside.
@@ -185,7 +188,12 @@ play. Drift and periodic error do not pass through the gear.
   and leaves tracking off. Neither moves the pointing; with tracking off,
   the sky moves instead.
 - **`set_tracking(on)`** stops an RA pulse in progress where it stands, as
-  the GTi's driver does.
+  the GTi's driver does. A parked mount refuses to turn tracking on
+  (`Parked`), as the GTi's driver refuses it, and may turn it off.
+- **The declination** is the configured one for the whole run. A slew
+  moves the pointing but not the declination the RA axis scales by; a
+  test at another declination builds a simulator of its own, as the
+  guider reads the declination once a run.
 
 ## The sky
 
@@ -263,13 +271,17 @@ Besides its pixels, a frame carries its truth:
 
 - its start and duration;
 - the pointing, averaged over the exposure;
-- the field's shift on the sensor, averaged over the exposure: where a star
-  that sat at the frame's centre at the start now lies, less the frame's
-  centre, in pixels. This is the pointing's effect alone, without seeing;
+- the field's shift on the sensor: where a star that sat at the frame's
+  centre at the start now lies, less the frame's centre, in pixels. This is
+  the pointing's effect alone, without seeing;
 - the transmission, averaged over the exposure;
-- for each star whose averaged position lies on the frame: its index in the
-  field, its position averaged over the exposure with seeing included, and
-  the electrons it delivered.
+- for each star whose position lies on the frame: its index in the field,
+  its position with seeing included, and the electrons it delivered.
+
+The field's shift and the stars' positions are averaged over the exposure
+with the light as the weight, as the pixels' centroid weighs them, so a
+star that moves while a cloud passes is where its light puts it. With no
+light at all they are plain averages.
 
 The field's shift is what a guider should measure. The stars' positions are
 what it can measure, given the seeing.
@@ -283,10 +295,10 @@ what it can measure, given the seeing.
   rate that is negative; a declination outside ±90°; a random star field
   whose faintest brightness is not positive or exceeds its brightest; a
   cloud transmission outside 0 to 1, or a ramp longer than half the
-  cloud; a late step whose earliest delay exceeds its latest; and any
-  value that is not finite.
-- **`MountError`** is a refused pulse or slew: `Parked`, `Slewing` or
-  `AxisBusy`.
+  cloud; a late step with no Dec step, or whose earliest delay exceeds its
+  latest; and any value that is not finite.
+- **`MountError`** is a refused pulse, slew or start of tracking: `Parked`,
+  `Slewing` or `AxisBusy`.
 
 ## Testing
 

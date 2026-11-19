@@ -138,7 +138,9 @@ pub struct Frame {
     pub truth: FrameTruth,
 }
 
-/// What a frame shows, averaged over its exposure.
+/// What a frame shows, averaged over its exposure: the pointing and the
+/// transmission over time, the field's shift and the stars' positions
+/// with the light as the weight.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameTruth {
     /// When the exposure started.
@@ -162,7 +164,7 @@ pub struct FrameTruth {
 pub struct StarTruth {
     /// Its index in the star field.
     pub index: usize,
-    /// Its position, averaged over the exposure, seeing included.
+    /// Its position, seeing included.
     pub position: SensorPoint,
     /// The electrons it delivered, before any Bayer response.
     pub electrons: f64,
@@ -276,7 +278,7 @@ impl Camera {
             shift.add(
                 self.to_sensor(SkyOffset::ZERO.minus(sample.pointing), sample.flipped)
                     .minus(centre),
-                0.0,
+                sample.transmission * sample.secs,
             );
             pointing = pointing.plus(sample.pointing);
             transmission += sample.transmission;
@@ -355,26 +357,37 @@ impl Camera {
     }
 }
 
-/// Sums of a star's or the field's positions over an exposure's samples.
+/// Sums of a star's or the field's positions over an exposure's
+/// samples, each weighted by the light it carries.
 #[derive(Debug, Clone, Copy, Default)]
 struct Tally {
     x: f64,
     y: f64,
-    count: f64,
     light: f64,
+    plain_x: f64,
+    plain_y: f64,
+    count: f64,
 }
 
 impl Tally {
     fn add(&mut self, at: SensorPoint, light: f64) {
-        self.x += at.x;
-        self.y += at.y;
-        self.count += 1.0;
+        self.x = at.x.mul_add(light, self.x);
+        self.y = at.y.mul_add(light, self.y);
         self.light += light;
+        self.plain_x += at.x;
+        self.plain_y += at.y;
+        self.count += 1.0;
     }
 
+    /// The mean position with the light as the weight, the way the
+    /// pixels' centroid weighs it; the plain mean when no light came.
     fn mean(&self) -> SensorPoint {
-        let count = self.count.max(1.0);
-        SensorPoint::new(self.x / count, self.y / count)
+        if self.light > 0.0 {
+            SensorPoint::new(self.x / self.light, self.y / self.light)
+        } else {
+            let count = self.count.max(1.0);
+            SensorPoint::new(self.plain_x / count, self.plain_y / count)
+        }
     }
 }
 
@@ -729,11 +742,47 @@ mod tests {
                 ..still(0.5)
             },
         ];
-        let frame = render(&mut c, &[star(0.0, 0.0, 1_000.0)], &moving);
+        let frame = render(&mut c, &[star(0.0, 0.0, 100_000.0)], &moving);
         assert_eq!(frame.truth.pointing, SkyOffset::new(-4.0, 0.0));
-        assert_eq!(frame.truth.field_shift, SensorPoint::new(2.0, 0.0));
         assert_eq!(frame.truth.transmission, 0.75);
-        assert_eq!(frame.truth.stars[0].electrons, 750.0);
+        assert_eq!(frame.truth.stars[0].electrons, 75_000.0);
+        // The light weighs the positions: 1 px with two thirds of it,
+        // 3 px with one third.
+        let shift = frame.truth.field_shift;
+        assert!(
+            (shift.x - 5.0 / 3.0).abs() < 1e-12 && shift.y == 0.0,
+            "{shift:?}"
+        );
+        let star_shift = frame.truth.stars[0].position.minus(c.centre());
+        assert!((star_shift.x - 5.0 / 3.0).abs() < 1e-12, "{star_shift:?}");
+        let centroid = centroid(&frame.pixels, 500.0, frame.truth.stars[0].position, 6);
+        assert!(
+            (centroid.x - frame.truth.stars[0].position.x).abs() < 0.05,
+            "{centroid:?}"
+        );
+    }
+
+    #[test]
+    fn with_no_light_the_truth_takes_the_plain_mean() {
+        let mut c = camera(quiet());
+        let dark = [
+            Sample {
+                pointing: SkyOffset::new(-2.0, 0.0),
+                transmission: 0.0,
+                ..still(0.5)
+            },
+            Sample {
+                pointing: SkyOffset::new(-6.0, 0.0),
+                transmission: 0.0,
+                ..still(0.5)
+            },
+        ];
+        let frame = render(&mut c, &[star(0.0, 0.0, 1_000.0)], &dark);
+        assert_eq!(frame.truth.field_shift, SensorPoint::new(2.0, 0.0));
+        assert_eq!(
+            frame.truth.stars[0].position.minus(c.centre()),
+            SensorPoint::new(2.0, 0.0)
+        );
     }
 
     #[test]

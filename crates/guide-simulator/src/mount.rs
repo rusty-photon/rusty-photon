@@ -55,7 +55,7 @@ pub enum DecSense {
     South,
 }
 
-/// Why the mount refused a pulse or a slew.
+/// Why the mount refused a pulse, a slew or a start of tracking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum MountError {
     /// The mount is parked.
@@ -160,6 +160,11 @@ impl MountConfig {
             config::positive("mount.delivery.dec.step_arcsec", step)?;
         }
         if let Some(late) = self.delivery.dec.late_last_step {
+            config::require(
+                self.delivery.dec.step_arcsec.is_some(),
+                "mount.delivery.dec.late_last_step",
+                "needs a Dec step",
+            )?;
             config::require(
                 late.earliest <= late.latest,
                 "mount.delivery.dec.late_last_step",
@@ -474,11 +479,19 @@ impl Mount {
 
     /// Turns tracking on or off. A change stops an RA pulse in progress
     /// where it stands.
-    pub fn set_tracking(&mut self, on: bool) {
+    ///
+    /// # Errors
+    ///
+    /// [`MountError::Parked`] when tracking is turned on while parked.
+    pub fn set_tracking(&mut self, on: bool) -> Result<(), MountError> {
+        if on && self.at_park {
+            return Err(MountError::Parked);
+        }
         if on != self.tracking {
             self.stop_ra_pulse();
             self.tracking = on;
         }
+        Ok(())
     }
 
     /// Whether a slew is in progress.
@@ -577,7 +590,7 @@ impl Mount {
                 .tracked
                 .saturating_add(t.since_start().saturating_sub(self.now.since_start()));
         } else {
-            self.ra_axis_arcsec = (-SIDEREAL_ARCSEC_PER_S).mul_add(to - from, self.ra_axis_arcsec);
+            self.ra_axis_arcsec = SIDEREAL_ARCSEC_PER_S.mul_add(to - from, self.ra_axis_arcsec);
         }
         if let Some(pulse) = self.ra_pulse {
             self.ra_axis_arcsec += pulse.travel(from, to);
@@ -870,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn with_tracking_off_the_pointing_runs_west_at_sidereal_and_drift_and_periodic_error_stop() {
+    fn with_tracking_off_the_pointing_runs_east_at_sidereal_and_drift_and_periodic_error_stop() {
         let mut m = mount(MountConfig {
             tracking: false,
             drift: Drift {
@@ -885,7 +898,7 @@ mod tests {
             ..MountConfig::default()
         });
         m.advance_to(at(10.0));
-        close(m.pointing().east, -10.0 * SIDEREAL_ARCSEC_PER_S, 1e-9);
+        close(m.pointing().east, 10.0 * SIDEREAL_ARCSEC_PER_S, 1e-9);
         close(m.pointing().north, 0.0, 1e-12);
     }
 
@@ -1272,11 +1285,20 @@ mod tests {
         m.pulse(GuideDirection::West, Duration::from_secs(2))
             .unwrap();
         m.advance_to(at(1.0));
-        m.set_tracking(false);
+        m.set_tracking(false).unwrap();
         assert!(!m.is_pulse_guiding());
-        m.set_tracking(true);
+        m.set_tracking(true).unwrap();
         m.advance_to(at(3.0));
         close(m.pointing().east, -GUIDE, 1e-9);
+    }
+
+    #[test]
+    fn a_parked_mount_refuses_to_track_and_may_stop_tracking() {
+        let mut m = mount(MountConfig::default());
+        m.park();
+        assert_eq!(m.set_tracking(true), Err(MountError::Parked));
+        assert!(!m.tracking());
+        m.set_tracking(false).unwrap();
     }
 
     #[test]
@@ -1321,6 +1343,18 @@ mod tests {
             }),
             "mount.delivery.dec.late_last_step"
         );
+        let mut no_step = PulseDelivery::star_adventurer_gti();
+        no_step.dec.step_arcsec = None;
+        let refused_late = Mount::new(
+            MountConfig {
+                delivery: no_step,
+                ..MountConfig::default()
+            },
+            1,
+        )
+        .unwrap_err();
+        assert_eq!(refused_late.field, "mount.delivery.dec.late_last_step");
+        assert_eq!(refused_late.reason, "needs a Dec step");
         let mut stepless = PulseDelivery::default();
         stepless.dec.step_arcsec = Some(0.0);
         assert_eq!(
