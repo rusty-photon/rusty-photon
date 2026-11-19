@@ -369,6 +369,9 @@ struct SearchOutcome {
     /// step that wanted less than the floor — so dimming the panel is
     /// the way down.
     over_bright: bool,
+    /// Why the ladder stopped when the panel refused its step, for the
+    /// result's warnings.
+    refused: Option<String>,
 }
 
 #[expect(
@@ -425,6 +428,7 @@ async fn search_pass(
                 iterations: iteration,
                 converged: true,
                 over_bright: false,
+                refused: None,
             });
         }
 
@@ -442,6 +446,7 @@ async fn search_pass(
                 iterations: iteration,
                 converged: false,
                 over_bright: true,
+                refused: None,
             });
         }
         duration = wanted.min(ceiling);
@@ -453,6 +458,7 @@ async fn search_pass(
         iterations: config.max_iterations,
         converged: false,
         over_bright: last_median > target,
+        refused: None,
     })
 }
 
@@ -529,6 +535,10 @@ async fn search_with_ladder(
                     %message,
                     "the panel refused the dimmer level; ending the search"
                 );
+                pass.refused = Some(format!(
+                    "the panel refused brightness {halved} and stayed at {}: {message}",
+                    *brightness
+                ));
                 return Ok(pass);
             }
             Err(e) => return Err(e),
@@ -676,13 +686,14 @@ pub async fn train_flats(
     .await;
     let cleanup = session.finish(rig.cleanup).await;
 
-    let (trained, unconverged) = outcome?;
+    let (trained, unconverged, mut warnings) = outcome?;
+    warnings.extend(cleanup.warnings);
     Ok(TrainFlatsOutcome {
         train_id: ctx.train_id,
         trained,
         unconverged,
         cover_restored: cleanup.cover_restored,
-        warnings: cleanup.warnings,
+        warnings,
     })
 }
 
@@ -694,9 +705,10 @@ async fn train_body(
     target: u32,
     brightness: &mut u32,
     progress: &dyn Progress,
-) -> Result<(Vec<FlatRecord>, Vec<Unconverged>)> {
+) -> Result<(Vec<FlatRecord>, Vec<Unconverged>, Vec<String>)> {
     let mut trained = Vec::new();
     let mut unconverged = Vec::new();
+    let mut warnings = Vec::new();
     let mut ticks = 0u32;
     let facts = ctx.camera_facts();
 
@@ -750,6 +762,9 @@ async fn train_body(
                 iterations = pass.iterations,
                 "exposure did not converge; nothing recorded"
             );
+            if let Some(why) = &pass.refused {
+                warnings.push(format!("{label}: {why}"));
+            }
             unconverged.push(Unconverged {
                 filter: filter.clone(),
                 best_duration: pass.duration,
@@ -757,7 +772,7 @@ async fn train_body(
             });
         }
     }
-    Ok((trained, unconverged))
+    Ok((trained, unconverged, warnings))
 }
 
 // ---------------------------------------------------------------------------
@@ -1694,6 +1709,12 @@ mod tests {
         assert_eq!(
             outcome.trained[0].brightness, 255,
             "Red trains at the level the panel kept"
+        );
+        assert_eq!(outcome.warnings.len(), 1, "{:?}", outcome.warnings);
+        assert!(
+            outcome.warnings[0].starts_with("Luminance: the panel refused brightness 127"),
+            "{:?}",
+            outcome.warnings
         );
     }
 

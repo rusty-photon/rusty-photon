@@ -327,8 +327,10 @@ filter as `unconverged` with the best duration and the last median.
 brightness refuses a level below it: `calibrator_on` fails with the
 device's `INVALID_VALUE`, which `rp` relays as its ASCOM code ([rp.md
 § CoverCalibrator Tool Details](rp.md#covercalibrator-tool-details)).
-The filter is `unconverged`, the panel stays at the last level it took,
-and the run goes on: the next filter starts at that level. Any other
+The filter is `unconverged`, the result's `warnings` names it with the
+level the panel refused and the device's message, the panel stays at the
+last level it took, and the run goes on: the next filter starts at that
+level. Any other
 `calibrator_on` failure fails the run, because the panel's level is then
 unknown and a record would name a brightness the panel may not be at.
 

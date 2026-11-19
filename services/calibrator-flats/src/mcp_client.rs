@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rmcp::model::CallToolRequestParams;
+use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rp_mcp_client::{ProxyCallError, RpMcpClient, SAFETY_UNSAFE_CODE};
 use serde::Deserialize;
 use serde_json::Value;
@@ -118,17 +118,24 @@ impl McpClient {
             }
             Err(e) => return Err(CalibratorFlatsError::ToolCall(format!("{tool}: {e}"))),
         };
-        let value = rp_mcp_client::tool_result_value(&result).map_err(|e| {
-            let message = format!("{tool}: {e}");
-            match rp_mcp_client::ascom_error_code(&result) {
-                Some(code) => CalibratorFlatsError::Device { code, message },
-                None => CalibratorFlatsError::ToolCall(message),
-            }
-        })?;
+        let value = tool_value(tool, &result)?;
         serde_json::from_value(value).map_err(|e| {
             CalibratorFlatsError::ToolCall(format!("{tool}: failed to parse result: {e}"))
         })
     }
+}
+
+/// The value of `tool`'s result, or the failure it reports: a tool error
+/// that relays its device's ASCOM code is [`CalibratorFlatsError::Device`],
+/// any other [`CalibratorFlatsError::ToolCall`].
+fn tool_value(tool: &str, result: &CallToolResult) -> Result<Value> {
+    rp_mcp_client::tool_result_value(result).map_err(|e| {
+        let message = format!("{tool}: {e}");
+        match rp_mcp_client::ascom_error_code(result) {
+            Some(code) => CalibratorFlatsError::Device { code, message },
+            None => CalibratorFlatsError::ToolCall(message),
+        }
+    })
 }
 
 #[async_trait]
@@ -237,5 +244,47 @@ impl FlatsRig for McpClient {
             serde_json::json!({ "image_path": image_path, "document_id": document_id }),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use rmcp::model::ContentBlock;
+
+    #[test]
+    fn a_tool_error_relaying_a_device_code_is_a_device_error() {
+        let mut result = CallToolResult::error(vec![ContentBlock::text(
+            "failed to turn calibrator on: ASCOM error INVALID_VALUE: too dim",
+        )]);
+        result.structured_content = Some(serde_json::json!({
+            "ascom_error": { "code": 1025, "message": "too dim" }
+        }));
+        let err = tool_value("calibrator_on", &result).unwrap_err();
+        let CalibratorFlatsError::Device { code, message } = err else {
+            panic!("expected a Device error, got {err:?}");
+        };
+        assert_eq!(code, 1025);
+        assert!(message.starts_with("calibrator_on: "), "{message}");
+    }
+
+    #[test]
+    fn a_tool_error_relaying_no_code_is_a_tool_call_error() {
+        let result = CallToolResult::error(vec![ContentBlock::text("calibrator not found")]);
+        let err = tool_value("calibrator_on", &result).unwrap_err();
+        assert!(
+            matches!(&err, CalibratorFlatsError::ToolCall(m) if m == "calibrator_on: calibrator not found"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_success_is_its_value() {
+        let result = CallToolResult::success(vec![ContentBlock::text(r#"{"brightness": 127}"#)]);
+        assert_eq!(
+            tool_value("calibrator_on", &result).unwrap(),
+            serde_json::json!({ "brightness": 127 })
+        );
     }
 }
