@@ -209,6 +209,9 @@ pub struct RpWorld {
     pub last_image_pixels_body: Option<Vec<u8>>,
     /// Last tool call result
     pub last_tool_result: Option<Result<Value, String>>,
+    /// The ASCOM error code the last cover-calibrator tool call relayed
+    /// from its device, if it failed with one.
+    pub last_ascom_error_code: Option<u16>,
     /// In-flight tool calls issued on their own MCP session by the
     /// "a second MCP client starts ... in the background" steps
     /// (`motion_gate.feature`, `capture_concurrency.feature`), as

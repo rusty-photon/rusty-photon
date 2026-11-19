@@ -369,6 +369,9 @@ struct SearchOutcome {
     /// step that wanted less than the floor — so dimming the panel is
     /// the way down.
     over_bright: bool,
+    /// Why the ladder stopped when the panel refused its step, for the
+    /// result's warnings.
+    refused: Option<String>,
 }
 
 #[expect(
@@ -425,6 +428,7 @@ async fn search_pass(
                 iterations: iteration,
                 converged: true,
                 over_bright: false,
+                refused: None,
             });
         }
 
@@ -442,6 +446,7 @@ async fn search_pass(
                 iterations: iteration,
                 converged: false,
                 over_bright: true,
+                refused: None,
             });
         }
         duration = wanted.min(ceiling);
@@ -453,14 +458,19 @@ async fn search_pass(
         iterations: config.max_iterations,
         converged: false,
         over_bright: last_median > target,
+        refused: None,
     })
 }
 
+/// ASCOM's `INVALID_VALUE`: the code a panel refusing a brightness relays
+/// through `rp`.
+const ASCOM_INVALID_VALUE: u16 = 0x401;
+
 /// The search with its brightness ladder (docs/services/calibrator-flats.md
 /// § Exposure search): a pass that ends over-bright halves the panel and
-/// runs again from its last duration, down to a brightness floor of 1.
-/// `brightness` is updated in place so the level that worked persists to
-/// the next group.
+/// runs again from its last duration, down to a brightness floor of 1. A
+/// step the panel refuses ends the ladder like the floor does. `brightness`
+/// is updated in place so the level that worked persists to the next group.
 #[expect(
     clippy::too_many_arguments,
     reason = "the ladder threads the pass inputs plus the two accumulators (brightness, ticks) through one call site per group"
@@ -512,7 +522,27 @@ async fn search_with_ladder(
             target_adu = target,
             "panel over-bright, stepping brightness down"
         );
-        let applied = rig.calibrator_on(ctx.calibrator()?, Some(halved)).await?;
+        let applied = match rig.calibrator_on(ctx.calibrator()?, Some(halved)).await {
+            Ok(applied) => applied,
+            Err(CalibratorFlatsError::Device {
+                code: ASCOM_INVALID_VALUE,
+                message,
+            }) => {
+                warn!(
+                    filter = %label,
+                    asked = halved,
+                    brightness = *brightness,
+                    %message,
+                    "the panel refused the dimmer level; ending the search"
+                );
+                pass.refused = Some(format!(
+                    "the panel refused brightness {halved} and stayed at {}: {message}",
+                    *brightness
+                ));
+                return Ok(pass);
+            }
+            Err(e) => return Err(e),
+        };
         if applied >= *brightness {
             warn!(
                 filter = %label,
@@ -656,13 +686,14 @@ pub async fn train_flats(
     .await;
     let cleanup = session.finish(rig.cleanup).await;
 
-    let (trained, unconverged) = outcome?;
+    let (trained, unconverged, mut warnings) = outcome?;
+    warnings.extend(cleanup.warnings);
     Ok(TrainFlatsOutcome {
         train_id: ctx.train_id,
         trained,
         unconverged,
         cover_restored: cleanup.cover_restored,
-        warnings: cleanup.warnings,
+        warnings,
     })
 }
 
@@ -674,9 +705,10 @@ async fn train_body(
     target: u32,
     brightness: &mut u32,
     progress: &dyn Progress,
-) -> Result<(Vec<FlatRecord>, Vec<Unconverged>)> {
+) -> Result<(Vec<FlatRecord>, Vec<Unconverged>, Vec<String>)> {
     let mut trained = Vec::new();
     let mut unconverged = Vec::new();
+    let mut warnings = Vec::new();
     let mut ticks = 0u32;
     let facts = ctx.camera_facts();
 
@@ -730,6 +762,9 @@ async fn train_body(
                 iterations = pass.iterations,
                 "exposure did not converge; nothing recorded"
             );
+            if let Some(why) = &pass.refused {
+                warnings.push(format!("{label}: {why}"));
+            }
             unconverged.push(Unconverged {
                 filter: filter.clone(),
                 best_duration: pass.duration,
@@ -737,7 +772,7 @@ async fn train_body(
             });
         }
     }
-    Ok((trained, unconverged))
+    Ok((trained, unconverged, warnings))
 }
 
 // ---------------------------------------------------------------------------
@@ -1550,7 +1585,138 @@ mod tests {
         assert_eq!(brightness, 255);
     }
 
+    #[tokio::test]
+    async fn a_refused_step_ends_the_ladder_at_the_level_the_panel_took() {
+        let mut rig = rig_resolving(train_info(false, true));
+        expect_measurements(&mut rig, &[65_535]);
+        rig.expect_calibrator_on()
+            .times(1)
+            .withf(|_, b| *b == Some(127))
+            .returning(|_, _| {
+                Box::pin(async {
+                    Err(CalibratorFlatsError::Device {
+                        code: ASCOM_INVALID_VALUE,
+                        message: "calibrator_on: brightness 127 is below the configured minimum"
+                            .into(),
+                    })
+                })
+            });
+        let ctx = resolve_train(&rig, "main", None).await.unwrap();
+        let cfg = config(r#"{"max_iterations": 1}"#);
+        let mut brightness = 255;
+        let mut ticks = 0;
+        let pass = search_with_ladder(
+            &rig,
+            &ctx,
+            &cfg,
+            TARGET,
+            &mut brightness,
+            &NoProgress,
+            &mut ticks,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!pass.converged);
+        assert_eq!(brightness, 255, "the panel stays at the level it took");
+    }
+
+    #[tokio::test]
+    async fn any_other_failed_step_fails_the_search() {
+        let mut rig = rig_resolving(train_info(false, true));
+        expect_measurements(&mut rig, &[65_535]);
+        rig.expect_calibrator_on().times(1).returning(|_, _| {
+            Box::pin(async {
+                Err(CalibratorFlatsError::Device {
+                    code: 0x40B,
+                    message: "calibrator_on: lamp failure".into(),
+                })
+            })
+        });
+        let ctx = resolve_train(&rig, "main", None).await.unwrap();
+        let cfg = config(r#"{"max_iterations": 1}"#);
+        let mut brightness = 255;
+        let mut ticks = 0;
+        let err = search_with_ladder(
+            &rig,
+            &ctx,
+            &cfg,
+            TARGET,
+            &mut brightness,
+            &NoProgress,
+            &mut ticks,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, CalibratorFlatsError::Device { code: 0x40B, .. }),
+            "got {err:?}"
+        );
+    }
+
     // --- train_flats -------------------------------------------------
+
+    #[tokio::test]
+    async fn a_refused_step_marks_the_filter_unconverged_and_the_run_goes_on() {
+        let (store, _dir) = temp_store().await;
+        let mut active = rig_resolving(train_info(true, true));
+        expect_guard(&mut active, "Closed");
+        active
+            .expect_calibrator_on()
+            .withf(|_, b| *b == Some(255))
+            .returning(|_, _| Box::pin(async { Ok(255) }));
+        active
+            .expect_calibrator_on()
+            .withf(|_, b| *b == Some(127))
+            .returning(|_, _| {
+                Box::pin(async {
+                    Err(CalibratorFlatsError::Device {
+                        code: ASCOM_INVALID_VALUE,
+                        message: "calibrator_on: brightness 127 is below the configured minimum"
+                            .into(),
+                    })
+                })
+            });
+        active
+            .expect_set_filter()
+            .returning(|_, _| Box::pin(async { Ok(()) }));
+        // Luminance saturates its one-exposure pass; Red lands on target.
+        expect_measurements(&mut active, &[65_535, TARGET]);
+        let cleanup = cleanup_rig(false);
+
+        let outcome = train_flats(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(r#"{"max_iterations": 1}"#),
+            &TrainFlatsParams {
+                train_id: "main".into(),
+                filters: Some(vec!["Luminance".into(), "Red".into()]),
+                brightness: Some(255),
+            },
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.unconverged.len(), 1, "{:?}", outcome.unconverged);
+        assert_eq!(outcome.unconverged[0].filter.as_deref(), Some("Luminance"));
+        assert_eq!(outcome.trained.len(), 1, "{:?}", outcome.trained);
+        assert_eq!(outcome.trained[0].filter.as_deref(), Some("Red"));
+        assert_eq!(
+            outcome.trained[0].brightness, 255,
+            "Red trains at the level the panel kept"
+        );
+        assert_eq!(outcome.warnings.len(), 1, "{:?}", outcome.warnings);
+        assert!(
+            outcome.warnings[0].starts_with("Luminance: the panel refused brightness 127"),
+            "{:?}",
+            outcome.warnings
+        );
+    }
 
     #[tokio::test]
     async fn train_flats_records_a_converged_filter_with_the_camera_facts_and_restores_the_cover() {

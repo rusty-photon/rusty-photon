@@ -720,6 +720,7 @@ struct MockCoverCalibrator {
     fail_close_cover: bool,
     fail_open_cover: bool,
     fail_calibrator_on: bool,
+    refuse_calibrator_on: bool,
     fail_calibrator_off: bool,
     fail_max_brightness: bool,
     fail_cover_state_poll: bool,
@@ -749,6 +750,11 @@ impl ascom_alpaca::api::CoverCalibrator for MockCoverCalibrator {
     async fn calibrator_on(&self, _brightness: u32) -> ascom_alpaca::ASCOMResult<()> {
         if self.fail_calibrator_on {
             return Err(ASCOMError::invalid_operation("lamp failure"));
+        }
+        if self.refuse_calibrator_on {
+            return Err(ASCOMError::invalid_value(
+                "brightness below the panel's minimum",
+            ));
         }
         Ok(())
     }
@@ -2396,6 +2402,37 @@ async fn test_calibrator_on_command_fails() {
         )
         .await;
     assert_tool_error(result, "failed to turn calibrator on");
+}
+
+#[tokio::test]
+async fn test_calibrator_on_refusal_relays_the_device_code() {
+    let cc = MockCoverCalibrator {
+        refuse_calibrator_on: true,
+        ..Default::default()
+    };
+    let handler = test_handler(calibrator_registry(Arc::new(cc)));
+    let result = handler
+        .calibrator_on_inner(
+            CalibratorOnParams {
+                calibrator_id: Some("cc".into()),
+                train_id: None,
+                brightness: Some(1),
+            },
+            &Cancel::never(),
+        )
+        .await
+        .expect("tool returned protocol error");
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        result.structured_content,
+        Some(serde_json::json!({
+            "ascom_error": {
+                "code": 0x401,
+                "message": "brightness below the panel's minimum",
+            }
+        }))
+    );
+    assert_eq!(rp_mcp_client::ascom_error_code(&result), Some(0x401));
 }
 
 #[tokio::test]

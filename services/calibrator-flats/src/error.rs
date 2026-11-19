@@ -17,6 +17,13 @@ pub enum CalibratorFlatsError {
     #[error("MCP tool call failed: {0}")]
     ToolCall(String),
 
+    /// An `rp` tool failed with its device's ASCOM error, which `rp`
+    /// relays as a code (rp.md § `CoverCalibrator` Tool Details). Distinct
+    /// from [`Self::ToolCall`] so the brightness ladder can tell a panel
+    /// refusing a level from one that failed.
+    #[error("{message}")]
+    Device { code: u16, message: String },
+
     /// `rp` refused an `rp` tool for safety (JSON-RPC error `-32010`):
     /// the gate is closed. Distinct from [`Self::ToolCall`] so the
     /// cleanup guard can report a refused `open_cover` as the warning it

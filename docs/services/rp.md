@@ -2396,6 +2396,22 @@ omitted, the calibrator is turned on at maximum brightness. The four
 actuating tools block until the operation completes by polling the
 device state (same pattern as `set_filter`), bounded by a 60 s ceiling.
 
+**A refusal carries the device's ASCOM code.** When the device answers
+`calibrator_on` with an ASCOM error, the tool error's text names it
+(`failed to turn calibrator on: ASCOM error INVALID_VALUE: …`), and its
+structured content carries the device's code and message:
+
+```json
+{ "ascom_error": { "code": 1025, "message": "brightness 128 is below the configured minimum 250 (…)" } }
+```
+
+A brightness outside what the panel accepts is `INVALID_VALUE`
+(`0x401`, 1025): above `max_brightness`, or below a minimum the panel
+keeps and ASCOM has no property for, as `dsd-fp2`'s `min_brightness`.
+A client that has to tell a refused brightness from a lamp that failed
+reads the code, never the text; `rp-mcp-client`'s `ascom_error_code`
+reads it from a tool result.
+
 **Addressing.** All five tools take **exactly one of `calibrator_id`
 or `train_id`** — the `set_filter` shape (each tool's input schema
 publishes the alternatives as a presence-only `oneOf`). `train_id`
