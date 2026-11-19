@@ -813,16 +813,6 @@ document and persists the sidecar JSON. Each section is opaque to `rp`
       "background_mean": 1200,
       "background_stddev": 45
     },
-    "guiding_stats": {
-      "rms_ra_px": 0.45,
-      "rms_dec_px": 0.38,
-      "total_rms_px": 0.59
-    },
-    "weather": {
-      "temperature_c": -5.2,
-      "humidity_pct": 42,
-      "dewpoint_c": -15.1
-    },
     "image_stats": {
       "median_adu": 32768,
       "mean_adu": 32450.7,

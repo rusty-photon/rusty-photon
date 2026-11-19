@@ -434,8 +434,10 @@ slew to `(RA, Dec)` produces a mount that reports exactly `(RA, Dec)`.
 Without injected error, a centering loop (`slew → expose → plate-solve
 → sync_mount`) has nothing to converge from — every iteration solves
 to the same coordinates the mount already reports. The offset is the
-simulator analog of cone error / a stale pointing model, the very
-thing centering corrects in production.
+simulator analog of cone error / a stale pointing model, which
+centering corrects in production; a persistent offset cannot be
+corrected away here (below), so the closed-loop BDD uses the one-shot
+override (F7).
 
 **Sign convention.** Offsets are in topocentric RA/Dec arcseconds, the
 same units `sync_mount` corrects against. Positive `offset_ra_arcsec`
