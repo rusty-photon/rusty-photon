@@ -132,10 +132,10 @@ fn run_service() -> ServiceResult {
 /// service passes through to `set_status`, which in a service reports it to
 /// the SCM.
 ///
-/// The runtime is built before `Running` is reported, so the SCM shows a
-/// service Running only once it can run. A runtime that cannot be built, or
-/// a `Running` report that fails, ends the start as a failed run: the
-/// closure does not run, and the stop is reported as a failed run's is.
+/// A `Running` report that fails, or a runtime that cannot be built after
+/// it, ends the start as a failed run: the closure does not run, and the
+/// stop is reported as a failed run's is, so the SCM is never left showing
+/// a service Running that has ended.
 fn serve<S>(
     name: &'static str,
     run_fn: BoxedRunFn,
@@ -154,14 +154,18 @@ where
             ServiceControlAccept::STOP | ServiceControlAccept::PARAM_CHANGE
         }
     };
-    let started = build_runtime().map_err(RunError::from).and_then(|rt| {
-        set_status(service_status(
-            ServiceState::Running,
-            controls_accepted,
-            ServiceExitCode::Win32(0),
-        ))?;
-        Ok(rt)
-    });
+    // Running is reported before the runtime is built, not after. A closure
+    // that fails at once, as qhy-camera's does without qhyccd.dll, leaves
+    // the service Running only for the runtime's build, and msiexec's
+    // StartServices fails the install with error 1920 if it never sees the
+    // service Running.
+    let started = set_status(service_status(
+        ServiceState::Running,
+        controls_accepted,
+        ServiceExitCode::Win32(0),
+    ))
+    .map_err(RunError::from)
+    .and_then(|()| build_runtime().map_err(RunError::from));
     let rt = match started {
         Ok(rt) => rt,
         Err(e) => return report_stopped(name, Err(e), run_error, set_status),
@@ -403,14 +407,14 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_that_cannot_be_built_stops_the_start_as_failed() {
+    fn a_runtime_that_cannot_be_built_after_running_stops_the_start_as_failed() {
         let ran = Arc::new(AtomicBool::new(false));
         let served = serve_once(plain(&ran, || Ok(())), None, || {
             Err(std::io::Error::other("no worker threads"))
         });
 
         served.result.unwrap();
-        assert_eq!(served.reported, [STOPPED_FAILED]);
+        assert_eq!(served.reported, [RUNNING, STOPPED_FAILED]);
         assert_eq!(served.run_error.as_deref(), Some("no worker threads"));
         assert!(
             !ran.load(Ordering::SeqCst),
