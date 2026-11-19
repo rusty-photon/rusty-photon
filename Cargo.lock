@@ -4898,6 +4898,7 @@ version = "0.1.0"
 dependencies = [
  "color-eyre",
  "libc",
+ "rusty-photon-config",
  "tempfile",
  "tokio",
  "tokio-util",

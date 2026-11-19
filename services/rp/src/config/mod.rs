@@ -204,7 +204,7 @@ fn default_data_directory() -> String {
 }
 #[cfg(windows)]
 fn default_data_directory() -> String {
-    program_data_root(std::env::var_os("ProgramData"))
+    rusty_photon_config::program_data_root(std::env::var_os("ProgramData"))
         .join("rusty-photon")
         .join("rp")
         .join("data")
@@ -227,21 +227,6 @@ fn macos_data_directory(config_dir: Option<std::path::PathBuf>) -> String {
         || LINUX_STATE_DATA_DIR.to_string(),
         |dir| dir.join("rp").join("data").to_string_lossy().into_owned(),
     )
-}
-
-/// Pure resolution of the Windows `ProgramData` root from the value of the
-/// `ProgramData` environment variable: the value verbatim when present and
-/// non-empty, else the fixed `C:\ProgramData` fallback. A private copy of the
-/// same rule `rusty-photon-config` applies to the config path (each crate
-/// keeps its own — see the W2 note in `docs/plans/archive/windows-packaging.md`);
-/// compiled on Windows and in test builds on every platform, so the logic
-/// is unit-testable on non-Windows hosts.
-#[cfg(any(windows, test))]
-fn program_data_root(program_data: Option<std::ffi::OsString>) -> std::path::PathBuf {
-    match program_data {
-        Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
-        _ => std::path::PathBuf::from(r"C:\ProgramData"),
-    }
 }
 
 /// Domain validation shared by startup ([`load_config`]) and the setup
@@ -960,28 +945,6 @@ mod tests {
     #[test]
     fn macos_data_directory_falls_back_without_a_home() {
         assert_eq!(macos_data_directory(None), LINUX_STATE_DATA_DIR);
-    }
-
-    #[test]
-    fn program_data_root_uses_env_value_verbatim() {
-        let root = program_data_root(Some(std::ffi::OsString::from(r"D:\CustomData")));
-        assert_eq!(root, std::path::PathBuf::from(r"D:\CustomData"));
-    }
-
-    #[test]
-    fn program_data_root_falls_back_when_env_absent() {
-        assert_eq!(
-            program_data_root(None),
-            std::path::PathBuf::from(r"C:\ProgramData")
-        );
-    }
-
-    #[test]
-    fn program_data_root_falls_back_when_env_empty() {
-        assert_eq!(
-            program_data_root(Some(std::ffi::OsString::new())),
-            std::path::PathBuf::from(r"C:\ProgramData")
-        );
     }
 
     #[test]
