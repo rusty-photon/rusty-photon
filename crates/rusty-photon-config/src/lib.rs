@@ -163,7 +163,7 @@ pub fn default_config_dir() -> Result<PathBuf, ConfigError> {
 /// The Windows `ProgramData` root, from the value of the `ProgramData` environment variable.
 ///
 /// The value verbatim when present and non-empty, else the fixed `C:\ProgramData` fallback.
-/// Every `%PROGRAMDATA%` path in the workspace resolves its root through it — the Windows
+/// Every `%PROGRAMDATA%` path a service uses resolves its root through it — the Windows
 /// config directory above, the service lifecycle's SCM-mode log directory, rp's session data
 /// directory and filemonitor's default watch path — so all of them sit under the same one.
 /// Parameterized over the env value, and compiled on every platform, so the logic is
