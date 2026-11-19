@@ -3303,17 +3303,24 @@ starts:
 - **PF6.** **A service without the DLL loads it once it is installed,
   without a restart.** The server re-checks in the background on U6's
   cadence: after waits of 10 s, 20 s and 40 s, then every 60 s. Each try
-  runs the PF1–PF3 resolution, then checks that the SDK initializes
-  (`Sdk::try_new`). Repeat failures are logged at `debug!`, the PF4 line
-  having said it once. On the first try where both pass, the success is
+  runs the PF1–PF3 resolution. Once the DLL loads, it waits for the USB
+  scan to show a QHY camera working on the bus, then checks that the SDK
+  initializes (`Sdk::try_new`). That check is the SDK's first
+  initialisation in the process, and on Windows a later one lists no
+  camera that arrived after it (C9). So it waits for a camera the pack's
+  driver has bound, rather than initialising before the driver binds it,
+  or before the operator plugs it in, which would hide the camera until a
+  restart. Repeat failures are logged at `debug!`, the PF4 line having
+  said it once. On the first try where all pass, the success is
   logged at `info!`, and the server stops and is rebuilt from the
   configuration it was serving, as U6's re-scan does: the rebuild runs the
   start path again, placement and all, and finds the DLL resident (PF2).
   That is safe for the reason U6's is: serving without the SDK opened
   nothing, so there is no session to interrupt. A reload while the DLL is
   still missing builds without the SDK again, and its PF4 line says so
-  again. An SDK that blocks the rebuild once the DLL loads is logged at
-  `warn!` each time it starts to, and the re-check carries on. The re-check
+  again. A camera not yet on the bus, or an SDK that cannot enumerate,
+  once the DLL loads, is logged at `warn!` each time it starts to block
+  the rebuild, and the re-check carries on. The re-check
   stops when it rebuilds, and with the server it belongs to.
 
 ### `doctor` subcommand (installation checks inside the D5 shape)

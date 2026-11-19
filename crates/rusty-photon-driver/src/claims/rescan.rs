@@ -200,8 +200,8 @@ impl Rescan {
                     warn!(
                         %error,
                         sdk = self.sdk,
-                        "the SDK library loads, but the SDK cannot enumerate; not rebuilding \
-                         until it can"
+                        "the SDK library loads, but the SDK is not ready to enumerate; not \
+                         rebuilding until it is"
                     );
                 }
                 Blocker::Sdk(error) if new => {

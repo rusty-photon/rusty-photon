@@ -759,15 +759,21 @@ impl ServerBuilder {
     }
 
     /// The background re-check after the SDK's library did not load (PF6):
-    /// each try loads it and, once it loads, checks that the SDK opens; on
-    /// the first try both pass, it ends its own server, which the caller
-    /// rebuilds from the configuration it was serving ([`Ended::Rescanned`]).
+    /// each try loads it and, once it loads, waits for a QHY camera working
+    /// on the bus, then checks that the SDK opens; on the first try all
+    /// pass, it ends its own server, which the caller rebuilds from the
+    /// configuration it was serving ([`Ended::Rescanned`]).
     fn library_rescan(&self) -> Rescan {
         let library = self.sdk_library.clone();
+        let source = self.usb_source();
         Rescan::after_missing_library(
             claims::SDK_NAME,
             move || library.try_load(),
-            || {
+            move || {
+                // The SDK's first initialisation in this process: on Windows
+                // a later one lists no camera that arrived after it (C9), so
+                // it waits for a camera the pack's driver has bound.
+                camera_on_the_bus(source.scan())?;
                 // A server without the library holds no SDK, so another
                 // `Sdk` alive in this process is a later server's or an
                 // outlived try's, as for the failed scan's re-scan.
@@ -777,6 +783,17 @@ impl ServerBuilder {
             },
         )
     }
+}
+
+/// Whether `scan`, a USB scan, holds a QHY camera that is working, which the
+/// SDK's first initialisation waits for (PF6), and why not.
+fn camera_on_the_bus(
+    scan: std::result::Result<UsbScan, String>,
+) -> std::result::Result<(), String> {
+    if claims::bus_cameras(&scan?).is_empty() {
+        return Err("no QHY camera is working on the bus yet".to_string());
+    }
+    Ok(())
 }
 
 /// Every port `scan` holds a record on that can be a QHY camera, placed or
@@ -1084,6 +1101,23 @@ mod list_tests {
             "{reason}"
         );
         assert!(reason.contains("fixed, restart qhy-camera"), "{reason}");
+    }
+
+    #[test]
+    fn the_sdks_first_initialisation_waits_for_a_working_camera_on_the_bus() {
+        camera_on_the_bus(Ok(UsbScan {
+            devices: vec![record("c601", "p1")],
+            faults: Vec::new(),
+        }))
+        .unwrap();
+        assert_eq!(
+            camera_on_the_bus(Ok(UsbScan::default())),
+            Err("no QHY camera is working on the bus yet".to_string())
+        );
+        assert_eq!(
+            camera_on_the_bus(Err("powershell.exe timed out".to_string())),
+            Err("powershell.exe timed out".to_string())
+        );
     }
 
     fn enumerated(id: &str, model: &str) -> claims::Enumerated {

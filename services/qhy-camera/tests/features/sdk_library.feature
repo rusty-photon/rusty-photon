@@ -9,9 +9,10 @@ Feature: Serving without the QHYCCD SDK library
   pages are served either way.
 
   The service re-checks in the background after waits of 10 s, 20 s, 40 s,
-  60 s and every 60 s after that. Once the library loads and the SDK
-  initializes, it rebuilds itself from the configuration it was serving, and
-  serves its cameras with no restart (PF6).
+  60 s and every 60 s after that. Once the library loads, a QHY camera is
+  working on the bus, and the SDK initializes, it rebuilds itself from the
+  configuration it was serving, and serves its cameras with no restart
+  (PF6).
 
   The simulation build has no qhyccd.dll to miss, so a hidden flag stands one
   in: its library loads only once a file exists at the path the flag names.
