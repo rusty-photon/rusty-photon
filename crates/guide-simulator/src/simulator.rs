@@ -361,6 +361,28 @@ mod tests {
     }
 
     #[test]
+    fn the_seeing_does_not_follow_what_earlier_frames_showed() {
+        let second_frame = |sky_e_per_pixel_per_s: f64, extra: bool| {
+            let mut config = base();
+            config.sky.seeing.star_motion_arcsec = 1.0;
+            config.camera.sky_e_per_pixel_per_s = sky_e_per_pixel_per_s;
+            if extra {
+                config.sky.stars = StarField::Listed(vec![Star {
+                    position: SkyOffset::new(0.0, 0.0),
+                    e_per_s: 50_000.0,
+                }]);
+            }
+            let mut sim = simulator(config);
+            sim.expose(Duration::from_secs(1));
+            sim.expose(Duration::from_secs(1)).truth.stars
+        };
+        // The faint sky draws its noise from the Poisson branch, whose
+        // number of draws follows the pixels' content.
+        assert_eq!(second_frame(10.0, false), second_frame(2.0, false));
+        assert_eq!(second_frame(10.0, true), second_frame(2.0, true));
+    }
+
+    #[test]
     fn construction_names_the_field_it_refuses() {
         let refused = |config: SimConfig| Simulator::new(config).unwrap_err().field;
         let mut sky = base();

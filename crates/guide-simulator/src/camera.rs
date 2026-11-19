@@ -15,8 +15,11 @@ use crate::random::{erf, Stream};
 use crate::sky::{Seeing, Star};
 use crate::time::SimTime;
 
-/// The camera's stream within a run's seed.
+/// The pixel noise's stream within a run's seed.
 const CAMERA_STREAM: u64 = 1;
+
+/// The seeing's stream within a run's seed.
+const SEEING_STREAM: u64 = 3;
 
 /// The expected electrons from which shot and read noise are drawn
 /// together, as one Gaussian.
@@ -187,7 +190,11 @@ pub struct Camera {
     config: CameraConfig,
     /// `(row, column)` of each hot pixel.
     hot_pixels: Vec<(usize, usize)>,
+    /// The hot pixels' places and the pixel noise.
     stream: Stream,
+    /// The image motion, apart from the noise, so that what a frame
+    /// shows does not move the seeing of the frames after it.
+    seeing: Stream,
 }
 
 impl Camera {
@@ -201,6 +208,7 @@ impl Camera {
             config,
             hot_pixels,
             stream,
+            seeing: Stream::new(seed, SEEING_STREAM),
         })
     }
 
@@ -334,8 +342,8 @@ impl Camera {
     /// One frame's image motion: a random offset of standard deviation
     /// `sigma` on each sky axis.
     fn motion(&mut self, sigma: f64) -> SkyOffset {
-        let east = sigma * self.stream.normal();
-        SkyOffset::new(east, sigma * self.stream.normal())
+        let east = sigma * self.seeing.normal();
+        SkyOffset::new(east, sigma * self.seeing.normal())
     }
 
     /// The response of the pixel at `row`, `col`.

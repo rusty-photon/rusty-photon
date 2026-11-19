@@ -477,8 +477,8 @@ impl Mount {
         self.tracking
     }
 
-    /// Turns tracking on or off. A change stops an RA pulse in progress
-    /// where it stands.
+    /// Turns tracking on or off, and stops an RA pulse in progress where
+    /// it stands, even when tracking stays as it was.
     ///
     /// # Errors
     ///
@@ -487,10 +487,8 @@ impl Mount {
         if on && self.at_park {
             return Err(MountError::Parked);
         }
-        if on != self.tracking {
-            self.stop_ra_pulse();
-            self.tracking = on;
-        }
+        self.stop_ra_pulse();
+        self.tracking = on;
         Ok(())
     }
 
@@ -1339,6 +1337,18 @@ mod tests {
             SIDEREAL_ARCSEC_PER_S.mul_add(0.95, -GUIDE * 0.05),
             1e-9,
         );
+    }
+
+    #[test]
+    fn setting_tracking_to_what_it_is_still_stops_an_ra_pulse() {
+        let mut m = mount(MountConfig::default());
+        m.pulse(GuideDirection::West, Duration::from_secs(2))
+            .unwrap();
+        m.advance_to(at(1.0));
+        m.set_tracking(true).unwrap();
+        assert!(!m.is_pulse_guiding());
+        m.advance_to(at(3.0));
+        close(m.pointing().east, -GUIDE, 1e-9);
     }
 
     #[test]

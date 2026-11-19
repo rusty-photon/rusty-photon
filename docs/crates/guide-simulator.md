@@ -48,10 +48,10 @@ Out of scope:
   same run. The generator is `rand::rngs::Xoshiro256PlusPlus`, a named
   algorithm, not one of the defaults `rand` may replace in a later
   version.
-- **Separate streams.** The mount, the star placement and the renderer each
-  draw from a stream of their own, all derived from the seed. A change in
-  what one of them draws, such as a bigger frame or more stars, leaves the
-  others' draws as they were.
+- **Separate streams.** The mount, the star placement, the seeing and the
+  pixel noise each draw from a stream of their own, all derived from the
+  seed. A change in what one of them draws, such as a bigger frame or more
+  stars, leaves the others' draws as they were.
 
 ## Coordinates and units
 
@@ -189,8 +189,9 @@ play. Drift and periodic error do not pass through the gear.
   pulses and a slew stop where they stand. **`unpark()`** clears `at_park`
   and leaves tracking off. Neither moves the pointing; with tracking off,
   the sky moves instead.
-- **`set_tracking(on)`** stops an RA pulse in progress where it stands, as
-  the GTi's driver does. A parked mount refuses to turn tracking on
+- **`set_tracking(on)`** stops an RA pulse in progress where it stands,
+  even when tracking stays as it was, as every `Tracking` write does on the
+  GTi's driver. A parked mount refuses to turn tracking on
   (`Parked`), as the GTi's driver refuses it, and may turn it off.
 - **The declination** is the configured one for the whole run. A slew
   moves the pointing but not the declination the RA axis scales by; a

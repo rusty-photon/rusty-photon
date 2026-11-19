@@ -14,12 +14,12 @@ pub struct Stream {
 
 impl Stream {
     /// The stream numbered `index` of the run seeded with `seed`. The
-    /// generator spreads neighbouring seeds over its state, so streams
-    /// whose seeds differ by an index do not overlap in practice.
+    /// index is hashed into the seed: `seed_from_u64` steps its state by
+    /// the golden ratio, so seeds a multiple of it apart would start
+    /// from shifted copies of one state.
     pub(crate) fn new(seed: u64, index: u64) -> Self {
-        let golden = 0x9E37_79B9_7F4A_7C15_u64;
         Self {
-            rng: Xoshiro256PlusPlus::seed_from_u64(seed.wrapping_add(golden.wrapping_mul(index))),
+            rng: Xoshiro256PlusPlus::seed_from_u64(seed ^ mix(index.wrapping_add(GOLDEN))),
             spare_normal: None,
         }
     }
@@ -64,6 +64,17 @@ impl Stream {
             product *= self.uniform();
         }
     }
+}
+
+/// The golden ratio's fraction of 2^64, `SplitMix64`'s increment.
+const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// `SplitMix64`'s output function, which spreads `value`'s bits over the
+/// whole word.
+const fn mix(value: u64) -> u64 {
+    let z = (value ^ value.wrapping_shr(30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let z = (z ^ z.wrapping_shr(27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ z.wrapping_shr(31)
 }
 
 /// The error function, by Abramowitz and Stegun 7.1.26: within 1.5e-7
@@ -111,6 +122,15 @@ mod tests {
     #[test]
     fn another_index_gives_other_draws() {
         assert_ne!(Stream::new(7, 1).uniform(), Stream::new(7, 2).uniform());
+    }
+
+    #[test]
+    fn a_stream_is_not_another_seed_s_stream_shifted_by_the_index() {
+        let seed = 7_u64;
+        let mut next = Stream::new(seed, 1);
+        let mut shifted = Stream::new(seed.wrapping_add(GOLDEN), 0);
+        let draws = |stream: &mut Stream| (0..4).map(|_| stream.uniform()).collect::<Vec<_>>();
+        assert_ne!(draws(&mut next), draws(&mut shifted));
     }
 
     #[test]
