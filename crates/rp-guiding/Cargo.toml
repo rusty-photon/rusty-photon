@@ -1,0 +1,22 @@
+[package]
+name = "rp-guiding"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "The guider's core, without I/O: the frame a guider measures, its guide stars' selection and their measurement each frame"
+
+[lints]
+workspace = true
+
+[dependencies]
+ndarray = { workspace = true }
+num-traits = { workspace = true }
+rp-image-analysis = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+guide-simulator = { workspace = true }

@@ -1,0 +1,62 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-image-analysis:rp-image-analysis",
+]
+
+# The tests close the loop through the simulator's mount and renderer.
+_INTRA_WORKSPACE_DEV_DEPS = [
+    "//crates/guide-simulator:guide-simulator",
+]
+
+rust_library(
+    name = "rp-guiding",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "rp_guiding",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rp-guiding_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":rp-guiding",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEV_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

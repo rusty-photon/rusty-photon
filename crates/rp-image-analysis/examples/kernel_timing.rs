@@ -26,7 +26,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use ndarray::{Array2, ArrayView2};
-use rp_image_analysis::aperture::{measure_listed, Listed, MIN_APERTURE_RADIUS};
+use rp_image_analysis::aperture::{measure_listed, Listed, MIN_APERTURE_RADIUS, MIN_LISTED_SNR};
 use rp_image_analysis::background::{estimate_background, BackgroundStats};
 use rp_image_analysis::fwhm::{fit_2d_gaussian, GaussianFit2D, FWHM_OVER_SIGMA};
 use rp_image_analysis::hfr::star_hfr;
@@ -106,10 +106,17 @@ fn time_frame(name: &str, view: &ArrayView2<u16>, places: &[(f64, f64)]) {
         .filter_map(|star| fit(view, star, &background))
         .count();
     let listed = listed_where_measured(view, places, &hot, &background);
-    let measured = measure_listed(view, &listed, &hot, background.stddev, MAX_HALF_FLUX_AREA)
-        .iter()
-        .flatten()
-        .count();
+    let measured = measure_listed(
+        view,
+        &listed,
+        &hot,
+        background.stddev,
+        MAX_HALF_FLUX_AREA,
+        MIN_LISTED_SNR,
+    )
+    .iter()
+    .flatten()
+    .count();
 
     row(
         "estimate_background",
@@ -146,6 +153,7 @@ fn time_frame(name: &str, view: &ArrayView2<u16>, places: &[(f64, f64)]) {
                 &hot,
                 background.stddev,
                 MAX_HALF_FLUX_AREA,
+                MIN_LISTED_SNR,
             )
         }),
     );
@@ -201,7 +209,14 @@ fn per_frame(
         scanned = hot_pixels(view, &background, PARAMS.threshold_sigma);
         &scanned
     };
-    let measured = measure_listed(view, listed, hot, background.stddev, MAX_HALF_FLUX_AREA);
+    let measured = measure_listed(
+        view,
+        listed,
+        hot,
+        background.stddev,
+        MAX_HALF_FLUX_AREA,
+        MIN_LISTED_SNR,
+    );
     Some(measured.iter().flatten().count())
 }
 
@@ -221,7 +236,14 @@ fn listed_where_measured(
             radius: MIN_APERTURE_RADIUS,
         })
         .collect();
-    let measured = measure_listed(view, &first, hot, background.stddev, MAX_HALF_FLUX_AREA);
+    let measured = measure_listed(
+        view,
+        &first,
+        hot,
+        background.stddev,
+        MAX_HALF_FLUX_AREA,
+        MIN_LISTED_SNR,
+    );
     first
         .iter()
         .zip(measured)
