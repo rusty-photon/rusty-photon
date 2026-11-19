@@ -3282,9 +3282,13 @@ starts:
   registers no camera. With a list, every listed number is a placeholder,
   and every declared wheel a placeholder FilterWheel (U10), whose connect is
   refused with `qhyccd.dll not found: install QHY's All-in-One pack from
-  https://www.qhyccd.com/download/`. Health and the setup pages are served
-  either way. (`cargo ci verify-msi` installs on a runner without the DLL:
-  it finds this line in qhy-camera's log and holds the service to serving.)
+  https://www.qhyccd.com/download/` — or, when a probed copy exists and does
+  not load, `qhyccd.dll did not load: <that copy> (<the loader's reason>)`,
+  since installing the pack again would not help (an `OpenCL.dll` missing
+  with the GPU driver, say). Health and the setup pages are served either
+  way. (`cargo ci verify-msi` installs on a runner without the DLL: it
+  holds the service to serving, and, with no `qhyccd.dll` beside the exe or
+  where the All-in-One installs it, to this line in its log.)
 - **PF5.** `simulation` builds skip the DLL resolution entirely: the real FFI
   is `cfg`'d out, so no SDK call is ever made and `qhyccd.dll` is not
   required at runtime. (The SDK *link* itself is only omitted under

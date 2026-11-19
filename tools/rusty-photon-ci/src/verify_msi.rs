@@ -18,9 +18,8 @@
 //! - the rest run, write their config and answer their port, and
 //!   ui-htmx's config names rp and no drivers. qhy-camera is one of them
 //!   whether or not `qhyccd.dll`, the operator's, is installed: without it
-//!   the service serves no camera and its log names the DLL, which the run
-//!   reports. A loader crash, which its delay-load link prevents, would
-//!   neither run nor serve;
+//!   the service serves no camera, and its log must name the DLL. A loader
+//!   crash, which its delay-load link prevents, would neither run nor serve;
 //! - sentinel, killed, is restarted; filemonitor takes a `ParamChange`, its
 //!   reload; doctor runs, and its renewal task is registered;
 //! - removing the `ZwoCamera` feature takes zwo-camera, its exe and its DLL,
@@ -803,8 +802,8 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
     }
 
     /// Which answer qhy-camera, serving, gives this box: it serves whether
-    /// or not `qhyccd.dll` is installed, and its log names a DLL that did
-    /// not load. Read from the one snapshot of its log that showed the start.
+    /// or not `qhyccd.dll` is installed, and without it its log must name
+    /// the DLL. Read from the one snapshot of its log that showed the start.
     fn qhy_camera(&mut self) -> Result<(), Error> {
         let mut log = String::new();
         let started = self.wait_until(30, |run| {
@@ -816,12 +815,40 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             "qhy-camera",
             "timed out after 30s waiting for: 'Service started successfully' in its log",
         )?;
-        if log.contains("qhyccd.dll not found") {
-            println!("== qhy-camera: OK (serves without qhyccd.dll, which its log names)");
-        } else {
-            println!("== qhy-camera: OK (qhyccd.dll loaded)");
+        let named = log.contains("qhyccd.dll not found");
+        if self.qhy_dll_installed() {
+            let how = if named {
+                "installed, but did not load; its log says why"
+            } else {
+                "loaded"
+            };
+            println!("== qhy-camera: OK (qhyccd.dll {how})");
+            return Ok(());
         }
+        self.require(
+            named,
+            "qhy-camera",
+            "serves without qhyccd.dll, but its log does not name the missing DLL",
+        )?;
+        println!("== qhy-camera: OK (serves without qhyccd.dll, which its log names)");
         Ok(())
+    }
+
+    /// Whether `qhyccd.dll` lies where qhy-camera's preflight looks first:
+    /// beside its exe, or where QHY's All-in-One pack installs it under
+    /// `%ProgramFiles%` (docs/services/qhy-camera.md PF1). A copy only on
+    /// `PATH` is not looked for: a box this verifies holds none.
+    fn qhy_dll_installed(&self) -> bool {
+        let sdk = self
+            .places
+            .install
+            .parent()
+            .map_or_default(|program_files| {
+                program_files.join("QHYCCD").join("AllInOne").join("sdk")
+            });
+        [self.places.install.clone(), sdk.join("x64"), sdk]
+            .iter()
+            .any(|dir| dir.join("qhyccd.dll").is_file())
     }
 
     fn has_log(&self, service: &str) -> bool {
@@ -1718,6 +1745,7 @@ mod tests {
             (Box::new(|sim| sim.handshakes = 0), Script::default(), "FAIL [ppba-driver]: timed out after 30s waiting for: 'eager startup handshake'"),
             (Box::new(|sim| sim.handshakes = 1), Script::default(), "FAIL [ppba-driver]: timed out after 90s waiting for: a second handshake attempt"),
             (Box::new(|sim| sim.qhy_log = "panic: STATUS_DLL_NOT_FOUND\n"), Script::default(), "FAIL [qhy-camera]: timed out after 30s waiting for: 'Service started successfully' in its log"),
+            (Box::new(|sim| sim.qhy_log = "Service started successfully\n"), Script::default(), "FAIL [qhy-camera]: serves without qhyccd.dll, but its log does not name the missing DLL"),
             (Box::new(|_| ()), Script::default().on("curl --max-time 5 -o NUL -fsS http://127.0.0.1:11121", || Err(())), "FAIL [qhy-camera]: timed out after 60s waiting for an HTTP response on http://127.0.0.1:11121/management/apiversions"),
             (Box::new(|_| ()), Script::default().on("taskkill", || Ok(String::new())), "FAIL [sentinel]: timed out after 60s waiting for: a restart after the kill"),
             (Box::new(|_| ()), Script::default().on("sc.exe control", || Err(())), "FAIL [filemonitor]: sc control paramchange failed"),
@@ -1830,15 +1858,23 @@ mod tests {
         }
     }
 
-    /// A box with no hardware may answer either way: qhy-camera serving with
-    /// its DLL loaded, or without it.
+    /// A box with QHY's All-in-One installed answers with qhy-camera
+    /// serving on its DLL, its log naming none missing.
     #[test]
-    fn accepts_either_answer_a_box_without_hardware_gives() {
+    fn accepts_a_box_with_the_all_in_one_installed() {
         let fixture = Fixture::new();
+        let places = fixture.places();
+        let dll = places
+            .install
+            .parent()
+            .unwrap()
+            .join("QHYCCD/AllInOne/sdk/x64/qhyccd.dll");
+        fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        fs::write(&dll, "").unwrap();
         let sim = fixture.sim();
         sim.borrow_mut().qhy_log = "Service started successfully\n";
-        let (result, _) = fixture.verify(&sim, Script::default(), &Request::default());
-        assert_eq!(result.unwrap(), 9);
+        let (result, lines) = fixture.verify(&sim, Script::default(), &Request::default());
+        assert_eq!(result.unwrap(), 9, "{lines:#?}");
     }
 
     #[test]

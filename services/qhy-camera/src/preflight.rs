@@ -188,10 +188,21 @@ pub enum PreflightError {
 }
 
 /// The reason a placeholder's connect is refused with while `qhyccd.dll`
-/// does not load (PF4): the remedy alone, the log carrying the rest.
+/// does not load (PF4), from the resolution's `failures`.
+///
+/// A probed copy that exists and failed to load is named with the loader's
+/// reason, since installing the pack again would not help; with none, the
+/// remedy is the pack. The log carries the rest.
 #[must_use]
-pub fn dll_missing_reason() -> String {
-    format!("{QHY_DLL_NAME} not found: install QHY's All-in-One pack from {QHY_ALL_IN_ONE_URL}")
+pub fn dll_missing_reason(failures: &[LoadFailure]) -> String {
+    let by_name = Path::new(QHY_DLL_NAME);
+    failures
+        .iter()
+        .find(|failure| failure.path != by_name)
+        .map_or_else(
+            || format!("{QHY_DLL_NAME} not found: install QHY's All-in-One pack from {QHY_ALL_IN_ONE_URL}"),
+            |failure| format!("{QHY_DLL_NAME} did not load: {failure}"),
+        )
 }
 
 fn display_probed(probed: &[PathBuf]) -> String {
@@ -527,10 +538,34 @@ mod tests {
 
     #[test]
     fn a_placeholder_names_the_dll_and_the_all_in_one_download() {
+        // The by-name attempt always fails when nothing is found: it is not
+        // a copy that failed to load.
+        let failures = [LoadFailure {
+            path: PathBuf::from(QHY_DLL_NAME),
+            error: "default Windows DLL search order: not found".to_string(),
+        }];
         assert_eq!(
-            dll_missing_reason(),
+            dll_missing_reason(&failures),
             "qhyccd.dll not found: install QHY's All-in-One pack from \
              https://www.qhyccd.com/download/"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_names_a_copy_that_failed_to_load_with_the_loaders_reason() {
+        let failures = [
+            LoadFailure {
+                path: PathBuf::from(r"C:\Program Files\QHYCCD\AllInOne\sdk\x64\qhyccd.dll"),
+                error: "The specified module could not be found. (os error 126)".to_string(),
+            },
+            LoadFailure {
+                path: PathBuf::from(QHY_DLL_NAME),
+                error: "default Windows DLL search order: not found".to_string(),
+            },
+        ];
+        assert_eq!(
+            dll_missing_reason(&failures),
+            r"qhyccd.dll did not load: C:\Program Files\QHYCCD\AllInOne\sdk\x64\qhyccd.dll (The specified module could not be found. (os error 126))"
         );
     }
 

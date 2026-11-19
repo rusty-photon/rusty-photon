@@ -86,19 +86,21 @@ impl SdkLibrary {
 #[cfg(all(windows, not(feature = "simulation")))]
 fn load_dll(announce: bool) -> Result<(), String> {
     use crate::preflight::{
-        dll_missing_reason, ensure_qhyccd_dll, resolve_and_load, DllResolution,
+        dll_missing_reason, ensure_qhyccd_dll, resolve_and_load, DllResolution, PreflightError,
     };
 
-    let loaded = if announce {
-        ensure_qhyccd_dll().is_ok()
+    let failures = if announce {
+        match ensure_qhyccd_dll() {
+            Ok(_) => return Ok(()),
+            Err(PreflightError::DllNotFound { failures, .. }) => failures,
+        }
     } else {
-        !matches!(resolve_and_load(), DllResolution::NotFound { .. })
+        match resolve_and_load() {
+            DllResolution::FoundAt(_) | DllResolution::FoundByName => return Ok(()),
+            DllResolution::NotFound { failures, .. } => failures,
+        }
     };
-    if loaded {
-        Ok(())
-    } else {
-        Err(dll_missing_reason())
-    }
+    Err(dll_missing_reason(&failures))
 }
 
 /// The simulated library loads once a file exists at `path`.
