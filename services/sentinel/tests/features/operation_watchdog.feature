@@ -13,6 +13,11 @@ Feature: Operation watchdog
     And sentinel is running
     Then the watchdog records no escalation
 
+  Scenario: A guide start that settles within its deadline raises no alert
+    Given rp is streaming a guide start that settles within its deadline
+    And sentinel is running
+    Then the watchdog records no escalation
+
   Scenario: An operation that overruns its deadline is escalated
     Given rp is streaming a slew operation that never completes
     And sentinel is running

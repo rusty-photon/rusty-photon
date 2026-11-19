@@ -442,7 +442,8 @@ It is the Sentinel half of the two-loop supervision design described in
 [`docs/services/rp.md` §Sentinel Watchdog Integration](rp.md#sentinel-watchdog-integration);
 rp is the inner loop (every blocking operation emits a `*_started` event
 carrying a predicted and a maximum duration, then a `*_complete` /
-`*_failed`), and the watchdog is the outer loop that tracks those
+`*_failed` — or, for a guide start and a dither, `*_settled`), and the
+watchdog is the outer loop that tracks those
 deadlines independently and escalates when one is missed.
 
 It is implemented as an `EventMonitor` (`OperationDeadlineMonitor`) that
@@ -464,7 +465,7 @@ on `*_started` events for operations with predictive deadlines — a
 | Event suffix | Action |
 |---|---|
 | `*_started` | Begin tracking this `operation_id`. If the envelope carries `max_duration_ms`, arm an expiry timer for `max_duration_ms + buffer` (the **buffer** covers wire latency and gives rp's own internal deadline a chance to fire first). If it does not (an operation rp emits without a deadline, e.g. `plate_solve`), track it open with no timer — it clears only on completion or via the liveness pulse. |
-| `*_complete` / `*_failed` | Stop tracking this `operation_id`; cancel its timer. The operation finished within its deadline — no escalation. |
+| `*_complete` / `*_failed` / `*_settled` | Stop tracking this `operation_id`; cancel its timer. The operation finished within its deadline — no escalation. rp ends a guide start and a dither with `guide_settled` / `dither_settled` when guiding settles, so `*_settled` ends an operation as `*_complete` does. |
 | timer expiry (no matching completion) | **Escalate** per the operation family's `on_expiry` policy. |
 
 The operation **family** (the key used to look up `buffer` / `on_expiry`)
@@ -628,7 +629,7 @@ watchdog keeps retrying without ever escalating an unresponsive rp), and a
 
 | Scenario | Behavior |
 |----------|----------|
-| Operation completes within its deadline | Tracking entry removed on `*_complete` / `*_failed`. No notification. |
+| Operation completes within its deadline | Tracking entry removed on `*_complete` / `*_failed` / `*_settled`. No notification. |
 | Operation's `max_duration_ms + buffer` elapses with no completion | One escalation per expiry, recorded in history (and, for `abort_then_restart`, after the ladder runs). |
 | Expiry, `abort_then_restart`, service responsive | Health check passes → abort verb `PUT`; ladder stops; notification reports `abort=ok`. |
 | Expiry, `abort_then_restart`, service unresponsive | Abort skipped → derived restart command run → recovery awaited up to the 300 s budget; notification reports the restart outcome. |
