@@ -10,13 +10,12 @@ description = "Shared ASCOM-driver runtime layer for rusty-photon: the common Dr
 
 [features]
 default = []
-# Device claims (docs/plans/archive/device-claims-and-phd2-camera.md, Part A): the
-# placeholder Camera that holds a listed device number whose camera cannot be
-# served, the failed USB scan's background re-scan, and the camera drivers'
-# own part of their setup pages (the Cameras section and each camera's page,
-# docs/plans/archive/driver-setup-pages.md D11). Only the camera drivers with a
-# `usb_devices` list turn it on, so no other driver's graph gains
-# ascom-alpaca's `Camera` trait through this crate.
+# Device claims: the placeholder Camera that holds a listed device number whose
+# camera cannot be served, the failed USB scan's background re-scan, and the
+# camera drivers' own part of their setup pages (the Cameras section and each
+# camera's page). Only the camera drivers with a `usb_devices` list turn it on,
+# so no other driver's graph gains ascom-alpaca's `Camera` trait through this
+# crate.
 claims = [
     "ascom-alpaca/camera",
     "dep:async-trait",
@@ -34,15 +33,12 @@ tokio-util = { workspace = true, features = ["rt"], optional = true }
 # The markup of a driver's own part of its pages (the `overrides` module, the
 # camera pages), as `rusty-photon-setup` draws its own.
 maud = { workspace = true }
-# Only the core ASCOM error types (`ASCOMError`/`ASCOMResult`/`ASCOMErrorCode`,
-# unfeatured in `errors.rs`) are used. lib.rs `compile_error!`s unless one device
-# and one network feature are on. The device guard keys off the empty `__anydevice`
-# marker, so we satisfy it without enabling any real device trait — no
-# cover_calibrator leaking into every driver's graph via feature unification. The
-# network side needs a *real* feature though: the always-built `api::device_state`
-# module's serde derives are gated on `client`/`server`, not on `__anynetwork`, so
-# the marker alone won't compile. `server` is the lightest sufficient choice and is
-# already enabled by every driver, so it adds nothing to any driver's build graph.
+# `server` for the setup hooks (`ServerSetup`, `SetupRequest`, `SetupResponse`)
+# and the discovery responder (`discovery::DiscoveryServer`). ascom-alpaca's
+# lib.rs `compile_error!`s unless a device feature is on too, and outside
+# `claims` this crate implements no device trait: the empty `__anydevice` marker
+# satisfies that guard without enabling a real one — no cover_calibrator leaking
+# into every driver's graph via feature unification.
 ascom-alpaca = { workspace = true, features = ["__anydevice", "server"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

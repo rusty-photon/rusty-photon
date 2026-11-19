@@ -1,4 +1,4 @@
-//! The failed USB scan's background re-scan (the device-claims plan's D4.4).
+//! The failed USB scan's background re-scan.
 //!
 //! A driver whose USB scan failed serves a placeholder at every listed number
 //! and opens nothing. A failed scan is never a startup failure, so nothing

@@ -6,16 +6,15 @@
 //! than `ascom_alpaca::Server::start()` — and only the latter spawns the
 //! crate's own discovery responder. `into_service`'s documented contract is
 //! that "the caller is responsible for starting the Alpaca discovery server
-//! separately if needed"; this module is that caller-owned responder. (The
-//! responder was lost when PR #63 introduced the rusty-photon-tls serving path.)
+//! separately if needed"; this module is that caller-owned responder.
 //!
-//! Discovery is **off unless the config opts in**: rusty-photon runs up to
-//! 14 Alpaca servers on one host, and a default-on responder in every one
-//! would collide on the shared discovery port (with `SO_REUSEPORT`, a
-//! unicast query is answered by an arbitrary one of them). An absent /
-//! `null` `discovery_port` — the default — means no responder; an explicit
-//! port (normally 32227, the Alpaca standard) opts in, for hosts running a
-//! single driver.
+//! Discovery is **off unless the config opts in**: rusty-photon runs each
+//! driver as an Alpaca server of its own on one host, and a default-on
+//! responder in every one would collide on the shared discovery port (with
+//! `SO_REUSEPORT`, a unicast query is answered by an arbitrary one of them).
+//! An absent / `null` `discovery_port` — the default — means no responder; an
+//! explicit port (normally 32227, the Alpaca standard) opts in, for hosts
+//! running a single driver.
 
 use ascom_alpaca::discovery::{BoundDiscoveryServer, DiscoveryServer};
 use std::net::SocketAddr;

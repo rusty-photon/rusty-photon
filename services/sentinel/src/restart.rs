@@ -1,10 +1,12 @@
 //! The Service Restart API's engine: `POST /api/services/{name}/restart`.
 //!
-//! Sentinel owns *process* restart for the rest of the stack (drivers reload
-//! themselves after a setup-page save; sentinel restarts processes). `{name}` is a
-//! [discovered service](crate::discovery); the [`RestartManager`] hands its
-//! unit to the platform service manager and then polls the platform's
-//! recovery check until it passes or the constant restart budget elapses.
+//! Sentinel restarts a process when supervision or an operator calls for it
+//! (a driver also reloads itself after a setup-page save, and ends itself
+//! for its service manager to start again when a client asks it to
+//! restart). `{name}` is a [discovered service](crate::discovery); the
+//! [`RestartManager`] hands its unit to the platform service manager and
+//! then polls the platform's recovery check until it passes or the constant
+//! restart budget elapses.
 //! The command's outcome is a *domain* result ([`RestartReport`], HTTP 200
 //! either way); addressing errors ([`RestartError`]) map to 4xx. See
 //! `docs/services/sentinel.md` §Service Restart API.
@@ -159,8 +161,8 @@ impl RestartManager {
     ///
     /// # Errors
     ///
-    /// Returns [`RestartError::UnknownService`] if `name` was never
-    /// discovered, or [`RestartError::AlreadyInFlight`] if another
+    /// Returns [`RestartError::UnknownService`] if `name` is not a
+    /// discovered service, or [`RestartError::AlreadyInFlight`] if another
     /// restart of it holds the gate. A platform restart that fails is
     /// not an `Err` — it is reported in the `Ok` report's
     /// `status`/`detail` fields.

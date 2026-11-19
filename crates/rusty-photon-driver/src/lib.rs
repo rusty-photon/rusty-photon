@@ -3,13 +3,13 @@
 //!
 //! Where [`rusty_photon_config`] is the transport- and consumer-agnostic config
 //! *model* (also used by the plain-REST `rp` / `sentinel` services), this crate is
-//! the ASCOM-driver *adapter* shared by the six Alpaca driver services. It owns:
+//! the ASCOM-driver *adapter* shared by the Alpaca driver services. It owns:
 //!
 //! - [`driver_error!`] — a macro generating each driver's common error enum (the
 //!   shared transport-driver variants + their ASCOM classification +
-//!   `From<TransportError>`), with device-specific variants spliced in. Kept a
-//!   macro (rather than a shared enum) so each driver's error stays a local type —
-//!   its own `From<SessionError<XxxCodecError>>` would otherwise be orphan-illegal.
+//!   `From<TransportError>`), with device-specific variants spliced in. A macro
+//!   rather than a shared enum, so each driver's error stays a local type — its
+//!   own `From<SessionError<XxxCodecError>>` would otherwise be orphan-illegal.
 //! - `setup` — the glue from the crate's setup hooks (`Device::setup_request`,
 //!   `Server::setup`) to `rusty-photon-setup`'s pages.
 //! - [`connected_transition`] — what an ASCOM `Connected` write does on a device
@@ -21,10 +21,14 @@
 //!   (`POST /service/v1/restart`) and name the process serving
 //!   (`GET /service/v1/instance`), which every driver merges into its router
 //!   (docs/crates/rusty-photon-service-lifecycle.md § Restart on request).
+//! - [`discovery`] — the Alpaca UDP discovery responder, bound only when a
+//!   driver's `server.discovery_port` opts in.
 //! - `claims` (the `claims` feature) — a camera driver's device claims at
 //!   runtime: the placeholder Camera that holds a listed device number whose
-//!   camera cannot be served, and the failed USB scan's background re-scan.
-//!   Only the camera drivers with a `usb_devices` list turn the feature on.
+//!   camera cannot be served, the failed USB scan's background re-scan, the
+//!   run loop that rebuilds the server after a reload or a re-scan, and the
+//!   driver's own part of its setup pages. Only the camera drivers with a
+//!   `usb_devices` list turn the feature on.
 //!
 //! A driver invokes [`driver_error!`] for its error type and serves its setup
 //! pages through `setup`. See

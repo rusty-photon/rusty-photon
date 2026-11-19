@@ -49,11 +49,11 @@ pub mod test_cert;
 
 /// Install `aws-lc-rs` as the process-wide default rustls `CryptoProvider`.
 ///
-/// Today `aws-lc-rs` is the only provider our dependency tree
-/// feature-activates on `rustls`, so automatic selection would also work —
-/// but any future dependency that turns on rustls's `ring` feature would
-/// defeat automatic selection process-wide. The explicit install pins the
-/// choice so that stays a non-event.
+/// `aws-lc-rs` is the only provider the workspace feature-activates on
+/// `rustls`, so automatic selection would also pick it — but a dependency
+/// that also turns on rustls's `ring` feature defeats automatic selection
+/// process-wide. The explicit install pins the choice so that stays a
+/// non-event.
 ///
 /// The install is attempted exactly once per process via `Once`. If some other
 /// code path installed a different provider first, the failure is logged at

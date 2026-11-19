@@ -1,5 +1,5 @@
 //! [`PlaceholderCamera`]: the Camera that holds a listed device number whose
-//! camera cannot be served (the device-claims plan's D4.5).
+//! camera cannot be served.
 //!
 //! It reads `Connected == false`, refuses `Connected = true` with the
 //! device-claims error code and the reason, carries the same reason in its

@@ -78,8 +78,9 @@ impl Engine {
             handles.push(handle);
         }
 
-        // Event monitors (e.g. the operation watchdog) own a long-lived
-        // connection and run until cancelled, in parallel with the poll loops.
+        // Event monitors (the operation watchdog, the discovery supervisor)
+        // drive themselves and run until cancelled, in parallel with the
+        // poll loops.
         for event_monitor in &self.event_monitors {
             let event_monitor = Arc::clone(event_monitor);
             let cancel = self.cancel.clone();

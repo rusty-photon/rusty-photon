@@ -1,8 +1,8 @@
 //! Configuration types and startup validation.
 //!
 //! See `docs/services/plate-solver.md` §"Configuration" for the field
-//! semantics. Validation rules are exercised by Phase 3 BDD's
-//! `configuration.feature`.
+//! semantics. `tests/features/configuration.feature` exercises the
+//! validation rules.
 
 pub use rusty_photon_server_config::ServerConfig;
 use serde::Deserialize;

@@ -38,7 +38,7 @@ pub enum ServiceHealth {
     Up,
     /// Last probe answered 503: the service is alive but reports an
     /// external dependency unavailable — a state a restart cannot cure,
-    /// so it counts as alive for supervision (issue #595).
+    /// so it counts as alive for supervision.
     Degraded,
     /// Last probe failed (other status, timeout, or connection error), or
     /// the unit is in the `failed` run state.
@@ -228,7 +228,8 @@ impl SharedState {
             .map(|m| m.state)
     }
 
-    /// Get a monitor's previous state (before last update) — uses current state as proxy
+    /// A monitor's count of consecutive polls that read `Unknown`; 0 for a
+    /// name with no monitor
     #[must_use]
     pub fn get_monitor_consecutive_errors(&self, name: &str) -> u32 {
         self.monitors

@@ -65,6 +65,11 @@ impl From<ProbeDomain> for String {
 ///
 /// `deny_unknown_fields` so typoed or removed top-level keys fail loudly at
 /// load instead of being silently ignored.
+///
+/// There is deliberately no `services` map: the services sentinel
+/// supervises are discovered from the platform service manager (see
+/// `crate::discovery` and `docs/services/sentinel.md` §Service
+/// discovery), so a `services` key fails at load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -96,13 +101,9 @@ pub struct Config {
     /// [`ProbeDomain`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_domain: Option<ProbeDomain>,
-    /// Optional push-based operation watchdog. Absent means safety polling
-    /// only (today's behavior). See [`OperationWatchdogConfig`].
-    ///
-    /// There is deliberately no `services` map: the services sentinel
-    /// supervises are discovered from the platform service manager (see
-    /// `crate::discovery` and `docs/services/sentinel.md` §Service
-    /// Discovery), so a config still carrying one fails loudly at load.
+    /// Optional push-based operation watchdog. Absent, the watchdog does
+    /// not run; safety polling and health supervision run either way. See
+    /// [`OperationWatchdogConfig`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_watchdog: Option<OperationWatchdogConfig>,
 }
@@ -314,8 +315,9 @@ pub enum TransitionDirection {
 /// Operation watchdog configuration — the push-based event monitor that
 /// subscribes to an rp event stream and tracks per-operation deadlines.
 ///
-/// Optional: when the `operation_watchdog` block is absent, sentinel runs
-/// safety polling only. See `docs/services/sentinel.md` §Operation Watchdog.
+/// Optional: when the `operation_watchdog` block is absent, the watchdog
+/// does not run; safety polling and health supervision run either way. See
+/// `docs/services/sentinel.md` §Operation Watchdog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationWatchdogConfig {
@@ -946,9 +948,8 @@ mod tests {
 
     #[test]
     fn config_rejects_retired_services_map() {
-        // The `services` map was deleted when supervision moved to service
-        // discovery; a config still carrying it must fail loudly at load,
-        // not be silently ignored.
+        // Sentinel discovers the services it supervises, so the config has
+        // no `services` key: one fails at load, not silently ignored.
         let json = r#"{
             "services": { "rp": { "restart_command": "systemctl restart rusty-photon-rp" } }
         }"#;
@@ -958,8 +959,9 @@ mod tests {
 
     #[test]
     fn operation_watchdog_rejects_nested_services() {
-        // The watchdog block never carried a service registry of its own;
-        // one nested here must fail loudly, not be silently ignored.
+        // The watchdog resolves `operations.<family>.service` against the
+        // discovered services and has no registry of its own: a `services`
+        // key nested here fails at load, not silently ignored.
         let json = r#"{
             "operation_watchdog": {
                 "rp_url": "http://rp",
@@ -1110,8 +1112,8 @@ mod tests {
 
     #[test]
     fn dashboard_config_rejects_relocated_listener_fields() {
-        // port/tls/auth moved to the top-level `server` block; an old config
-        // still writing them under `dashboard` must fail loudly at load.
+        // The listener's port, tls and auth belong to the top-level
+        // `server` block; under `dashboard` each fails at load.
         for (json, field) in [
             (r#"{ "dashboard": { "port": 11114 } }"#, "port"),
             (

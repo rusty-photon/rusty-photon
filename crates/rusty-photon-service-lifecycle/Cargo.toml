@@ -13,8 +13,8 @@ workspace = true
 
 [dependencies]
 # color-eyre + tracing-error are deliberately crate-local, NOT workspace deps:
-# this crate is the single owner of top-level error/panic reporting (ADR-011),
-# and keeping the deps here is the structural guardrail that stops eyre!-style
+# this crate is the single owner of top-level error/panic reporting, and
+# keeping the deps here is the structural guardrail that stops eyre!-style
 # ad-hoc errors from leaking into thiserror-typed library/device code.
 color-eyre = "0.6.5"
 tokio = { workspace = true }

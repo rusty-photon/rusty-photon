@@ -6,9 +6,9 @@
 //! the platform's recovery check. Implementations: systemd (Linux), the
 //! Windows service control manager, Homebrew services (macOS), and a
 //! directory-backed test stub selected by the `SENTINEL_SERVICE_MANAGER_DIR`
-//! environment variable. The rule (ADR-016 decision 8) is that the source of
-//! truth must be alive when the supervised service is not — which the service
-//! manager is, and a config map is not.
+//! environment variable. The rule is that the source of truth must be alive
+//! when the supervised service is not — which the service manager is, and a
+//! config map is not.
 //!
 //! Discovery also derives each running service's health probe URL from the
 //! service's own `<svc>.json` (the shared `server` block: port + TLS), read
@@ -52,8 +52,8 @@ const JOB_SERVICES: &[&str] = &["renew"];
 ///
 /// Everything else discovered is an Alpaca driver probed at
 /// `/management/v1/configureddevices`. A new non-Alpaca service must be
-/// added here (a unit test asserts every listed name exists under
-/// `services/*/pkg`).
+/// added here (a unit test asserts every listed name is a directory under
+/// `services/`).
 pub const NON_ALPACA_SERVICES: &[&str] = &[
     "rp",
     "plate-solver",
@@ -201,8 +201,8 @@ fn platform_service_manager() -> Arc<dyn ServiceManager> {
     Arc::new(BrewServiceManager)
 }
 
-/// Supervision policy — the shipped defaults of the retired per-service
-/// config, promoted to constants (plan D3s).
+/// Supervision policy: constants, not config (`docs/services/sentinel.md`
+/// §Service Health Supervision).
 ///
 /// The stub service manager's optional `policy.json` can tighten them,
 /// which exists so BDD scenarios don't need 90-second detection windows;
@@ -298,9 +298,9 @@ impl SupervisionPolicy {
 
 /// The permissive cross-binary view of another service's `server` block.
 /// Deliberately the opposite of the strict `deny_unknown_fields` parse a
-/// service applies to its *own* config (ADR-016 decision 7): a read across
-/// build generations must degrade, not refuse, so only what the probe needs
-/// is read and everything else is stepped around.
+/// service applies to its *own* config: a read across build generations
+/// must degrade, not refuse, so only what the probe needs is read and
+/// everything else is stepped around.
 #[derive(Debug, Deserialize)]
 struct ServerView {
     port: u16,
@@ -785,9 +785,6 @@ mod tests {
     fn non_alpaca_services_exist_in_the_tree() {
         // The probe-class constant must track the services tree — a renamed
         // or removed service would silently flip probe classes otherwise.
-        // (session-runner is deliberately unpackaged today; listing it here
-        // is future-proofing, so the assertion is on the service dir, not
-        // its pkg/.)
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("services/ dir");
@@ -983,7 +980,7 @@ mod tests {
 
     #[test]
     fn derive_probe_tolerates_unknown_server_fields() {
-        // A newer build's server block must still be readable (decision 7).
+        // A newer build's server block must still be readable.
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("rp.json"),
@@ -1078,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_defaults_are_the_plan_constants() {
+    fn policy_defaults_are_the_documented_constants() {
         let p = SupervisionPolicy::default();
         assert_eq!(p.discovery_interval, Duration::from_mins(1));
         assert_eq!(p.poll_interval, Duration::from_secs(30));

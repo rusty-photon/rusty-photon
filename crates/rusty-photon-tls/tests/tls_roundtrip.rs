@@ -460,8 +460,9 @@ async fn plaintext_http_request_is_redirected_to_https_same_port() {
     let (pki_dir, bound_addr, shutdown_tx, server_handle) =
         start_tls_server_with_health_route().await;
 
-    // A plain HTTP client hitting the TLS port gets a 308 to https on the
-    // same port — this is the misdirected-bookmark scenario from #610.
+    // A plain HTTP client hitting the TLS port — a bookmark or a typed URL
+    // that says `http://` for a service serving TLS — gets a 308 to https on
+    // the same port.
     let plain_client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -701,8 +702,8 @@ async fn a_connection_closed_before_any_byte_is_sent_is_handled_cleanly() {
     drop(socket);
 
     // If the server mishandled the immediate EOF it could panic the spawned
-    // task; give it a moment and then confirm the server is still healthy by
-    // completing a normal TLS request.
+    // task; give it a moment and then confirm the server still answers a
+    // fresh connection, here with the plaintext redirect.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

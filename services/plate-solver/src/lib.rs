@@ -9,8 +9,7 @@
 )]
 //! plate-solver — rp-managed service wrapping the ASTAP CLI.
 //!
-//! See `docs/services/plate-solver.md` for the design contract and
-//! `docs/plans/archive/plate-solver.md` for sequencing.
+//! See `docs/services/plate-solver.md` for the design contract.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -57,10 +56,10 @@ use tokio::sync::Semaphore;
 
 /// Two-phase server builder.
 ///
-/// Use `build()` to bind the TCP listener (so the bound port is known
-/// up-front), then `start()` to serve. Mirrors `services/rp::ServerBuilder`
-/// and avoids the port-TOCTOU race noted in
-/// `docs/skills/development-workflow.md` §"Phase 4 Stabilization".
+/// Use `build()` to bind the TCP listener, then `start()` to serve.
+/// Binding first makes the bound port known before the server runs, so
+/// a `port: 0` config gets its port from the kernel and announces it,
+/// with no window in which another process can take it.
 pub struct ServerBuilder {
     config: Option<Config>,
     runner: Option<Arc<dyn AstapRunner>>,
@@ -81,8 +80,8 @@ impl ServerBuilder {
         self
     }
 
-    /// Override the runner (tests inject mocks; production uses
-    /// `AstapCliRunner` constructed from config).
+    /// Override the runner. Without one, `build()` constructs an
+    /// `AstapCliRunner` from the config.
     #[must_use]
     pub fn with_runner(mut self, runner: Arc<dyn AstapRunner>) -> Self {
         self.runner = Some(runner);

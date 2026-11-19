@@ -5,14 +5,15 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
   group on Unix, CTRL_BREAK_EVENT to its console process group on
   Windows), waits a fixed 2-second grace period, then force-kills what is
   left of the tree (SIGKILL to the group / TerminateJobObject). The
-  wrapper always reaps the child before returning; no orphaned child
-  processes.
+  wrapper reaps the child before returning, waiting up to 5 s after the
+  force-kill; only a child the kill cannot end in that time outlives
+  the response.
 
   Overlapping requests queue behind a single-flight semaphore (default
   capacity 1). Queue wait time is not counted against the per-request
   deadline.
 
-  Both escalation outcomes share the frozen `solve_timeout` error code,
+  Both escalation outcomes share the `solve_timeout` error code,
   so the wire discriminator between them is the `message` field:
   "(terminated)" when the child answered the graceful signal within the
   grace period, "(killed)" when it did not and was force-killed. That is

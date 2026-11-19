@@ -22,7 +22,7 @@ use crate::resolver::ReloadableCertResolver;
 
 /// First byte of a TLS handshake record (`ContentType::Handshake`,
 /// RFC 8446 §5.1) — distinguishes a real TLS client from a plaintext HTTP
-/// request landing on the TLS port (issue #610).
+/// request landing on the TLS port.
 const TLS_HANDSHAKE_CONTENT_TYPE: u8 = 0x16;
 
 /// Bound on how long a non-TLS connection may take, in total, to produce a
@@ -43,8 +43,8 @@ const MAX_REQUEST_HEAD_BYTES: usize = 8 * 1024;
 /// indefinitely, defeating the same resource-sink guarantee the plaintext
 /// path already gets. Longer than `PLAINTEXT_IO_TIMEOUT` because a genuine
 /// handshake, unlike the plaintext redirect's single request/response, can
-/// span multiple round trips on a slow or high-latency link (ADR-002's
-/// remote-observatory-over-VPN case).
+/// span multiple round trips on a slow or high-latency link, such as a
+/// remote observatory reached over a VPN.
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Bind a TCP listener with dual-stack (IPv4+IPv6) support.
@@ -381,11 +381,12 @@ async fn stop_requested(mut stop: watch::Receiver<bool>) {
 }
 
 /// Dispatch one accepted connection on the TLS port: a genuine TLS
-/// handshake (first byte `0x16`) proceeds as before; anything else is
-/// handled as a possibly-plaintext HTTP request and answered with a
-/// redirect to `https://` on the same host and port, or dropped if it
-/// doesn't look like HTTP at all (issue #610). `stop` resolving makes an
-/// established TLS connection finish gracefully.
+/// handshake (first byte `0x16`) is accepted and served; anything else is
+/// handled as a possibly-plaintext HTTP request — a client that dialed
+/// `http://` for a service serving TLS — and answered with a redirect to
+/// `https://` on the same host and port, or dropped if it doesn't look like
+/// HTTP at all. `stop` resolving makes an established TLS connection finish
+/// gracefully.
 async fn handle_connection(
     stream: TcpStream,
     remote_addr: SocketAddr,
@@ -571,8 +572,8 @@ fn parse_request_head(head: &[u8]) -> Option<ParsedRequest> {
     // uppercase letters — extension methods like WebDAV's PROPFIND/MKCOL or
     // SSDP's M-SEARCH are syntactically valid and would otherwise be
     // silently dropped instead of redirected. The method is never echoed
-    // into the response, so broadening this doesn't reopen any injection
-    // surface; a bare '\r'/'\n' still isn't a tchar and stays rejected.
+    // into the response, so accepting any token opens no injection surface;
+    // a bare '\r'/'\n' isn't a tchar and stays rejected.
     if method.is_empty() || !method.bytes().all(is_tchar) {
         return None;
     }
@@ -885,8 +886,8 @@ mod tests {
 
     #[test]
     fn parse_request_head_rejects_a_method_smuggling_a_bare_newline() {
-        // A bare CR/LF is never a tchar, so this must still be rejected even
-        // under the broadened method check.
+        // A bare CR/LF is never a tchar, so the method check that accepts
+        // any extension token still rejects this.
         assert!(parse_request_head(b"GET\nInjectedX /path HTTP/1.1\r\n").is_none());
     }
 
