@@ -163,9 +163,11 @@ pub fn default_config_dir() -> Result<PathBuf, ConfigError> {
 /// The Windows `ProgramData` root, from the value of the `ProgramData` environment variable.
 ///
 /// The value verbatim when present and non-empty, else the fixed `C:\ProgramData` fallback.
-/// The Windows config directory above and the service lifecycle's SCM-mode log directory both
-/// resolve the root through it, so the two sit under the same one. Parameterized over the env
-/// value, and compiled on every platform, so the logic is unit-testable on non-Windows hosts.
+/// Every `%PROGRAMDATA%` path in the workspace resolves its root through it — the Windows
+/// config directory above, the service lifecycle's SCM-mode log directory, rp's session data
+/// directory and filemonitor's default watch path — so all of them sit under the same one.
+/// Parameterized over the env value, and compiled on every platform, so the logic is
+/// unit-testable on non-Windows hosts.
 #[must_use]
 pub fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
     match program_data {
