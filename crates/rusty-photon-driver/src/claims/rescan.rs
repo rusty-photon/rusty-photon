@@ -1,7 +1,8 @@
-//! The failed USB scan's background re-scan.
+//! The background re-scan of a server that serves without its cameras.
 //!
 //! A driver whose USB scan failed serves a placeholder at every listed number
-//! and opens nothing. A failed scan is never a startup failure, so nothing
+//! and opens nothing. So does one whose SDK's library did not load, a
+//! library the operator installs. Neither is a startup failure, so nothing
 //! else would retry it: the driver re-scans after waits of 10 s, 20 s and
 //! 40 s, then every 60 s, and on the first try after which a rebuild would
 //! serve the list it ends its own server ([`Ended::Rescanned`]). The driver's
@@ -12,9 +13,11 @@
 //! reload has already stopped the server reaches nothing, and cannot stop the
 //! next one.
 //!
-//! What a try checks is the driver's ([`Rescan::new`]): its scan, then — only
-//! once the scan runs — its SDK's enumeration. A rebuild whose enumeration
-//! fails ends the service, so the re-scan waits that out too.
+//! What a try checks is the driver's. After a failed scan ([`Rescan::new`]):
+//! its scan, then — only once the scan runs — its SDK's enumeration. After a
+//! library that did not load ([`Rescan::after_missing_library`]): its
+//! library, then — only once it loads — the enumeration. A rebuild whose
+//! enumeration fails ends the service, so the re-scan waits that out too.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,12 +39,23 @@ pub fn rescan_waits() -> impl Iterator<Item = Duration> {
 /// What still stands between a re-scan and the rebuild it would ask for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Blocker {
+    /// The SDK's library still does not load, so the SDK cannot be opened.
+    Library(String),
     /// The USB scan still fails.
     Scan(String),
     /// The SDK cannot enumerate, and a rebuild that cannot enumerate ends the
-    /// service: with the first scan failed, the rebuild is the first
-    /// enumeration since the start.
+    /// service: with the first scan failed or the library missing, the
+    /// rebuild is the first enumeration since the start.
     Sdk(String),
+}
+
+/// What a re-scan's server serves without, which the re-scan waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    /// The USB scan failed.
+    Scan,
+    /// The SDK's library did not load.
+    Library,
 }
 
 impl Blocker {
@@ -71,11 +85,26 @@ fn first_blocker(
     enumerate().err().map(Blocker::Sdk)
 }
 
-/// The background re-scan of one server whose USB scan failed.
+/// What would keep a rebuild now from serving the list, or `None` when
+/// nothing would: the library's failure to load, else the SDK's. The SDK is
+/// asked only once the library loads. Blocking.
+fn library_blocker(
+    library: impl FnOnce() -> Result<(), String>,
+    enumerate: impl FnOnce() -> Result<(), String>,
+) -> Option<Blocker> {
+    if let Err(error) = library() {
+        return Some(Blocker::Library(error));
+    }
+    enumerate().err().map(Blocker::Sdk)
+}
+
+/// The background re-scan of one server whose USB scan failed, or whose
+/// SDK's library did not load.
 #[derive(Clone)]
 pub struct Rescan {
     /// The SDK's display name, for the log.
     sdk: &'static str,
+    missing: Missing,
     check: Check,
 }
 
@@ -83,6 +112,7 @@ impl std::fmt::Debug for Rescan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Rescan")
             .field("sdk", &self.sdk)
+            .field("missing", &self.missing)
             .finish_non_exhaustive()
     }
 }
@@ -99,13 +129,29 @@ impl Rescan {
         Self::checking(sdk, move || first_blocker(&scan, &enumerate))
     }
 
-    /// A re-scan whose every try runs `check`.
+    /// A re-scan for a server whose SDK's `library` did not load: every try
+    /// loads it and, once it loads, has the SDK `enumerate`; each says why it
+    /// failed. Both run on the blocking pool. A library that loads stays
+    /// loaded, for the rebuild to find.
+    pub fn after_missing_library(
+        sdk: &'static str,
+        library: impl Fn() -> Result<(), String> + Send + Sync + 'static,
+        enumerate: impl Fn() -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            missing: Missing::Library,
+            ..Self::checking(sdk, move || library_blocker(&library, &enumerate))
+        }
+    }
+
+    /// A re-scan after a failed scan whose every try runs `check`.
     fn checking(
         sdk: &'static str,
         check: impl Fn() -> Option<Blocker> + Send + Sync + 'static,
     ) -> Self {
         Self {
             sdk,
+            missing: Missing::Scan,
             check: Arc::new(check),
         }
     }
@@ -126,7 +172,15 @@ impl Rescan {
             let check = Arc::clone(&self.check);
             let blocker = match tokio::task::spawn_blocking(move || check()).await {
                 Ok(None) => {
-                    info!("the USB scan succeeds again; rebuilding to place the listed cameras");
+                    match self.missing {
+                        Missing::Scan => info!(
+                            "the USB scan succeeds again; rebuilding to place the listed cameras"
+                        ),
+                        Missing::Library => info!(
+                            sdk = self.sdk,
+                            "the SDK library loads; rebuilding to place the cameras"
+                        ),
+                    }
                     // A send to a server that has already stopped goes
                     // nowhere: the success belongs to this server alone.
                     let _ = ready.send(());
@@ -140,7 +194,16 @@ impl Rescan {
             };
             let new = blocker.is_new(previous.as_ref());
             match &blocker {
+                Blocker::Library(error) => debug!(%error, "the SDK library still does not load"),
                 Blocker::Scan(error) => debug!(%error, "the USB scan still fails"),
+                Blocker::Sdk(error) if new && self.missing == Missing::Library => {
+                    warn!(
+                        %error,
+                        sdk = self.sdk,
+                        "the SDK library loads, but the SDK cannot enumerate; not rebuilding \
+                         until it can"
+                    );
+                }
                 Blocker::Sdk(error) if new => {
                     warn!(
                         %error,
@@ -161,8 +224,9 @@ impl Rescan {
 pub enum Ended {
     /// The caller's stop future resolved.
     Stopped,
-    /// A failed USB scan succeeds again: rebuild the server from the
-    /// configuration it was serving, to place the listed cameras.
+    /// The re-scan finds that a rebuild would serve the list: the failed USB
+    /// scan succeeds again, or the missing library loads. Rebuild the server
+    /// from the configuration it was serving, to place the cameras.
     Rescanned,
 }
 
@@ -255,6 +319,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_rescan_never_asks_for_a_rebuild_while_something_blocks_it() {
         for blocker in [
+            Blocker::Library("no qhyccd.dll".to_string()),
             Blocker::Scan("no sysfs".to_string()),
             Blocker::Sdk("no SDK".to_string()),
         ] {
@@ -324,6 +389,74 @@ mod tests {
         assert_eq!(*ran.lock().unwrap(), ["scan", "enumerate"]);
     }
 
+    /// A re-scan after a missing library whose library and enumeration
+    /// answer `library` and `enumerate`, and the log of which of the two each
+    /// try ran, in order.
+    fn recorded_library(
+        library: Result<(), String>,
+        enumerate: Result<(), String>,
+    ) -> (Rescan, Arc<std::sync::Mutex<Vec<&'static str>>>) {
+        let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (loads, enumerates) = (Arc::clone(&ran), Arc::clone(&ran));
+        let rescan = Rescan::after_missing_library(
+            "QHYCCD",
+            move || {
+                loads.lock().unwrap().push("library");
+                library.clone()
+            },
+            move || {
+                enumerates.lock().unwrap().push("enumerate");
+                enumerate.clone()
+            },
+        );
+        (rescan, ran)
+    }
+
+    #[test]
+    fn a_try_with_the_library_and_the_sdk_working_is_not_blocked() {
+        let (rescan, ran) = recorded_library(Ok(()), Ok(()));
+        assert_eq!(rescan.check(), None);
+        assert_eq!(*ran.lock().unwrap(), ["library", "enumerate"]);
+    }
+
+    #[test]
+    fn a_missing_library_blocks_before_the_sdk_enumerates() {
+        let (rescan, ran) = recorded_library(Err("no qhyccd.dll".to_string()), Ok(()));
+        assert_eq!(
+            rescan.check(),
+            Some(Blocker::Library("no qhyccd.dll".to_string()))
+        );
+        assert_eq!(*ran.lock().unwrap(), ["library"]);
+    }
+
+    #[test]
+    fn a_loaded_library_whose_sdk_cannot_enumerate_blocks_the_rebuild() {
+        let (rescan, ran) = recorded_library(Ok(()), Err("no SDK".to_string()));
+        assert_eq!(rescan.check(), Some(Blocker::Sdk("no SDK".to_string())));
+        assert_eq!(*ran.lock().unwrap(), ["library", "enumerate"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rescan_after_a_missing_library_asks_for_a_rebuild_once_it_loads() {
+        let tries = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&tries);
+        let rescan = Rescan::after_missing_library(
+            "QHYCCD",
+            move || {
+                let n = counted.fetch_add(1, Ordering::SeqCst);
+                if n < 1 {
+                    Err("no qhyccd.dll".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            || Ok(()),
+        );
+        // 10 s + 20 s: the second try is the first to find the library.
+        assert!(ready_within(rescan, Duration::from_secs(31)).await);
+        assert_eq!(tries.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn a_blocker_is_news_each_time_it_starts() {
         let scan = || Blocker::Scan("no sysfs".to_string());
@@ -333,6 +466,10 @@ mod tests {
         assert!(
             sdk().is_new(Some(&scan())),
             "one that clears and comes back"
+        );
+        assert!(
+            sdk().is_new(Some(&Blocker::Library("no qhyccd.dll".to_string()))),
+            "one met once the library loads"
         );
     }
 

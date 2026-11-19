@@ -151,8 +151,9 @@ graph TD;
   file, after a failed scan's re-scan from the configuration it was serving
   (U6). A stop always wins: one that lands with a reload ends the service
   without building another server first.
-- **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK,
-  **enumerates every connected camera** and places each on its USB port
+- **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK (on
+  Windows once `qhyccd.dll` loads; without it, it serves without the SDK,
+  PF4), **enumerates every connected camera** and places each on its USB port
   (`claims.rs`), then registers what it serves as ASCOM devices (index 0, 1,
   2, …) with their serial-derived UniqueIDs: with no list every placed camera
   in port order and any CFW its probe finds (U11), with a `usb_devices` list
@@ -1645,7 +1646,9 @@ replaces with the declaration.
   `debug!` while it persists, and the re-scan carries on. The re-scan stops
   when it rebuilds, and with the server it belongs to. It is not hot-plug: a
   successful scan whose listed port is merely empty serves a placeholder until
-  the next reload, as at any start.
+  the next reload, as at any start. On Windows a missing `qhyccd.dll` serves
+  the same placeholders, naming the DLL, and is re-checked the same way
+  (PF4, PF6).
 
   A try already running when its server stops is not interrupted: it runs on
   the blocking pool, out under the scan's own deadline, and its answer goes
@@ -1839,7 +1842,9 @@ replaces with the declaration.
   `error!`, the SDK is not enumerated, and the service re-scans in the
   background and rebuilds on the first success, exactly as U6 does for a
   list. Until then the server serves no device at all; its setup page is
-  still served, and the re-scan needs nothing from it.
+  still served, and the re-scan needs nothing from it. A missing
+  `qhyccd.dll` on Windows also registers no camera and opens none, and is
+  re-checked the same way (PF4, PF6).
 
   Each registered camera is the same `QhyCameraDevice` a list serves, and
   each wheel the same `QhyFilterWheelDevice`, with the `UniqueID` it always
@@ -3211,8 +3216,8 @@ package redistributes it ([Packaging](#packaging)). The
 operator installs QHY's **All-in-One pack** (required for the signed device
 driver anyway), which also provides the DLL. Without intervention a
 missing DLL kills the process **in the Windows loader before `main`** — no
-log line, just an error dialog. Three layers make that failure mode
-diagnosable instead:
+log line, just an error dialog. Three layers make the service run without
+it instead, say why, and load it once it is installed:
 
 ### Delay-load (build layer)
 
@@ -3234,14 +3239,14 @@ diagnosable instead:
 
 ### Startup preflight (service + console modes)
 
-Runs on Windows real-SDK builds only, **before any SDK call**, as the first
-act of the `ServiceRunner` run closure in `main.rs`. Inside the closure, not
-before the runner, deliberately: in SCM service mode the wrapper registers
-with the SCM and reports `Running` before invoking the closure, so a
-missing-DLL failure is a clean `ServiceSpecific(1)` stop that the failure
-actions restart every 5 s — whereas a process exit before SCM registration
-is a start *failure*, which aborts an entire MSI install with error 1920
-during `StartServices`:
+Runs on Windows real-SDK builds only, **before any SDK call**: at the start
+of every server build, before the SDK is opened, and in each try of the
+background re-check (PF6). A missing DLL is never a startup failure. The
+service starts and serves without the SDK, so the SCM sees it Running for as
+long as it runs. A service that stopped instead would be restarted every
+5 s by the failure actions, and msiexec's `StartServices` fails the whole MSI
+install with error 1920 unless it sees the service Running between those
+starts:
 
 - **PF1.** Probe an **ordered candidate list** of directories for
   `qhyccd.dll`: (1) the exe's own directory, then (2) a **best-effort seed**
@@ -3271,18 +3276,41 @@ during `StartServices`:
 - **PF4.** Everything misses → **one distinctive, actionable `error!`**
   naming the QHY All-in-One download URL (<https://www.qhyccd.com/download/>),
   the probed directories, and **every failed load attempt with the loader's
-  reason** (the 2 a.m. log says both *what* was tried and *why* it failed),
-  then a clean non-zero exit. SCM/systemd failure actions restart the service
-  every 5 s — the same contract as a missing serial device: the unit comes up
-  by itself once the pack is installed. (`cargo ci verify-msi` passes an
-  install on a runner without the DLL by finding this line in qhy-camera's
-  log.)
-- **PF5.** `simulation` builds skip the preflight entirely: the real FFI is
-  `cfg`'d out, so no SDK call is ever made and `qhyccd.dll` is not required
-  at runtime. (The SDK *link* itself is only omitted under
+  reason** (the 2 a.m. log says both *what* was tried and *why* it failed).
+  The build then serves **without the SDK**: it opens no SDK and enumerates
+  nothing, as a failed USB scan does (U6). With no `usb_devices` list it
+  registers no camera. With a list, every listed number is a placeholder,
+  and every declared wheel a placeholder FilterWheel (U10), whose connect is
+  refused with `qhyccd.dll not found: install QHY's All-in-One pack from
+  https://www.qhyccd.com/download/`. Health and the setup pages are served
+  either way. (`cargo ci verify-msi` installs on a runner without the DLL:
+  it finds this line in qhy-camera's log and holds the service to serving.)
+- **PF5.** `simulation` builds skip the DLL resolution entirely: the real FFI
+  is `cfg`'d out, so no SDK call is ever made and `qhyccd.dll` is not
+  required at runtime. (The SDK *link* itself is only omitted under
   `QHYCCD_SKIP_NATIVE_LINK` — see *Native dependency & build gating*; the
-  preflight keys off runtime behavior, not linkage.) Non-Windows builds have
-  no preflight.
+  preflight keys off runtime behavior, not linkage.) In its place, the hidden
+  test-only flag `--simulation-sdk-library <path>` stands in a missing
+  library for PF4 and PF6: the simulated library loads only once a file
+  exists at `path`, and until then the placeholders' reason is `the simulated
+  QHYCCD SDK library is not installed: <path> does not exist`. Without the
+  flag it always loads. Non-Windows builds have no preflight: the SDK is
+  linked in.
+- **PF6.** **A service without the DLL loads it once it is installed,
+  without a restart.** The server re-checks in the background on U6's
+  cadence: after waits of 10 s, 20 s and 40 s, then every 60 s. Each try
+  runs the PF1–PF3 resolution, then checks that the SDK initializes
+  (`Sdk::try_new`). Repeat failures are logged at `debug!`, the PF4 line
+  having said it once. On the first try where both pass, the success is
+  logged at `info!`, and the server stops and is rebuilt from the
+  configuration it was serving, as U6's re-scan does: the rebuild runs the
+  start path again, placement and all, and finds the DLL resident (PF2).
+  That is safe for the reason U6's is: serving without the SDK opened
+  nothing, so there is no session to interrupt. A reload while the DLL is
+  still missing builds without the SDK again, and its PF4 line says so
+  again. An SDK that blocks the rebuild once the DLL loads is logged at
+  `warn!` each time it starts to, and the re-check carries on. The re-check
+  stops when it rebuilds, and with the server it belongs to.
 
 ### `doctor` subcommand (installation checks inside the D5 shape)
 
@@ -3412,7 +3440,9 @@ Layered per [`testing.md`](../skills/testing.md).
   an installed MSI, by `cargo ci verify-msi`). The BDD doctor smoke
   (`doctor.feature`, shared fixture) drives the `simulation` binary, which
   deliberately skips this whole layer (PF5/DR5) — it proves the config and
-  enumeration contract, not the DLL layer.
+  enumeration contract, not the DLL layer. What the service does without
+  its library, and once it appears (PF4, PF6), is BDD-tested in
+  `sdk_library.feature` through `--simulation-sdk-library` (PF5).
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
   validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E11),
   gain/offset/readout (GO1–GO3, and RM1 and B4's readout-mode refusals as far

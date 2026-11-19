@@ -60,9 +60,9 @@
       <!-- qhyccd.dll is proprietary and NEVER shipped. The exe
            delay-loads it (services/qhy-camera/build.rs) and a startup
            preflight probes the QHY All-in-One pack's install locations; on a
-           box without the pack the service logs an actionable pointer and
-           exits cleanly (SCM restarts it every 5 s until the pack appears —
-           the same contract as a missing serial device). The Start-Menu
+           box without the pack the service logs an actionable pointer, runs
+           serving no camera, and loads the DLL once the pack is installed,
+           so StartServices sees it Running like any other. The Start-Menu
            shortcut below runs the interactive `doctor` diagnosis, which a
            session-0 service cannot do (it can open QHY's download page in a
            browser). cmd /k keeps the console open after the report. -->

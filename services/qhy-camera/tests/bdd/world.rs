@@ -67,6 +67,10 @@ pub struct CameraWorld {
     /// The staged USB inventory handed over with `--usb-inventory` (U7);
     /// `None` leaves the simulation build its default inventory.
     pub usb_inventory: Option<PathBuf>,
+    /// The path handed over with `--simulation-sdk-library` (PF5): the
+    /// simulated SDK library loads only once a file exists there. `None`
+    /// starts a service whose library always loads.
+    pub sdk_library: Option<PathBuf>,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
@@ -208,6 +212,10 @@ impl CameraWorld {
             args.push("--usb-inventory".to_string());
             args.push(inventory.to_str().expect("utf8 inventory path").to_string());
         }
+        if let Some(library) = &self.sdk_library {
+            args.push("--simulation-sdk-library".to_string());
+            args.push(library.to_str().expect("utf8 library path").to_string());
+        }
         args
     }
 
@@ -260,12 +268,23 @@ impl CameraWorld {
     /// a list registers exactly its entries, whatever the SDK sees (U4), and
     /// no list registers what the scan places and the CFW probe can open
     /// (U11) — the simulated camera on its default record, and on a staged
-    /// scan whatever that places, which may be nothing.
+    /// scan whatever that places, which may be nothing. Without its SDK
+    /// library it registers none (PF4).
     fn expects_a_camera(&self) -> bool {
         match self.config_json.as_ref().and_then(|c| c.get("usb_devices")) {
             Some(list) => list.as_array().is_some_and(|l| !l.is_empty()),
-            None => !(self.empty_backend || self.expect_no_camera) && self.usb_inventory.is_none(),
+            None => {
+                !(self.empty_backend || self.expect_no_camera || self.sdk_library_missing())
+                    && self.usb_inventory.is_none()
+            }
         }
+    }
+
+    /// Whether this scenario's service starts without its SDK library.
+    fn sdk_library_missing(&self) -> bool {
+        self.sdk_library
+            .as_ref()
+            .is_some_and(|library| !library.exists())
     }
 
     async fn acquire(&mut self) {

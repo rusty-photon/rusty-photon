@@ -59,6 +59,7 @@ pub mod doctor;
 pub mod error;
 pub mod filterwheel;
 pub mod preflight;
+pub mod sdk_library;
 pub mod setup;
 
 pub use camera::QhyCameraDevice;
@@ -70,6 +71,7 @@ pub use config::{
 pub use error::{QhyCameraError, Result};
 pub use filterwheel::{PlaceholderFilterWheel, QhyFilterWheelDevice};
 pub use rusty_photon_driver::claims::{serve_and_rebuild, Ended};
+pub use sdk_library::SdkLibrary;
 pub use setup::QhyCameraDriver;
 
 use std::future::Future;
@@ -119,6 +121,8 @@ pub struct ServerBuilder {
     /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
     /// this driver's default ([`claims::default_usb_source`]).
     usb_source: Option<UsbSource>,
+    /// The SDK's library, which a build loads before it opens the SDK (PF4).
+    sdk_library: SdkLibrary,
     /// The setup pages, set by [`Self::build`] when there is a config
     /// source and a reload path.
     pages: Option<Pages>,
@@ -181,6 +185,15 @@ impl ServerBuilder {
         self
     }
 
+    /// Take the SDK's library from `library` (PF5) — a staged one, in a
+    /// simulation build. The default is this platform's.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn with_sdk_library(mut self, library: SdkLibrary) -> Self {
+        self.sdk_library = library;
+        self
+    }
+
     /// Where this build's USB scan comes from.
     fn usb_source(&self) -> UsbSource {
         self.usb_source
@@ -206,6 +219,8 @@ impl ServerBuilder {
     /// read, and the responder's bind error if the config opts into discovery
     /// and that port is taken. A failed USB scan is not an error: it registers
     /// placeholders, or no camera without a list, and is retried (U6, U11).
+    /// Nor is an SDK library that does not load: the server serves without
+    /// the SDK, and the library is re-checked (PF4, PF6).
     pub async fn build(mut self) -> std::result::Result<BoundServer, BoxError> {
         // The load refuses a list that breaks a rule; checked again here
         // because registration depends on it — numbers 0..N-1 are what make
@@ -216,9 +231,16 @@ impl ServerBuilder {
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = self.config.server.socket_addr();
         self.pages = self.setup_pages();
-        let (registered, sdk) = match &self.config.usb_devices {
-            None => self.register_enumerated(&mut server, injected).await?,
-            Some(list) => self.register_list(&mut server, list, injected).await?,
+        let library = self.sdk_library.clone();
+        // A check that panics has not loaded the library, like one that
+        // errors: a re-check, never a failed start (PF4).
+        let loaded = tokio::task::spawn_blocking(move || library.load())
+            .await
+            .unwrap_or_else(|error| Err(format!("the SDK library check did not finish: {error}")));
+        let (registered, sdk) = match (loaded, &self.config.usb_devices) {
+            (Err(reason), _) => (self.register_without_sdk(&mut server, &reason), None),
+            (Ok(()), None) => self.register_enumerated(&mut server, injected).await?,
+            (Ok(()), Some(list)) => self.register_list(&mut server, list, injected).await?,
         };
         if let Some(pages) = &self.pages {
             server.setup = Some(Arc::new(rusty_photon_driver::ServerPages(Arc::clone(
@@ -496,6 +518,33 @@ impl ServerBuilder {
         Ok((registered, sdk))
     }
 
+    /// Without the SDK's library (PF4): with no list register no camera, and
+    /// with a list a placeholder at every listed number and declared wheel,
+    /// in number order, naming `reason`. Nothing is scanned or opened. The
+    /// returned registration carries the re-check that rebuilds the server
+    /// once the library loads (PF6).
+    fn register_without_sdk(&self, server: &mut Server, reason: &str) -> Registered {
+        let mut registered = Registered::default();
+        match &self.config.usb_devices {
+            None => debug!("no QHY camera is registered until the SDK library loads"),
+            Some(list) => {
+                let mut entries = list.clone();
+                entries.sort_by_key(|e| e.device_number);
+                let mut wheels = Vec::new();
+                for entry in entries {
+                    self.register_placeholder(server, &entry, reason);
+                    registered.placeholders = registered.placeholders.saturating_add(1);
+                    if let Some(number) = entry.filter_wheel_number {
+                        wheels.push((number, entry, Err(reason.to_string())));
+                    }
+                }
+                self.register_declared_wheels(server, wheels, &mut registered);
+            }
+        }
+        registered.rescan = Some(self.library_rescan());
+        registered
+    }
+
     /// Register the placeholder that holds `entry`'s camera number for
     /// `reason` (U4), with its setup page.
     fn register_placeholder(&self, server: &mut Server, entry: &UsbDeviceEntry, reason: &str) {
@@ -708,6 +757,26 @@ impl ServerBuilder {
             },
         )
     }
+
+    /// The background re-check after the SDK's library did not load (PF6):
+    /// each try loads it and, once it loads, checks that the SDK opens; on
+    /// the first try both pass, it ends its own server, which the caller
+    /// rebuilds from the configuration it was serving ([`Ended::Rescanned`]).
+    fn library_rescan(&self) -> Rescan {
+        let library = self.sdk_library.clone();
+        Rescan::after_missing_library(
+            claims::SDK_NAME,
+            move || library.try_load(),
+            || {
+                // A server without the library holds no SDK, so another
+                // `Sdk` alive in this process is a later server's or an
+                // outlived try's, as for the failed scan's re-scan.
+                qhyccd_rs::Sdk::try_new()
+                    .map(drop)
+                    .map_err(|e| format!("{e:#}"))
+            },
+        )
+    }
 }
 
 /// Every port `scan` holds a record on that can be a QHY camera, placed or
@@ -803,7 +872,8 @@ type Scanned = std::result::Result<
 /// placeholder.
 type DeclaredWheel = std::result::Result<Arc<SharedCameraConnection>, String>;
 
-/// What a build registered, and the re-scan to run when the USB scan failed.
+/// What a build registered, and the re-scan to run when the USB scan failed
+/// or the SDK's library did not load.
 #[derive(Default)]
 struct Registered {
     cameras: usize,
@@ -823,9 +893,9 @@ fn take_sdk(
     }
     let sdk = match qhyccd_rs::Sdk::try_new() {
         Err(qhyccd_rs::QHYError::SdkInUse) => {
-            // Only a failed scan's re-scan can hold it here: a try that
-            // outlived its server, still in its SDK check (U6).
-            warn!("waiting for a USB re-scan's QHY SDK check to finish before opening the SDK");
+            // Only a re-scan can hold it here: a try that outlived its
+            // server, still in its SDK check (U6, PF6).
+            warn!("waiting for a re-scan's QHY SDK check to finish before opening the SDK");
             qhyccd_rs::Sdk::new()
         }
         tried => tried,
@@ -876,7 +946,8 @@ pub struct BoundServer {
     /// Alpaca UDP discovery responder, when the config opts in. Runs inside
     /// `start()`'s select so its socket closes when serving ends (reload).
     discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
-    /// The re-scan of a failed USB scan (U6), run while this server serves.
+    /// The re-scan of a failed USB scan (U6), or the re-check of an SDK
+    /// library that did not load (PF6), run while this server serves.
     rescan: Option<Rescan>,
     /// Held so the SDK is released (its `Drop` calls `ReleaseQHYCCDResource` on
     /// real hardware) only after the HTTP server stops — on shutdown *and*
