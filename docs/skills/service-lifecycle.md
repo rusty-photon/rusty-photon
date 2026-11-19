@@ -357,8 +357,9 @@ platform. Do not add a per-consumer feature variant: two instantiations
 of the crate in one binary's graph stop its types (`ReloadSignal`,
 `Shutdown`) from unifying (E0308).
 
-On a run-closure error under SCM, the runner reports `SERVICE_STOPPED`
-with a non-zero exit code so SCM (with the installer-configured failure
+On a run-closure error under SCM, or a start that fails before the
+closure runs, the runner reports `SERVICE_STOPPED` with a non-zero exit
+code so SCM (with the installer-configured failure
 actions + failure-actions flag) counts the stop as a failure and
 restarts the service — the Windows translation of systemd's
 `Restart=on-failure` that the serial drivers' eager-validation exits

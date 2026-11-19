@@ -386,8 +386,11 @@ enabled, `run` / `run_with_reload` take a different path:
      `reload.notify()`
    - `ServiceControl::Interrogate` → `NoError`
    - everything else → `NotImplemented`
-4. Report `ServiceState::Running` to SCM.
-5. Build the tokio runtime, invoke the user closure with the same
+4. Build the tokio runtime, then report `ServiceState::Running` to SCM.
+   A start that fails here, a runtime that cannot be built or a
+   `Running` report the SCM refuses, is a failed run: the closure does
+   not run, and step 6 reports the stop with the start's error.
+5. Invoke the user closure with the same
    [`Shutdown`] (and optional [`ReloadSignal`]) types as the console
    path. **The user closure does not know whether it is running under
    SCM or under console-mode signals** — that is the whole point of
@@ -402,7 +405,11 @@ enabled, `run` / `run_with_reload` take a different path:
    rolling log file is often the only visible trace) and stashed so
    `dispatch` can return it from `main` once
    `service_dispatcher::start` unblocks — SCM mode keeps console
-   mode's "`main` returns the closure's error" contract.
+   mode's "`main` returns the closure's error" contract. The error is
+   stashed before the stop is reported, not after:
+   `service_dispatcher::start` can return, and the process end, as soon
+   as the service reports `SERVICE_STOPPED`, and a report that fails
+   must not take the error with it.
 
 **Failure visibility / restart contract.** The non-zero exit code on
 `Err` is the pinned mechanism for making a deliberate service exit
