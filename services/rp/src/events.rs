@@ -60,9 +60,7 @@ const HISTORY_CAPACITY: usize = 512;
 /// fire-and-forget with no retry, so the bound exists to stop a stalled
 /// subscriber from pinning a spawned task (and the envelope clone it
 /// carries) for the rest of the night — not to give the plugin room to
-/// work. The acknowledgement is prompt by contract: a plugin answers with
-/// its duration estimates and processes in parallel (rp.md § Delivery:
-/// Webhooks).
+/// work: rp reads only the response status (rp.md § Delivery: Webhooks).
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// rp's client for webhook delivery: `ca_cert_path` is the observatory CA

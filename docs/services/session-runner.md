@@ -143,13 +143,15 @@ validation error — misspellings must not silently no-op.
 - A tool error (after retries) raises a workflow error that propagates
   outward through enclosing `try` instructions (see `try`), ultimately
   failing the workflow.
-- If the tool result carries a **correction** (`rp` returns
-  `pending_correction` on natural completion or `status: "aborted"` +
-  `correction` on an immediate correction, per `rp.md` § Corrections), the
-  engine fires the synthetic `correction_requested` trigger source (see
+- If the tool result carries a **correction** — a `pending_correction`
+  object, or `status: "aborted"` / `"blocked_by_correction"` with a
+  `correction` object — the engine fires the synthetic
+  `correction_requested` trigger source (see
   [Triggers](#triggers)) with the correction as the event payload, then
   continues. An `aborted` tool result is **not** a workflow error — the
-  document decides how to react via a trigger.
+  document decides how to react via a trigger. `rp`'s built-in tools
+  return no correction; `rp` relays a tool provider's result verbatim, so
+  a provider's tool can return one.
 
 #### `sequence` — ordered container
 
@@ -465,7 +467,7 @@ Implementation pins (`src/engine/`):
   `status: "blocked_by_correction"` carrying a `correction` object
   synthesizes `correction_requested` with `event.delivery =
   "immediate"`; a result carrying `pending_correction` synthesizes it
-  with `"after_current"` (`rp.md` § Corrections). The synthetic event is
+  with `"after_current"`. The synthetic event is
   evaluated at the safe point immediately after the carrying tool call,
   ahead of that safe point's intake drain. A correction value that is
   not a JSON object is logged at `debug!` and ignored.

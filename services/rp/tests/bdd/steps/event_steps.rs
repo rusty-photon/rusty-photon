@@ -36,16 +36,6 @@ async fn webhook_receiver_subscribed_to_list(world: &mut RpWorld, event_types: S
     );
 }
 
-#[given(
-    expr = "the test webhook receiver acknowledges with estimated {int} seconds and max {int} seconds"
-)]
-const fn webhook_ack_config(world: &mut RpWorld, estimated: i32, max: i32) {
-    world.webhook_ack_config = Some((
-        Duration::from_secs(estimated as u64),
-        Duration::from_secs(max as u64),
-    ));
-}
-
 /// An auth-enabled subscriber: the receiver 401s anything that does not
 /// present exactly this credential, the way a plugin serving behind
 /// `rp_auth`'s middleware does. rp reaches it only when the registration
@@ -63,9 +53,8 @@ async fn webhook_receiver_requiring_auth(
         world.webhook_receiver.is_none(),
         "the auth-requiring receiver must be the scenario's first"
     );
-    let (estimated, max) = world
-        .webhook_ack_config
-        .unwrap_or((Duration::from_secs(5), Duration::from_secs(10)));
+    // The receiver's acknowledgment body is ignored: rp reads only the status.
+    let (estimated, max) = (Duration::from_secs(5), Duration::from_secs(10));
     world.webhook_receiver = Some(
         WebhookReceiver::start_requiring_auth(
             world.received_events.clone(),
@@ -206,17 +195,6 @@ async fn event_order(world: &mut RpWorld, first: String, second: String) {
     assert!(
         first_time < second_time,
         "expected '{first}' before '{second}', but '{first}' arrived at {first_time:?} and '{second}' at {second_time:?}"
-    );
-}
-
-#[then("rp should have recorded the plugin timing estimates")]
-async fn timing_estimates_recorded(world: &mut RpWorld) {
-    // Verify by checking that the event was delivered and acknowledged.
-    // The actual recording is internal to rp — we verify it didn't error.
-    let events = world.received_events.read().await;
-    assert!(
-        !events.is_empty(),
-        "expected at least one event to have been delivered and acknowledged"
     );
 }
 
@@ -599,9 +577,8 @@ async fn setup_webhook_receiver(world: &mut RpWorld) {
         return;
     }
 
-    let (estimated, max) = world
-        .webhook_ack_config
-        .unwrap_or((Duration::from_secs(5), Duration::from_secs(10)));
+    // The receiver's acknowledgment body is ignored: rp reads only the status.
+    let (estimated, max) = (Duration::from_secs(5), Duration::from_secs(10));
 
     let events = world.received_events.clone();
     world.webhook_receiver = Some(WebhookReceiver::start(events, estimated, max).await);

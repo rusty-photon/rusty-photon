@@ -784,7 +784,8 @@ most of them under N.I.N.A.'s cards, one device's entry for a list
 Results live in named sections. `rp`'s own analysis tools and
 `plate_solve` write theirs in-process (`image_analysis`, `wcs`, …); no
 route lets another process write one. `rp` merges each section into the
-document and persists the sidecar JSON.
+document and persists the sidecar JSON. Each section is opaque to `rp`
+— it stores and serves whatever its writer provides.
 
 ```json
 {
@@ -7143,8 +7144,10 @@ under this rule, on disk and in progress alike — do not name a filter
 `grading` section and applies the target's **effective** thresholds
 (`target.grading` field-wise over `target_store.default_grading`).
 The section is opaque to `rp` like any other (§ [Sections](#sections)) —
-`rp` neither writes nor validates it; the grading plugin that measures
-frames is a separate component and is not part of this service. `rp`
+`rp` neither writes nor validates it. It is a separate grading
+component's to write, and no component writes one today: `rp` serves no
+route through which another process could, so every frame counts as good
+(below). `rp`
 reads four optional numeric metrics, each paired with the threshold
 that judges it:
 

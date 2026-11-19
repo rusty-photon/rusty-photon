@@ -163,8 +163,6 @@ pub struct RpWorld {
     // --- Webhook receiver state ---
     /// Events collected by the test webhook receiver
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
-    /// Webhook acknowledgment config (`estimated_duration`, `max_duration`)
-    pub webhook_ack_config: Option<(Duration, Duration)>,
 
     // --- MCP client state ---
     /// Last captured image path (for `compute_image_stats` chaining)

@@ -289,9 +289,8 @@ async fn setup_webhook_receiver(world: &mut RpWorld) {
     if world.webhook_receiver.is_some() {
         return;
     }
-    let (estimated, max) = world
-        .webhook_ack_config
-        .unwrap_or((Duration::from_secs(5), Duration::from_secs(10)));
+    // The receiver's acknowledgment body is ignored: rp reads only the status.
+    let (estimated, max) = (Duration::from_secs(5), Duration::from_secs(10));
     let events = world.received_events.clone();
     world.webhook_receiver = Some(WebhookReceiver::start(events, estimated, max).await);
 }
