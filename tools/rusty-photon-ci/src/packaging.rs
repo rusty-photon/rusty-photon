@@ -49,9 +49,6 @@ pub const GATED: &[&str] = &[
     "polar-align",
 ];
 
-/// Services that run on built-in defaults and write no config file.
-pub const NO_CONFIG_FILE: &[&str] = &["qhy-camera", "zwo-camera", "zwo-focuser"];
-
 /// Services that answer `/health` rather than the Alpaca management API.
 pub const HEALTH_PROBED: &[&str] = &[
     "sentinel",

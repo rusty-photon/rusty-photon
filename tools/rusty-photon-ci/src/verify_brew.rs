@@ -16,7 +16,6 @@
 //!   launchd would restart it, again and again;
 //! - a [`SERIAL`] driver exits on its absent device, so it is checked for
 //!   its config and its handshake attempt in the log, not a probe;
-//! - the cameras and zwo-focuser create no config ([`NO_CONFIG_FILE`]);
 //! - zwo-focuser finds its focuser through the HID APIs, which under launchd
 //!   block until the user grants a privacy permission, which a CI runner
 //!   cannot: it is held to staying alive under launchd, then probed in the
@@ -33,7 +32,7 @@ use std::time::Duration;
 
 use crate::brew_formulas::{self, Channel};
 use crate::build_tarballs::tarball;
-use crate::packaging::{self, io, GATED, HEALTH_PROBED, NO_CONFIG_FILE, SERIAL};
+use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL};
 use crate::process::{self, Cmd, Runner};
 
 /// The scratch tap the formulas are rendered into.
@@ -134,7 +133,7 @@ fn running(info: &str) -> bool {
 }
 
 fn self_creates_config(service: &str) -> bool {
-    !GATED.contains(&service) && !NO_CONFIG_FILE.contains(&service)
+    !GATED.contains(&service)
 }
 
 fn probe_path(service: &str) -> &'static str {
@@ -413,7 +412,9 @@ impl<R: Runner> Run<'_, R> {
     }
 
     /// zwo-focuser under launchd, blocked on the HID privacy grant: alive,
-    /// not restarting, and serving when run in the foreground.
+    /// not restarting, and serving when run in the foreground. Under
+    /// launchd it blocks before `main`, so the foreground run is what
+    /// writes its config.
     fn hid_gated(&mut self, service: &str, url: &str, port: u16) -> Result<(), Error> {
         (self.sleep)(Duration::from_secs(3));
         let info = self.info(service);
@@ -439,6 +440,13 @@ impl<R: Runner> Run<'_, R> {
                 "no HTTP response on port {port} ({}) even in a foreground run",
                 probe_path(service)
             ),
+        )?;
+        let config = self.config_file(service);
+        let created = self.wait_until(15, |_| config.is_file());
+        self.require(
+            created,
+            service,
+            &format!("config not self-created at {}", config.display()),
         )?;
         println!(
             "== {service}: OK (foreground serve, port {port}; launchd probe skipped — HID discovery \
@@ -802,7 +810,7 @@ mod tests {
         assert_eq!(probe_path("filemonitor"), "/management/apiversions");
         assert!(self_creates_config("filemonitor"));
         assert!(!self_creates_config("plate-solver"));
-        assert!(!self_creates_config("zwo-camera"));
+        assert!(self_creates_config("zwo-camera"));
     }
 
     #[test]
@@ -1104,18 +1112,34 @@ mod tests {
         assert_eq!(probes, 30);
     }
 
-    /// A service that installs, answers its probe and needs no config:
-    /// zwo-camera and zwo-focuser are such.
+    /// A service that installs, writes its config when it starts and
+    /// answers its probe, as zwo-camera and zwo-focuser do.
     fn quiet_service(mac: &Mac, service: &'static str) -> Script {
         mac.install(&format!("rusty-photon-{service}"));
+        let config = mac.path(&format!(
+            "home/Library/Application Support/rusty-photon/{service}.json"
+        ));
         let bin = mac.path(&format!("prefix/bin/rusty-photon-{service}"));
-        mac.brew().on(
-            &format!("brew uninstall rusty-photon-{service}"),
-            move || {
-                let _ = fs::remove_file(&bin);
+        // zwo-focuser blocks before `main` under launchd on a runner, which
+        // cannot grant HID access: only its foreground run writes a config.
+        let writes = if service == "zwo-focuser" {
+            bin.display().to_string()
+        } else {
+            "brew services start".to_owned()
+        };
+        mac.brew()
+            .on(&writes, move || {
+                fs::create_dir_all(config.parent().unwrap()).unwrap();
+                fs::write(&config, "{}").unwrap();
                 Ok(String::new())
-            },
-        )
+            })
+            .on(
+                &format!("brew uninstall rusty-photon-{service}"),
+                move || {
+                    let _ = fs::remove_file(&bin);
+                    Ok(String::new())
+                },
+            )
     }
 
     #[test]
@@ -1232,6 +1256,31 @@ mod tests {
         let error = mac.verify(&mut runner, &request).unwrap_err();
         assert!(
             error.to_string().contains("launchd process not running"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn zwo_focuser_is_held_to_the_config_its_foreground_run_writes() {
+        let mac = Mac::new(&["zwo-focuser"]);
+        let keg = mac.path("prefix/opt/rusty-photon-zwo-focuser-nightly/lib");
+        fs::create_dir_all(&keg).unwrap();
+        fs::write(keg.join("libEAFFocuser.dylib"), "").unwrap();
+        mac.install("rusty-photon-zwo-focuser");
+        // Neither its launchd start nor its foreground run writes a config.
+        let mut runner = mac
+            .brew()
+            .on("otool -L", || Ok("@rpath/libEAFFocuser.dylib\n".to_owned()))
+            .on("brew services info", || {
+                Ok(r#"[{"running": true,"pid": 7}]"#.to_owned())
+            });
+        let error = mac
+            .verify(&mut runner, &Mac::request(Some(&["zwo-focuser"])))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("FAIL [zwo-focuser]: config not self-created at "),
             "{error}"
         );
     }
