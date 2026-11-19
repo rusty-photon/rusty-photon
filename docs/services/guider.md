@@ -1442,7 +1442,8 @@ clients as they cover `rp`'s.
 
 - **The core in simulated time.** `rp-guiding` takes its time and its
   randomness as arguments, so unit tests step a run frame by frame, and
-  closed-loop tests run it against `guide-simulator`'s mount model for
+  closed-loop tests run it against `guide-simulator`'s mount model
+  ([docs/crates/guide-simulator.md](../crates/guide-simulator.md)) for
   simulated hours in seconds: drift, periodic error, backlash, a mount
   that delivers short pulses coarsely, seeing, clouds, a slew in the
   middle of a run.
