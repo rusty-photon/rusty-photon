@@ -71,7 +71,7 @@ impl Default for StarParams {
 pub enum SelectError {
     /// Fewer detections passed the tests than `stars.min`, which a run
     /// could not guide on.
-    #[error("the frame has fewer stars to guide on than the fewest a frame needs")]
+    #[error("the frame has fewer stars to guide on than stars.min")]
     NoStars,
 }
 
@@ -228,6 +228,7 @@ impl GuideStars {
             detections = detection.stars.len(),
             measured = measured.len(),
             selected = candidates.len(),
+            min = params.min,
             ?passed_over,
             "guide stars selected"
         );

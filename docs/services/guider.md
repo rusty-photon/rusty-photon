@@ -437,9 +437,9 @@ detection is passed over when:
   of that star's measurement, as it is in every later frame.
 
 Selection happens on the first frame of `looping` and on each later one
-until a frame has stars, when a run begins from `idle` or `looping`,
-and on `star/reselect`. The guider never selects stars again on its own
-in the middle of a run.
+until a frame has enough stars, when a run begins from `idle` or
+`looping`, and on `star/reselect`. The guider never selects stars again
+on its own in the middle of a run.
 
 **Measurement.** In each later frame every guide star is looked for
 within `stars.search_region_px` of its position in the last frame in
