@@ -387,10 +387,10 @@ enabled, `run` / `run_with_reload` take a different path:
    - `ServiceControl::Interrogate` → `NoError`
    - everything else → `NotImplemented`
 4. Report `ServiceState::Running` to SCM, then build the tokio runtime.
-   Running goes out first: a closure that fails at once, as
-   qhy-camera's does without `qhyccd.dll`, leaves the service Running
-   only for the runtime's build, and msiexec's `StartServices` fails the
-   install with error 1920 if it never sees the service Running. A start
+   Running goes out first: a closure that fails soon after it starts,
+   as a serial driver's does when its port is absent, is then Running
+   for the runtime's build as well, and msiexec's `StartServices` fails
+   the install with error 1920 if it never sees the service Running. A start
    that fails here, a `Running` report the SCM refuses or a runtime that
    cannot be built, is a failed run: the closure does not run, and
    step 6 reports the stop with the start's error.

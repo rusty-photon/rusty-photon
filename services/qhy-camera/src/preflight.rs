@@ -9,7 +9,7 @@
 //! not kill the process in the Windows loader before `main`; this module
 //! resolves the DLL **before any SDK call** and keeps it resident so the
 //! delay-load helper binds to the already-loaded module. Behavioral contracts
-//! PF1–PF5 in `docs/services/qhy-camera.md` § "Windows: qhyccd.dll
+//! PF1–PF6 in `docs/services/qhy-camera.md` § "Windows: qhyccd.dll
 //! resolution".
 //!
 //! The candidate ordering, selection, and failed-load skip logic is pure
@@ -174,10 +174,10 @@ pub enum DllResolution {
 pub enum PreflightError {
     #[error(
         "qhyccd.dll not found — qhy-camera cannot drive QHY hardware without the QHYCCD SDK \
-         DLL. Install QHY's 'All-in-One' pack (it also carries the required signed device \
-         driver) from {QHY_ALL_IN_ONE_URL} and restart this service; it retries on every \
-         start until the DLL appears. Probed: {}; plus the standard Windows DLL search \
-         order (exe directory, System32, PATH).{}",
+         DLL, and serves no camera until it loads. Install QHY's 'All-in-One' pack (it also \
+         carries the required signed device driver) from {QHY_ALL_IN_ONE_URL}; the service \
+         loads the DLL within a minute of its install, without a restart. Probed: {}; plus \
+         the standard Windows DLL search order (exe directory, System32, PATH).{}",
         display_probed(.probed),
         display_failures(.failures)
     )]
@@ -185,6 +185,24 @@ pub enum PreflightError {
         probed: Vec<PathBuf>,
         failures: Vec<LoadFailure>,
     },
+}
+
+/// The reason a placeholder's connect is refused with while `qhyccd.dll`
+/// does not load (PF4), from the resolution's `failures`.
+///
+/// A probed copy that exists and failed to load is named with the loader's
+/// reason, since installing the pack again would not help; with none, the
+/// remedy is the pack. The log carries the rest.
+#[must_use]
+pub fn dll_missing_reason(failures: &[LoadFailure]) -> String {
+    let by_name = Path::new(QHY_DLL_NAME);
+    failures
+        .iter()
+        .find(|failure| failure.path != by_name)
+        .map_or_else(
+            || format!("{QHY_DLL_NAME} not found: install QHY's All-in-One pack from {QHY_ALL_IN_ONE_URL}"),
+            |failure| format!("{QHY_DLL_NAME} did not load: {failure}"),
+        )
 }
 
 fn display_probed(probed: &[PathBuf]) -> String {
@@ -288,9 +306,9 @@ pub fn resolve_and_load() -> DllResolution {
 
 /// Startup preflight (PF1–PF4): resolve `qhyccd.dll` before any SDK call.
 ///
-/// On failure it emits the ONE distinctive `error!` and returns `Err` for a
-/// clean non-zero exit (the SCM/systemd restart loop then applies — same
-/// contract as a missing serial device).
+/// On failure it emits the ONE distinctive `error!` and returns `Err`: the
+/// server then serves without the SDK (PF4), and its background re-check
+/// loads the DLL once it is installed (PF6).
 ///
 /// # Errors
 ///
@@ -506,6 +524,49 @@ mod tests {
         // The 2 a.m. log names what was attempted and why it failed (PF4).
         assert!(message.contains("Load attempts failed:"), "{message}");
         assert!(message.contains("wrong architecture"), "{message}");
+    }
+
+    #[test]
+    fn preflight_error_says_the_service_loads_the_dll_without_a_restart() {
+        let message = PreflightError::DllNotFound {
+            probed: vec![],
+            failures: vec![],
+        }
+        .to_string();
+        assert!(message.contains("without a restart"), "{message}");
+    }
+
+    #[test]
+    fn a_placeholder_names_the_dll_and_the_all_in_one_download() {
+        // The by-name attempt always fails when nothing is found: it is not
+        // a copy that failed to load.
+        let failures = [LoadFailure {
+            path: PathBuf::from(QHY_DLL_NAME),
+            error: "default Windows DLL search order: not found".to_string(),
+        }];
+        assert_eq!(
+            dll_missing_reason(&failures),
+            "qhyccd.dll not found: install QHY's All-in-One pack from \
+             https://www.qhyccd.com/download/"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_names_a_copy_that_failed_to_load_with_the_loaders_reason() {
+        let failures = [
+            LoadFailure {
+                path: PathBuf::from(r"C:\Program Files\QHYCCD\AllInOne\sdk\x64\qhyccd.dll"),
+                error: "The specified module could not be found. (os error 126)".to_string(),
+            },
+            LoadFailure {
+                path: PathBuf::from(QHY_DLL_NAME),
+                error: "default Windows DLL search order: not found".to_string(),
+            },
+        ];
+        assert_eq!(
+            dll_missing_reason(&failures),
+            r"qhyccd.dll did not load: C:\Program Files\QHYCCD\AllInOne\sdk\x64\qhyccd.dll (The specified module could not be found. (os error 126))"
+        );
     }
 
     #[test]

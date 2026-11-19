@@ -19,7 +19,7 @@ pub type Stop = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 ///
 /// `serve` builds a server from a configuration and serves it until the
 /// [`Stop`] it is handed resolves — on `shutdown` or on `reload` — or its
-/// failed USB scan's re-scan ends it ([`Ended::Rescanned`]). After a reload
+/// re-scan ends it ([`Ended::Rescanned`]). After a reload
 /// the next server is built from what `load` reads now. After a re-scan it is
 /// built from the configuration the stopped server was serving: nobody asked
 /// for that rebuild, so it applies no edit to the file that no reload has
@@ -75,7 +75,7 @@ where
             debug!("a reload landed while the re-scanned server drained; rebuilding from it");
             continue;
         }
-        debug!("a failed USB scan succeeds again; rebuilding from the configuration it serves");
+        debug!("the re-scan clears the rebuild; rebuilding from the configuration it serves");
         serving = Some(config);
     }
 }

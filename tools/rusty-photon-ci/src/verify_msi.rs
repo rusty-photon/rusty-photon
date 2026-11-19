@@ -15,11 +15,11 @@
 //!   and its log says why;
 //! - a [`SERIAL`] driver writes its config and logs its handshake attempt,
 //!   and the first of them a second attempt, which only a restart makes;
-//! - qhy-camera either starts or logs that `qhyccd.dll`, the operator's, is
-//!   missing: anything else is the loader crash its delay-load link
-//!   prevents. It writes its config either way, before the DLL preflight;
 //! - the rest run, write their config and answer their port, and
-//!   ui-htmx's config names rp and no drivers;
+//!   ui-htmx's config names rp and no drivers. qhy-camera is one of them
+//!   whether or not `qhyccd.dll`, the operator's, is installed: without it
+//!   the service serves no camera, and its log must name the DLL. A loader
+//!   crash, which its delay-load link prevents, would neither run nor serve;
 //! - sentinel, killed, is restarted; filemonitor takes a `ParamChange`, its
 //!   reload; doctor runs, and its renewal task is registered;
 //! - removing the `ZwoCamera` feature takes zwo-camera, its exe and its DLL,
@@ -801,27 +801,54 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         Ok(())
     }
 
-    /// qhy-camera started, or reported the DLL missing: one of the two,
-    /// read from the one snapshot of its log that showed it.
+    /// Which answer qhy-camera, serving, gives this box: it serves whether
+    /// or not `qhyccd.dll` is installed, and without it its log must name
+    /// the DLL. Read from the one snapshot of its log that showed the start.
     fn qhy_camera(&mut self) -> Result<(), Error> {
         let mut log = String::new();
-        let resolved = self.wait_until(30, |run| {
+        let started = self.wait_until(30, |run| {
             log = run.log_tail("qhy-camera", 500);
-            log.contains("Service started successfully") || log.contains("qhyccd.dll not found")
+            log.contains("Service started successfully")
         });
         self.require(
-            resolved,
+            started,
             "qhy-camera",
-            "timed out after 30s waiting for the delay-load to resolve either way (started, or \
-             reported the missing DLL; not a loader crash)",
+            "timed out after 30s waiting for: 'Service started successfully' in its log",
         )?;
-        self.created("qhy-camera")?;
-        if log.contains("qhyccd.dll not found") {
-            println!("== qhy-camera: OK (preflight reported the missing DLL; no loader crash)");
-        } else {
-            println!("== qhy-camera: OK (delay-load resolved; service started)");
+        let named = log.contains("qhyccd.dll not found");
+        if self.qhy_dll_installed() {
+            let how = if named {
+                "installed, but did not load; its log says why"
+            } else {
+                "loaded"
+            };
+            println!("== qhy-camera: OK (qhyccd.dll {how})");
+            return Ok(());
         }
+        self.require(
+            named,
+            "qhy-camera",
+            "serves without qhyccd.dll, but its log does not name the missing DLL",
+        )?;
+        println!("== qhy-camera: OK (serves without qhyccd.dll, which its log names)");
         Ok(())
+    }
+
+    /// Whether `qhyccd.dll` lies where qhy-camera's preflight looks first:
+    /// beside its exe, or where QHY's All-in-One pack installs it under
+    /// `%ProgramFiles%` (docs/services/qhy-camera.md PF1). A copy only on
+    /// `PATH` is not looked for: a box this verifies holds none.
+    fn qhy_dll_installed(&self) -> bool {
+        let sdk = self
+            .places
+            .install
+            .parent()
+            .map_or_default(|program_files| {
+                program_files.join("QHYCCD").join("AllInOne").join("sdk")
+            });
+        [self.places.install.clone(), sdk.join("x64"), sdk]
+            .iter()
+            .any(|dir| dir.join("qhyccd.dll").is_file())
     }
 
     fn has_log(&self, service: &str) -> bool {
@@ -1046,9 +1073,10 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         if let Some(first) = serial.first() {
             self.restarted_after_error(first)?;
         }
-        self.qhy_camera()?;
-        let started = active.iter().chain(&serial).map(String::as_str);
-        for service in started.chain(["qhy-camera"]) {
+        if active.iter().any(|service| service == "qhy-camera") {
+            self.qhy_camera()?;
+        }
+        for service in active.iter().chain(&serial) {
             let logged = self.has_log(service);
             let logs = self.logs().display().to_string();
             self.require(
@@ -1081,7 +1109,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
 }
 
 /// The services by kind: the [`GATED`] ones but those `configured`, the
-/// [`SERIAL`] drivers, and the rest but qhy-camera, which all run and serve.
+/// [`SERIAL`] drivers, and the rest, which all run and serve.
 fn kinds(services: &[String], configured: &[String]) -> (Vec<String>, Vec<String>, Vec<String>) {
     let gated: Vec<String> = services
         .iter()
@@ -1095,9 +1123,7 @@ fn kinds(services: &[String], configured: &[String]) -> (Vec<String>, Vec<String
         .collect();
     let active = services
         .iter()
-        .filter(|service| {
-            !gated.contains(service) && !serial.contains(service) && *service != "qhy-camera"
-        })
+        .filter(|service| !gated.contains(service) && !serial.contains(service))
         .cloned()
         .collect();
     (gated, serial, active)
@@ -1287,7 +1313,7 @@ mod tests {
                 zwo_camera_removed: false,
                 sentinel_pid: 500,
                 handshakes: 2,
-                qhy_log: "qhyccd.dll not found\n",
+                qhy_log: "qhyccd.dll not found\nService started successfully\n",
                 ui_config: r#"{"rp": {"url": "http://127.0.0.1:11115"}}"#,
                 logs_cleared_at_install: None,
                 arp: Vec::new(),
@@ -1367,9 +1393,6 @@ mod tests {
                 &self.places.data.join("logs/qhy-camera.2026-10-22"),
                 self.qhy_log,
             );
-            if self.broken != Some(Broken::NoConfig("qhy-camera")) {
-                write(&self.places.data.join("qhy-camera.json"), "{}");
-            }
             for service in &gated {
                 write(
                     &self.places.data.join(format!("logs/{service}.2026-10-22")),
@@ -1641,6 +1664,7 @@ mod tests {
                 powershell(SERVICES_PS),
                 format!("msiexec /i {msi} /qn /norestart /l*v <temp>/rusty-photon-msi-install.log ADDLOCAL=ALL"),
                 curl(11111, "/management/apiversions"),
+                curl(11121, "/management/apiversions"),
                 curl(11114, "/health"),
                 curl(11120, "/health"),
                 curl(11122, "/management/apiversions"),
@@ -1720,7 +1744,9 @@ mod tests {
             (Box::new(|_| ()), Script::default().on("curl --max-time 5 -o NUL -fsS http://127.0.0.1:11124", || Err(())), "FAIL [zwo-focuser]: timed out after 60s waiting for an HTTP response on http://127.0.0.1:11124/management/apiversions"),
             (Box::new(|sim| sim.handshakes = 0), Script::default(), "FAIL [ppba-driver]: timed out after 30s waiting for: 'eager startup handshake'"),
             (Box::new(|sim| sim.handshakes = 1), Script::default(), "FAIL [ppba-driver]: timed out after 90s waiting for: a second handshake attempt"),
-            (Box::new(|sim| sim.qhy_log = "panic: STATUS_DLL_NOT_FOUND\n"), Script::default(), "FAIL [qhy-camera]: timed out after 30s waiting for the delay-load to resolve"),
+            (Box::new(|sim| sim.qhy_log = "panic: STATUS_DLL_NOT_FOUND\n"), Script::default(), "FAIL [qhy-camera]: timed out after 30s waiting for: 'Service started successfully' in its log"),
+            (Box::new(|sim| sim.qhy_log = "Service started successfully\n"), Script::default(), "FAIL [qhy-camera]: serves without qhyccd.dll, but its log does not name the missing DLL"),
+            (Box::new(|_| ()), Script::default().on("curl --max-time 5 -o NUL -fsS http://127.0.0.1:11121", || Err(())), "FAIL [qhy-camera]: timed out after 60s waiting for an HTTP response on http://127.0.0.1:11121/management/apiversions"),
             (Box::new(|_| ()), Script::default().on("taskkill", || Ok(String::new())), "FAIL [sentinel]: timed out after 60s waiting for: a restart after the kill"),
             (Box::new(|_| ()), Script::default().on("sc.exe control", || Err(())), "FAIL [filemonitor]: sc control paramchange failed"),
             (Box::new(|sim| sim.broken = Some(Broken::FeatureRemoveKeeps("ASICamera2.dll"))), Script::default(), "FAIL [zwo-camera]: ASICamera2.dll still present after feature remove"),
@@ -1832,15 +1858,23 @@ mod tests {
         }
     }
 
-    /// A box with no hardware may answer either way: qhy-camera started or
-    /// reporting its DLL missing.
+    /// A box with QHY's All-in-One installed answers with qhy-camera
+    /// serving on its DLL, its log naming none missing.
     #[test]
-    fn accepts_either_answer_a_box_without_hardware_gives() {
+    fn accepts_a_box_with_the_all_in_one_installed() {
         let fixture = Fixture::new();
+        let places = fixture.places();
+        let dll = places
+            .install
+            .parent()
+            .unwrap()
+            .join("QHYCCD/AllInOne/sdk/x64/qhyccd.dll");
+        fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        fs::write(&dll, "").unwrap();
         let sim = fixture.sim();
         sim.borrow_mut().qhy_log = "Service started successfully\n";
-        let (result, _) = fixture.verify(&sim, Script::default(), &Request::default());
-        assert_eq!(result.unwrap(), 9);
+        let (result, lines) = fixture.verify(&sim, Script::default(), &Request::default());
+        assert_eq!(result.unwrap(), 9, "{lines:#?}");
     }
 
     #[test]
@@ -1937,6 +1971,7 @@ mod tests {
         for service in [
             "filemonitor",
             "focus-model",
+            "qhy-camera",
             "sentinel",
             "ui-htmx",
             "zwo-camera",
@@ -2272,6 +2307,7 @@ mod tests {
             active,
             [
                 "filemonitor",
+                "qhy-camera",
                 "sentinel",
                 "ui-htmx",
                 "zwo-camera",

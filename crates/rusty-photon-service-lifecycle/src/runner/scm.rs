@@ -155,10 +155,10 @@ where
         }
     };
     // Running is reported before the runtime is built, not after. A closure
-    // that fails at once, as qhy-camera's does without qhyccd.dll, leaves
-    // the service Running only for the runtime's build, and msiexec's
-    // StartServices fails the install with error 1920 if it never sees the
-    // service Running.
+    // that fails soon after it starts, as a serial driver's does when its
+    // port is absent, is then Running for the runtime's build as well, and
+    // msiexec's StartServices fails the install with error 1920 if it never
+    // sees the service Running.
     let started = set_status(service_status(
         ServiceState::Running,
         controls_accepted,
