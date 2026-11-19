@@ -56,6 +56,7 @@ pub mod rotator_device;
 pub mod serial;
 pub mod setup;
 pub mod switch_device;
+pub mod sync_record;
 pub mod units;
 
 pub use codec::{FalconCodec, FalconCodecError, FalconResponse};
@@ -88,6 +89,20 @@ use tracing::{debug, info};
 use crate::config::CliOverrides;
 use crate::setup::FalconRotatorDriver;
 
+/// The manager for `factory`, keeping the sync offset in the record beside
+/// the config file when there is one.
+async fn manager_for(
+    factory: Arc<dyn TransportFactory>,
+    config_source: Option<&(PathBuf, CliOverrides)>,
+) -> Arc<FalconManager> {
+    match config_source {
+        Some((path, _)) => {
+            FalconManager::with_sync_record(factory, sync_record::record_path(path)).await
+        }
+        None => FalconManager::new(factory),
+    }
+}
+
 /// Builder for the ASCOM Alpaca server.
 ///
 /// Wires the Rotator and Status Switch devices through a single
@@ -98,7 +113,8 @@ pub struct ServerBuilder {
     config: Config,
     factory: Arc<dyn TransportFactory>,
     /// Where a setup-page save persists + which fields are CLI-pinned.
-    /// `Some` enables the setup pages (together with `reload`).
+    /// `Some` enables the setup pages (together with `reload`), and keeps
+    /// the sync offset in the record beside that file.
     config_source: Option<(PathBuf, CliOverrides)>,
     /// Reload trigger the pages fire after a save's response has flushed.
     reload: Option<ReloadSignal>,
@@ -185,7 +201,7 @@ impl ServerBuilder {
     pub async fn build(
         self,
     ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
-        let manager = FalconManager::new(self.factory);
+        let manager = manager_for(self.factory, self.config_source.as_ref()).await;
 
         // Eager hardware validation at startup: opens the port,
         // runs the handshake, and spawns the reconnect supervisor

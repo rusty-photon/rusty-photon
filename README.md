@@ -95,7 +95,7 @@ See [docs/services/star-adventurer-gti.md](docs/services/star-adventurer-gti.md)
 
 ### Pa Falcon Rotator
 
-ASCOM Alpaca Rotator + Switch driver for the Pegasus Astro Falcon Rotator (firmware ≥ 1.3). Exposes the rotator as `IRotatorV4` with sky/mechanical position separation (`Sync` is a driver-side offset; the wire-level `SD` command is never issued) and a second `ISwitchV3` device that surfaces the Falcon's raw input voltage and `FA.limit_detect` flag as two read-only switches. Communicates via 9600-baud USB-CDC serial; every property read maps to a live serial command (no cache, no background poller) so the device is always the authoritative source.
+ASCOM Alpaca Rotator + Switch driver for the Pegasus Astro Falcon Rotator (firmware ≥ 1.3). Exposes the rotator as `IRotatorV4` with sky/mechanical position separation (`Sync` is a driver-side offset, kept beside the config file so it survives a restart; the wire-level `SD` command is never issued) and a second `ISwitchV3` device that surfaces the Falcon's raw input voltage and `FA.limit_detect` flag as two read-only switches. Communicates via 9600-baud USB-CDC serial; every property read maps to a live serial command (no cache, no background poller) so the device is always the authoritative source.
 
 See [docs/services/falcon-rotator.md](docs/services/falcon-rotator.md) for design documentation.
 

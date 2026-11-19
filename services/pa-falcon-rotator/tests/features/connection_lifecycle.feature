@@ -6,6 +6,10 @@ Feature: Connection lifecycle
   a connect runs no handshake, and each device connects and disconnects
   independently of the other.
 
+  A disconnect that leaves no client on either device clears the target of
+  the last move, so TargetPosition reads the current Position again; one that
+  leaves the other device connected keeps it.
+
   Scenario: Rotator starts disconnected
     Given a running pa-falcon-rotator service
     Then the rotator should be disconnected
@@ -64,3 +68,24 @@ Feature: Connection lifecycle
     Given a running pa-falcon-rotator service
     When I read GetSwitchValue for id 0
     Then the switch read should fail with code 1031
+
+  Scenario: The last client's disconnect clears the stored target
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I call MoveAbsolute with 90.00
+    And the rotator reports mechanical position 120.00 degrees
+    And I disconnect the rotator
+    And I connect the rotator
+    And I read TargetPosition
+    Then TargetPosition should be 120.00 degrees
+
+  Scenario: A disconnect that leaves the status switch connected keeps the stored target
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And I connect the status switch
+    And I call MoveAbsolute with 90.00
+    And the rotator reports mechanical position 120.00 degrees
+    And I disconnect the rotator
+    And I connect the rotator
+    And I read TargetPosition
+    Then TargetPosition should be 90.00 degrees

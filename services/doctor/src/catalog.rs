@@ -262,14 +262,18 @@ mod tests {
         assert_eq!(entry("qhy-focuser").unwrap().default_port, 11113);
     }
 
-    /// Only `star-adventurer-gti` keeps a state file beside its config:
-    /// its mount state record. The name is not measured from anywhere, so a
-    /// plain assertion pins the declarations against edits.
+    /// Two services keep a state file beside their config:
+    /// `star-adventurer-gti` its mount state record and `pa-falcon-rotator`
+    /// its sync-offset record. The names are not measured from anywhere, so
+    /// a plain assertion pins the declarations against edits.
     #[test]
     fn test_state_files_match_the_known_set() {
         for entry in catalog() {
-            let expected = (entry.name == "star-adventurer-gti")
-                .then_some("star-adventurer-gti.mount-state.json");
+            let expected = match entry.name {
+                "star-adventurer-gti" => Some("star-adventurer-gti.mount-state.json"),
+                "pa-falcon-rotator" => Some("pa-falcon-rotator.sync-offset.json"),
+                _ => None,
+            };
             assert_eq!(
                 entry.state_file.as_deref(),
                 expected,
