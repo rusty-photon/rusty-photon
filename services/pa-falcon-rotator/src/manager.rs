@@ -29,7 +29,7 @@
 //! every property read and never polls in the background. `Hooks::while_open`
 //! is `None`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rusty_photon_shared_transport::{
@@ -44,6 +44,10 @@ use crate::protocol::{validate_echo, Command, FalconStatus};
 use crate::sync_record::{self, ReadRecord};
 use crate::units::{MechanicalDegrees, SkyDegrees, SyncOffset};
 
+/// How a manager writes its sync-offset record: [`sync_record::write`],
+/// or, in a unit test, a writer the test can pause mid-write.
+type RecordWriter = Arc<dyn Fn(&Path, SyncOffset) -> std::io::Result<()> + Send + Sync>;
+
 /// Manager wrapping the shared transport plus driver-side Falcon state.
 ///
 /// One instance per process; both ASCOM devices (`FalconRotatorDevice`
@@ -55,6 +59,7 @@ pub struct FalconManager {
     /// Where [`Self::sync`] keeps the offset; `None` keeps it in memory
     /// only.
     sync_record: Option<PathBuf>,
+    write_record: RecordWriter,
     /// Orders the syncs: held across a sync's record write and the
     /// assignment after it, so the last sync to write is the last to
     /// assign, while `sync_offset` is held only for the assignment and a
@@ -80,7 +85,12 @@ impl FalconManager {
     /// The sync offset starts at zero and lives in memory only; the
     /// binary builds its manager with [`Self::with_sync_record`].
     pub fn new(factory: Arc<dyn TransportFactory>) -> Arc<Self> {
-        Self::build(factory, None, SyncOffset::ZERO)
+        Self::build(
+            factory,
+            None,
+            SyncOffset::ZERO,
+            Arc::new(sync_record::write),
+        )
     }
 
     /// Build a manager around `factory` whose sync offset is kept in the
@@ -115,13 +125,14 @@ impl FalconManager {
                 SyncOffset::ZERO
             }
         };
-        Self::build(factory, Some(path), offset)
+        Self::build(factory, Some(path), offset, Arc::new(sync_record::write))
     }
 
     fn build(
         factory: Arc<dyn TransportFactory>,
         sync_record: Option<PathBuf>,
         sync_offset: SyncOffset,
+        write_record: RecordWriter,
     ) -> Arc<Self> {
         let last_limit_detected = Arc::new(Mutex::new(None));
         let last_for_hooks = Arc::clone(&last_limit_detected);
@@ -143,6 +154,7 @@ impl FalconManager {
             transport,
             sync_offset: Mutex::new(sync_offset),
             sync_record,
+            write_record,
             sync_writes: Mutex::new(()),
             target_position: Mutex::new(None),
             last_limit_detected,
@@ -384,7 +396,8 @@ impl FalconManager {
         let writing = self.sync_writes.lock().await;
         if let Some(path) = &self.sync_record {
             let write_path = path.clone();
-            tokio::task::spawn_blocking(move || sync_record::write(&write_path, offset))
+            let write = Arc::clone(&self.write_record);
+            tokio::task::spawn_blocking(move || write(&write_path, offset))
                 .await
                 .map_err(|e| {
                     FalconRotatorError::SyncNotSaved(format!("the write did not finish: {e}"))
@@ -708,38 +721,107 @@ mod mock_tests {
         manager.release(session).await.unwrap();
     }
 
+    /// A record writer that reports each write as it starts and as it
+    /// ends, naming the offset, and holds every write until the test sends
+    /// a release: a test can act while a sync is mid-write.
+    fn paused_writer() -> (
+        RecordWriter,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (events, events_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let writer: RecordWriter = Arc::new(move |path: &Path, offset: SyncOffset| {
+            events.send(format!("start {:.1}", offset.value())).unwrap();
+            release_rx.lock().unwrap().recv().unwrap();
+            let written = crate::sync_record::write(path, offset);
+            events.send(format!("end {:.1}", offset.value())).unwrap();
+            written
+        });
+        (writer, events_rx, release)
+    }
+
     #[tokio::test]
-    async fn a_sync_writing_its_record_holds_up_the_next_sync_but_no_reader() {
-        let (manager, factory) = make_manager();
-        let session = manager.acquire().await.unwrap();
+    async fn a_sync_mid_write_holds_up_the_next_sync_but_no_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.sync-offset.json");
+        let (writer, mut events, release) = paused_writer();
+        let factory = Arc::new(MockFalconTransportFactory::default());
+        let manager = FalconManager::build(
+            Arc::<MockFalconTransportFactory>::clone(&factory),
+            Some(path.clone()),
+            SyncOffset::ZERO,
+            writer,
+        );
+        let first = manager.acquire().await.unwrap();
+        let second = manager.acquire().await.unwrap();
         factory.set_mech_position_deg(45.0).await;
 
-        // A sync mid-write holds the writer lock.
-        let writing = manager.sync_writes.lock().await;
-        tokio::time::timeout(std::time::Duration::from_millis(500), manager.sync_offset())
-            .await
-            .expect("a reader must not wait on a sync's write");
-
         let syncing = Arc::clone(&manager);
-        let second = tokio::spawn(async move {
-            let synced = syncing.sync(&session, 90.0).await;
-            (synced, session)
+        let first_sync = tokio::spawn(async move {
+            let synced = syncing.sync(&first, 90.0).await;
+            (synced, first)
         });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(events.recv().await.unwrap(), "start 45.0");
+
+        // The first sync is mid-write: a reader answers at once, with the
+        // offset still in force.
         let offset =
             tokio::time::timeout(std::time::Duration::from_millis(500), manager.sync_offset())
                 .await
-                .expect("a reader must not wait on a sync queued for the writer lock");
+                .expect("a reader must not wait on a sync's write");
+        assert!(offset.value().abs() < 1e-9, "{}", offset.value());
+
+        // A second sync reads the rotator, then waits for the first: its
+        // write does not start while the first one's is in progress.
+        let fa_before = status_reads(&factory).await;
+        let syncing = Arc::clone(&manager);
+        let second_sync = tokio::spawn(async move {
+            let synced = syncing.sync(&second, 120.0).await;
+            (synced, second)
+        });
+        while status_reads(&factory).await == fa_before {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(
-            offset.value().abs() < 1e-9,
-            "the second sync waits for the first to finish"
+            tokio::time::timeout(std::time::Duration::from_millis(100), events.recv())
+                .await
+                .is_err(),
+            "the second sync must not start writing while the first is"
         );
 
-        drop(writing);
-        let (synced, session) = second.await.unwrap();
+        release.send(()).unwrap();
+        assert_eq!(events.recv().await.unwrap(), "end 45.0");
+        assert_eq!(events.recv().await.unwrap(), "start 75.0");
+        release.send(()).unwrap();
+        assert_eq!(events.recv().await.unwrap(), "end 75.0");
+
+        let (synced, first) = first_sync.await.unwrap();
         synced.unwrap();
-        assert!((manager.sync_offset().await.value() - 45.0).abs() < 1e-9);
-        manager.release(session).await.unwrap();
+        let (synced, second) = second_sync.await.unwrap();
+        synced.unwrap();
+        assert!(
+            (manager.sync_offset().await.value() - 75.0).abs() < 1e-9,
+            "the last sync to write is the last to assign"
+        );
+        assert_eq!(
+            crate::sync_record::read(&path),
+            ReadRecord::Offset(SyncOffset::new(75.0))
+        );
+        manager.release(first).await.unwrap();
+        manager.release(second).await.unwrap();
+    }
+
+    /// How many `FA` status reads the mock has answered.
+    async fn status_reads(factory: &MockFalconTransportFactory) -> usize {
+        factory
+            .command_log()
+            .await
+            .iter()
+            .filter(|command| *command == "FA")
+            .count()
     }
 
     #[tokio::test]
