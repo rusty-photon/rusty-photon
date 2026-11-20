@@ -283,10 +283,10 @@ procedure runs:
   action cut short by a crash does not count as fired.
 - Trigger actions never preempt an in-flight instruction. They run at
   **safe points** — after the current instruction, or continuously during a
-  `wait`. A document that wants "stop the current exposure when X" reacts
-  to a correction in a tool result (`correction_requested`); it cannot
-  abort on its own. `rp`'s built-in tools return none, so only a tool
-  provider's result can carry one.
+  `wait`. A document cannot cut an exposure or any other instruction
+  short, not even through a trigger on a correction in a tool result
+  (`correction_requested`). `rp`'s built-in tools return no correction;
+  only a tool provider's result can carry one.
 - An uncaught error in a `do` block fails the session. A trigger that must
   not take the night down wraps its body in `try` with a logging `catch` —
   the shipped deep-sky document does exactly this around `focus_train`

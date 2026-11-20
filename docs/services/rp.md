@@ -7921,9 +7921,9 @@ route: the page is where its configuration is edited, and the file.
 `rp`'s client surface is MCP (Tenet 8): every capability a UI, plugin, or
 external client drives is an MCP tool on `/mcp`. The HTTP/REST routes below
 are **not** a second surface that mirrors those tools — they carry only what
-cannot ride MCP: raw image bytes, the SSE event stream, plugin completion
-callbacks, and config (which must stay reachable while conditions are
-unsafe), plus a few operational reads (`/health`, equipment status).
+cannot ride MCP: raw image bytes, the SSE event stream, and config
+(which must stay reachable while conditions are unsafe), plus a few
+operational reads (`/health`, equipment status).
 Whatever REST serves, it stays a dumb pipe — no application logic.
 
 ### REST Endpoints
@@ -8015,7 +8015,8 @@ stream (`Content-Type: text/event-stream`) carrying every event the
 webhooks, plus stream-control frames. Any consumer that needs live events
 connects here: UIs for rendering state, and the Sentinel operation watchdog
 for tracking deadlines and rp liveness. It is the primary mechanism for
-passive consumers — push updates without the webhook ack/completion protocol.
+passive consumers: a consumer connects and receives, with no plugin
+registration in `rp`'s config.
 
 **Frame format.** Each event is one SSE frame:
 

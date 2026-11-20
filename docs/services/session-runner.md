@@ -395,10 +395,11 @@ actions run at the next **safe point** — after the current instruction
 completes, or continuously during a `wait`. Multiple queued triggers run in
 document order. A trigger whose action is queued or running does not queue
 again. Only `rp` (safety) and Sentinel (watchdog) ever abort an in-flight
-operation; a document that wants "stop the current exposure when X" reacts
-to a *correction* in a tool result (`correction_requested`) rather than
-aborting on its own. `rp`'s built-in tools return none; a tool provider's
-result, relayed verbatim, can.
+operation: a document cannot cut one short, not even through a trigger
+on a *correction* in a tool result (`correction_requested`), whose
+action waits for the next safe point too. `rp`'s built-in tools return
+no correction; a tool provider's result, relayed verbatim, can carry
+one.
 
 **Poll lifecycle.** Poll triggers start when the workflow starts and stop
 when it completes or is cancelled. A poll whose tool call fails logs at
