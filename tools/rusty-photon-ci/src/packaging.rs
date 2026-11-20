@@ -363,19 +363,23 @@ pub fn missing(path: &Path) -> Error {
     }
 }
 
-/// Unpacks the zip at `zip` into `dest` with PowerShell's `Expand-Archive`.
+/// Unpacks the zip at `zip` into `dest`, a directory that holds none of its
+/// files, with .NET's `ZipFile.ExtractToDirectory`, from Windows PowerShell.
 ///
 /// Windows' own `tar.exe` fails on a name the code page cannot hold, as
 /// ZWO's SDKs have (docs/skills/ci-logic.md, "An action that installs a
-/// tool"). The paths reach PowerShell as variables, so nothing in them is
-/// read as code.
+/// tool"). `Expand-Archive` is not used: the version of its module a runner
+/// provides can call a `ZipFile` overload that Windows PowerShell's .NET
+/// Framework lacks, and then fails. The paths reach PowerShell as
+/// variables, so nothing in them is read as code.
 ///
 /// # Errors
 ///
 /// When PowerShell cannot start or the archive cannot be unpacked.
 pub fn expand_zip(runner: &mut impl Runner, zip: &Path, dest: &Path) -> Result<(), Error> {
-    let script = "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; \
-                  Expand-Archive -LiteralPath $env:RP_ZIP -DestinationPath $env:RP_DEST -Force";
+    let script = "$ErrorActionPreference = 'Stop'; \
+                  Add-Type -AssemblyName System.IO.Compression.FileSystem; \
+                  [System.IO.Compression.ZipFile]::ExtractToDirectory($env:RP_ZIP, $env:RP_DEST)";
     let cmd = Cmd::new(
         "powershell",
         &["-NoProfile", "-NonInteractive", "-Command", script],
@@ -792,9 +796,9 @@ mod tests {
         );
     }
 
-    /// The Windows archive is a zip, which Expand-Archive unpacks.
+    /// The Windows archive is a zip, which .NET's `ZipFile` unpacks.
     #[test]
-    fn unpacks_a_qhy_zip_with_expand_archive() {
+    fn unpacks_a_qhy_zip_with_powershell() {
         let cache = tempfile::tempdir().unwrap();
         let sha256 = hex(Sha256::digest(b"zip").as_slice());
         let mut runner = crate::process::Script::default()
