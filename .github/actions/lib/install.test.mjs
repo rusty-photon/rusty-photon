@@ -835,7 +835,7 @@ test('unpack refuses a file it has no tool for', async () => {
   });
 });
 
-test('unpackZips on Windows runs one Expand-Archive per zip in one PowerShell, by its full path, each path quoted whole', async () => {
+test('unpackZips on Windows runs one ZipFile.ExtractToDirectory per zip in one PowerShell, by its full path, each path quoted whole', async () => {
   const { run, calls } = recorder();
   const program = await withEnv({ SystemRoot: 'C:\\Windows' }, async () => {
     const zips = [
@@ -853,9 +853,9 @@ test('unpackZips on Windows runs one Expand-Archive per zip in one PowerShell, b
   assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-EncodedCommand']);
   assert.equal(
     Buffer.from(args[3], 'base64').toString('utf16le'),
-    "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; try { " +
-      "Expand-Archive -LiteralPath 'C:\\Users\\o''brien\\a\u2019\u2019b.zip' -DestinationPath 'C:\\Temp\\a' -Force; " +
-      "Expand-Archive -LiteralPath 'C:\\Temp\\b.zip' -DestinationPath 'C:\\Temp\\b' -Force" +
+    "$ErrorActionPreference = 'Stop'; try { Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+      "[System.IO.Compression.ZipFile]::ExtractToDirectory('C:\\Users\\o''brien\\a\u2019\u2019b.zip', 'C:\\Temp\\a'); " +
+      "[System.IO.Compression.ZipFile]::ExtractToDirectory('C:\\Temp\\b.zip', 'C:\\Temp\\b')" +
       ' } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }',
   );
 });

@@ -378,9 +378,12 @@ above.
   `linkRuntime` links a -dev package's linker name to it on the sudo-less
   Pi, `loaderFinds` says whether the loader's cache lists a library where
   it went, `canWrite` whether the user can write a prefix without `sudo`,
-  and `unpackZips` unpacks a vendor's zip on Windows with PowerShell's
-  `Expand-Archive`, since Windows' `tar.exe` fails on a name the code
-  page cannot hold, as ZWO's SDKs have.
+  and `unpackZips` unpacks a vendor's zip on Windows with .NET's
+  `ZipFile.ExtractToDirectory`, from Windows PowerShell, since Windows'
+  `tar.exe` fails on a name the code page cannot hold, as ZWO's SDKs
+  have. Not with `Expand-Archive`: the version of its module a runner
+  provides can call a `ZipFile` overload that Windows PowerShell's .NET
+  Framework lacks, and then fails.
 - **`unpack`** runs each OS's own tool, since Node's built-ins read no
   archive format and have no xz decoder: on Linux GNU tar, and `unzip`
   for a zip, which GNU tar does not read; on macOS and Windows bsdtar,
