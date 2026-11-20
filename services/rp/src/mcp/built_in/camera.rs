@@ -50,10 +50,12 @@ pub struct CaptureParams {
     pub target: Option<String>,
     /// This capture's intent. Omitted (the default), the frame is named
     /// `<doc_uuid_8>.fits` — `target` is then ignored and
-    /// nothing is denormalized onto the exposure document. Supplying
-    /// it requires `session.file_naming_pattern` to be configured and
-    /// activates directory/file rendering per docs/services/rp.md §
-    /// Capture Tool Details.
+    /// nothing is denormalized onto the exposure document. Supplied,
+    /// it and `target` are stamped on the exposure document; the
+    /// directory and file are rendered from them only when
+    /// `session.file_naming_pattern` is configured, and the frame
+    /// keeps the flat name otherwise, which is not an error. See
+    /// docs/services/rp.md § Capture Tool Details.
     #[serde(default)]
     pub frame_type: Option<rp_vocabulary::FrameType>,
     /// What lights the frame: `panel` (a light source that moves with

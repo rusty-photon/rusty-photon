@@ -268,9 +268,10 @@ pub struct RpWorld {
     pub directory_pattern: Option<String>,
     /// When `true`, forces `session.file_naming_pattern` to `null` in
     /// the emitted config, overriding `RpConfigBuilder::build`'s
-    /// unconditional default — for the scenario exercising `capture`'s
-    /// "`frame_type` requires `session.file_naming_pattern` to be
-    /// configured" error path (`capture_target_linkage.feature`).
+    /// unconditional default — for the scenario in which `capture`
+    /// takes a `frame_type` with no naming pattern configured, stamps
+    /// the document and keeps the flat file name
+    /// (`capture_target_linkage.feature`).
     pub clear_file_naming_pattern: bool,
     /// Error from the most recent `ServiceHandle::try_start` call (the
     /// config-load validation scenarios' `rp attempts to start`, in
