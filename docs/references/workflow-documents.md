@@ -284,7 +284,9 @@ procedure runs:
 - Trigger actions never preempt an in-flight instruction. They run at
   **safe points** — after the current instruction, or continuously during a
   `wait`. A document that wants "stop the current exposure when X" reacts
-  to the correction `rp` delivers; it cannot abort on its own.
+  to a correction in a tool result (`correction_requested`); it cannot
+  abort on its own. `rp`'s built-in tools return none, so only a tool
+  provider's result can carry one.
 - An uncaught error in a `do` block fails the session. A trigger that must
   not take the night down wraps its body in `try` with a logging `catch` —
   the shipped deep-sky document does exactly this around `focus_train`
