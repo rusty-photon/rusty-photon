@@ -403,10 +403,11 @@ ratio. A detection is passed over when it is saturated, when it is
 closer to the frame's edge than `calibration.distance_px` plus
 `stars.search_region_px`, when it is too sharp to be a star (a hot
 pixel), or when another star is so close that the two would be
-confused. A frame that yields no guide star refuses `calibrate`,
+confused. A frame that yields fewer guide stars than `stars.min`
+yields none: a run could not guide on them. It refuses `calibrate`,
 `guiding/start` and `star/reselect` with `no_stars`. `loop` is not
 refused: it answers with a `star_count` of 0, and the guider selects
-again on each frame of `looping` until one has stars.
+again on each frame of `looping` until one has enough stars.
 
 **How selection detects.** The guider detects stars as `rp`'s measuring
 tools do ([rp.md § `measure_stars` Contract](rp.md#measure_stars-contract)):
@@ -436,9 +437,9 @@ detection is passed over when:
   of that star's measurement, as it is in every later frame.
 
 Selection happens on the first frame of `looping` and on each later one
-until a frame has stars, when a run begins from `idle` or `looping`,
-and on `star/reselect`. The guider never selects stars again on its own
-in the middle of a run.
+until a frame has enough stars, when a run begins from `idle` or
+`looping`, and on `star/reselect`. The guider never selects stars again
+on its own in the middle of a run.
 
 **Measurement.** In each later frame every guide star is looked for
 within `stars.search_region_px` of its position in the last frame in
@@ -789,8 +790,9 @@ Starts the camera loop without guiding.
 
 - From `idle`: clears the metrics window, writes the frame settings,
   takes the first frame, selects guide stars on it and answers. A first
-  frame with no star still answers `looping`, with `star_count` 0, and
-  the guider selects again on each frame until one has stars.
+  frame with fewer guide stars than `stars.min` still answers `looping`,
+  with `star_count` 0, and the guider selects again on each frame until
+  one has enough.
 - In `looping`: answers with the current values and changes nothing.
 - In a run state: `not_idle`.
 
@@ -881,8 +883,8 @@ does depends on the state it finds:
 
 - `recalibrate: true` runs a calibration first in each of these states.
   A calibration is always followed by a new lock.
-- A frame with no star answers `no_stars` and leaves the state, the
-  guide stars and the lock as they were.
+- A frame with fewer guide stars than `stars.min` answers `no_stars` and
+  leaves the state, the guide stars and the lock as they were.
 - A calibration that fails answers `calibration_failed`. The guider
   returns to `idle` or `looping` if the request found it there, and
   stops the run with the reason `calibration_failed` otherwise.
@@ -971,8 +973,8 @@ Selects the guide stars anew on the next frame. Takes no fields.
   pause.
 - In a run, the new stars' positions become the run's home and the lock
   offset returns to zero.
-- A frame with no star answers `no_stars` and keeps the previous guide
-  stars.
+- A frame with fewer guide stars than `stars.min` answers `no_stars`
+  and keeps the previous guide stars.
 
 #### `GET /api/v1/calibration`
 
@@ -1208,7 +1210,7 @@ left out when there is nothing to attach):
 | `stopped` | 409 | A `guiding/stop` arrived while the request was waiting or queued |
 | `dither_aborted` | 409 | A `dither/abort` arrived while the `dither` waited to settle |
 | `camera_unsupported` | 422 | A sensor type the guider cannot measure, or a `camera.binning` the camera cannot do |
-| `no_stars` | 422 | Star selection found no guide star |
+| `no_stars` | 422 | Star selection found fewer guide stars than `stars.min` |
 | `calibration_failed` | 422 | A calibration leg ran out of steps or time, or a cross-check failed |
 | `guide_failed` | 422 | The run or the loop stopped by itself while the request waited. `details.stop_reason` holds the reason |
 | `device_unreachable` | 502 | A device does not answer when a request starts the loop or a run |

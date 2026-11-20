@@ -5605,7 +5605,7 @@ counts towards it nor ends it. The guider waits in `star_lost` for as
 long as the run lasts and never selects stars again by itself
 ([guider.md § Star selection and measurement](guider.md#star-selection-and-measurement)),
 so the event repeats, and an orchestrator can ask for a new selection
-at each one until a frame has stars.
+at each one until a frame has enough stars.
 
 The shipped `deep_sky.json` wires both (session-runner.md
 § `deep_sky.json`). On `guide_star_lost` it reads the guider's state
