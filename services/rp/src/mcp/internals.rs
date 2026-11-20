@@ -1592,8 +1592,9 @@ impl McpHandler {
     /// `CAPTURE_READOUT_GRACE`) advance. `cancel` aborts the exposure
     /// and ends the call (rp.md § In-Flight Tool Calls). The
     /// emitted `progress` is the elapsed fraction of the total
-    /// `duration + CAPTURE_READOUT_GRACE` budget; messages cycle
-    /// `"exposing"` → `"reading_out"` once `image_ready` flips true.
+    /// `duration + CAPTURE_READOUT_GRACE` budget; the message reads
+    /// `"exposing"` until `duration` has passed and `"reading_out"`
+    /// after it.
     /// `None` (unit tests, MCP clients that omitted `progressToken`)
     /// makes the emission a no-op.
     pub(crate) async fn do_capture(

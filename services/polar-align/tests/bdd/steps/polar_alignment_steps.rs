@@ -2,10 +2,9 @@
 //!
 //! The scenarios spawn `OmniSim` (telescope + camera), rp, and
 //! polar-align, plus an in-process plate-solver stub whose canned
-//! solves are choreographed from a known injected axis error. The
-//! completion contract is asserted through the plugin's `/status`
-//! endpoint (rp deliberately ignores completion bodies) and rp's
-//! session status.
+//! solves are choreographed from a known injected axis error. A run's
+//! outcome is asserted through the plugin's `/status` endpoint, which
+//! is the only place polar-align reports it: nothing is posted to rp.
 
 use std::time::Duration;
 

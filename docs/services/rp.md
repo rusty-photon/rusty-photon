@@ -1709,9 +1709,13 @@ parent directory). See
 a camera that reads `Error` fails the capture at once with
 `exposure_failed`, carrying the reason the camera's `image_array` read
 returns, rather than being polled as still exposing: a camera that
-fails an exposure reads `Error` and never reports `image_ready`. The
-readout backstop, `duration` + 120 s from the exposure's start, fails a
-capture whose camera stays in `Exposing`.
+fails an exposure reads `Error` and never reports `image_ready`. A
+camera that reads `Idle` on two polls in a row, still with no image,
+had its exposure aborted, and the capture ends then too. The readout
+backstop, `duration` + 120 s from the moment the camera accepts the
+exposure, fails a capture whose camera stays in any other state —
+`Waiting`, `Exposing`, `Reading` or `Download` — without reporting the
+frame ready.
 
 **Pixel geometry.** Alpaca's `image_array` is width-major — the
 `[x][y]` array of the ASCOM specification, `x` varying slowest on the
