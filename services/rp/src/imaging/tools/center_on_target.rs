@@ -13,35 +13,28 @@
 //! Behavioral contract: `docs/services/rp.md` → Compound Tools →
 //! `center_on_target` Contract.
 //!
-//! **BDD-author note.** `do_slew_blocking` now sizes its deadline from
-//! the slew distance (`compute_slew_deadline`, §2.1): a small
-//! inner-iteration corrective slew floors at `MIN_SLEW_DEADLINE` (30 s), so
-//! it no longer approaches rmcp's 300 s MCP-transport keep-alive — only a
-//! multi-degree slew gets a deadline near that bound. Keeping BDD canned
-//! WCS values within ~2′ of any prior synced position still matters: it
-//! keeps iter-1's sync + slew traversal small (and fast) even under heavy
-//! CI load. See `services/rp/tests/features/center_on_target.feature` for
-//! the worked numbers.
+//! **BDD-author note.** `do_slew_blocking` sizes its deadline from the
+//! slew distance (`compute_slew_deadline`): a small inner-iteration
+//! corrective slew floors at `MIN_SLEW_DEADLINE` (30 s), and only a long
+//! slew gets a deadline of minutes, approaching the BDD client's
+//! 6-minute `MCP_CALL_TIMEOUT`. Keeping BDD canned WCS values within ~2′
+//! of any prior synced position keeps iter-1's sync + slew traversal
+//! small (and fast) even under heavy CI load. See
+//! `services/rp/tests/features/center_on_target.feature` for the worked
+//! numbers.
 //!
-//! Note: the closed-loop centering BDD hit *two* distinct hang classes
-//! in May 2026, neither the slew/keep-alive race above:
-//!
-//! 1. `do_capture` looped forever on a **failed** `sky-survey-camera`
-//!    exposure — its follow-mode mount read timed out under load, so
-//!    `ImageReady` never went true and the capture poll spun
-//!    indefinitely. Fixed in `mcp/internals.rs::do_capture` (treat
-//!    `CameraState::Error` as terminal + a readout deadline).
-//! 2. (Issue #319.) A *single* per-iteration mount read stalled and
-//!    hung forever, because rp's Alpaca HTTP client had **no
-//!    per-request timeout** — a device that accepts the connection but
-//!    never answers (an overloaded `OmniSim` in CI) blocks the `await`
-//!    indefinitely, and the blocking-op poll deadlines guard *loops*,
-//!    not a single in-flight request. Fixed in `equipment::alpaca` with
-//!    a per-request connect + read timeout; the capture's mount read and
-//!    the `Slewing` poll also ride out a transient read failure.
-//!
-//! CI job `timeout-minutes` and the BDD client's `MCP_CALL_TIMEOUT` are
-//! independent backstops, not the fix.
+//! No step of the loop waits on a device without a bound
+//! (`docs/services/rp.md` § `center_on_target` Contract, "Unresponsive
+//! device"): a single mount read that stalls ends at the Alpaca client's
+//! per-request timeout, the capture's mount read retries a failed read,
+//! and the slew's `Slewing` poll takes a read error for "not idle yet".
+//! On the capture side (`mcp/internals.rs`, `wait_for_image_ready`), a
+//! camera that reports `CameraState::Error` while its frame is not ready
+//! ends the capture at once with the camera's stored reason, rather than
+//! being polled as "still exposing", and the readout backstop
+//! (`duration` plus 120 s) bounds a camera that stays in `Exposing`. CI
+//! job `timeout-minutes` and the BDD client's `MCP_CALL_TIMEOUT` are
+//! backstops behind these, not what bounds the loop.
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -69,7 +62,7 @@ pub struct CenterOnTargetParams {
 }
 
 /// Action taken on a single iteration *after* the per-iter solve.
-/// Serialized as a kebab/snake-cased string in the result JSON.
+/// Serialized as a `snake_case` string in the result JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IterationAction {
@@ -145,10 +138,9 @@ pub enum CenterOnTargetError {
 #[async_trait]
 pub trait PlateSolveOps {
     /// Plate-solve the named `document_id`. The MCP-side adapter passes
-    /// no hints, so the frame's recorded pointing is the hint and the
-    /// wrapper hint plumbing stays in the existing `plate_solve`
-    /// Contract. Synthetic adapters ignore the `document_id` and return
-    /// canned outcomes.
+    /// no hints, so the frame's recorded pointing is the hint, as the
+    /// `plate_solve` Contract states. Synthetic adapters ignore the
+    /// `document_id` and return canned outcomes.
     async fn solve(&self, document_id: &str) -> Result<SolveOutcome, String>;
 }
 

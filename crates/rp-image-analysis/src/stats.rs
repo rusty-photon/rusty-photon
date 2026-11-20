@@ -32,8 +32,8 @@ pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
     let pixel_count = u64::try_from(pixels.len()).unwrap_or(u64::MAX);
 
     // Fold min/max/mean in a single pass before the partition mutates
-    // the buffer; the values are order-independent so reading them
-    // up front matches the previous (non-mutating) contract.
+    // the buffer; the values are order-independent, so reading them
+    // up front describes the pixel set as the caller passed it.
     let mut min = i32::MAX;
     let mut max = i32::MIN;
     let mut sum = 0.0_f64;
@@ -67,10 +67,10 @@ pub fn compute_stats(pixels: &mut [i32]) -> Option<ImageStats> {
     };
 
     // Clamp negatives to 0 across all four fields so the reported stats
-    // are internally consistent. Production cameras today are u16-only;
-    // negatives only arise on the i32 deferred-scientific-camera path
+    // are internally consistent. A u16 frame has none; an i32 one can,
+    // from a scientific camera or a FITS file that holds them
     // (over-subtraction during dark correction, electronic offsets), and
-    // when they do, callers see a uniform "negatives become zero" rather
+    // when it does, callers see a uniform "negatives become zero" rather
     // than a min/max/median of 0 alongside a negative mean.
     let clamp = |v: i32| -> u32 { v.max(0).cast_unsigned() };
 

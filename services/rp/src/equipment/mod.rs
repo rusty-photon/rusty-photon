@@ -13,9 +13,10 @@
 //! Session Recovery) in [`supervisor`].
 //!
 //! `rotator` has its own tools, and `switch` its power tools through the
-//! power map ([`power`]); `observing_conditions` and `dome` cover roster
-//! membership and connectivity status only (rp.md § Equipment
-//! Integration).
+//! power map ([`power`]); `observing_conditions` has no tool, and each
+//! capture reads its sensors into the frame's rig state; `dome` covers
+//! roster membership and connectivity status only (rp.md § ASCOM Alpaca
+//! Devices).
 //!
 //! [`EntryRef`] names one entry of any kind, for the code that acts on
 //! an entry by its id alone: the reconnect supervisor's walk,
@@ -25,10 +26,6 @@
 //! locate the device in the server's `configureddevices` list, hold it
 //! to the entry's identity pin (rp.md § Device Identity Pin), switch it
 //! on, and log what was bound.
-//!
-//! The submodules' `*Entry` types and shared status types are
-//! re-exported here so existing `crate::equipment::CameraEntry` etc.
-//! callsites keep working unchanged.
 
 pub mod alpaca;
 pub mod binding;
@@ -182,8 +179,8 @@ pub const SITE_MATCH_TOLERANCE_DEG: f64 = 0.01;
 
 impl EquipmentRegistry {
     /// `ca_cert_path` is the observatory CA (`Config::ca_cert_path`,
-    /// rp.md §Configuration), forwarded to every device's Alpaca client so
-    /// an `https://` `alpaca_url` signed by that CA verifies (issue #609).
+    /// rp.md § ASCOM Alpaca Devices), forwarded to every device's Alpaca
+    /// client so an `https://` `alpaca_url` signed by that CA verifies.
     pub async fn new(
         equipment_config: &config::EquipmentConfig,
         ca_cert_path: Option<&std::path::Path>,

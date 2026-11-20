@@ -1,4 +1,4 @@
-Feature: Round-trippable file-naming template config-load validation (P1)
+Feature: Round-trippable file-naming template config-load validation
   `session.file_naming_pattern` and `session.directory_pattern` are a
   round-trippable contract rp both renders and parses back (rp.md §
   Persistence, rp-targets.md § File-naming template). Both are parsed
@@ -51,7 +51,7 @@ Feature: Round-trippable file-naming template config-load validation (P1)
     When rp attempts to start
     Then rp should start successfully
 
-  Scenario: The old {duration}/{sequence} token names are rejected as unknown tokens
+  Scenario: The retired {duration}/{sequence} token names are rejected as unknown tokens
     Given an rp config with file_naming_pattern "{target}_{filter}_{binning}_{sequence}_{duration}_fpos_{filter_position}_{sensor_temp}"
     When rp attempts to start
     Then rp should fail to start

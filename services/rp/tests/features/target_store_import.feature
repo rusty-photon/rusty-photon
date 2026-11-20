@@ -1,17 +1,15 @@
-Feature: Target store import form (P3)
-  P3 of the planetarium-target-import plan activates add_target's third
-  form — bare ra_hours + dec_degrees + a source {kind, client,
-  received_at} provenance object — the shape the planetarium bridge
-  sends (rp.md § Target Store → Import form). Naming is rp's job here:
-  one reverse cone-search over the embedded catalog names the import (a
-  deep-sky hit outranks any star hit; no hit falls back to the
-  IAU-style coordinate form), so catalog_ref and display_name are
-  rejected alongside source. Identity is proximity-only dedup
-  (target_store.import.dedup_arcsec, default 30 arcsec): a repeated
-  import within tolerance upserts only a row that is still pending and
-  last written by the same source.kind; active or operator-touched rows
-  are never modified (Decision 3,
-  docs/plans/archive/planetarium-target-import.md). Imports always land paused
+Feature: Target store import form
+  add_target's third form — bare ra_hours + dec_degrees + a source
+  {kind, client, received_at} provenance object — is the shape the
+  planetarium bridge sends (rp.md § Target Store → Import form). Naming
+  is rp's job here: one reverse cone-search over the embedded catalog
+  names the import (a deep-sky hit outranks any star hit; no hit falls
+  back to the IAU-style coordinate form), so catalog_ref and
+  display_name are rejected alongside source. Identity is
+  proximity-only dedup (target_store.import.dedup_arcsec, default 30
+  arcsec): a repeated import within tolerance upserts only a row that
+  is still pending and last written by the same source.kind; active or
+  operator-touched rows are never modified. Imports always land paused
   with the config-default goals, stamped with typed writer identity
   (created_by / updated_by = source.kind) and a human-readable
   provenance line in notes.

@@ -4,7 +4,7 @@ Feature: Ephemeris primitive MCP tools
   the `Ephemeris` trait in `rp-ephemeris` (which wraps ERFA / IAU
   SOFA via the `erfars` crate). Each is a single-operation tool
   shaped so that a planner plugin can compose them; the convenience
-  tools (Phase 7) call into the same trait. The `get_site` tool
+  tools (planner.feature) call into the same trait. The `get_site` tool
   reports the configured site itself, so a plugin (polar-align) can
   source the observer coordinates instead of duplicating them in its
   own config.

@@ -59,22 +59,24 @@ pub(crate) struct DeviceHold {
 /// (e.g. `sky-survey-camera` when its follow-mode mount read or survey
 /// fetch times out) — or, more rarely, wedge in `Exposing`. The poll
 /// loop treats `Error` as terminal; this grace caps the wait even when a
-/// camera never reports either readiness or error. 120 s mirrors
-/// `do_move_focuser_blocking`'s deadline and comfortably covers real
-/// readout/download latency on top of the exposure itself.
+/// camera never reports either readiness or error. 120 s matches the
+/// `move_focuser` fallback ceiling ([`FOCUSER_DEADLINE_FALLBACK`]) and
+/// comfortably covers real readout/download latency on top of the
+/// exposure itself.
 const CAPTURE_READOUT_GRACE: Duration = Duration::from_mins(2);
 
 /// Default per-camera readout + download estimate used to size the
-/// predictive exposure deadline (§2.4) when `camera.readout_time_estimate`
-/// is omitted. Conservative (slow side) so the advertised `predicted`
-/// over-estimates rather than under-estimates — the Sentinel watchdog must
-/// not flag a healthy-but-slow readout. A fast USB-3 CMOS reads out in well
+/// predictive exposure deadline (rp.md § Event Envelope) when
+/// `camera.readout_time_estimate` is omitted. Conservative (slow side)
+/// so the advertised `predicted` over-estimates rather than
+/// under-estimates — the Sentinel watchdog must not flag a
+/// healthy-but-slow readout. A fast USB-3 CMOS reads out in well
 /// under a second; this 15 s default is sized for an unconfigured slow
 /// USB-2 CCD, and a real rig sets a tighter value per camera.
 const DEFAULT_READOUT_TIME_ESTIMATE: Duration = Duration::from_secs(15);
 
 /// Additive slack over the exposure `predicted` for the advertised
-/// hard-ceiling `max` (§2.4): `max = duration + readout_time_estimate +
+/// hard-ceiling `max`: `max = duration + readout_time_estimate +
 /// EXPOSURE_READOUT_HEADROOM`. Covers a slow USB-2 download tail beyond the
 /// per-camera estimate. This sizes only the deadline carried on the
 /// `exposure_started` envelope (which the Sentinel watchdog tracks) — rp's
@@ -82,7 +84,7 @@ const DEFAULT_READOUT_TIME_ESTIMATE: Duration = Duration::from_secs(15);
 /// [`CAPTURE_READOUT_GRACE`]; the camera driver owns enforcement.
 const EXPOSURE_READOUT_HEADROOM: Duration = Duration::from_secs(30);
 
-/// Size the predictive exposure deadline (§2.4) for the `exposure_started`
+/// Size the predictive exposure deadline for the `exposure_started`
 /// envelope: `predicted = duration + readout_estimate`, `max = predicted +
 /// EXPOSURE_READOUT_HEADROOM`. Pure millisecond math returning the
 /// `(predicted_ms, max_ms)` envelope pair. Unlike the slew/park/focuser
@@ -100,7 +102,7 @@ pub(crate) fn exposure_deadlines(duration: Duration, readout_estimate: Duration)
     )
 }
 
-/// Size the predictive `center_on_target` deadline (§2.5) for the
+/// Size the predictive `center_on_target` deadline for the
 /// `centering_started` envelope. The Sentinel watchdog tracks only the
 /// outer loop (each per-iteration `slew`/`capture` carries its own
 /// deadline), so: `per_iter = capture_duration + solve_time_estimate +
@@ -124,11 +126,11 @@ pub(crate) fn centering_deadlines(
     (predicted_ms, max_ms)
 }
 
-/// Floor on the predictive slew deadline (§2.1 of the predictive-deadlines
-/// plan). A short slew still gets at least this long before it's considered
-/// overrun, covering fixed overheads that `distance / rate` ignores:
-/// acceleration ramps and controller/`IsSlewing` latency. The binding
-/// constraint is the `OmniSim` BDD simulator — it slews at 20°/s with a fixed
+/// Floor on the predictive slew deadline. A short slew still gets at
+/// least this long before it's considered overrun, covering fixed
+/// overheads that `distance / rate` ignores: acceleration ramps and
+/// controller/`IsSlewing` latency. The binding constraint is the
+/// `OmniSim` BDD simulator — it slews at 20°/s with a fixed
 /// deceleration tail, so a from-rest slew (its physical axes reset to a
 /// startup position each scenario, while `sync_mount` only moves the
 /// *reported* coordinates) takes up to ~12 s regardless of the small
@@ -137,17 +139,17 @@ pub(crate) fn centering_deadlines(
 /// `OmniSim`'s ~12 s worst case — margin for a contended CI runner dropping
 /// timer ticks (the goto-slew advances a fixed angle per tick, so a stalled
 /// timer stretches wall-clock time) — while still surfacing a wedged slew
-/// ~10× sooner than the prior hardcoded 300 s ceiling.
+/// ~10× sooner than the 300 s [`SLEW_DEADLINE_FALLBACK`].
 const MIN_SLEW_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Slew deadline used when the predicted deadline can't be computed — the
 /// mount isn't resolvable yet, or the pre-slew pointing read failed. A
 /// prediction is an optimization, not a precondition for slewing, so the
-/// deadline degrades to the historical 300 s ceiling rather than failing
-/// the slew.
+/// deadline degrades to a fixed 300 s ceiling rather than failing the
+/// slew.
 const SLEW_DEADLINE_FALLBACK: Duration = Duration::from_mins(5);
 
-/// Worst-case axis traverse used to size the park deadline (§2.2). The
+/// Worst-case axis traverse used to size the park deadline. The
 /// generic Alpaca `Telescope` trait exposes no park-position getter, so rp
 /// cannot compute a great-circle distance to the park position the way
 /// `slew` does. 180° is the maximum angular separation between any two
@@ -157,8 +159,8 @@ const PARK_WORST_CASE_TRAVERSE_DEG: f64 = 180.0;
 
 /// Headroom multiplier over the worst-case park `predicted`. Smaller than
 /// slew's ×3 (which sits over a *measured* small distance): park's
-/// `predicted` is already a worst-case 180° traverse, so ×3 would re-approach
-/// the old 300 s ceiling and defeat the point.
+/// `predicted` is already a worst-case 180° traverse, so ×3 would approach
+/// the 300 s [`PARK_DEADLINE_FALLBACK`] and defeat the point.
 const PARK_DEADLINE_HEADROOM: f64 = 2.0;
 
 /// Floor on the predictive park deadline. More generous than
@@ -173,7 +175,7 @@ const MIN_PARK_DEADLINE: Duration = Duration::from_mins(1);
 /// the slew path.
 const PARK_DEADLINE_FALLBACK: Duration = Duration::from_mins(5);
 
-/// Headroom multiplier over the focuser `predicted` (§2.3): `max =
+/// Headroom multiplier over the focuser `predicted`: `max =
 /// max(predicted × 2, MIN_FOCUSER_DEADLINE)`.
 const FOCUSER_DEADLINE_HEADROOM: f64 = 2.0;
 
@@ -184,8 +186,8 @@ const MIN_FOCUSER_DEADLINE: Duration = Duration::from_secs(5);
 /// Move-focuser deadline used when the predicted deadline can't be computed
 /// — the focuser isn't resolvable, or the pre-move position read failed. A
 /// prediction is an optimization, not a precondition for moving, so the
-/// deadline degrades to the historical 120 s ceiling rather than failing
-/// the move.
+/// deadline degrades to a fixed 120 s ceiling rather than failing the
+/// move.
 const FOCUSER_DEADLINE_FALLBACK: Duration = Duration::from_mins(2);
 
 /// A planned focuser move: the legs to command in order (one, or
@@ -346,16 +348,6 @@ fn measure_stars_on<T: imaging::Pixel>(
     }
 }
 
-/// Counts existing `.fits` frames in `dir` whose filename (parsed via
-/// `file_template`) shares this frame's `(filter, binning, exposure_duration)`
-/// sub-spec, and returns count + 1 — the `{frame_number}` value for a
-/// new frame in that sub-spec. Nothing is stored (rp-targets.md §
-/// Progress derivation): a plain `read_dir` scan per capture, scoped
-/// to `dir` (the frame's own rendered directory, e.g. one target's one
-/// observing night) rather than the whole data directory. `Ok(1)`
-/// when `dir` doesn't exist yet — this sub-spec's first frame here.
-/// Filters out `.json` sidecars explicitly: they share a filename stem
-/// with their FITS file, so counting both would double-count.
 /// The JSON sidecar carries fixed-width dimensions, so this is where
 /// the frame geometry stops being a buffer length (the FITS writer
 /// takes the lengths directly).
@@ -763,7 +755,7 @@ struct CameraClaim {
 }
 
 /// What a capture holds of its camera: the capture slot (rp.md
-/// § Capture Tool Details, "Binning" → Concurrency; under a train lease,
+/// § Capture Tool Details, Concurrency; under a train lease,
 /// the lease's slot for the camera) and, through the guide camera, the
 /// guide camera guard (§ The guide camera guard).
 ///
@@ -848,10 +840,10 @@ fn wind_down(
 
 /// Download the finished frame and give up the camera: the guide camera
 /// guard when the capture holds it, and the capture slot (rp.md
-/// § Capture Tool Details, "Binning" → Concurrency). Nothing
+/// § Capture Tool Details, Concurrency). Nothing
 /// a capture does after its download touches the camera, so the next
 /// queued capture can start its exposure while this frame is still
-/// being written (tenet 2), and the guider can start.
+/// being written (tenet 2 of rp.md § Tenets), and the guider can start.
 async fn download_frame(
     cam: &Arc<dyn Camera>,
     hold: &mut CameraHold,
@@ -946,9 +938,9 @@ fn row_major_pixels(
         .copied())
 }
 
-/// What Decision 11's `frame_type` makes of a frame: the document's
-/// `target` and `frame_type`, and the templated path when the rig names
-/// its files.
+/// What a capture's `frame_type` makes of a frame (rp.md § Capture Tool
+/// Details, Target linkage): the document's `target` and `frame_type`,
+/// and the templated path when the rig names its files.
 #[derive(Default)]
 struct FrameNaming {
     target: Option<persistence::ExposureTarget>,
@@ -1226,6 +1218,16 @@ fn derive_optics(
     optics
 }
 
+/// Counts existing `.fits` frames in `dir` whose filename (parsed via
+/// `file_template`) shares this frame's `(filter, binning, exposure_duration)`
+/// sub-spec, and returns count + 1 — the `{frame_number}` value for a
+/// new frame in that sub-spec. Nothing is stored (rp-targets.md §
+/// Progress derivation): a plain `read_dir` scan per capture, scoped
+/// to `dir` (the frame's own rendered directory, e.g. one target's one
+/// observing night) rather than the whole data directory. `Ok(1)`
+/// when `dir` doesn't exist yet — this sub-spec's first frame here.
+/// Only `.fits` files count: a `.json` sidecar shares its FITS file's
+/// stem, so counting both would double-count.
 async fn next_frame_number(
     file_template: &naming_template::CompiledTemplate,
     dir: &std::path::Path,
@@ -1590,8 +1592,9 @@ impl McpHandler {
     /// `CAPTURE_READOUT_GRACE`) advance. `cancel` aborts the exposure
     /// and ends the call (rp.md § In-Flight Tool Calls). The
     /// emitted `progress` is the elapsed fraction of the total
-    /// `duration + CAPTURE_READOUT_GRACE` budget; messages cycle
-    /// `"exposing"` → `"reading_out"` once `image_ready` flips true.
+    /// `duration + CAPTURE_READOUT_GRACE` budget; the message reads
+    /// `"exposing"` until `duration` has passed and `"reading_out"`
+    /// after it.
     /// `None` (unit tests, MCP clients that omitted `progressToken`)
     /// makes the emission a no-op.
     pub(crate) async fn do_capture(
@@ -1623,9 +1626,9 @@ impl McpHandler {
         let camera_id = req.camera_id;
         let duration = req.duration;
         // One capture through a camera at a time (rp.md § Capture Tool
-        // Details, "Binning" → Concurrency): the slot is held from the
-        // first geometry write until the frame is downloaded, so a
-        // second capture through this camera queues here rather than
+        // Details, Concurrency): the slot is held from the first
+        // geometry write until the frame is downloaded, so a second
+        // capture through this camera queues here rather than
         // interleaving its writes with this one's.
         //
         // Exposures through a train's camera contend with mount motion
@@ -1780,9 +1783,9 @@ impl McpHandler {
         capture_result.map(|()| (image_path, document_id))
     }
 
-    /// Decision 11 (rp.md § Capture Tool Details): `frame_type` stamps
-    /// the document's `target`/`frame_type` fields. `None` leaves both
-    /// unset. The *templated path* is a separate switch —
+    /// `frame_type` stamps the document's `target`/`frame_type` fields
+    /// (rp.md § Capture Tool Details, Target linkage). `None` leaves
+    /// both unset. The *templated path* is a separate switch —
     /// `session.file_naming_pattern` — so a rig with no pattern
     /// configured still records what a frame is and what it is of, it
     /// just keeps the flat `<doc_uuid_8>.fits` name (and, having nothing
@@ -2074,13 +2077,13 @@ impl McpHandler {
     /// the exposure start (rp.md § Core
     /// Fields). All auxiliary — a failed read only drops its field, never
     /// the capture — and issued together, so they cost one round-trip of
-    /// latency. Read after the exposure completes (rather than after the
-    /// FITS write, as before Decision 11) because Decision 11's render
-    /// step may need `sensor_temperature_c` to finalize `image_path`
-    /// before the FITS write happens. `captured_at` is the window's
-    /// `ready` instant — once, reused both for `{night_date}` and the
-    /// document's `captured_at` field — rather than read twice a few
-    /// hundred milliseconds apart. Every read but the temperature is
+    /// latency. Read after the exposure completes, not after the FITS
+    /// write, because the naming template's render step may need
+    /// `sensor_temperature_c` to finalize `image_path` before the FITS
+    /// write happens. `captured_at` is the window's `ready` instant —
+    /// once, reused both for `{night_date}` and the document's
+    /// `captured_at` field — rather than read twice a few hundred
+    /// milliseconds apart. Every read but the temperature is
     /// bounded by `deadline`; the temperature read, which a
     /// `{sensor_temp}` filename can depend on, is not.
     async fn capture_conditions(
@@ -2251,7 +2254,7 @@ impl McpHandler {
     }
 
     /// The flat `<data_directory>/<doc_uuid_8>.fits` path every
-    /// capture starts from — what a frame keeps unless Decision 11's
+    /// capture starts from — what a frame keeps unless its
     /// `frame_type` *and* a configured `session.file_naming_pattern`
     /// render something else over it.
     fn flat_frame_path(&self, uuid8: &str) -> String {
@@ -2265,7 +2268,7 @@ impl McpHandler {
     /// Claim the camera for one capture: wait for it, then snapshot it.
     ///
     /// The two waits come in this order (rp.md § Capture Tool Details,
-    /// "Binning" → Concurrency): the camera's capture slot, then the
+    /// Concurrency): the camera's capture slot, then the
     /// motion-gate permit. Slot first, so a capture queued behind a busy
     /// camera holds no permit and never delays a pending slew; nothing
     /// holds the gate and then waits for a camera, so the two waits
@@ -2295,15 +2298,14 @@ impl McpHandler {
     /// The snapshot follows the waits: the connected camera handle, the
     /// train-derived focal length, and the invariant physical-sensor
     /// properties (plus the driver name) cached at connect time, cloned
-    /// out of the `CameraEntry` borrow — which is
-    /// what lets `do_capture` avoid the 5 Alpaca round-trips per
-    /// exposure it used to pay for these properties (see `CameraEntry`
+    /// out of the `CameraEntry` borrow, so `do_capture` reads none of
+    /// these properties from the camera per exposure (see `CameraEntry`
     /// docs). A capture can queue for a whole exposure, and a reconnect
     /// in that time may put a different device behind the entry (rp.md
     /// § Device Session Recovery), so the snapshot is taken once the
     /// capture holds the camera: it exposes on the session live when it
     /// got the camera, not the one live when it queued. The readout
-    /// estimate sizes the predictive exposure deadline (§2.4); omitted
+    /// estimate sizes the predictive exposure deadline; omitted
     /// in config → the conservative built-in default. rp does not
     /// enforce it; it rides the `exposure_started` envelope for the
     /// Sentinel watchdog (the camera driver owns the exposure, and
@@ -2492,13 +2494,12 @@ impl McpHandler {
     /// necessarily still exposing. An Alpaca camera that *fails* an
     /// exposure transitions to `CameraState::Error` and leaves
     /// `ImageReady` false forever; polling `ImageReady` alone treats
-    /// that as "still exposing" and loops indefinitely. That is the
-    /// bug that ran CI's closed-loop centering BDD to GitHub's 6 h job
-    /// cap: `sky-survey-camera`'s follow-mode mount read timed out
-    /// under load, the exposure failed, and `do_capture` span here
-    /// forever. Treat `Error` as terminal (surfacing the camera's
-    /// stored reason via `image_array`), and cap the total wait with a
-    /// deadline as a backstop for a camera wedged in `Exposing`.
+    /// that as "still exposing" and loops indefinitely — as it would
+    /// for `sky-survey-camera` when its follow-mode mount read times
+    /// out under load and the exposure fails. Treat `Error` as terminal
+    /// (surfacing the camera's stored reason via `image_array`), and
+    /// cap the total wait with a deadline as a backstop for a camera
+    /// wedged in `Exposing`.
     async fn wait_for_image_ready(
         cam: &Arc<dyn Camera>,
         duration: Duration,
@@ -2605,8 +2606,8 @@ impl McpHandler {
         }
     }
 
-    /// Decision 11 (rp.md § Capture Tool Details) naming: render the
-    /// templated directory + file path for a typed frame. `Ok(None)`
+    /// Render the templated directory + file path for a typed frame
+    /// (rp.md § Capture Tool Details, Target linkage). `Ok(None)`
     /// when no `session.file_naming_pattern` is configured — the frame
     /// keeps the flat `<doc_uuid_8>.fits` name.
     async fn render_templated_path(
@@ -2685,7 +2686,7 @@ impl McpHandler {
 
     /// Resolves `do_capture`'s `target`/`frame_type` into the exposure
     /// document's `target` field plus the `TargetSlug` `render` needs
-    /// (rp.md § Capture Tool Details, Decision 11). An explicit
+    /// (rp.md § Capture Tool Details, Target linkage). An explicit
     /// `target` always resolves against the store regardless of
     /// `frame_type` (an unknown slug or an absent store both error).
     /// Absent `target`: `Light` errors (a Light frame always needs a
@@ -2755,10 +2756,9 @@ impl McpHandler {
 
     /// [`Self::read_frame_filter`] as a capture runs it: bounded by
     /// `deadline` where the filename does not depend on it, since a slow
-    /// wheel must not fail such a capture; waited out
-    /// where it does ([`Self::names_files`]), as it always has been,
-    /// rather than lose a finished exposure to a slow read (rp.md § Core
-    /// Fields, `filter`).
+    /// wheel must not fail such a capture; waited out where it does
+    /// ([`Self::names_files`]), rather than lose a finished exposure to
+    /// a slow read (rp.md § Core Fields, `filter`).
     pub(super) async fn capture_filter(
         &self,
         camera_id: &str,
@@ -2819,7 +2819,8 @@ impl McpHandler {
     /// to command (one, or overshoot-then-target under backlash
     /// compensation — see [`plan_focuser_legs`]), each with its own
     /// predictive deadline from its hop and the configured step rate
-    /// (§2.3): `leg_predicted = |leg − previous| / steps_per_sec`,
+    /// (rp.md § Event Envelope):
+    /// `leg_predicted = |leg − previous| / steps_per_sec`,
     /// `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE)`. The
     /// `(predicted_ms, max_ms)` pair riding the `move_focuser_started`
     /// envelope sums both over the legs.
@@ -2954,7 +2955,7 @@ impl McpHandler {
         // Plan the legs and size the deadline from the move's actual
         // workload. If the focuser can't be resolved or the pre-move
         // position read fails, fall back to a single uncompensated leg on
-        // the historical 120 s ceiling and omit the deadline fields — a
+        // a fixed 120 s ceiling and omit the deadline fields — a
         // prediction is an optimization, not a precondition for moving.
         let (plan, started_event) = match self.plan_focuser_move(focuser_id, position).await {
             Ok(plan) => {
@@ -3199,8 +3200,8 @@ impl McpHandler {
 
     /// Size the predictive slew deadline from the mount's current
     /// pointing, the requested target, the configured slew rate, and the
-    /// settle time (§2.1). `ra` is in hours (the `slew` boundary unit),
-    /// `dec` in degrees. Returns the poll deadline plus the
+    /// settle time (rp.md § Event Envelope). `ra` is in hours (the
+    /// `slew` boundary unit), `dec` in degrees. Returns the poll deadline plus the
     /// `(predicted_ms, max_ms)` pair for the `slew_started` envelope.
     ///
     /// `Err` if the mount can't be resolved or a pre-slew pointing read
@@ -3297,7 +3298,7 @@ impl McpHandler {
 
         // Size the deadline from the slew's actual workload. If the mount
         // can't be resolved or the pre-slew pointing read fails, fall back
-        // to the historical 300 s ceiling and omit the deadline fields —
+        // to a fixed 300 s ceiling and omit the deadline fields —
         // a prediction is an optimization, not a precondition for slewing.
         let started_payload = serde_json::json!({ "ra": ra, "dec": dec });
         let (deadline, started_event) = match self
@@ -3348,9 +3349,10 @@ impl McpHandler {
     /// settle + post-slew read. Split out so the public method can wrap
     /// it in the `slew_started` / `slew_complete` / `slew_failed` event
     /// triple under one `operation_id`. Every call (including
-    /// `center_on_target`'s per-iteration slews) emits its own triple;
-    /// Sentinel filters inner-vs-outer in Phase 4. `deadline` is the
-    /// predicted poll ceiling sized by the wrapper (see
+    /// `center_on_target`'s per-iteration slews) emits its own triple,
+    /// which Sentinel watches on its own `operation_id` (rp.md
+    /// § Sentinel Watchdog Integration). `deadline` is the predicted
+    /// poll ceiling sized by the wrapper (see
     /// [`Self::compute_slew_deadline`]).
     async fn do_slew_blocking_inner(
         &self,
@@ -3424,11 +3426,12 @@ impl McpHandler {
         Ok((actual_ra, actual_dec))
     }
 
-    /// Size the park deadline (§2.2). rp can't read the mount's park
-    /// coordinates — the generic Alpaca `Telescope` trait exposes no
-    /// park-position getter — so the deadline is the worst-case full-axis
-    /// traverse ([`PARK_WORST_CASE_TRAVERSE_DEG`]) at the configured slew
-    /// rate, not a distance-scaled prediction like slew:
+    /// Size the park deadline (rp.md § Event Envelope). rp can't read
+    /// the mount's park coordinates — the generic Alpaca `Telescope`
+    /// trait exposes no park-position getter — so the deadline is the
+    /// worst-case full-axis traverse ([`PARK_WORST_CASE_TRAVERSE_DEG`])
+    /// at the configured slew rate, not a distance-scaled prediction
+    /// like slew:
     /// `predicted = 180° / slew_rate + settle`,
     /// `max = max(predicted × 2, MIN_PARK_DEADLINE)`. Returns the poll
     /// deadline plus the `(predicted_ms, max_ms)` pair for the
@@ -3502,7 +3505,7 @@ impl McpHandler {
         let started_at = chrono::Utc::now();
 
         // Size the deadline from the worst-case traverse at the configured
-        // slew rate. With no mount configured, fall back to the historical
+        // slew rate. With no mount configured, fall back to a fixed
         // 300 s ceiling and omit the deadline fields.
         let (deadline, started_event) = match self.compute_park_deadline() {
             Ok((deadline, predicted_ms, max_ms)) => (
@@ -3548,10 +3551,10 @@ impl McpHandler {
     /// Inner body of [`do_park_blocking`] — the `park()` call + the
     /// `at_park` poll loop. Split out so the public method wraps it in
     /// the `park_started` / `park_complete` / `park_failed` triple. The
-    /// timeout path still returns `Err` (so `park_failed` fires) and
-    /// still does NOT auto-abort — the watchdog ladder owns that decision
-    /// in Phase 5. `deadline` is the predicted poll ceiling sized by the
-    /// wrapper (see [`Self::compute_park_deadline`]).
+    /// timeout path returns `Err` (so `park_failed` fires) and does NOT
+    /// auto-abort — Sentinel's watchdog ladder owns that decision (rp.md
+    /// § Corrective Actions). `deadline` is the predicted poll ceiling
+    /// sized by the wrapper (see [`Self::compute_park_deadline`]).
     async fn do_park_blocking_inner(
         &self,
         deadline: Duration,
@@ -3985,12 +3988,13 @@ pub(crate) enum PollIdleError {
 }
 
 /// Consecutive `slewing()` read errors [`poll_slewing_until_idle`]
-/// tolerates before giving up. A transient read failure — the now
-/// timeout-bounded stall a loaded `OmniSim` or a flaky link produces
-/// (issue #319) — is treated like "not idle yet" and retried on the
-/// next tick; only a *persistent* failure aborts the slew. The 300 s
-/// deadline still caps the total wait. Mirrors the connect path's
-/// tolerance for a transient device stall.
+/// tolerates before giving up. A transient read failure — the stall,
+/// bounded by the request's read timeout, that a loaded `OmniSim` or a
+/// flaky link produces — is treated like "not idle yet" and retried on
+/// the next tick; only a *persistent* failure aborts the slew, and the
+/// slew's deadline caps the total wait (rp.md § `center_on_target`
+/// Contract). Mirrors the connect path's tolerance for a transient
+/// device stall.
 const SLEWING_READ_ERROR_TOLERANCE: u32 = 5;
 
 /// Poll `mount.slewing()` every 100 ms until it returns `false`,

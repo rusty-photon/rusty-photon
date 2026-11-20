@@ -1,5 +1,5 @@
 //! The single home of rp's plan-data validation rules (rp.md § Plan
-//! schema and validation, ADR-019).
+//! schema and validation).
 //!
 //! Every rule a plan write enforces lives here exactly once, and both the
 //! writers (`add_target`, `set_goals`) and the read-only `validate_plan`

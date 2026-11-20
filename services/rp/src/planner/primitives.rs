@@ -8,8 +8,9 @@
 //! Each helper takes the parsed input + a borrowed `Site` (where
 //! relevant) and returns a `serde_json::Value` that the MCP tool body
 //! in `crate::mcp` projects onto a `CallToolResult` success or error
-//! payload. Keeping the JSON-shaping in this module lets the
-//! convenience tools (Phase 7) reuse the same primitive calls.
+//! payload. Keeping the parsing and JSON-shaping out of the MCP layer
+//! lets the convenience tools reuse the same parsers and site check
+//! (`parse_time_or_now`, `validate_icrs`, `site_required_error`).
 
 use chrono::{DateTime, NaiveDate, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, SideOfPier, Site, TwilightKind};

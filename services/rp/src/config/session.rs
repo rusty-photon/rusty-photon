@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct SessionConfig {
     pub data_directory: String,
-    /// Retired with the session registry (mcp-sessionless D6 / D11):
-    /// rp keeps no run state, so there is nothing for this key to
-    /// name. It is still *accepted by the parser* — never serialized,
+    /// A retired key: rp keeps no run state, so there is nothing for it
+    /// to name. It is *accepted by the parser* — never serialized,
     /// never in the schema — solely so that
     /// [`crate::config::validate_config`] can reject a config carrying
-    /// it with a message naming the migration, at load and on a setup-page
-    /// save alike, instead of serde's bare "unknown field".
+    /// it with a message naming the migration (rp.md § Plugin Types), at
+    /// load and on a setup-page save alike, instead of serde's bare
+    /// "unknown field".
     #[serde(default, skip_serializing)]
     #[schemars(skip)]
     pub session_state_file: Option<String>,
@@ -27,11 +27,10 @@ pub struct SessionConfig {
     /// `{uuid8}` token, unknown tokens, and ambiguous adjacent tokens
     /// all fail startup). `capture` renders it (together with
     /// `directory_pattern`) whenever its `frame_type` parameter is
-    /// supplied (Decision 11) — otherwise `capture` still writes
-    /// `<doc_uuid_8>.fits` regardless of this value. See
-    /// `docs/services/rp.md` (Persistence, Capture Tool Details),
-    /// `docs/crates/rp-targets.md` (File-naming template), and Phase 7
-    /// of `docs/plans/archive/image-evaluation-tools.md`.
+    /// supplied — otherwise `capture` writes `<doc_uuid_8>.fits`
+    /// regardless of this value. See `docs/services/rp.md` (Persistence,
+    /// Capture Tool Details) and `docs/crates/rp-targets.md` (File-naming
+    /// template).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_naming_pattern: Option<String>,
     /// Optional template for the per-frame subdirectory `capture`

@@ -41,7 +41,7 @@ async fn rp_running_with_cover_calibrator_at(world: &mut RpWorld, url: String, d
     start_rp(world).await;
 }
 
-// --- Train addressing (calibrator-flats-provider plan, D4) ---
+// --- Train addressing ---
 
 /// `main` = [flat-panel, main-cam]: the flip-flat first in the train.
 #[given("rp is running with a camera and a cover calibrator on the simulator in an imaging train")]

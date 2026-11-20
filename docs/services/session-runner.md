@@ -143,13 +143,15 @@ validation error — misspellings must not silently no-op.
 - A tool error (after retries) raises a workflow error that propagates
   outward through enclosing `try` instructions (see `try`), ultimately
   failing the workflow.
-- If the tool result carries a **correction** (`rp` returns
-  `pending_correction` on natural completion or `status: "aborted"` +
-  `correction` on an immediate correction, per `rp.md` § Corrections), the
-  engine fires the synthetic `correction_requested` trigger source (see
+- If the tool result carries a **correction** — a `pending_correction`
+  object, or `status: "aborted"` / `"blocked_by_correction"` with a
+  `correction` object — the engine fires the synthetic
+  `correction_requested` trigger source (see
   [Triggers](#triggers)) with the correction as the event payload, then
   continues. An `aborted` tool result is **not** a workflow error — the
-  document decides how to react via a trigger.
+  document decides how to react via a trigger. `rp`'s built-in tools
+  return no correction; `rp` relays a tool provider's result verbatim, so
+  a provider's tool can return one.
 
 #### `sequence` — ordered container
 
@@ -393,8 +395,11 @@ actions run at the next **safe point** — after the current instruction
 completes, or continuously during a `wait`. Multiple queued triggers run in
 document order. A trigger whose action is queued or running does not queue
 again. Only `rp` (safety) and Sentinel (watchdog) ever abort an in-flight
-operation; a document that wants "stop the current exposure when X" reacts
-to the *correction* `rp` delivers rather than aborting on its own.
+operation: a document cannot cut one short, not even through a trigger
+on a *correction* in a tool result (`correction_requested`), whose
+action waits for the next safe point too. `rp`'s built-in tools return
+no correction; a tool provider's result, relayed verbatim, can carry
+one.
 
 **Poll lifecycle.** Poll triggers start when the workflow starts and stop
 when it completes or is cancelled. A poll whose tool call fails logs at
@@ -465,7 +470,7 @@ Implementation pins (`src/engine/`):
   `status: "blocked_by_correction"` carrying a `correction` object
   synthesizes `correction_requested` with `event.delivery =
   "immediate"`; a result carrying `pending_correction` synthesizes it
-  with `"after_current"` (`rp.md` § Corrections). The synthetic event is
+  with `"after_current"`. The synthetic event is
   evaluated at the safe point immediately after the carrying tool call,
   ahead of that safe point's intake drain. A correction value that is
   not a JSON object is logged at `debug!` and ignored.
@@ -831,8 +836,8 @@ Implementation pins (`src/events.rs`):
   watchdog, `bdd-infra`'s harness client): a chunked `reqwest` `GET` and
   a hand-rolled `id:`/`event:`/`data:` parser.
 
-Webhook delivery is not used: `session-runner` registers no
-`subscribes_to`/`barrier_gates` and never blocks `rp`'s tool pipeline. It is
+Webhook delivery is not used: `session-runner` registers no event plugin
+and never blocks `rp`'s tool pipeline. It is
 purely a *consumer* of the stream plus an MCP *client*.
 
 ## Runs

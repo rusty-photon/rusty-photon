@@ -1,12 +1,11 @@
 //! BDD step definitions for the closed-loop centering scenario.
 //!
-//! Phase-4 integration path from
-//! `docs/plans/archive/sky-survey-camera-mount-following.md`: the camera is a
-//! real `sky-survey-camera` process configured to follow `OmniSim`'s
-//! Telescope. The scenario primes a one-shot pointing override on
-//! the camera (F7) before invoking `center_on_target`, so iter 0
-//! sees the camera "off-target", syncs the mount, slews, and iter 1
-//! reads the mount fresh and converges.
+//! The camera is a real `sky-survey-camera` process configured to
+//! follow `OmniSim`'s Telescope (sky-survey-camera.md § Telescope follow
+//! mode). The scenario primes a one-shot pointing override on the
+//! camera (contract F7 there) before invoking `center_on_target`, so
+//! iter 0 sees the camera "off-target", syncs the mount, slews, and
+//! iter 1 reads the mount fresh and converges.
 
 use cucumber::{given, when};
 

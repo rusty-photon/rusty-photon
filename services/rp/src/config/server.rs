@@ -1,6 +1,6 @@
 //! rp's `server` block is the shared advertising shape — the plain-HTTP
-//! fields plus `advertised_url`, which rp uses to tell an orchestrator
-//! where its MCP endpoint is (the invocation's `mcp_server_url`).
+//! fields plus `advertised_url`, whose host rp admits to its MCP
+//! endpoint's `Host` allowlist (rp.md § MCP Server).
 //!
 //! It is the shared type rather than an rp-local copy of it so that the
 //! shape rp accepts is by construction the shape `rusty-photon-doctor`

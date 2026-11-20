@@ -380,14 +380,14 @@ where
 /// new session out of the slot's live state
 /// ([`DeviceSession::install`]).
 ///
-/// On success the fresh handle is installed and an `equipment_changed`
-/// event with `connected: true` is emitted unconditionally: a service
-/// that bounced between two passes drew no `connected: false` event,
-/// but the session was still re-established and the operator should
-/// see it. On failure the entry stays disconnected, with the
-/// `connected: false` event and an `info!` line emitted once per
-/// transition — not once per attempt — and each later failed pass
-/// logged at `debug!`.
+/// On success the fresh handle is installed and, when it goes live, an
+/// `equipment_changed` event with `connected: true` is emitted whether
+/// or not a `connected: false` preceded it: a service that bounced
+/// between two passes drew no `connected: false` event, but the session
+/// was still re-established and the operator should see it. On failure
+/// the entry stays disconnected, with the `connected: false` event and
+/// an `info!` line emitted once per transition — not once per attempt —
+/// and each later failed pass logged at `debug!`.
 ///
 /// A session that reads healthy is then held to the entry's identity
 /// pin by [`check_pin`] (rp.md § Device Identity Pin), which this runs
@@ -774,8 +774,8 @@ mod tests {
         );
     }
 
-    /// An unpinned healthy session costs no listing read: its behaviour
-    /// is exactly what it was before pins existed.
+    /// An unpinned healthy session costs no listing read: its health
+    /// check reads `Connected` alone.
     #[tokio::test]
     async fn pass_does_not_read_the_listing_for_a_healthy_unpinned_session() {
         let state = Arc::new(StubState::default());
@@ -836,11 +836,12 @@ mod tests {
         assert!(events.try_recv().is_err(), "no event for a healthy session");
     }
 
-    /// The incident shape (#1138): the downstream service restarted, so
-    /// its fresh process reports Connected=false. The pass re-issues
+    /// The downstream service restarted between two passes, so its
+    /// fresh process reports Connected=false. The pass re-issues
     /// Connected=true through the full connect routine and emits
     /// `equipment_changed` with connected=true even though no
-    /// connected=false event was emitted for the bounce.
+    /// connected=false event was emitted for the bounce (rp.md § Device
+    /// Session Recovery).
     #[tokio::test]
     async fn pass_reestablishes_a_session_the_service_restart_killed() {
         let state = Arc::new(StubState::default());
@@ -1170,8 +1171,8 @@ mod tests {
             "invariants must be re-read from the fresh session, not assumed"
         );
         // The pair, not just its metadata half: fresh invariants beside
-        // the dead session's handle is exactly the tear this change
-        // exists to prevent, and an assertion on the width alone would
+        // the dead session's handle is exactly the tear the one-step
+        // install prevents, and an assertion on the width alone would
         // pass on it.
         let (handle, paired) = entry
             .snapshot()

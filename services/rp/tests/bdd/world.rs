@@ -163,8 +163,6 @@ pub struct RpWorld {
     // --- Webhook receiver state ---
     /// Events collected by the test webhook receiver
     pub received_events: Arc<RwLock<Vec<ReceivedEvent>>>,
-    /// Webhook acknowledgment config (`estimated_duration`, `max_duration`)
-    pub webhook_ack_config: Option<(Duration, Duration)>,
 
     // --- MCP client state ---
     /// Last captured image path (for `compute_image_stats` chaining)
@@ -230,9 +228,9 @@ pub struct RpWorld {
     /// Current filter from `get_filter`
     pub current_filter: Option<String>,
     /// Slug of the most recently added/fetched target (Target Store
-    /// scenarios — `target_store`_*.feature, *(planned, P1)*), so a
-    /// later step can act on "the target I just added" without the
-    /// feature file repeating the slug.
+    /// scenarios — `target_store_*.feature`), so a later step can act
+    /// on "the target I just added" without the feature file repeating
+    /// the slug.
     pub last_target_slug: Option<String>,
     /// Raw JSON array from the most recent `list_targets` call
     /// (Target Store scenarios).
@@ -270,14 +268,15 @@ pub struct RpWorld {
     pub directory_pattern: Option<String>,
     /// When `true`, forces `session.file_naming_pattern` to `null` in
     /// the emitted config, overriding `RpConfigBuilder::build`'s
-    /// unconditional default — for the scenario exercising `capture`'s
-    /// "`frame_type` requires `session.file_naming_pattern` to be
-    /// configured" error path (`capture_target_linkage.feature`).
+    /// unconditional default — for the scenario in which `capture`
+    /// takes a `frame_type` with no naming pattern configured, stamps
+    /// the document and keeps the flat file name
+    /// (`capture_target_linkage.feature`).
     pub clear_file_naming_pattern: bool,
-    /// Error from the most recent `ServiceHandle::try_start` call
-    /// (Target Store naming-template config-load validation scenarios —
-    /// `target_naming_template.feature`, *(planned, P1)*). `None` after
-    /// a successful start.
+    /// Error from the most recent `ServiceHandle::try_start` call (the
+    /// config-load validation scenarios' `rp attempts to start`, in
+    /// `target_naming_template_steps.rs`). `None` after a successful
+    /// start.
     pub rp_start_error: Option<String>,
     /// `server.advertised_url` override, merged over
     /// [`RpConfigBuilder::build`]'s output the same way
@@ -307,7 +306,7 @@ pub struct RpWorld {
     /// The setup-page steps' state (`setup_pages.feature`).
     pub setup_pages: bdd_infra::setup_pages::SetupPagesState,
 
-    // --- Document HTTP API test state (Phase 7 Step 6) ---
+    // --- Document HTTP API test state ---
     /// Pinned data directory across rp lifecycle. The cross-restart
     /// scenarios need both rp processes pointing at the same on-disk
     /// archive. The `TempDir` is held by `pinned_data_dir_holder` to
@@ -354,7 +353,7 @@ pub struct RpWorld {
     /// persists to it, so the file assertions read this path.
     pub config_rest_path: Option<std::path::PathBuf>,
 
-    // --- Phase 4 closed-loop centering: sky-survey-camera follow mode ---
+    // --- Closed-loop centering: sky-survey-camera follow mode ---
     /// Running `sky-survey-camera` process when the centering scenario
     /// uses it as `main-cam`. Held on the world so its child stays
     /// alive for the scenario duration; dropped (which sends SIGTERM
@@ -395,9 +394,9 @@ impl bdd_infra::doctor_smoke::DoctorSmokeWorld for RpWorld {
 
     fn valid_config(&self) -> serde_json::Value {
         // The minimal shape rp's own `load_config` accepts: `session` and
-        // `equipment` are the two required blocks, `server` is the shared
-        // core shape (D1). Nothing is started, so the data directory is
-        // never created.
+        // `equipment` are the two required blocks, `server` takes the
+        // shared `rusty-photon-server-config` shape. Nothing is started, so
+        // the data directory is never created.
         serde_json::json!({
             "session": {
                 "data_directory": std::env::temp_dir()
@@ -543,7 +542,7 @@ impl RpWorld {
         // Target-store settings (`db_path` / `default_scheduling` /
         // `default_goals`, rp.md § Target Store) as the raw
         // `target_store` config object. The shared `RpConfigBuilder` has
-        // no typed store-settings builder yet, so a scenario that needs
+        // no typed store-settings builder, so a scenario that needs
         // non-default settings sets `target_store_config` and it is
         // spliced in here; targets themselves are seeded post-boot via
         // the `add_target` MCP tool.

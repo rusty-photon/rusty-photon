@@ -25,7 +25,7 @@ pub enum TrainDeviceKind {
     Rotator,
     FilterWheel,
     /// A cover calibrator sits at the objective: first in the list,
-    /// at most one per train (calibrator-flats-provider plan, D3).
+    /// at most one per train.
     CoverCalibrator,
 }
 
@@ -163,8 +163,8 @@ pub struct AfStep {
 }
 
 /// The validated, queryable train model. `Default` is the no-trains
-/// model — every query returns "nothing", which is exactly the
-/// pre-train behavior (trains are enrichment, not a gate).
+/// model — every query returns "nothing", as it does for a device left
+/// out of every train (trains are enrichment, not a gate).
 #[derive(Debug, Clone, Default)]
 pub struct TrainModel {
     trains: Vec<Train>,
@@ -320,11 +320,10 @@ fn imaging_focusers_error(
 /// The cover-calibrator placement rules for entry `j` = `id` of
 /// `train`: a calibrator sits at the objective (first-only) and a train
 /// has one at most — a motorized dust cap plus a separate light panel
-/// is not modeled (calibrator-flats-provider plan, D3 and O1). The
-/// one-per-train check comes first so a second calibrator is named as
-/// such rather than as misplaced. `first_calibrator` tracks the one
-/// already seen in this train. Returns the error message, or `None`
-/// when the entry is well placed.
+/// is not modeled. The one-per-train check comes first so a second
+/// calibrator is named as such rather than as misplaced.
+/// `first_calibrator` tracks the one already seen in this train.
+/// Returns the error message, or `None` when the entry is well placed.
 fn calibrator_placement_error<'a>(
     train: &OpticalTrainConfig,
     id: &'a str,
@@ -839,9 +838,9 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
-    /// The reference rig from rp.md § Optical Trains: shared drawtube
-    /// focuser (EAF), rotator behind the OAG pick-off (main train
-    /// only), guide helical on the guide train.
+    /// The reference rig, the layout of rp.md § Optical Trains' example:
+    /// shared drawtube focuser (EAF), rotator behind the OAG pick-off
+    /// (main train only), guide helical on the guide train.
     fn reference_rig() -> EquipmentConfig {
         equipment(serde_json::json!({
             "cameras": [
@@ -1080,8 +1079,9 @@ mod tests {
         assert!(model.train_for_camera("unknown-cam").is_none());
     }
 
-    /// Requirement 1 of the plan: main AF first (shared EAF runs in the
-    /// train where it is terminal), guide AF after.
+    /// Main AF first (shared EAF runs in the train where it is
+    /// terminal), guide AF after: the EAF moves the guide camera's focus
+    /// too, never the reverse.
     #[test]
     fn af_sequence_orders_shared_focusers_before_train_local_ones() {
         let model = TrainModel::try_from_equipment(&reference_rig()).unwrap();
@@ -1231,7 +1231,7 @@ mod tests {
     }
 
     /// The OAG-behind-rotator variant differs by one id in one list and
-    /// flips every rotation derivation (plan, Decision 1).
+    /// flips every rotation derivation.
     #[test]
     fn oag_behind_rotator_couples_rotation_to_the_guide_train() {
         let mut config = reference_rig();
@@ -1249,7 +1249,7 @@ mod tests {
     }
 
     /// Separate guide scope: trains sharing nothing degrade to
-    /// independent trains (reference rig 3 in rp.md).
+    /// independent trains.
     #[test]
     fn disjoint_trains_derive_no_coupling() {
         let config = equipment(serde_json::json!({
@@ -1492,7 +1492,7 @@ mod tests {
     }
 
     /// The reference roster plus a flip-flat, with `trains` as the
-    /// train lists — the calibrator-membership fixtures (plan D3).
+    /// train lists — the calibrator-membership fixtures.
     fn rig_with_calibrators(trains: serde_json::Value) -> EquipmentConfig {
         equipment(serde_json::json!({
             "cameras": [

@@ -1,11 +1,8 @@
-Feature: Target store CRUD (P1)
-  P1 of the planetarium-target-import plan (docs/plans/archive/planetarium-target-import.md)
-  replaces the config `targets[]` array with a redb-backed store
-  (rp-targets crate) exposed over `add_target`, `get_target`,
-  `list_targets`, `update_target`, and `delete_target` MCP tools (rp.md
-  § Target Store). Coexists with the legacy `targets[]` planner tools
-  (planner.feature) pending the Dynamic Planner cutover
-  (target_store_planner.feature).
+Feature: Target store CRUD
+  Targets live in a redb-backed store (rp-targets crate), not in
+  config, exposed over the `add_target`, `get_target`, `list_targets`,
+  `update_target`, and `delete_target` MCP tools (rp.md § Target
+  Store).
 
   `add_target` derives a slug from `catalog_ref` (a catalog lookup) or
   `display_name` (a custom add), then resolves it against the store:
@@ -15,7 +12,7 @@ Feature: Target store CRUD (P1)
   the lowest unused `"{base}-{n}"` suffix. The same-`catalog_ref`
   branch is itself gated on coordinate proximity, so a later catalog
   add can never silently clobber an earlier framed import of the same
-  object (Decision 3, docs/plans/archive/planetarium-target-import.md).
+  object (rp.md § Slug allocation (add-time)).
 
   Scenario: Tool catalog includes the target CRUD tools
     Given rp is running with a target store
@@ -72,9 +69,9 @@ Feature: Target store CRUD (P1)
   # NGC 7000's catalog centroid is ~RA 20.9767h, Dec +44.33deg. The
   # existing row below is framed a full degree east of it — far beyond
   # any plausible dedup tolerance (arcmin/arcsec scale) — so the second
-  # catalog add must not clobber it (Decision 3's cross-writer
-  # protection: this rule applies to every `catalog_ref` writer, not
-  # only the P3 planetarium bridge).
+  # catalog add must not clobber it: the protection applies to every
+  # `catalog_ref` writer, not only the planetarium bridge (rp.md § Slug
+  # allocation (add-time)).
   Scenario: A catalog add whose coordinates differ from an existing framed target gets a new slug
     Given rp is running with a target store
     And an MCP client connected to rp
@@ -130,7 +127,7 @@ Feature: Target store CRUD (P1)
     Then the tool call should succeed
     And the target result deleted should be false
 
-  # Framing angle (P2, rp.md § Target Store → Position angle): the
+  # Framing angle (rp.md § Target Store → Position angle): the
   # per-target sky position angle in degrees east of north, in
   # move_rotator's domain (0.0 inclusive to 360.0 exclusive, finite).
   # Absent means "inherit the imaging train's configured default" —
@@ -160,9 +157,10 @@ Feature: Target store CRUD (P1)
     Then the tool call should succeed
     And the fetched target position angle should be 12.5
 
-  # Explicit null is the one update_target field with clearing
-  # semantics: blank (inherit the train default) and 0.0 (explicit
-  # north-up) must stay distinguishable for the P4 inbox.
+  # On update_target an explicit null clears the angle back to inherit,
+  # as it clears `grading`: blank (inherit the train default) and 0.0
+  # (explicit north-up) must stay distinguishable for the ui-htmx
+  # targets inbox.
   Scenario: An explicit null clears the framing angle back to inherit
     Given rp is running with a target store
     And an MCP client connected to rp

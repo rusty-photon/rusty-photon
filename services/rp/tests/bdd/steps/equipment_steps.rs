@@ -340,8 +340,7 @@ async fn camera_should_be_disconnected(world: &mut RpWorld) {
 /// Fetch `GET /api/equipment`, find the entry with `id` in the array at
 /// `array_key`, and assert its `connected` flag equals `expected`. Shared by
 /// the switch/rotator/observing-conditions/dome connected/disconnected Then
-/// steps below — the `camera/filter_wheel` steps above predate this helper and
-/// keep their own inline bodies.
+/// steps below.
 async fn assert_device_connected(world: &RpWorld, array_key: &str, id: &str, expected: bool) {
     let client = reqwest::Client::new();
     let url = format!("{}/api/equipment", world.rp_url());

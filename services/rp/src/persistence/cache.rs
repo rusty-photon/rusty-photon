@@ -4,11 +4,12 @@
 //! (`measure_basic`, `measure_stars`, plugins) don't re-read and re-decode the
 //! FITS file. The on-disk FITS file remains the durable source of truth — the
 //! cache is strictly a hot-path optimization, with the file as fallback on
-//! miss. See `docs/services/rp.md` (Image Cache) for the full design.
+//! miss. See `docs/services/rp.md` (Image and Document Cache) for the full
+//! design.
 //!
 //! Storage is `u16` for every consumer/prosumer astro camera (`max_adu` ≤
-//! 65535); the `I32` variant is the hatch for future scientific cameras whose
-//! `max_adu` exceeds 16-bit range.
+//! 65535); the `I32` variant holds the frames of a scientific camera whose
+//! `max_adu` exceeds the 16-bit range.
 //!
 //! Arrays are row-major, shaped `(height, width)` and indexed `[[y, x]]`
 //! — the FITS orientation `capture` transposes the Alpaca array into
@@ -35,12 +36,11 @@ use crate::config::naming_template;
 
 /// Pixel storage variant.
 ///
-/// The design intent is per-camera selection at
-/// connect time (driven by the camera's `MaxADU`); the same camera always
-/// reports the same `MaxADU`, so the variant is effectively per-camera. The
-/// current implementation fetches `max_adu` per-frame in
-/// `mcp.rs:capture` — see the "Phase 3 follow-up: stash `max_adu` on
-/// `CameraEntry`" section in `docs/plans/archive/image-evaluation-tools.md`.
+/// Chosen per frame from the `MaxADU` `capture` reads once the frame is
+/// ready, or on a disk-fallback rehydration the one the sidecar
+/// recorded: `U16` when it is at most 65535, else `I32`. It is read per
+/// capture, not once per connection, because a camera can change it
+/// while connected (rp.md § Storage Type Selection (u16 vs i32)).
 pub enum CachedPixels {
     U16(Array2<u16>),
     I32(Array2<i32>),
@@ -150,7 +150,7 @@ pub struct CachedImage {
     pub max_adu: u32,
     pub document: RwLock<ExposureDocument>,
     /// Bytes returned by `serde_json::to_vec(&document)` at the last update.
-    /// Updated atomically by `put_section` (Step 4) so the cache mutex can
+    /// Updated atomically by `put_section` so the cache mutex can
     /// read it during eviction without taking the per-entry lock.
     pub json_nbytes: AtomicUsize,
 }
@@ -337,8 +337,8 @@ impl ImageCache {
 
     /// Resolve `document_id` to its `ExposureDocument` and the FITS file
     /// it was confirmed against, with on-disk rehydration on miss. Same
-    /// disk-scan algorithm as [`resolve`] but returns the document even
-    /// when the cache cannot hold the pixels (e.g. sidecar
+    /// disk-scan algorithm as [`resolve`](Self::resolve) but returns the
+    /// document even when the cache cannot hold the pixels (e.g. sidecar
     /// `max_adu == null`). Callers that need the raw FITS read
     /// [`ResolvedDocument::fits_path`].
     pub async fn resolve_document(&self, document_id: &str) -> Option<ResolvedDocument> {
@@ -396,9 +396,9 @@ impl ImageCache {
     /// is held across the sidecar write so concurrent updates
     /// serialize at the entry level. The sidecar is written beside the
     /// entry's [`CachedImage::fits_path`]. On sidecar-write failure the
-    /// in-memory section is rolled back to its prior value, mirroring
-    /// the old `DocumentStore::put_section` contract. The cache budget
-    /// is updated only after a successful write.
+    /// in-memory section is rolled back to its prior value, so the
+    /// cached document never holds a section its sidecar lacks. The
+    /// cache budget is updated only after a successful write.
     ///
     /// **Disk-fallback path.** When the cache entry is absent (post-
     /// eviction or a fresh `rp` restart), `put_section` finds the pair
@@ -998,8 +998,8 @@ mod tests {
     #[test]
     fn cached_image_new_includes_serialized_doc_in_nbytes() {
         // Pins the contract that `CachedImage::new` accounts for the
-        // serialized document size. Step 4 will use this to keep the
-        // running cache budget honest after `put_section` mutations.
+        // serialized document size: `put_section` adjusts the running
+        // cache budget by the change from it after a mutation.
         let pixels = CachedPixels::U16(Array2::from_elem((4, 4), 0u16));
         let pixel_bytes = pixels.nbytes();
         let doc = dummy_document("550e8400-e29b-41d4-a716-446655440000");
@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Disk-fallback resolution tests (Step 5)
+    // Disk-fallback resolution tests
     // ---------------------------------------------------------------
 
     /// Write a complete FITS+sidecar pair into `dir` and return the full
@@ -1152,15 +1152,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target_uuid = "deadbeef-1111-1111-1111-111111111111";
         let ghost_uuid = "deadbeef-2222-2222-2222-222222222222";
-        // Both have the same uuid8 = "deadbeef", so file basename
-        // collides. Place them in different subdirs to avoid the
-        // basename collision while still sharing the suffix prefilter.
-        // Actually: collision IS the point. We can't put both in the
-        // same dir with the same basename; the design relies on the
-        // greenfield assumption that no two captures share uuid8 in
-        // the same data directory. Test the realistic ghost case
-        // instead: a manually-renamed legacy file with `_<uuid8>.fits`
-        // form sharing the suffix.
+        // Both share the uuid8 "deadbeef". Two flat captures would both
+        // be `deadbeef.fits`, which one directory cannot hold, so the
+        // ghost carries the suffix after a prefix, `_<uuid8>.fits`, as a
+        // templated frame does: it sits beside the target and passes
+        // the same suffix prefilter.
         let target_path = dir.path().join("deadbeef.fits");
         crate::persistence::write_fits_u16(
             &target_path,
@@ -1538,8 +1534,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_document_refuses_a_non_uuid_id_before_touching_disk() {
         let dir = tempfile::tempdir().unwrap();
-        // Eight characters, so the old prefix slice would have accepted it
-        // and the pair below would have confirmed it by DOC_ID.
+        // Eight characters: a key sliced from the id's string, rather
+        // than derived from a parsed UUID, would find the pair below,
+        // and its DOC_ID would confirm it.
         let not_a_uuid = "missing1";
         write_disk_pair(dir.path(), not_a_uuid, &[1u16, 2, 3, 4], 2, 2).await;
 
@@ -1569,7 +1566,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // resolve_document_by_path helpers (Phase 6c-2 Step 3)
+    // resolve_document_by_path
     // ---------------------------------------------------------------
 
     #[tokio::test]
@@ -1673,7 +1670,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // put_section disk-fallback (Phase 6c-2 review fix)
+    // put_section disk-fallback
     // ---------------------------------------------------------------
 
     #[tokio::test]

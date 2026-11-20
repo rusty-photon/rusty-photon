@@ -91,7 +91,7 @@ Feature: CoverCalibrator tools
     Then the tool call should return an error
     And the error message should contain "calibrator_id"
 
-  # --- Train addressing (calibrator-flats-provider plan, D4) ---
+  # --- Train addressing ---
   # Every calibrator tool takes exactly one of calibrator_id or train_id;
   # train_id resolves the calibrator first in that train's device list.
   # Every result carries the resolved calibrator_id and trains, the

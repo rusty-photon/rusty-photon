@@ -1,10 +1,10 @@
 @serial
-Feature: Capture threads target identity into the file-naming template (Decision 11)
+Feature: Capture threads target identity into the file-naming template
   `capture` accepts two optional parameters: `target` (a slug) and
   `frame_type` (`Light`/`Dark`/`Flat`/`Bias`). `frame_type` stamps the
   exposure document's `target`/`frame_type` fields; omitted, both stay
   unset and `capture` writes a flat `<doc_uuid_8>.fits` regardless of
-  `target`, exactly as before Decision 11 landed.
+  `target`.
 
   The templated on-disk path is a **separate** switch:
   `session.file_naming_pattern`. Configured, `capture` renders

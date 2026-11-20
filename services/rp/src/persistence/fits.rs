@@ -1,9 +1,7 @@
 //! FITS file I/O for rp's persistence layer.
 //!
-//! Per ADR-001 Amendment A:
-//!
-//! - **Writes use the workspace `rp-fits` crate** (no `fitrs`, no
-//!   CFITSIO). The on-disk format defaults to BITPIX=16+BZERO=32768
+//! - **Writes use the workspace `rp-fits` crate**, a pure-Rust writer
+//!   (no CFITSIO). The on-disk format defaults to BITPIX=16+BZERO=32768
 //!   for the common 16-bit sensor case; cameras whose `max_adu`
 //!   exceeds `u16::MAX` go through [`write_fits_i32`] instead.
 //! - **Reads always return `Vec<i32>`**. `rp_fits::reader` applies
@@ -54,8 +52,8 @@ fn header_cards(doc_id: &str, extra: Vec<Keyword>) -> Result<Vec<Keyword>> {
 ///
 /// Used by the production capture path for the common 16-bit sensor
 /// case (QHY600 and similar). Cameras whose `max_adu` exceeds 65535
-/// must use [`write_fits_i32`] instead — see `mcp::capture` for the
-/// dispatch.
+/// must use [`write_fits_i32`] instead — the capture path's
+/// `write_pixels` (`mcp/internals.rs`) dispatches on it.
 ///
 /// # Errors
 ///
@@ -147,8 +145,8 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
 /// sees physical ADU values regardless of on-disk encoding. `BLANK`
 /// sentinel pixels are *not* remapped at this layer — they pass
 /// through unscaled and may surface as ordinary numeric ADU values.
-/// Per ADR-001 Amendment A the wrapper exposes BLANK on the typed
-/// `read_primary` path; consumers that need explicit handling should
+/// `rp_fits::reader::read_primary` exposes the raw sentinel as
+/// `FitsImage::blank`; consumers that need explicit handling should
 /// use that entry point instead of `read_fits_pixels`.
 ///
 /// # Errors
@@ -196,8 +194,8 @@ pub fn read_fits_array<P: AsRef<Path>>(path: P) -> Result<Array2<i32>> {
 /// Read the `DOC_ID` keyword from a FITS file's primary HDU.
 ///
 /// Returns `Ok(Some(uuid))` when the header is present and is a
-/// character string, `Ok(None)` when the header is absent (e.g. files
-/// written before Phase 7).
+/// character string, `Ok(None)` when the header is absent (e.g. a FITS
+/// file another program wrote).
 ///
 /// # Errors
 ///
@@ -232,10 +230,7 @@ fn translate_write_err(err: &FitsError) -> RpError {
     // `FitsError::Io`. We can't distinguish a `create_dir_all` failure
     // from an fsync failure from a `persist` (rename) collision via
     // the variant alone, so route everything through a single
-    // "failed to write FITS file" prefix. The previous version painted
-    // every Io with "failed to persist FITS file" for fitrs-era
-    // backwards compat — that's gone now (no external callers depend
-    // on the legacy prefix).
+    // "failed to write FITS file" prefix.
     RpError::Imaging(format!("failed to write FITS file: {err}"))
 }
 
@@ -398,9 +393,9 @@ mod tests {
 
     #[test]
     fn read_fits_doc_id_returns_none_when_header_absent() {
-        // Files written before Phase 7 lacked DOC_ID. Bypass the
-        // public `write_fits_*` API and emit a raw HDU without the
-        // keyword to simulate them.
+        // A FITS file another program wrote carries no DOC_ID. Bypass
+        // the public `write_fits_*` API, which always stamps one, and
+        // emit a raw HDU without the keyword.
         use rp_fits::writer::write_i32_image as raw_write;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy.fits");

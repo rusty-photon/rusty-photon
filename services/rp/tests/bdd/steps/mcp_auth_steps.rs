@@ -1,7 +1,7 @@
 //! BDD step definitions for MCP over TLS with HTTP Basic auth.
 //!
 //! These scenarios prove the /mcp endpoint honors the server-wide
-//! `server.tls` / `server.auth` (ADR-017): a client presenting the
+//! `server.tls` / `server.auth`: a client presenting the
 //! observatory credential over verified HTTPS gets the catalog and can
 //! call tools; a client without (or with wrong) credentials cannot
 //! establish a session. rp startup reuses the shared TLS/auth steps in

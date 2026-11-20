@@ -451,8 +451,8 @@ mod tests {
     /// The assertion the sequential test above cannot make: under a
     /// concurrent installer, a snapshot must never return one
     /// session's handle beside the other's metadata. Two independent
-    /// locks — the shape this slot replaced — tear here within a few
-    /// iterations; one lock cannot tear at all.
+    /// locks, one for the handle and one for the metadata, would tear
+    /// here within a few iterations; one lock cannot tear at all.
     #[test]
     fn a_snapshot_never_straddles_a_concurrent_install() {
         const ROUNDS: usize = 20_000;

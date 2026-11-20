@@ -434,17 +434,19 @@ slew to `(RA, Dec)` produces a mount that reports exactly `(RA, Dec)`.
 Without injected error, a centering loop (`slew → expose → plate-solve
 → sync_mount`) has nothing to converge from — every iteration solves
 to the same coordinates the mount already reports. The offset is the
-simulator analog of cone error / a stale pointing model, the very
-thing centering corrects in production.
+simulator analog of cone error / a stale pointing model, which
+centering corrects in production; a persistent offset cannot be
+corrected away here (below), so the closed-loop BDD uses the one-shot
+override (F7).
 
 **Sign convention.** Offsets are in topocentric RA/Dec arcseconds, the
 same units `sync_mount` corrects against. Positive `offset_ra_arcsec`
 shifts the rendered cutout east of where the mount thinks it's
-pointing; positive `offset_dec_arcsec` shifts it north. After the
-first `sync_mount` the mount's reported RA/Dec lines up with the
-solved center, so the offset's effect on subsequent iterations
-collapses and the loop converges in one corrective step (matching the
-"sync on first iteration only" invariant of `center_on_target`).
+pointing; positive `offset_dec_arcsec` shifts it north. A sync and a
+slew never drive a persistent offset to zero: the camera renders the
+mount-reported position plus the offset, and a sync moves what the
+mount reports. The closed-loop centering BDD therefore uses the
+one-shot override (F7).
 
 **Static mode is unaffected.** When `pointing.telescope` is absent,
 the offset fields don't exist and `StartExposure` snapshots

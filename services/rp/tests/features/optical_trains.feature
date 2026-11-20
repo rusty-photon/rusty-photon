@@ -337,7 +337,7 @@ Feature: Optical trains configuration
     Then the tool call should return an error
     And the error message should contain "train 'main' has no filter wheel"
 
-  # --- Cover calibrators as train members (calibrator-flats-provider plan, D3) ---
+  # --- Cover calibrators as train members ---
   # A cover calibrator sits at the objective: it may only be the first
   # device of a train, a train holds one at most (a separate dust cap and
   # light panel on one train is not modeled), and one calibrator may be
@@ -385,7 +385,7 @@ Feature: Optical trains configuration
       """
     Then the save is accepted
 
-  # --- get_train_info (calibrator-flats-provider plan, D4) ---
+  # --- get_train_info ---
   # A read over the train model: the terminal camera, the sole filter
   # wheel with its configured filter names in position order, the cover
   # calibrator, the focusers with the terminal one named on its own,

@@ -1,8 +1,6 @@
-//! Test module relocated verbatim from the pre-split `mcp.rs`. A
-//! follow-up will distribute these tests across the per-category
-//! `built_in/<category>.rs` files (matching the `imaging/` layout
-//! convention) and split the shared mock-device fixtures into a
-//! sibling `test_support.rs`.
+//! Unit tests of the MCP handler's built-in tools and the blocking
+//! helpers in `internals`, against the mock devices and registry
+//! builders defined at the top of this file.
 
 use super::built_in::auto_focus::*;
 use super::built_in::camera::*;
@@ -91,8 +89,8 @@ struct MockCamera {
     never_ready: bool,
     /// When non-zero, `image_ready` reports `false` for the first N
     /// calls and `true` thereafter — models a bounded readout for
-    /// progress-notification tests. `0` (default) keeps the original
-    /// behavior (`image_ready` returns true immediately).
+    /// progress-notification tests. `0` (default) ⇒ `image_ready`
+    /// returns true immediately.
     not_ready_count: u32,
     image_ready_calls: std::sync::atomic::AtomicU32,
     /// When set, `camera_state` reports `Error` — simulating a camera
@@ -458,13 +456,12 @@ impl ascom_alpaca::api::Camera for MockCamera {
 }
 
 // -----------------------------------------------------------------------
-// MockCameraNoMetadata — regression contract for "per-capture metadata
-// reads are gone". Implements only the exposure path; every invariant-
-// sensor property method panics if called. Pins the `do_capture` ↔
+// MockCameraNoMetadata — a camera whose invariant-sensor properties
+// must not be read per capture. Implements only the exposure path; every
+// invariant-sensor property method panics if called. Pins the `do_capture` ↔
 // `CameraEntry`-cache contract: with the cache populated, capture must
-// not touch `pixel_size_*` or `camera_*_size` on the device. `max_adu`
-// is not among them: a driver may tie it to the readout mode, so a
-// capture reads it live.
+// not touch any of them on the device. `max_adu` is not among them: a
+// driver may tie it to the readout mode, so a capture reads it live.
 // -----------------------------------------------------------------------
 
 #[derive(Default)]
@@ -1007,7 +1004,7 @@ struct MockTelescope {
     slewing_not_implemented: bool,
     /// First N `slewing()` calls return a transient error before
     /// behaving normally — drives `poll_slewing_until_idle`'s
-    /// transient-tolerance path (issue #319). Counter is `slewing_calls`.
+    /// transient-tolerance path. Counter is `slewing_calls`.
     slewing_transient_errors: u32,
     /// When non-zero (and `stuck_slewing` is false), `slewing()`
     /// returns `true` for the first N successful calls (after the
@@ -1723,10 +1720,9 @@ async fn test_capture_image_array_fails() {
 
 #[tokio::test]
 async fn test_capture_failed_exposure_surfaces_error_not_hang() {
-    // Regression for the 6 h CI hang: a camera that *fails* an exposure
-    // reports `CameraState::Error` and leaves `ImageReady` false forever.
-    // `do_capture` must surface that as an error rather than polling
-    // `ImageReady` indefinitely. `fail_image_array` makes `image_array`
+    // A camera that *fails* an exposure reports `CameraState::Error` and
+    // leaves `ImageReady` false forever. `do_capture` must surface that
+    // as an error rather than polling `ImageReady` indefinitely. `fail_image_array` makes `image_array`
     // carry the stored failure detail, mirroring sky-survey-camera after a
     // follow-mode mount-read timeout. The outer `timeout` guard fails the
     // test loudly (rather than hanging the suite) if the loop regresses.
@@ -1925,9 +1921,10 @@ async fn test_get_camera_info_reads_max_adu_live_and_sensor_from_cache() {
 
 #[tokio::test]
 async fn test_get_camera_info_sensor_size_unavailable_when_cache_none() {
-    // Sensor dimensions moved to the connect-time cache (same shape as
-    // `max_adu` above). A missing `sensor_width_px` or `sensor_height_px`
-    // surfaces as a tool_error.
+    // Sensor dimensions come from the connect-time cache: a missing
+    // `sensor_width_px` or `sensor_height_px` (a failed connect-time
+    // read) surfaces as a tool_error, as a failed live `max_adu` read
+    // does above.
     let registry = camera_registry_with_meta(
         Arc::new(MockCamera::default()),
         CachedCameraMeta {
@@ -2504,8 +2501,8 @@ async fn test_capture_caches_i32_when_max_adu_above_u16_max() {
     // `capture` — exercised by no other test, since OmniSim and the
     // default MockCamera both report max_adu ≤ 65535. Pins the
     // capture invariant: a successful capture leaves the embedded
-    // document accessible through the cache entry (now the single
-    // source of truth) with the matching `max_adu`.
+    // document accessible through the cache entry (the single source
+    // of truth) with the matching `max_adu`.
     let cam = MockCamera {
         max_adu_value: std::sync::atomic::AtomicU32::new(1 << 20),
         ..Default::default()
@@ -2668,8 +2665,8 @@ async fn test_capture_rejects_a_colour_image_array() {
 #[tokio::test]
 async fn test_capture_filename_uses_uuid8_suffix() {
     // Pins the on-disk reverse-lookup contract: the FITS basename matches
-    // the first 8 hex chars of the document_id. The disk-fallback
-    // resolution path in Phase 7 grep's by this suffix.
+    // the first 8 hex chars of the document_id, the suffix the disk
+    // fallback of rp.md § Document Resolution looks for.
     let cam = MockCamera::default();
     let temp = tempfile::tempdir().unwrap();
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
@@ -3328,9 +3325,9 @@ async fn capture_and_read_sidecar(
 ) -> ExposureDocument {
     let temp = tempfile::tempdir().unwrap();
     let doc = capture_into(temp.path(), registry, trains).await;
-    // Explicit drop pins the TempDir lifetime past the sidecar read
-    // — without it the borrow checker is happy but the temp dir could
-    // be cleaned up at any drop point the optimizer chose.
+    // The directory must outlive the capture and the sidecar read
+    // inside `capture_into`; the explicit drop marks the point after
+    // both.
     drop(temp);
     doc
 }
@@ -3957,12 +3954,12 @@ async fn test_capture_with_a_zero_pixel_size_records_and_exports_the_rest() {
 
 #[tokio::test]
 async fn test_capture_does_not_call_invariant_metadata_methods_on_device() {
-    // Regression contract pinned by `MockCameraNoMetadata` (above): every
+    // The contract `MockCameraNoMetadata` (above) pins: every
     // invariant-sensor property method panics. With the `CameraEntry`
     // cache populated, `do_capture` must satisfy itself from the cache
     // and never touch the device — so the call must succeed without any
-    // panic. If a future change reintroduces a per-capture read of one
-    // of these properties, this test catches it via panic.
+    // panic. A per-capture read of one of these properties panics and
+    // fails this test.
     let cam = MockCameraNoMetadata;
     let registry = camera_registry_with_meta(
         Arc::new(cam),
@@ -3988,7 +3985,7 @@ async fn test_capture_does_not_call_invariant_metadata_methods_on_device() {
 #[tokio::test]
 async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
     // Pins the sidecar-failure branch in `persist_capture_artifact` (the
-    // post-FITS persistence step extracted from `capture`). Contract
+    // post-FITS persistence step of `capture`). Contract
     // documented in `docs/services/rp.md` → Capture Tool Details
     // → Sidecar failure contract: write_sidecar fails →
     // `document_persistence_failed` event payload is constructed → cache
@@ -4051,9 +4048,9 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
 }
 
 // -----------------------------------------------------------------------
-// Calibrator addressing — calibrator_id / train_id (calibrator-flats
-// plan, D4). The device-path bodies are covered above; these pin the
-// resolution and the `trains` field on the result.
+// Calibrator addressing — calibrator_id / train_id. The device-path
+// bodies are covered above; these pin the resolution and the `trains`
+// field on the result.
 // -----------------------------------------------------------------------
 
 /// The flip-flat `cc` first in `main` = [cc, cam] and `guide` =
@@ -4134,8 +4131,8 @@ async fn close_cover_by_calibrator_id_still_reports_the_trains_containing_it() {
 
 #[tokio::test]
 async fn calibrator_outside_every_train_reports_an_empty_trains_list() {
-    // No train model at all: the pre-train behavior, with the field
-    // present and empty rather than absent.
+    // No train model at all: the calibrator is addressed by its id
+    // alone, and the field is present and empty rather than absent.
     let handler = test_handler(calibrator_registry(
         Arc::new(MockCoverCalibrator::default()),
     ));
@@ -4722,7 +4719,7 @@ async fn get_camera_info_reports_null_gain_and_offset_when_the_driver_lacks_them
 async fn get_camera_info_fails_loud_when_the_gain_read_errors() {
     // A camera that has a gain property but cannot be read right now
     // is a tool error, never a null — a transport blip must not be
-    // persisted as "this camera has no gain" (Copilot, #1163 round 1).
+    // persisted as "this camera has no gain".
     let cam = MockCamera {
         fail_gain: true,
         ..Default::default()
@@ -4989,7 +4986,7 @@ async fn test_compute_image_stats_bad_fits() {
 
 #[tokio::test]
 async fn test_compute_image_stats_missing_arguments() {
-    // Pins the validation contract surfaced by `rp.md:702` ("document_id
+    // Pins the validation contract of rp.md § Built-in Tools ("document_id
     // or image_path"): callers must supply at least one. Mirrors the
     // missing-args branch tested for measure_basic / estimate_background.
     let handler = test_handler(crate::equipment::EquipmentRegistry {
@@ -5012,10 +5009,10 @@ async fn test_compute_image_stats_missing_arguments() {
 
 #[tokio::test]
 async fn test_compute_image_stats_persists_section_via_document_id() {
-    // Pins the load-bearing piece of issue #175: when called with a
-    // `document_id` that resolves through the cache, the computed
-    // stats are written into the exposure document as an
-    // `image_stats` section. Mirrors the section-persistence test
+    // Pins the persistence contract of rp.md § Image Statistics Tool
+    // Details: when called with a `document_id` that resolves through
+    // the cache, the computed stats are written into the exposure
+    // document as an `image_stats` section. Mirrors the section-persistence test
     // shape used by the other imaging tools (measure_basic ->
     // image_analysis, estimate_background -> background, etc).
     let temp = tempfile::tempdir().unwrap();
@@ -5143,7 +5140,7 @@ async fn test_set_filter_filter_not_found() {
 }
 
 // -----------------------------------------------------------------------
-// get_filter — success path (covers lines 387-391)
+// get_filter — success path
 // -----------------------------------------------------------------------
 
 #[tokio::test]
@@ -5437,11 +5434,11 @@ async fn test_move_focuser_position_read_fails() {
     assert_tool_error(result, "failed to read focuser position");
 }
 
-/// §2.6: `is_moving()` stays `true`, the predicted deadline expires, and the
+/// `is_moving()` stays `true`, the predicted deadline expires, and the
 /// move returns the timeout error. With current 0 → target 1000 at the
 /// default 500 steps/s the deadline is `max(2 s × 2, 5 s floor) = 5 s`, so
-/// the failure lands far under the old 120 s ceiling — proof the deadline
-/// now scales with the move. `start_paused` auto-advances virtual time.
+/// the failure lands far under the 120 s fallback ceiling — proof the
+/// deadline scales with the move. `start_paused` auto-advances virtual time.
 #[tokio::test(start_paused = true)]
 async fn test_move_focuser_timeout() {
     let foc = MockFocuser {
@@ -5465,8 +5462,8 @@ async fn test_move_focuser_timeout() {
     assert_tool_error(result, "timeout waiting for focuser to settle");
     assert!(
         elapsed < Duration::from_mins(1),
-        "a short move should hit its computed ~5 s deadline, not the old \
-         120 s ceiling; elapsed {elapsed:?}"
+        "a short move should hit its computed ~5 s deadline, not the 120 s \
+         fallback ceiling; elapsed {elapsed:?}"
     );
 }
 
@@ -5847,8 +5844,8 @@ async fn test_slew_dec_out_of_range() {
 
 /// Models the ASCOM `InvalidOperationException` that fires when
 /// `Tracking == false` and the caller invokes
-/// `SlewToCoordinatesAsync` — the natural error path the design
-/// explicitly chose over a magical `ensure_tracking` parameter.
+/// `SlewToCoordinatesAsync` — the natural error path, which the design
+/// prefers to a magical `ensure_tracking` parameter.
 #[tokio::test]
 async fn test_slew_alpaca_error_propagates() {
     let mount = MockTelescope {
@@ -5875,8 +5872,8 @@ async fn test_slew_alpaca_error_propagates() {
 /// called (best-effort, ignored result), and the tool returns the
 /// timeout error. With current pointing == target (distance 0) the
 /// deadline floors at `MIN_SLEW_DEADLINE` (30 s), so the test also
-/// asserts the failure lands far under the old 300 s ceiling — proof
-/// the deadline now scales with the slew (§2.6). `start_paused` lets
+/// asserts the failure lands far under the 300 s fallback ceiling —
+/// proof the deadline scales with the slew. `start_paused` lets
 /// tokio auto-advance virtual time so the test runs in real-time ms.
 #[tokio::test(start_paused = true)]
 async fn test_slew_timeout_returns_error_after_abort() {
@@ -5902,7 +5899,7 @@ async fn test_slew_timeout_returns_error_after_abort() {
     assert!(
         elapsed < Duration::from_mins(1),
         "a zero-distance slew should hit the ~30 s MIN_SLEW_DEADLINE floor, \
-         not the old 300 s ceiling; elapsed {elapsed:?}"
+         not the 300 s fallback ceiling; elapsed {elapsed:?}"
     );
 }
 
@@ -6062,8 +6059,8 @@ async fn test_get_tracking_surfaces_can_set_tracking_false() {
     assert_eq!(json["can_set_tracking"], false);
 }
 
-/// Per the design decision: fail loud on `Tracking` read errors;
-/// don't try to half-succeed by returning `can_set_tracking` alone.
+/// Fails loud on `Tracking` read errors (rp.md § Built-in Tools);
+/// doesn't try to half-succeed by returning `can_set_tracking` alone.
 #[tokio::test]
 async fn test_get_tracking_fails_when_tracking_read_errors() {
     let mount = MockTelescope {
@@ -6167,9 +6164,9 @@ async fn test_park_alpaca_error_propagates() {
 
 /// The predicted deadline expires while `at_park()` keeps returning
 /// `false`. Unlike `slew`, `park` does NOT auto-abort — it surfaces the
-/// timeout and lets the caller decide. §2.2: the deadline is the worst-case
+/// timeout and lets the caller decide. The deadline is the worst-case
 /// 180° traverse at the default 7200″/s rate (`90 s × 2 = 180 s`), so the
-/// failure lands below the old 300 s ceiling. `start_paused` auto-advances
+/// failure lands below the 300 s fallback ceiling. `start_paused` auto-advances
 /// virtual time so the test runs in real-time milliseconds.
 #[tokio::test(start_paused = true)]
 async fn test_park_timeout_does_not_auto_abort() {
@@ -6187,7 +6184,7 @@ async fn test_park_timeout_does_not_auto_abort() {
     assert!(
         elapsed < Duration::from_secs(250),
         "park should hit its computed worst-case deadline (~180 s at the \
-         default rate), not the old 300 s ceiling; elapsed {elapsed:?}"
+         default rate), not the 300 s fallback ceiling; elapsed {elapsed:?}"
     );
 }
 
@@ -6246,8 +6243,8 @@ async fn test_get_park_state_returns_all_fields() {
     assert_eq!(json["can_unpark"], true);
 }
 
-/// Per the design decision: fail loud on `at_park` read errors;
-/// don't try to half-succeed by returning `can_park` alone.
+/// Fails loud on `at_park` read errors (rp.md § Built-in Tools);
+/// doesn't try to half-succeed by returning `can_park` alone.
 #[tokio::test]
 async fn test_get_park_state_fails_when_at_park_read_errors() {
     let mount = MockTelescope {
@@ -6288,10 +6285,7 @@ async fn test_get_park_state_fails_when_can_unpark_read_errors() {
 }
 
 /// `park()` succeeds, but the very first `at_park()` poll errors
-/// — covers the `Err` arm of the polling loop. The previous
-/// implementation polled `Slewing` and then verified `AtPark`
-/// separately; now both arms collapse into the single `at_park`
-/// poll error path.
+/// — covers the `Err` arm of the polling loop.
 #[tokio::test]
 async fn test_park_at_park_poll_fails() {
     let mount = MockTelescope {
@@ -6331,11 +6325,12 @@ async fn test_slew_polling_error_propagates() {
     assert_tool_error(result, "error polling mount slewing");
 }
 
-/// Issue #319 resilience: a *transient* `slewing()` read error mid-slew
-/// (fewer than `SLEWING_READ_ERROR_TOLERANCE` consecutive failures) is
-/// tolerated — the poll keeps going and reports idle once the reads
-/// recover — rather than aborting the slew (and the whole
-/// `center_on_target` loop) on a single hiccup.
+/// A *transient* `slewing()` read error mid-slew (fewer than
+/// `SLEWING_READ_ERROR_TOLERANCE` consecutive failures) is tolerated —
+/// the poll keeps going and reports idle once the reads recover —
+/// rather than aborting the slew (and the whole `center_on_target`
+/// loop) on a single hiccup
+/// ([§ `center_on_target` Contract](../../../../docs/services/rp.md#center_on_target-contract)).
 #[tokio::test(start_paused = true)]
 async fn poll_slewing_tolerates_transient_read_errors_then_idles() {
     let mount = MockTelescope {
@@ -6388,11 +6383,11 @@ async fn test_abort_slew_alpaca_error() {
 // -----------------------------------------------------------------------
 // Planner tools — error paths
 //
-// The new ephemeris/planner tools added in Phases 5-7 share two common
-// failure shapes: missing site config (10 of the 12 tools require it)
-// and parameter validation (range / format). One unit test per branch
-// is enough to pin the wiring; the math itself is covered by the
-// primitives.rs / decision.rs unit tests.
+// The ephemeris/planner tools share two common failure shapes: missing
+// site config (most of them require it) and parameter validation
+// (range / format). One unit test per branch is enough to pin the
+// wiring; the math itself is covered by the primitives.rs /
+// decision.rs unit tests.
 // -----------------------------------------------------------------------
 
 fn test_handler_with_site(site: rp_ephemeris::Site) -> McpHandler {
@@ -6725,7 +6720,7 @@ async fn handler_with_planned_target() -> (McpHandler, tempfile::TempDir) {
 }
 
 /// Opens a temp redb store, upserts `target`, and wires it onto a
-/// site-configured handler (the store is now the sole planner-target
+/// site-configured handler (the store is the planner's only target
 /// source).
 async fn handler_with_store_target(target: rp_targets::Target) -> (McpHandler, tempfile::TempDir) {
     handler_with_store_target_and_defaults(target, crate::config::TargetStoreConfig::default())
@@ -6811,8 +6806,8 @@ fn store_goal(filter: &str, secs: u64, desired_count: u32) -> rp_targets::Acquis
 /// A store `Target` from a display name, coordinates, an optional
 /// per-target altitude floor, and goals. `active: true` so the planner
 /// sees it. The slug comes from `from_display_name`, the same derivation
-/// `add_target` uses — a fixture that minted slugs its own way is what
-/// let a lookup/store mismatch hide here once already.
+/// `add_target` uses — a fixture that minted slugs its own way would
+/// hide a mismatch between the lookup and the store.
 fn test_store_target(
     display_name: &str,
     ra_hours: f64,
@@ -7072,9 +7067,9 @@ async fn get_meridian_status_errors_when_mount_absent() {
 }
 
 // -----------------------------------------------------------------------
-// Planner tools — happy paths (cover the success-return arms in mcp.rs;
-// value correctness is covered by primitives.rs / convenience.rs unit
-// tests).
+// Planner tools — happy paths (cover the success-return arms in
+// `built_in/planner.rs`; value correctness is covered by primitives.rs /
+// convenience.rs unit tests).
 // -----------------------------------------------------------------------
 
 fn handler_with_site_and_mount() -> McpHandler {
@@ -9956,13 +9951,13 @@ async fn progress_sink_emit_sends_via_real_peer() {
 }
 
 // -----------------------------------------------------------------------
-// Operation-event triple tests (predictive-deadlines Phase 1, Step 2)
+// Operation-event triple tests (rp.md § Event Envelope)
 //
 // Each blocking helper emits a `*_started` envelope at entry and a
 // `*_complete` / `*_failed` envelope at exit, all sharing one
-// `operation_id`. Decision B: the assertion seam is the `EventBus`
-// broadcast `Receiver` — exercising the real production fan-out path
-// with no test-only abstraction. `emit_operation` publishes
+// `operation_id`. The assertion seam is the `EventBus` broadcast
+// `Receiver` — exercising the real production fan-out path with no
+// test-only abstraction. `emit_operation` publishes
 // synchronously, so by the time a helper returns its envelopes are
 // already queued on a receiver that subscribed beforehand.
 // -----------------------------------------------------------------------
@@ -10023,9 +10018,9 @@ fn assert_end_mirrors_start(
         "no ended_at on the start envelope"
     );
     // The matching `*_started` envelope carries deadline fields only for
-    // operations with a predictive deadline (slew §2.1, park + move_focuser
-    // §2.2/§2.3, exposure §2.4, centering §2.5, and guide/dither when a
-    // settle timeout is resolved); every other operation's start must
+    // operations with a predictive deadline (slew, park, move_focuser,
+    // exposure, centering, and guide/dither when a settle timeout is
+    // resolved); every other operation's start must
     // still omit them. Slew/park/move_focuser/exposure/centering always
     // predict, so those are keyed off the event name (each such
     // operation's start is asserted present by its own test). Guide/dither
@@ -10099,7 +10094,7 @@ async fn slew_emits_started_complete_triple() {
     assert_eq!(started.max_duration_ms, Some(30000));
 }
 
-/// §2.1: the `slew_started` envelope carries a deadline sized from the
+/// The `slew_started` envelope carries a deadline sized from the
 /// great-circle distance to the target. Current pointing (0h, 0°) →
 /// target (0h, 60°) is 60° = 216000″; at the default 7200″/s rate with no
 /// settle, predicted = 30 s and max = max(30 × 3, 30 s floor) = 90 s
@@ -10134,7 +10129,7 @@ async fn slew_started_carries_distance_scaled_deadline() {
     );
 }
 
-/// §2.1 fallback: when the pre-slew pointing read fails the deadline can't
+/// When the pre-slew pointing read fails the deadline can't
 /// be predicted, so `slew_started` omits the deadline fields and the slew
 /// proceeds on the fallback ceiling. (Here the same failing read also
 /// fails the post-slew read, so the operation ends in error — the point
@@ -10166,7 +10161,7 @@ async fn slew_started_omits_deadline_when_pointing_read_fails() {
     );
 }
 
-/// §2.1 robustness: a finite, positive, but absurdly small slew rate makes
+/// A finite, positive, but absurdly small slew rate makes
 /// `distance / rate` a *finite* value far too large for `Duration` to hold
 /// — the case a bare `is_finite()` check misses (it slips through to
 /// `Duration::from_secs_f64`, which panics on overflow). `compute_slew_deadline`
@@ -10267,7 +10262,7 @@ async fn park_emits_started_complete_triple() {
     assert_eq!(complete.event, "park_complete");
     assert_end_mirrors_start(&started, &complete);
 
-    // §2.2: no park coordinates are knowable via Alpaca, so the deadline is
+    // No park coordinates are knowable via Alpaca, so the deadline is
     // the worst-case 180° traverse at the default 7200″/s rate: predicted =
     // 648000″ / 7200 = 90 s, max = 90 × 2 = 180 s (above the 60 s floor).
     assert_eq!(started.predicted_duration_ms, Some(90000));
@@ -10300,13 +10295,13 @@ async fn move_focuser_emits_started_complete_triple() {
     assert_eq!(complete.payload["position"], 4321);
     assert_end_mirrors_start(&started, &complete);
 
-    // §2.3: current == target (4321) ⇒ distance 0, so predicted floors at
+    // Current == target (4321) ⇒ distance 0, so predicted floors at
     // 0 ms and max at the 5 s MIN_FOCUSER_DEADLINE floor.
     assert_eq!(started.predicted_duration_ms, Some(0));
     assert_eq!(started.max_duration_ms, Some(5000));
 }
 
-/// §2.3: the `move_focuser_started` envelope carries a deadline sized from
+/// The `move_focuser_started` envelope carries a deadline sized from
 /// the step travel. Current 0 → target 10000 at the default 500 steps/s is
 /// predicted = 20 s and max = max(20 × 2, 5 s floor) = 40 s (target chosen
 /// large enough that `predicted × 2` clears the floor, so the distance
@@ -10339,7 +10334,7 @@ async fn move_focuser_started_carries_distance_scaled_deadline() {
     );
 }
 
-/// §2.3 fallback: when the pre-move position read fails the deadline can't
+/// When the pre-move position read fails the deadline can't
 /// be predicted, so `move_focuser_started` omits the deadline fields and the
 /// move proceeds on the fallback ceiling. (Here the same failing read also
 /// fails the post-move read, so the operation ends in error — the point
@@ -10474,7 +10469,8 @@ fn plan_focuser_legs_clamps_the_overshoot_to_the_bounds() {
 /// commanded to the overshoot first and then the target, the started
 /// envelope flags the compensation and sizes its deadline from both
 /// legs (1000 → 400 → 500 = 700 steps at 500 steps/s = 1.4 s predicted,
-/// max floored at 5 s), and the outcome reports the target.
+/// each leg's max floored at 5 s, 10 s in all), and the outcome reports
+/// the target.
 #[tokio::test]
 async fn do_move_focuser_blocking_compensates_a_move_against_the_approach() {
     use crate::config::focuser::BacklashApproach;
@@ -10574,7 +10570,8 @@ async fn do_move_focuser_blocking_clamps_the_overshoot_at_zero_without_configure
 }
 
 /// The settle rule: a driver whose position read lags its idle report
-/// by two polls no longer ends the call with the pre-move position.
+/// by two polls does not end the call with the pre-move position; the
+/// call waits for the read-back to reach the target.
 #[tokio::test(start_paused = true)]
 async fn do_move_focuser_blocking_waits_for_the_position_to_catch_up() {
     let foc = Arc::new(MockFocuser {
@@ -10712,7 +10709,7 @@ async fn move_focuser_tool_reports_backlash_compensated() {
 async fn sync_mount_emits_complete_only_no_started() {
     // Sync is instant per ASCOM, so the helper emits the
     // `sync_mount_complete` / `sync_mount_failed` pair *without* a
-    // `_started` (parent plan §1.2).
+    // `_started` (rp.md § Events).
     let mount = MockTelescope::default();
     let handler = test_handler(mount_registry(Arc::new(mount), None));
     let mut rx = handler.event_bus.subscribe();
@@ -11281,10 +11278,9 @@ async fn center_on_target_rejects_a_binning_the_camera_cannot_do_before_any_moti
 }
 
 #[tokio::test]
-async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
-    // The historical `exposure_started` / `exposure_complete` point
-    // events are migrated onto the envelope under one operation_id; their
-    // payloads are preserved byte-for-byte (Decision A).
+async fn capture_emits_exposure_triple_with_shared_operation_id() {
+    // `exposure_started` / `exposure_complete` share one operation_id on
+    // the envelope, and their payloads are the ones rp.md § Events lists.
     let handler = test_handler(camera_registry(Arc::new(MockCamera::default())));
     let mut rx = handler.event_bus.subscribe();
 
@@ -11311,14 +11307,13 @@ async fn capture_migrated_emits_exposure_triple_with_shared_operation_id() {
 
     assert_eq!(started.event, "exposure_started");
     assert_eq!(complete.event, "exposure_complete");
-    // Legacy payload shape preserved.
     assert_eq!(started.payload["camera_id"], "cam");
     assert!(started.payload["duration"].is_string());
     assert_eq!(complete.payload["document_id"], document_id);
     assert_eq!(complete.payload["file_path"], image_path);
     assert_end_mirrors_start(&started, &complete);
 
-    // §2.4: the exposure deadline rides `exposure_started`. The camera has
+    // The exposure deadline rides `exposure_started`. The camera has
     // no configured `readout_time_estimate`, so the 15 s default applies:
     // predicted = 100 ms + 15 s = 15100 ms; max = predicted + 30 s headroom.
     assert_eq!(started.predicted_duration_ms, Some(15_100));
@@ -11365,14 +11360,14 @@ async fn capture_failure_emits_exposure_failed() {
     assert_end_mirrors_start(&started, &failed);
 
     // The deadline is sized from the request, not the camera's success, so a
-    // failed exposure still advertises it on `exposure_started` (§2.4).
+    // failed exposure still advertises it on `exposure_started`.
     assert_eq!(started.predicted_duration_ms, Some(15_100));
     assert_eq!(started.max_duration_ms, Some(45_100));
 }
 
 #[test]
 fn exposure_deadlines_add_readout_and_headroom() {
-    // §2.4: predicted = duration + readout_estimate; max = predicted + 30 s.
+    // predicted = duration + readout_estimate; max = predicted + 30 s.
     let (predicted_ms, max_ms) =
         super::internals::exposure_deadlines(Duration::from_mins(5), Duration::from_secs(8));
     assert_eq!(predicted_ms, 308_000, "300 s exposure + 8 s readout");
@@ -11381,7 +11376,7 @@ fn exposure_deadlines_add_readout_and_headroom() {
 
 #[test]
 fn centering_deadlines_compose_per_iteration_over_max_attempts() {
-    // §2.5: per_iter = capture + solve + slew_overhead; predicted = per_iter
+    // per_iter = capture + solve + slew_overhead; predicted = per_iter
     // (single-pass convergence); max = max_attempts × per_iter.
     let (predicted_ms, max_ms) = super::internals::centering_deadlines(
         5,
@@ -11398,7 +11393,7 @@ fn centering_deadlines_compose_per_iteration_over_max_attempts() {
 
 #[tokio::test]
 async fn centering_started_carries_outer_loop_deadline() {
-    // §2.5 wiring: center_on_target stamps the outer-loop deadline on
+    // `center_on_target` stamps the outer-loop deadline on
     // `centering_started` from the default centering config (30 s solve,
     // 10 s slew overhead) and the call's duration + max_attempts. The loop
     // then fails (no plate solver configured), but the started event — the
@@ -12953,10 +12948,11 @@ async fn every_guider_tool_reports_not_configured_without_a_guider_block() {
     );
 }
 
-/// The on-disk reverse-lookup key is written from the UUID's `time_low`
-/// field (`internals.rs` capture) but read back by slicing the document id's
-/// first eight characters (`persistence::cache::disk_resolve`). The two must
-/// agree or a captured frame becomes unresolvable from disk.
+/// The on-disk reverse-lookup key is derived from the UUID's `time_low`
+/// field (`naming_template::uuid8_of`, which `capture` mints the suffix
+/// with and the disk fallback looks for), and rp.md § Document Resolution
+/// names it as the document id's first eight characters. The two must
+/// agree, or a frame named for one is not found by the other.
 #[test]
 fn test_uuid8_disk_key_matches_the_document_id_prefix() {
     for _ in 0..1_000 {

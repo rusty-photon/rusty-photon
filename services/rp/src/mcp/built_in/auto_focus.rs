@@ -67,7 +67,7 @@ impl McpHandler {
 
     /// Body of the `auto_focus` MCP tool, split out so unit tests can
     /// pass `None` for the progress sink without constructing a real
-    /// rmcp `Peer` (its constructor is `pub(crate)` in rmcp 1.7). The
+    /// rmcp `Peer` (its constructor is `pub(crate)` in rmcp). The
     /// parameter rules of the contract, then the metric sweep.
     pub(crate) async fn auto_focus_inner(
         &self,

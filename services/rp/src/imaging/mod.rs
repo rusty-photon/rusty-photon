@@ -13,8 +13,8 @@
 //! objects, so it is *not* async-/I/O-free at the top level — but the
 //! math and grid logic they bundle (`build_grid`, `haversine_arcsec`)
 //! are still pure helpers that test independently. The MCP wrappers in
-//! `mcp.rs` provide concrete adapters that bind the equipment traits
-//! to live Alpaca clients; tests substitute synthetic adapters.
+//! `mcp/built_in/` provide concrete adapters that bind the equipment
+//! traits to live Alpaca clients; tests substitute synthetic adapters.
 //!
 //! - [`rp_image_analysis`]: single-purpose math (background, stars,
 //!   hfr, fwhm, snr, stats, pixel trait), shared with the guider. Pure,

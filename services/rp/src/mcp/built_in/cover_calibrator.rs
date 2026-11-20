@@ -8,7 +8,7 @@
 //! carries the resolved `calibrator_id` and `trains`, the optical
 //! trains containing it: a closed cover blinds every camera behind it
 //! and a lit panel floods them, so the sibling trains are worth
-//! knowing (the `moved_trains` precedent of `move_rotator`).
+//! knowing (as `move_rotator`'s `moved_trains` lists them).
 
 use std::time::Duration;
 
