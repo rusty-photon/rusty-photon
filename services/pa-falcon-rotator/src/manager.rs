@@ -55,6 +55,11 @@ pub struct FalconManager {
     /// Where [`Self::sync`] keeps the offset; `None` keeps it in memory
     /// only.
     sync_record: Option<PathBuf>,
+    /// Orders the syncs: held across a sync's record write and the
+    /// assignment after it, so the last sync to write is the last to
+    /// assign, while `sync_offset` is held only for the assignment and a
+    /// reader of the offset never waits on the write.
+    sync_writes: Mutex<()>,
     target_position: Mutex<Option<SkyDegrees>>,
     last_limit_detected: Arc<Mutex<Option<bool>>>,
     /// Clients connected across both devices. [`Self::acquire`] and
@@ -138,6 +143,7 @@ impl FalconManager {
             transport,
             sync_offset: Mutex::new(sync_offset),
             sync_record,
+            sync_writes: Mutex::new(()),
             target_position: Mutex::new(None),
             last_limit_detected,
             clients: Mutex::new(0),
@@ -375,9 +381,7 @@ impl FalconManager {
         let sky = SkyDegrees::new(sky_deg);
         let mech = self.read_status(session).await?.position_deg;
         let offset = sky - mech;
-        // Held across the write, so concurrent syncs leave the record and
-        // the offset in force agreeing.
-        let mut in_force = self.sync_offset.lock().await;
+        let writing = self.sync_writes.lock().await;
         if let Some(path) = &self.sync_record {
             let write_path = path.clone();
             tokio::task::spawn_blocking(move || sync_record::write(&write_path, offset))
@@ -389,8 +393,8 @@ impl FalconManager {
                     FalconRotatorError::SyncNotSaved(format!("{}: {e}", path.display()))
                 })?;
         }
-        *in_force = offset;
-        drop(in_force);
+        *self.sync_offset.lock().await = offset;
+        drop(writing);
         debug!(
             "sync: sky={:.4} mech={:.4} → sync_offset={:.4}",
             sky.value(),
@@ -701,6 +705,40 @@ mod mock_tests {
             crate::sync_record::read(&path),
             ReadRecord::Offset(SyncOffset::new(45.0))
         );
+        manager.release(session).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sync_writing_its_record_holds_up_the_next_sync_but_no_reader() {
+        let (manager, factory) = make_manager();
+        let session = manager.acquire().await.unwrap();
+        factory.set_mech_position_deg(45.0).await;
+
+        // A sync mid-write holds the writer lock.
+        let writing = manager.sync_writes.lock().await;
+        tokio::time::timeout(std::time::Duration::from_millis(500), manager.sync_offset())
+            .await
+            .expect("a reader must not wait on a sync's write");
+
+        let syncing = Arc::clone(&manager);
+        let second = tokio::spawn(async move {
+            let synced = syncing.sync(&session, 90.0).await;
+            (synced, session)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let offset =
+            tokio::time::timeout(std::time::Duration::from_millis(500), manager.sync_offset())
+                .await
+                .expect("a reader must not wait on a sync queued for the writer lock");
+        assert!(
+            offset.value().abs() < 1e-9,
+            "the second sync waits for the first to finish"
+        );
+
+        drop(writing);
+        let (synced, session) = second.await.unwrap();
+        synced.unwrap();
+        assert!((manager.sync_offset().await.value() - 45.0).abs() < 1e-9);
         manager.release(session).await.unwrap();
     }
 

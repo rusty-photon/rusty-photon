@@ -506,15 +506,16 @@ unit stays inert until `plate-solver.json` exists.
 
 ```sh
 sudo apt-get remove rusty-photon-<svc>   # keeps the service's config + state
-sudo apt-get purge rusty-photon-<svc>    # also deletes its config + state dir
+sudo apt-get purge rusty-photon-<svc>    # also deletes its config, the state records beside it, and its state dir
 ```
 
 The shared user, `/var/lib/rusty-photon`, and the `/etc/rusty-photon`
 symlink are never removed (shared across packages, Debian convention for
 system users). rpm has no purge lifecycle: erase behaves like `remove`;
 to fully clean up after an erase, delete
-`/var/lib/rusty-photon/.config/rusty-photon/<svc>.json` and
-`/var/lib/rusty-photon/<svc>/` by hand.
+`/var/lib/rusty-photon/.config/rusty-photon/<svc>.json`, the state
+records beside it (`<svc>.*.json`) and `/var/lib/rusty-photon/<svc>/` by
+hand.
 
 ## Verifying a build
 

@@ -248,7 +248,7 @@ impl FlatsRig for McpClient {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use rmcp::model::ContentBlock;
