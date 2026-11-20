@@ -168,7 +168,7 @@ ASCOM also requires that "the sync offset must persist across driver starts and 
 }
 ```
 
-- **`Sync` writes the record before it returns.** `Sync` computes the new offset, replaces the record atomically (a synced temp file renamed over it) and only then puts the offset in force. A write that fails fails the `Sync` with `INVALID_OPERATION`, naming the file, and leaves the offset in force as it was: `Position` never reports an offset that a restart would lose.
+- **`Sync` writes the record before it returns.** `Sync` computes the new offset, replaces the record atomically (a synced temp file renamed over it) and only then puts the offset in force. A write that fails fails the `Sync` with `INVALID_OPERATION`, naming the file, and leaves the offset in force as it was: `Position` never reports an offset that a restart would lose. Reads never wait on the write: they report the offset in force until the assignment, and a second `Sync` waits for the first to finish.
 - **Start and reload read it.** No record means no `Sync` yet: the offset is zero and `Position` equals `MechanicalPosition`. A record that cannot be read or does not parse is logged at `warn!` and the offset starts at zero; the record stays as it is until the next `Sync` replaces it.
 - **Only `Sync` changes the offset.** A disconnect, a reconnect or a reload leaves it alone.
 - **The record belongs to the config file, not to the rotator.** A different Falcon run on the same config file starts with the offset the last one was synced to, until a `Sync` sets it afresh.

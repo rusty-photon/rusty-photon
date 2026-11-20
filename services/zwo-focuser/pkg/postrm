@@ -3,6 +3,10 @@ set -e
 SVC="${DPKG_MAINTSCRIPT_PACKAGE#rusty-photon-}"
 if [ "$1" = "purge" ]; then
     rm -f "/var/lib/rusty-photon/.config/rusty-photon/$SVC.json"
+    # The state records the service keeps beside its config, named
+    # <svc>.<record>.json (star-adventurer-gti's mount state,
+    # pa-falcon-rotator's sync offset).
+    rm -f "/var/lib/rusty-photon/.config/rusty-photon/$SVC".*.json
     rm -rf "/var/lib/rusty-photon/$SVC"
 fi
 #DEBHELPER#
