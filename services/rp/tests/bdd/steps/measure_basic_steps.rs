@@ -295,7 +295,8 @@ async fn call_measure_basic(
         args.insert("threshold_sigma".to_string(), serde_json::json!(threshold));
     }
     // min_area and max_area are required parameters (no defaults — they encode
-    // pixel-scale assumptions per docs/services/rp.md).
+    // pixel-scale assumptions per docs/services/rp.md § `measure_basic`
+    // Contract).
     args.insert("min_area".to_string(), serde_json::json!(min_area));
     args.insert("max_area".to_string(), serde_json::json!(max_area));
 

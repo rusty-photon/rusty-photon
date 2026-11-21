@@ -1,16 +1,10 @@
 @serial
-Feature: Planner altitude-gating parity against the target store (P1)
-  Decision 9 (docs/plans/archive/planetarium-target-import.md) is a fixed P1
-  migration requirement: `get_next_target` must keep eliminating
-  targets below their altitude floor for targets that live in the
-  rp-targets store (see planner.feature for the legacy config
-  `targets[]` array coverage — `get_next_target` evaluates both
-  sources together). The floor comes from
-  `target.scheduling.min_altitude_degrees`, falling back to
-  `targets.default_scheduling.min_altitude_degrees` from config — the
-  same two-level per-target-then-default fallback the config-array
-  planner already applies today (rp.md § Target Store, § Dynamic
-  Planner).
+Feature: Planner altitude gating against the target store
+  `get_next_target` eliminates a target-store target below its altitude
+  floor. The floor comes from `target.scheduling.min_altitude_degrees`,
+  falling back to `target_store.default_scheduling.min_altitude_degrees`
+  from config and then to the planner-wide `planner.min_altitude_degrees`
+  (rp.md § Target Store, § Decision Logic (inside `get_next_target`)).
 
   # The evaluation time is pinned to true astronomical night at this
   # site (matching planner.feature's equinox convention) — otherwise

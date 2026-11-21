@@ -142,10 +142,9 @@ mod tests {
         )
         .unwrap();
 
-        // Elevation is explicitly out of v1 scope; surface a parse
-        // error so an operator who's read the rp.md plan and added
-        // an `elevation_meters` key gets a helpful failure rather
-        // than silent ignoring.
+        // The site carries no elevation (rp.md § Site Configuration);
+        // an operator who adds an `elevation_meters` key gets a parse
+        // error rather than the key being silently ignored.
         let err = load_config(&path).unwrap_err();
         let msg = err.to_string();
         assert!(

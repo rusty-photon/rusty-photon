@@ -17,8 +17,8 @@ use super::safety_monitor::SafetyMonitorConfig;
 use super::switch::SwitchConfig;
 
 /// Default `temperature_event_delta_c`: half a degree is well above
-/// probe noise on every focuser hub seen so far and well under the
-/// drift that moves focus on a typical refractor.
+/// focuser-probe noise and well under the drift that moves focus on a
+/// typical refractor.
 const DEFAULT_TEMPERATURE_EVENT_DELTA_C: f64 = 0.5;
 
 /// The drift, in °C since the last emission, at which the Focuser
@@ -80,11 +80,11 @@ impl TryFrom<f64> for TemperatureEventDeltaC {
 ///
 /// Validated at load (parse-don't-validate): an empty value, or one with
 /// leading or trailing whitespace, is rejected during deserialization.
-/// The pin is compared verbatim with what the server lists, so a padded
-/// value could never match, and rejecting it beats trimming a value the
-/// operator did not write. Serializes transparently as the inner string;
-/// each field carrying one declares its JSON Schema as a plain optional
-/// string.
+/// The pin is compared as written with the `UniqueID` the server lists,
+/// padding stripped, so a padded pin could never match, and rejecting it
+/// beats trimming a value the operator did not write. Serializes
+/// transparently as the inner string; each field carrying one declares
+/// its JSON Schema as a plain optional string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct UniqueIdPin(String);
@@ -963,8 +963,8 @@ mod tests {
     }
 
     /// The schema advertises the pin as an optional plain string, the
-    /// shape the web UI's schema walker renders as a text input
-    /// (docs/services/ui-htmx.md § Schema-driven rendering).
+    /// shape the setup page's schema walker renders as a text input
+    /// (docs/crates/rusty-photon-setup.md § Fields).
     #[test]
     fn unique_id_schema_is_an_optional_string() {
         let schema = schemars::schema_for!(crate::config::DomeConfig);

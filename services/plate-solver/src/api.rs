@@ -1,9 +1,8 @@
 //! Axum router and HTTP handlers for `POST /api/v1/solve` and
 //! `GET /health`.
 //!
-//! Frozen contract details live in
-//! `docs/plans/archive/plate-solver.md` §"HTTP contract" and the
-//! behavior contract is in `docs/services/plate-solver.md`.
+//! The contract — request fields, response fields, error codes, health
+//! answers — is [§ HTTP API](../../../docs/services/plate-solver.md#http-api).
 
 use crate::error::AppError;
 use crate::runner::{AstapRunner, RunnerError, SolveOutcome, SolveRequest, WcsMatrix};
@@ -111,7 +110,7 @@ async fn solve(
     // 3. fits_path must exist, be a regular file (not a directory),
     //    and be readable. Each failure surfaces as `fits_not_found`
     //    with a message describing which check failed — `internal` is
-    //    reserved for genuine wrapper bugs.
+    //    reserved for the wrapper's own failures.
     let fits_meta = std::fs::metadata(&body.fits_path)
         .map_err(|e| AppError::FitsNotFound(format!("{}: {}", body.fits_path.display(), e)))?;
     if !fits_meta.is_file() {
@@ -149,8 +148,8 @@ async fn solve(
             .map_err(|e| AppError::Internal(format!("semaphore closed: {e}")))?
     };
 
-    // 6. Drive the runner. Map RunnerError → AppError per the frozen
-    //    error-code table.
+    // 6. Drive the runner. Map RunnerError → AppError per the error-code
+    //    table of docs/services/plate-solver.md § HTTP API.
     let request = SolveRequest {
         fits_path: body.fits_path,
         ra_hint: body.ra_hint,

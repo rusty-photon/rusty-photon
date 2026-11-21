@@ -3,9 +3,9 @@
 //! Each module declares its own
 //! `#[tool_router(router = tool_router_<name>, vis = "pub")]` impl
 //! block on `super::handler::McpHandler`; the merge happens in
-//! `McpHandler::new`. Adding a new tool category = one new file
-//! here, one `pub mod <name>;` line below, and one
-//! `+ Self::tool_router_<name>()` in `handler::McpHandler::new`.
+//! `McpHandler::merged_tool_router`. Adding a new tool category = one
+//! new file here, one `pub mod <name>;` line below, and one
+//! `+ Self::tool_router_<name>()` in `McpHandler::merged_tool_router`.
 
 pub mod auto_focus;
 pub mod camera;

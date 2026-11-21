@@ -1006,7 +1006,7 @@ where
 }
 
 /// The synthetic `correction_requested` event for a tool result that
-/// carries a correction (design § Triggers pins; `rp.md` § Corrections):
+/// carries a correction (`docs/services/session-runner.md` § Triggers):
 /// `status: "aborted"` or `"blocked_by_correction"` with a `correction`
 /// object → `event.delivery = "immediate"`; a `pending_correction`
 /// object → `"after_current"`. A correction value that is not a JSON

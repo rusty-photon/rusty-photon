@@ -1,6 +1,6 @@
 //! BDD step definitions for `capture`'s `target`/`frame_type`
 //! parameters (`capture_target_linkage.feature`, rp.md § Capture Tool
-//! Details, rp-targets.md § File-naming template — Decision 11).
+//! Details, rp-targets.md § File-naming template).
 
 use cucumber::{given, then, when};
 

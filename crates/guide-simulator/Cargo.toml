@@ -1,0 +1,18 @@
+[package]
+name = "guide-simulator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "A guide camera's view through a mount in simulated time: a mount model with drift, periodic error, backlash and coarse short pulses, and a star renderer with seeing, clouds and sensor noise"
+
+[lints]
+workspace = true
+
+[dependencies]
+ndarray = { workspace = true }
+num-traits = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }

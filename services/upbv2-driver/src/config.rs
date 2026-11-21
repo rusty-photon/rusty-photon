@@ -227,17 +227,6 @@ impl Default for ObservingConditionsConfig {
     }
 }
 
-/// A device's name, ASCOM `UniqueID` and description. Nothing in the driver
-/// reads it: the config's device sections are [`SwitchConfig`] and
-/// [`ObservingConditionsConfig`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DeviceConfig {
-    pub name: String,
-    pub unique_id: String,
-    pub description: String,
-}
-
 /// CLI overrides layered over the file config.
 ///
 /// Tracks which fields are pinned by a command-line flag so the setup pages

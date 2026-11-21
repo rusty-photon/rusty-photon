@@ -9,6 +9,16 @@ use bdd_infra::rp_harness::{
 use crate::steps::tool_steps::{add_camera, ensure_mcp_client, ensure_omnisim, start_rp};
 use crate::world::RpWorld;
 
+#[then(expr = "the tool error should carry the device's ASCOM error code {int}")]
+fn tool_error_carries_ascom_code(world: &mut RpWorld, code: u16) {
+    assert_eq!(
+        world.last_ascom_error_code,
+        Some(code),
+        "expected the tool error to relay ASCOM code {code}; result: {:?}",
+        world.last_tool_result
+    );
+}
+
 // --- Given steps ---
 
 #[given("rp is running with a cover calibrator on the simulator")]
@@ -31,7 +41,7 @@ async fn rp_running_with_cover_calibrator_at(world: &mut RpWorld, url: String, d
     start_rp(world).await;
 }
 
-// --- Train addressing (calibrator-flats-provider plan, D4) ---
+// --- Train addressing ---
 
 /// `main` = [flat-panel, main-cam]: the flip-flat first in the train.
 #[given("rp is running with a camera and a cover calibrator on the simulator in an imaging train")]
@@ -240,8 +250,9 @@ async fn call_calibrator_tool(
     if let Some(b) = brightness {
         args["brightness"] = serde_json::json!(b);
     }
-    let result = world.mcp().call_tool(tool_name, args).await;
+    let (result, ascom_code) = world.mcp().call_tool_with_ascom_code(tool_name, args).await;
     world.last_tool_result = Some(result);
+    world.last_ascom_error_code = ascom_code;
 }
 
 fn tool_result_value(world: &RpWorld) -> &serde_json::Value {

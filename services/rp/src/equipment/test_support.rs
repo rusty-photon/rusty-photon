@@ -1,10 +1,10 @@
-//! Shared test fixtures used by per-device-type test modules
-//! (`focuser::tests`, `mount::tests`). Spawns an axum-backed Alpaca
-//! stub server on `127.0.0.1:0` that individual tests then shape with
-//! their own routes.
-//!
-//! A workspace-wide testing-strategy decision is being tracked in
-//! issue #111; stubs in this module are the agreed interim approach.
+//! The in-test Alpaca server rp's unit tests drive devices against:
+//! [`spawn_stub`] binds an axum router on `127.0.0.1:0`, and each test
+//! gives it the routes its case needs. The `ascom_alpaca` device traits
+//! are too wide for `mockall`, so the code that drives a device through
+//! them is tested against the wire format instead
+//! (docs/skills/testing.md § 6.7, docs/services/rp.md § I/O
+//! Abstractions).
 
 use std::net::SocketAddr;
 

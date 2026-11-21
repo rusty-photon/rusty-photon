@@ -1,21 +1,21 @@
 //! The `target_store` config block (`docs/services/rp.md` § Target Store →
 //! Configuration).
 //!
-//! Its fields: `db_path`, `default_goals`, `default_scheduling`
-//! (Decision 9's altitude-gating parity,
-//! `docs/plans/archive/planetarium-target-import.md`), `import`, and
+//! Its fields: `db_path`, `default_goals`, `default_scheduling` (the
+//! fallback for a target's own scheduling, whose altitude floor
+//! `get_next_target` enforces — rp.md § Target Store), `import`, and
 //! `default_grading` — the thresholds the on-disk frame scan judges each
 //! frame's sidecar metrics against (rp.md § Progress derivation).
 //!
 //! Typed on [`crate::config::Config`] as [`TargetStoreConfigWire`] rather
-//! than an untyped `Value`: the block is now the *only* meaning of the key
-//! (the legacy `targets[]` planner array was retired — targets live in the
-//! redb store, added via `add_target`), so `Config`'s top-level
-//! `deny_unknown_fields` rejects a stray legacy `targets` key or a leftover
-//! array shape loudly at load, and the schema the setup page renders from
-//! carries the real structure. The wire type stays rp-local (mirroring [`GoalWire`]'s
-//! role for goals) so the store leaf keeps its deliberately schemars-free
-//! build (`crates/rp-targets/BUILD.bazel`).
+//! than an untyped `Value`. Targets live in the redb store, added via
+//! `add_target`, and have no config form: `Config`'s top-level
+//! `deny_unknown_fields` rejects a `targets` key, and the typed field an
+//! array in place of this object, both loudly at load. The schema the
+//! setup page renders from carries the real structure. The wire type
+//! stays rp-local (mirroring [`GoalWire`]'s role for goals) so the store
+//! leaf keeps its deliberately schemars-free build
+//! (`crates/rp-targets/BUILD.bazel`).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -33,13 +33,13 @@ pub struct TargetStoreConfig {
     /// Overrides the default `<session.data_directory>/targets.redb`
     /// location.
     pub db_path: Option<String>,
-    /// Applied by `add_target` when the caller supplies no `goals[]`
-    /// (Decision 10 — rp-owned policy, not bridge/UI config).
+    /// Applied by `add_target` when the caller supplies no `goals[]` —
+    /// rp-owned policy, not bridge/UI config.
     pub default_goals: Vec<rp_targets::AcquisitionGoal>,
     /// Fallback scheduling constraints for a target whose own
-    /// `scheduling` is `None`. `get_next_target`'s altitude-gating
-    /// parity (Decision 9) reads `min_altitude_degrees` from here when
-    /// a store-backed target carries no per-target override.
+    /// `scheduling` is `None`. `get_next_target`'s altitude floor reads
+    /// `min_altitude_degrees` from here when a store-backed target
+    /// carries no per-target override.
     pub default_scheduling: rp_targets::SchedulingConstraints,
     /// Tunables for `add_target`'s `source` import form (rp.md § Target
     /// Store → Import form).
@@ -311,8 +311,8 @@ mod tests {
 
     #[test]
     fn wire_rejects_a_leftover_array_shape() {
-        // The retired legacy `targets[]` planner array — an un-migrated
-        // config must fail loudly at load, not silently yield empty
+        // An array in place of the object — a `targets[]`-style list —
+        // must fail loudly at load, not silently yield empty
         // target-store settings.
         let err = serde_json::from_value::<TargetStoreConfigWire>(serde_json::json!([
             {"name": "M31", "ra_hours": 0.7, "dec_degrees": 41.0}

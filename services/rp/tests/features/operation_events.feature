@@ -6,21 +6,22 @@ Feature: Operation event envelopes
   correlate the triple. Each emission carries its own `event_id` and a
   monotonic `event_seq`; the start carries `started_at` and the end adds
   `ended_at` plus `elapsed_ms`. The `slew_started`, `park_started`,
-  `move_focuser_started`, and `exposure_started` events carry the
-  `predicted_duration_ms` / `max_duration_ms` deadline fields (Phase 2) when
-  the deadline can be predicted, and omit them on the fallback path (e.g. a
-  pre-read failure, or no mount configured for park); operations not yet
-  converted to predictive deadlines always omit them. The exposure deadline
+  `move_focuser_started`, `exposure_started` and `centering_started`
+  events carry the `predicted_duration_ms` / `max_duration_ms` deadline
+  fields when the deadline can be predicted (as do `guide_started` and
+  `dither_started` when a settle timeout is resolved), and omit them on
+  the fallback path (e.g. a
+  pre-read failure, or no mount configured for park); an operation rp
+  sizes no deadline for always omits them. The exposure deadline
   is sized from the exposure duration plus the camera's
   `readout_time_estimate` (a built-in default when unset) and a readout
   headroom; rp does not enforce it (the camera driver does), so it always
   rides `exposure_started`.
 
-  The envelope is additive over the historical webhook body: the
-  `event_id`, `event`, `timestamp`, and `payload` keys keep their exact
-  meaning, so the started payload carries the operation inputs and the
-  complete payload carries the same outcome keys webhook plugins already
-  received.
+  The envelope adds to the body every event carries: the `event_id`,
+  `event`, `timestamp`, and `payload` keys mean the same on an
+  operation's events as on a point event, so the started payload
+  carries the operation inputs and the complete payload its outcome.
 
   Scenario: Slew emits a started and complete event under one operation_id
     Given a running Alpaca simulator
@@ -91,7 +92,7 @@ Feature: Operation event envelopes
     And the webhook delivers the "unpark_complete" event
     And the "unpark_started" and "unpark_complete" events share one operation_id
 
-  Scenario: Capture migrates the legacy exposure events onto one operation_id
+  Scenario: Capture emits a started and complete exposure event under one operation_id
     Given a running Alpaca simulator
     And a webhook subscriber for the "exposure" operation
     And rp is running with a camera and the operation-event plugin

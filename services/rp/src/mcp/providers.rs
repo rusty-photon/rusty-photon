@@ -3,8 +3,8 @@
 //!
 //! A tool provider is a plugin running its own MCP server. At startup
 //! rp dials every `type: "tool_provider"` registration through the
-//! standard client (`rp-mcp-client`, ADR-017 — the same credential
-//! policy every first-party client follows), discovers its tools with
+//! standard client (`rp-mcp-client` — the same credential policy
+//! every first-party client follows), discovers its tools with
 //! `tools/list`, and merges them into the catalog as proxy routes: a
 //! client of rp sees them beside `slew` and `capture` with no way to
 //! tell the difference. The merge is checked once, at startup, and the
@@ -12,7 +12,8 @@
 //!
 //! - a tool name offered by a provider *and* a built-in, or by two
 //!   providers, fails startup naming both sources — there is no
-//!   precedence to guess at (tenet 2);
+//!   precedence to guess at (tenet 2 of docs/workspace.md § Project
+//!   Tenets);
 //! - a registration's `requires_tools` is checked against the merged
 //!   catalog, so a missing dependency is a startup error rather than a
 //!   3 a.m. surprise;

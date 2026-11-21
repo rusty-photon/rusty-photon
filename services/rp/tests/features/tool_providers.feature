@@ -2,7 +2,7 @@
 Feature: Tool-provider aggregation
   A tool provider is a plugin running its own MCP server. rp dials every
   `type: "tool_provider"` registration at startup through the standard
-  client (the observatory credential over verified TLS, ADR-017),
+  client (the observatory credential over verified TLS),
   discovers its tools with tools/list, and proxies them through its own
   catalog: a client of rp sees them beside the built-ins with no way to
   tell the difference. A proxied call forwards the caller's arguments and

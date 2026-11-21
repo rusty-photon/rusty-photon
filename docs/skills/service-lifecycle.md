@@ -21,17 +21,20 @@
 
 Every long-running binary in the workspace needs the same three things:
 a tokio runtime, OS signal handlers for graceful shutdown, and a way to
-propagate "time to stop" to its workers. Before issue #294, twelve
-services had drifted into four shapes for the same task — some panicked
-on signal install failure, some spawned hand-rolled cancel tasks,
-filemonitor carried ~100 lines of Windows SCM glue, and the five
-shared-transport ASCOM services additionally raced two installations
-against each other (issue #287).
+propagate "time to stop" to its workers. `rusty-photon-service-lifecycle`
+provides them once, for every service: one signal-install path, one
+propagation primitive ([`tokio_util::sync::CancellationToken`]), one
+handle (`Shutdown`), optional SCM behind a cargo feature.
 
-`rusty-photon-service-lifecycle` is the single workspace-wide
-replacement. One signal-install path, one propagation primitive
-([`tokio_util::sync::CancellationToken`]), one handle (`Shutdown`),
-optional SCM behind a cargo feature.
+The one `Shutdown` handle is what makes a stop dependable. The runner
+installs the handlers once, before the run closure starts, and a handler
+that fails to install costs a warning, not a panic. The server's stop
+path, every worker and every clone of the token then see the same
+cancellation, whether a signal, an SCM Stop or a restart request fired
+it. Without the shared handle, each service would install its own
+handlers, each its own way, and a server raced in `main` against a
+second signal future would be dropped mid-flight when that signal
+fired, before its graceful drain had run.
 
 ---
 
@@ -80,12 +83,12 @@ Key points:
   helpers alike. `main` returns the crate's `ServiceResult`: the runner
   converts the closure's error into a `color_eyre::Report`, so startup
   failures print the full `source()` chain, and it installs the `color-eyre`
-  panic hook once per process (formatted panic reports with span context —
-  see [ADR-011](../decisions/011-error-reporting-layers.md)). Never add
-  `color-eyre`/`eyre` to a service or library crate; errors below the binary
-  boundary stay `thiserror`-typed. For a rare fallible step *before*
-  `ServiceRunner::run` whose helper returns a boxed error, convert with
-  `rusty_photon_service_lifecycle::report_from_boxed`.
+  panic hook once per process (formatted panic reports with span context).
+  Never add `color-eyre`/`eyre` to a service or library crate; errors below
+  the binary boundary stay `thiserror`-typed ([crate design §
+  Scope](../crates/rusty-photon-service-lifecycle.md#scope)). For a rare
+  fallible step *before* `ServiceRunner::run` whose helper returns a boxed
+  error, convert with `rusty_photon_service_lifecycle::report_from_boxed`.
 - Bootstrap the config file **before** the runner with
   `rusty_photon_config::resolve_and_init::<Config>(name, args.config, &default, identity_pointers)`:
   it resolves the path, materializes the serialized default config at the
@@ -104,7 +107,8 @@ Key points:
   `.condition_path_exists(&config_path)`, and load the config inside the
   closure: under the Windows SCM the runner stops such a service cleanly,
   before the closure runs, while the file is absent — the MSI starts it at
-  boot like every other ([ADR-025](../decisions/025-config-gated-services-gate-themselves-on-windows.md)).
+  boot like every other ([crate design § SCM
+  mode](../crates/rusty-photon-service-lifecycle.md#scm-mode-cfgallwindows-feature--scm)).
   Read the file with `rusty_photon_config::load_file::<Config>`: it tells a
   JSON syntax error apart from a file that is JSON but not a valid
   configuration. See
@@ -116,16 +120,19 @@ Key points:
 
 ### Shared-transport ASCOM driver (`BoundServer::start(shutdown)`)
 
-The five shared-transport services already take a shutdown future:
+A shared-transport driver's `BoundServer::start` takes the shutdown
+future:
 
 ```rust
 bound.start(shutdown.cancelled()).await?;
 ```
 
 This is the only signal source — there is **no outer `tokio::select!`**
-in `main` racing the server against another signal future. That double-
-installation pattern is what issue #287 was about; the fix is to thread
-a single source through.
+in `main` racing the server against another signal future. Such a race
+would drop `start`'s future mid-flight when the other signal fired:
+axum's graceful drain and the transport teardown that `start` runs after
+serving would never happen. The drivers' reload loops compose one
+future that ends on a shutdown or a reload, and pass it in whole.
 
 ### Plain axum service
 
@@ -268,8 +275,8 @@ runner's to end, not the service's.
 ## Windows Service Control Manager mode
 
 SCM dispatch is opt-in per service via the `scm` cargo feature, and is
-a no-op on non-Windows targets. **Every service binary in `services/`
-has it** (windows-packaging plan, W1 — ADR-015). The uniform shape:
+a no-op on non-Windows targets. **Every long-running service in
+`services/` has it.** The uniform shape:
 
 ```toml
 # services/<name>/Cargo.toml
@@ -350,8 +357,9 @@ platform. Do not add a per-consumer feature variant: two instantiations
 of the crate in one binary's graph stop its types (`ReloadSignal`,
 `Shutdown`) from unifying (E0308).
 
-On a run-closure error under SCM, the runner reports `SERVICE_STOPPED`
-with a non-zero exit code so SCM (with the installer-configured failure
+On a run-closure error under SCM, or a start that fails before the
+closure runs, the runner reports `SERVICE_STOPPED` with a non-zero exit
+code so SCM (with the installer-configured failure
 actions + failure-actions flag) counts the stop as a failure and
 restarts the service — the Windows translation of systemd's
 `Restart=on-failure` that the serial drivers' eager-validation exits
@@ -388,10 +396,11 @@ section for the full list):
 
 - **Don't install your own signal handler downstream.** If you find
   yourself writing `tokio::signal::ctrl_c().await` inside a service
-  that already runs under `ServiceRunner`, you're recreating the bug
-  the runner exists to prevent. Use `shutdown.cancelled()` or
-  `shutdown.token()` instead. The only exception is one-off CLI tools
-  that don't (and shouldn't) use the runner.
+  that already runs under `ServiceRunner`, you're recreating the second
+  signal source the runner exists to prevent ([above](#why-this-exists)).
+  Use `shutdown.cancelled()` or `shutdown.token()` instead. The only
+  exception is one-off CLI tools that don't (and shouldn't) use the
+  runner.
 - **Don't wrap `ServiceRunner` inside `#[tokio::main]`.** The runner
   builds its own runtime; nesting will either fail at startup or
   produce a confusing two-runtime situation.
@@ -404,7 +413,7 @@ section for the full list):
   `Send` bounds. Only the *closure itself* is `Send + 'static`. The
   closure's *returned error* is the exception: it must be
   `Send + Sync` (the crate's `RunError`), because the runner wraps it
-  in a `color_eyre::Report` (ADR-011).
+  in a `color_eyre::Report`.
 
 ---
 
@@ -412,10 +421,6 @@ section for the full list):
 
 - [Crate design](../crates/rusty-photon-service-lifecycle.md) — public
   API, behavior, SCM dispatch internals, testing strategy.
-- [Migration plan](../plans/archive/service-lifecycle-unification.md) — how
-  the workspace got from twelve divergent shutdown shapes to one,
-  closed under issue #294 (with #287 as a side fix in the five
-  shared-transport services).
 - [`services/filemonitor`](../services/filemonitor.md) — worked example
   for reload + SCM. Its `main.rs` is the canonical reference for an
   SCM-enabled binary.

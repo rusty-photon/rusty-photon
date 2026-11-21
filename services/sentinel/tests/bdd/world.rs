@@ -348,12 +348,13 @@ impl SentinelWorld {
         let dir = root.path().join("svcmgr");
         std::fs::create_dir_all(&dir).expect("failed to create service manager dir");
         std::fs::write(dir.join("units.txt"), "").expect("failed to seed units.txt");
-        // Tight timings so threshold/backoff scenarios resolve in seconds:
-        // discovery every 250ms, probe every 200ms, threshold 4, backoff
-        // 1s..2s, restart budget 1s. Threshold is 4 (not the minimum 2) so
-        // the negative "records no restarts" assertions survive a loaded CI
-        // runner: a single slow/timed-out probe is normal jitter, and even
-        // two in a row must not read as a dead service — see issue #677.
+        // Tight timings so threshold and backoff scenarios resolve in
+        // seconds (the stub's `policy.json`, docs/services/sentinel.md § The
+        // test seam). The failure threshold is 4 rather than 2, the least
+        // that forgives one slow probe, so the negative "records no
+        // restarts" assertions survive a loaded CI runner: a single slow or
+        // timed-out probe there is normal jitter, and even two in a row must
+        // not read as a dead service.
         std::fs::write(
             dir.join("policy.json"),
             serde_json::json!({
@@ -448,10 +449,10 @@ impl SentinelWorld {
     /// Write a supervised service's own `<service>.json` next to sentinel's
     /// config file, so discovery can derive its probe URL from the shared
     /// `server` block. `bind_address` is pinned to the loopback literal the
-    /// stub actually listens on (matching every other service's BDD world)
-    /// so sentinel's probe never pays for a `localhost` hostname resolution
-    /// — a source of intermittent latency on loaded Windows CI runners that
-    /// contributed to issue #677.
+    /// stub listens on, so sentinel's probe dials that address and never
+    /// resolves `localhost`, which is intermittently slow on a loaded
+    /// Windows CI runner
+    /// ([testing.md § 5.15](../../../../docs/skills/testing.md#515-a-test-dials-the-service-under-test-at-the-address-it-bound-not-localhost)).
     pub fn write_service_config(&mut self, service: &str, port: u16) {
         let dir = self
             .temp_dir
@@ -464,9 +465,8 @@ impl SentinelWorld {
         .expect("failed to write sibling service config");
     }
 
-    /// POST a dashboard endpoint (empty body) and capture status + body.
-    /// `POST` `path` on the dashboard carrying `headers`, recording the
-    /// answer as [`Self::http_get`] does.
+    /// `POST` `path` on the dashboard with an empty body, carrying
+    /// `headers`, recording the answer as [`Self::http_get`] does.
     pub async fn http_post(&mut self, path: &str, headers: &[(&str, &str)]) {
         let client = reqwest::Client::new();
         let url = self.dashboard_url(path);
@@ -487,8 +487,9 @@ impl SentinelWorld {
 
     /// Start a local stub that mimics the Pushover API, replying 200 to any
     /// request. Lets notification scenarios exercise the dispatch path without
-    /// the real api.pushover.net round-trip (slow, network-dependent, and the
-    /// source of the flaky "history is empty" race the fixed sleep used to mask).
+    /// the real api.pushover.net round trip, which is slow and needs the
+    /// network: a notification reaches the history only when its POST
+    /// returns, so a history step would wait on it.
     pub async fn start_pushover_stub(&mut self) {
         use axum::Router;
 
@@ -594,8 +595,9 @@ impl SentinelWorld {
 
     /// Poll `/api/status` until `name` reports `expected_state`, or ~15s elapses.
     /// Returns the last observed state for that monitor (so a timeout produces a
-    /// useful assertion message). Replaces a blind fixed sleep, removing the race
-    /// against filemonitor + sentinel polling latency.
+    /// useful assertion message). Waits for the expected state rather than
+    /// assuming a fixed delay covers filemonitor's and sentinel's polling
+    /// latency.
     pub async fn wait_for_status(&self, name: &str, expected_state: &str) -> Option<String> {
         let mut last = None;
         for _ in 0..60 {
@@ -909,7 +911,8 @@ impl Drop for MountServiceStub {
 /// `GET /api/events/subscribe`. Every accepted connection receives the
 /// pre-scripted frames (as one chunked-transfer body) and is then held open —
 /// no disconnect — so the sentinel watchdog tracks exactly the operations the
-/// script describes. Built on raw tokio TCP so it pulls in no new dependency.
+/// script describes. Built on raw tokio TCP, so it needs no SSE or stream
+/// crate.
 #[derive(Debug)]
 pub struct RpEventStub {
     base_url: String,

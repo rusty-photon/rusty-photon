@@ -107,21 +107,35 @@ impl McpTestClient {
     /// transport loss) or the result is malformed, and a timeout message if
     /// no response arrives within `MCP_CALL_TIMEOUT`.
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<Value, String> {
+        self.call_tool_with_ascom_code(tool_name, arguments).await.0
+    }
+
+    /// [`Self::call_tool`], with the ASCOM error code a failed tool relays
+    /// from its device (rp.md § `CoverCalibrator` Tool Details): `None` for a
+    /// success and for an error that relays none.
+    pub async fn call_tool_with_ascom_code(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> (Result<Value, String>, Option<u16>) {
         let args = arguments.as_object().cloned().unwrap_or_default();
-        let call = self.client.call_tool(tool_name, args);
+        let call = self.client.call_tool_result(tool_name, args);
         match tokio::time::timeout(MCP_CALL_TIMEOUT, call).await {
-            Err(_) => Err(format!(
-                "{}: MCP call timed out after {}s with no response — the rp MCP \
-                 transport was almost certainly torn down mid-request (see MCP_CALL_TIMEOUT)",
-                tool_name,
-                MCP_CALL_TIMEOUT.as_secs()
-            )),
-            Ok(Err(McpCallError::Tool(message))) => Err(message),
-            Ok(Err(refusal @ McpCallError::SafetyStopped { .. })) => Err(refusal.to_string()),
-            Ok(Err(e @ (McpCallError::Request(_) | McpCallError::Malformed(_)))) => {
-                Err(format!("{tool_name}: {e}"))
-            }
-            Ok(Ok(value)) => Ok(value),
+            Err(_) => (
+                Err(format!(
+                    "{}: MCP call timed out after {}s with no response — the rp MCP \
+                     transport was almost certainly torn down mid-request (see MCP_CALL_TIMEOUT)",
+                    tool_name,
+                    MCP_CALL_TIMEOUT.as_secs()
+                )),
+                None,
+            ),
+            Ok(Err(e)) => (Err(call_error_message(tool_name, e)), None),
+            Ok(Ok(result)) => (
+                rp_mcp_client::tool_result_value(&result)
+                    .map_err(|e| call_error_message(tool_name, e)),
+                rp_mcp_client::ascom_error_code(&result),
+            ),
         }
     }
 
@@ -151,5 +165,18 @@ impl McpTestClient {
             .map_err(|e| format!("list_tools: {e}"))?;
 
         Ok(tools.into_iter().map(|t| t.name).collect())
+    }
+}
+
+/// How [`McpTestClient::call_tool`] reports a failed call: the tool's own
+/// message, rp-mcp-client's rendering of a safety refusal, and a
+/// `<tool>:`-prefixed message for a failed request or a malformed result.
+fn call_error_message(tool_name: &str, error: McpCallError) -> String {
+    match error {
+        McpCallError::Tool(message) => message,
+        refusal @ McpCallError::SafetyStopped { .. } => refusal.to_string(),
+        e @ (McpCallError::Request(_) | McpCallError::Malformed(_)) => {
+            format!("{tool_name}: {e}")
+        }
     }
 }

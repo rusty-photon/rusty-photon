@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// `cooler_targets_c` values must be multiples of [`COOLER_GRID_STEP_C`]
 /// within [`COOLER_GRID_MIN_C`]..=[`COOLER_GRID_MAX_C`]. The same
-/// constants drive the JSON-Schema `enum` the web UI renders as a
+/// constants drive the JSON-Schema `enum` the setup page renders as a
 /// checkbox grid, so schema and validation cannot drift apart.
 pub const COOLER_GRID_MIN_C: i32 = -40;
 pub const COOLER_GRID_MAX_C: i32 = 15;
@@ -72,8 +72,8 @@ pub struct CameraConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<i32>,
     /// Estimated sensor readout + download time for this camera, feeding
-    /// the predictive exposure deadline (§2.4 of the predictive-deadlines
-    /// plan): `predicted = exposure duration + readout_time_estimate`. There
+    /// the predictive exposure deadline:
+    /// `predicted = exposure duration + readout_time_estimate`. There
     /// is no ASCOM Alpaca property for readout time — even where a driver
     /// knows it, it is not exposed — so this config value is the estimate
     /// source. Set it per-rig (a slow USB-2 CCD reads out far slower than a
@@ -100,7 +100,7 @@ impl CameraConfig {
     /// with `index` naming its position in `equipment.cameras`. Shared by
     /// `load_config` (which aborts startup on the first error) and the
     /// setup page's save. Paths are dotted with the index
-    /// (`equipment.cameras.0.focal_length_mm`) so a UI can map each error
+    /// (`equipment.cameras.0.cooler_targets_c`) so a UI can map each error
     /// onto its field; the message names the camera id for humans.
     #[must_use]
     pub fn field_errors(&self, index: usize) -> Vec<FieldError> {
@@ -149,9 +149,9 @@ impl CameraConfig {
 mod tests {
     use crate::config::load_config;
 
-    /// The pre-train `focal_length_mm` camera key was retired to
-    /// `equipment.optical_trains[].focal_length_mm`; a config still
-    /// carrying it must fail loudly at load (rp.md § Configuration).
+    /// Focal length is a train's (`equipment.optical_trains[].focal_length_mm`),
+    /// so `focal_length_mm` on a camera is a retired key that must fail
+    /// loudly at load (rp.md § Configuration).
     #[test]
     fn camera_config_rejects_retired_focal_length_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -404,9 +404,9 @@ mod tests {
         );
     }
 
-    /// The schema advertises the grid as `items.enum` so the web UI can
-    /// render one checkbox per rung without hardcoding the values
-    /// (docs/services/ui-htmx.md § Schema-driven rendering).
+    /// The schema advertises the grid as `items.enum` so the setup page
+    /// can render one checkbox per rung without hardcoding the values
+    /// (docs/crates/rusty-photon-setup.md § Fields).
     #[test]
     fn cooler_targets_schema_enumerates_the_grid() {
         let schema = schemars::schema_for!(crate::config::CameraConfig);

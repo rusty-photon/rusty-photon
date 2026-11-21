@@ -11,7 +11,7 @@ use crate::error::{Result, TlsError};
 /// thin wrapper over this for callers with no further customization.
 ///
 /// When `ca_cert_path` is `Some`, the PEM-encoded CA certificate at that path
-/// becomes the client's **only** trusted root (`tls_certs_only`, ADR-002) —
+/// becomes the client's **only** trusted root (`tls_certs_only`) —
 /// this replaces, not adds to, the platform/built-in trust store, so a
 /// public-CA `https://` endpoint becomes unreachable through this builder
 /// alongside the observatory CA. This allows the client to connect to

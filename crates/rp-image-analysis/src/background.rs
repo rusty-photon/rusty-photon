@@ -5,8 +5,11 @@
 //! The final mean and stddev are robust against bright stars and hot pixels;
 //! the median is computed via `select_nth_unstable` on the surviving set.
 //!
-//! Used by `measure_basic` and (Phase 5) `estimate_background`. See
-//! `docs/services/rp.md` (MVP `measure_basic` Contract, algorithm step 2).
+//! Used by `measure_basic`, `measure_stars`, `compute_snr`, the aperture
+//! annulus, the `estimate_background` tool and the guider's frame
+//! measurement. See
+//! `docs/services/rp.md` (`measure_basic` Contract, algorithm step 2,
+//! and `estimate_background` Contract).
 
 use ndarray::ArrayView2;
 

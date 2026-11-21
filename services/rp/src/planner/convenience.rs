@@ -9,12 +9,11 @@
 //! body in `crate::mcp` handles parameter parsing, equipment lookup,
 //! deriving progress, and `CallToolResult` shaping.
 //!
-//! The per-filter `{completed, goal}` progress views that used to live
-//! here are gone with the counters: every progress surface now emits
-//! the per-goal rows `crate::mcp::built_in::targets::progress_rows`
-//! builds from the on-disk scan (rp.md § Progress derivation), so there
-//! is one definition of a target's progress rather than two shapes that
-//! could drift.
+//! No progress view is built here: every progress surface emits the
+//! per-goal rows `crate::mcp::built_in::targets::progress_rows` builds
+//! from the on-disk scan (rp.md § Progress derivation), so there is one
+//! definition of a target's progress rather than two shapes that could
+//! drift.
 
 use chrono::{DateTime, Utc};
 use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, SideOfPier, Site};
@@ -24,8 +23,8 @@ use serde_json::Value;
 use super::decision::signed_hour_angle;
 
 /// The `get_target_status` result: sky position for one named target
-/// plus the caller-supplied `progress` (the per-filter map when the
-/// name matches a configured target, `null` otherwise).
+/// plus the caller-supplied `progress` (the per-goal rows when the
+/// name matches an active store target, `null` otherwise).
 #[derive(Serialize)]
 struct TargetStatusView<'a> {
     target_name: &'a str,
@@ -156,7 +155,7 @@ mod tests {
         // is null.
         assert!(v["time_to_set_seconds"].is_null());
         // The progress argument passes through verbatim (null here —
-        // Polaris is not a configured target).
+        // Polaris is not a stored target).
         assert!(v["progress"].is_null());
     }
 

@@ -69,8 +69,9 @@ fn restart_cell(name: &str, unit: &str) -> String {
 #[derive(Clone)]
 pub struct DashboardState {
     pub state: StateHandle,
-    /// The Service Restart API's engine (the supervised-services registry +
-    /// shell seam). See `docs/services/sentinel.md` §Service Restart API.
+    /// The Service Restart API's engine (the discovered-services registry,
+    /// the platform service manager, and the shared restart gate). See
+    /// `docs/services/sentinel.md` §Service Restart API.
     pub restarts: Arc<RestartManager>,
 }
 

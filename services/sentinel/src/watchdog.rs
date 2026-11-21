@@ -4,7 +4,8 @@
 //!
 //! This is the Sentinel half of the two-loop supervision design: rp emits a
 //! `*_started` event carrying a `max_duration_ms` and later a `*_complete` /
-//! `*_failed`; [`OperationDeadlineMonitor`] tracks those deadlines
+//! `*_failed` (a guide start and a dither end in `*_settled` instead);
+//! [`OperationDeadlineMonitor`] tracks those deadlines
 //! independently and reacts when one is missed or when the stream (and thus
 //! rp) goes away. See `docs/services/sentinel.md` §Operation Watchdog and
 //! `docs/services/rp.md` §Real-Time Stream for the wire contract.
@@ -29,9 +30,9 @@ use crate::state::StateHandle;
 /// being polled by the engine on an interval.
 ///
 /// It owns either a long-lived connection it reacts to (the operation
-/// watchdog) or a poll loop it paces itself (the service health
-/// supervisor). The engine spawns one task per `EventMonitor` and runs
-/// it until the cancellation token fires.
+/// watchdog) or a poll loop it paces itself (the discovery supervisor,
+/// which runs one health supervisor per service). The engine spawns one
+/// task per `EventMonitor` and runs it until the cancellation token fires.
 #[async_trait]
 pub trait EventMonitor: Send + Sync + std::fmt::Debug {
     /// Display name (used in logs and notification history records).
@@ -68,7 +69,8 @@ enum FrameAction {
         operation_id: String,
         max_duration_ms: Option<u64>,
     },
-    /// An operation finished (`*_complete` / `*_failed`); stop tracking it.
+    /// An operation finished (`*_complete` / `*_failed` / `*_settled`); stop
+    /// tracking it.
     Ended { operation_id: String },
     /// rp signalled lost history — every open operation is now unconfirmed.
     Gap,
@@ -108,7 +110,9 @@ fn classify(frame: &SseFrame) -> FrameAction {
             max_duration_ms: json.get("max_duration_ms").and_then(Value::as_u64),
         });
     }
-    if event.ends_with("_complete") || event.ends_with("_failed") {
+    // rp ends a guide start and a dither with `guide_settled` /
+    // `dither_settled`, when guiding settles.
+    if event.ends_with("_complete") || event.ends_with("_failed") || event.ends_with("_settled") {
         return operation_id().map_or(FrameAction::Ignore, |operation_id| FrameAction::Ended {
             operation_id,
         });
@@ -300,8 +304,8 @@ impl OperationDeadlineMonitor {
             .unwrap_or(self.config.default_buffer)
     }
 
-    /// Corrective-action policy for a family. Phase 4 always notifies; this
-    /// is read so Phase 5 can branch on it without a signature change.
+    /// Corrective-action policy for a family: its `on_expiry`, or
+    /// `notify_only` when the family has no `operations` entry.
     fn on_expiry_for(&self, family: &str) -> OnExpiry {
         self.config
             .operations
@@ -726,6 +730,19 @@ mod tests {
     }
 
     #[test]
+    fn classify_settled_is_ended() {
+        for event in ["guide_settled", "dither_settled"] {
+            assert_eq!(
+                classify(&frame(2, event, Some("op-1"), None)),
+                FrameAction::Ended {
+                    operation_id: "op-1".to_string()
+                },
+                "{event}"
+            );
+        }
+    }
+
+    #[test]
     fn classify_ignores_started_without_operation_id_and_progress_events() {
         assert_eq!(
             classify(&frame(4, "slew_started", None, Some(5000))),
@@ -917,6 +934,30 @@ mod tests {
         for _ in 0..50 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn guide_start_settling_in_time_does_not_escalate() {
+        let source = MockSource::new(vec![Script::FramesOpen(vec![
+            frame(1, "guide_started", Some("op-1"), Some(5000)),
+            frame(2, "guide_settled", Some("op-1"), None),
+        ])]);
+        let (monitor, messages, _corrective) = build_monitor(source, test_config(10, 5));
+        let cancel = CancellationToken::new();
+        let cancel2 = cancel.clone();
+        let handle = tokio::spawn(async move { monitor.run(cancel2).await });
+
+        settle().await;
+        tokio::time::advance(Duration::from_mins(2)).await;
+        settle().await;
+
+        assert!(
+            messages.lock().unwrap().is_empty(),
+            "a settled guide start must not escalate: {:?}",
+            messages.lock().unwrap()
+        );
+        cancel.cancel();
+        handle.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

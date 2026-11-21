@@ -16,12 +16,16 @@ between requests. Restart is always cheap and never costs more than
 one in-flight request — which is what makes the supervision posture
 described below safe.
 
-Operators install ASTAP themselves (BYO per ADR-005). `plate-solver`
+Operators install ASTAP themselves (bring-your-own). `plate-solver`
 ships no ASTAP binary, no index database, and no install script;
 operators point it at their install via two required config fields.
+Because the project ships none of ASTAP and runs it only as a
+subprocess, it never conveys or links the LGPL-3.0 program;
+[ADR-005 § License Review](../decisions/005-plate-solver.md#license-review)
+holds the license analysis.
 
 **Cross-platform support:** Linux x64, Linux aarch64 (Pi 5), macOS
-Apple Silicon, Windows x64 — matching ADR-005's hard constraints.
+Apple Silicon, Windows x64.
 
 ## Architecture
 
@@ -62,14 +66,12 @@ Accessibility").
 - **Tenet 1 — Robustness above all else.** The service exists *only*
   to honor this tenet. Wrapping ASTAP in its own process means an
   ASTAP SIGSEGV, hang, or deadlock cannot threaten `rp`'s session
-  state. This rationale is the load-bearing argument for choosing
-  rp-managed-service over plugin shape; see
-  `docs/plans/archive/plate-solver.md` §"Stability and supervision" for
-  the full discriminator.
+  state. It is also why plate solving is an rp-managed service, which
+  Sentinel restarts on hang or crash, and not a plugin
+  ([rp.md § Component Categories](rp.md#component-categories)).
 - **Tenet 4 — Remote interfaces only.** HTTP between rp and the
   service. The service-to-ASTAP boundary is a CLI subprocess, not an
-  in-process FFI link — same shape that ADR-005 evaluates and ADR-001's
-  predecessor explicitly rejected for sep-sys.
+  in-process FFI link.
 - **Tenet 5 — Minimal footprint.** No long-running ASTAP processes,
   no warm caches, no embedded star database. The service holds only
   the request currently in flight.
@@ -78,9 +80,7 @@ Accessibility").
 
 ### HTTP API
 
-The service exposes exactly two endpoints. The contract is frozen by
-`docs/plans/archive/plate-solver.md` §"HTTP contract"; this section
-states the behavior, not the wire format details.
+The service exposes exactly two endpoints.
 
 #### `POST /api/v1/solve`
 
@@ -123,24 +123,33 @@ states the behavior, not the wire format details.
    stream stops exactly at the END card without trailing FITS-block
    padding; it does **not** lower the WCS-keyword bar — the parser
    still requires a complete primary HDU header (`SIMPLE`, `BITPIX`,
-   `NAXIS`, `CTYPE1`/`CTYPE2`) before the WCS solution. The wrapper
+   `NAXIS`, `CTYPE1`/`CTYPE2`) before the WCS solution. ASTAP writes
+   that header with no data block (`NAXIS = 0`), and the parser takes
+   it as it is. A sidecar without `CRVAL1`, `CRVAL2` or a pixel scale
+   (`CDELT1`, or `CD1_1` and `CD2_1`) fails the solve with the missing
+   keyword named; a non-numeric value on any keyword the response
+   reads fails it with that keyword and its value named. The wrapper
    does not hand-roll FITS-header parsing.
 7. Service releases the semaphore.
 
-**Error paths** all return the structured error envelope frozen in
-the plan. Each error code corresponds to one failure scenario:
+**Error paths** all return the same JSON envelope —
+`{"error": "<code>", "message": "<text>", "details": {…}}` — with the
+HTTP status the table gives. Each error code corresponds to one
+failure scenario:
 
-| Code | Trigger |
-|------|---------|
-| `invalid_request` | Schema-invalid body, non-absolute `fits_path`, unparseable `timeout`, `blind: true` together with `ra_hint`, `dec_hint` or `search_radius_deg`. Rejected before any subprocess work. |
-| `fits_not_found` | `fits_path` does not exist or is not readable. Rejected before any subprocess work. |
-| `solve_failed` | ASTAP exited non-zero, OR exited zero but did not write a `.wcs`, OR wrote a `.wcs` missing required keys. The error message names which sub-condition triggered. |
-| `solve_timeout` | Wall-clock deadline expired. Service signaled the child (see [supervision](#subprocess-supervision)) and returned this error after the child exited (clean or forced), or 5 s after the force-kill if that had not ended it. Both escalation outcomes share this code; `message` distinguishes them — `solve timed out (terminated)` when the child answered the graceful signal within the grace period, `solve timed out (killed)` when it had to be force-killed. |
-| `internal` | Unexpected wrapper failure: broken pipe, `.wcs` parse panic, file-system error reading the sidecar. Should be rare; surfacing as a distinct code keeps it visible in monitoring. |
+| Code | HTTP status | Trigger |
+|------|-------------|---------|
+| `invalid_request` | 400 | Schema-invalid body, non-absolute `fits_path`, unparseable `timeout`, `blind: true` together with `ra_hint`, `dec_hint` or `search_radius_deg`. Rejected before any subprocess work. |
+| `fits_not_found` | 404 | `fits_path` does not exist, is not a regular file, or is not readable. Rejected before any subprocess work. |
+| `solve_failed` | 422 | ASTAP exited non-zero, OR exited zero but did not write a `.wcs`, OR wrote a `.wcs` the wrapper cannot use — unreadable, a malformed header, or a required keyword missing or non-numeric. The error message names which sub-condition triggered. |
+| `solve_timeout` | 504 | Wall-clock deadline expired. Service signaled the child (see [supervision](#subprocess-supervision)) and returned this error after the child exited (clean or forced), or 5 s after the force-kill if that had not ended it. Both escalation outcomes share this code; `message` distinguishes them — `solve timed out (terminated)` when the child answered the graceful signal within the grace period, `solve timed out (killed)` when it had to be force-killed. |
+| `internal` | 500 | Unexpected wrapper failure: ASTAP could not be started or watched, or its stderr or exit status could not be read. Should be rare; surfacing as a distinct code keeps it visible in monitoring. |
 
-`rp` always sees one of these five codes on failure. ASTAP's stderr
-tail is included in the `details` field for `solve_failed` so the
-operator can diagnose without console access to the wrapper.
+`rp` always sees one of these five codes on failure. On a
+`solve_failed` from a non-zero exit, `details` carries ASTAP's
+`exit_code` and its `stderr_tail`, so the operator can diagnose
+without console access to the wrapper; every other error leaves
+`details` out.
 
 #### `GET /health`
 
@@ -173,7 +182,7 @@ command runs after consecutive failures. A `503` does **not** count
 as a failure: a missing binary or database is a condition a service
 restart cannot cure, so sentinel reports the service *degraded*
 (amber, with the `message` displayed verbatim) instead of
-restart-looping it (issue #595). Anything else that speaks HTTP
+restart-looping it. Anything else that speaks HTTP
 (Prometheus blackbox exporter, Nagios) can probe it too.
 
 ### Subprocess Supervision
@@ -348,12 +357,6 @@ rig:
 Smaller radius means faster solve. ASTAP's documented sweet spot is
 ~3° for typical amateur GoTo setups.
 
-ADR-005 §"Open questions" item 6 is retired by this section: the
-ASCOM gap is documented, the operator-supplied default is
-recommended, and `rp`'s `plate_solve` MCP tool sources
-`search_radius_deg` from rp config (or a per-call override) rather
-than from a nonexistent ASCOM property.
-
 #### Operator perf comparison (manual)
 
 To verify the hint speed advantage on a real rig, run the wrapper
@@ -387,7 +390,8 @@ Reference measurements on the committed `m101_known.fits` fixture
 - Blind: **~48 s** (~770× slower)
 
 The committed fixture has its FITS pointing breadcrumbs (`RA`,
-`DEC`, `OBJCTRA`, `OBJCTDEC`, `OBJECT`) stripped — see issue #236 —
+`DEC`, `OBJCTRA`, `OBJCTDEC`, `OBJECT`) stripped
+([Real-ASTAP Coverage Cadence](#real-astap-coverage-cadence)),
 so the "blind" measurement above truly walks ASTAP's search
 spiral. Operator-captured FITS that retain those header keys will
 behave very differently without hints: ASTAP reads the cards as a
@@ -399,19 +403,9 @@ or strip the pointing keys from a fixture copy.
 If the spread disappears entirely (hinted is not materially faster
 than blind on a header-less fixture), the wrapper isn't being
 invoked correctly or ASTAP's index database is mismatched to the
-FOV. The nightly `plate-solver-smoke` workflow trends both numbers
-automatically per OS — see issue #236 and the per-run
-`plate-solver-perf-<os>` CSV artifacts.
-
-The workflow's "Log and check solve times" step (the
-`plate-solver-times` action) then guards those numbers (issue #234). Per OS it requires the blind solve to stay at
-least 10× slower than the hinted solve — a dropped hint flag in
-`runner/astap.rs` collapses that ratio — and enforces coarse absolute
-ceilings (hinted ≤ 5 s, blind ≤ 180 s) to catch a uniform slowdown.
-A breach fails the smoke run, which on a scheduled run opens or
-updates the `plate-solver-nightly` tracking issue. The thresholds are
-deliberately loose (phase-1); pinning tighter per-OS budgets is
-forward work pending several weeks of scheduled-run baseline.
+FOV. The nightly `plate-solver-smoke` workflow records both numbers
+per OS and guards them
+([Real-ASTAP Coverage Cadence](#real-astap-coverage-cadence)).
 
 ### Configuration Validation at Startup
 
@@ -475,7 +469,7 @@ combined with the subcommand (the mixed form would silently ignore them).
 ```
 
 The `server` block is the shared `ServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`,
+`crates/rusty-photon-server-config`: `port`,
 `bind_address` (default `0.0.0.0`), and optional `tls`/`auth`. Absent
 `tls`/`auth` (shown as `null` above) means plain, unauthenticated
 HTTP.
@@ -486,7 +480,7 @@ HTTP.
 | `server.port` | no | `11131` | Matches the placeholder rp config in `rp.md` §"Configuration". |
 | `astap_binary_path` | **yes** | — | No default. Wrapper must be told where ASTAP is. |
 | `astap_db_directory` | **yes** | — | No default. ASTAP needs an index database to solve; the operator picks D05 / D80 / etc. for their FOV. |
-| `max_concurrency` | no | `1` | Capacity of the single-flight semaphore. v1 ships at 1; tuning above 1 is operator-driven and unsupported by the v1 budget assertions. |
+| `max_concurrency` | no | `1` | Capacity of the single-flight semaphore. A value above 1 is the operator's choice and unsupported: no test runs the service above 1. |
 | `default_solve_timeout` | no | `30s` | Applies when the request body omits `timeout`. |
 | `max_solve_timeout` | no | `120s` | Caps any caller-supplied `timeout`. |
 | `astap_extra_env` | no | `{}` | Map of environment variables set on every spawned `astap_cli` child. Use for operator-controlled tunables (locale, library paths) and for BDD tests that drive `mock_astap`'s `MOCK_ASTAP_MODE` per scenario without process-wide `env::set_var` races. |
@@ -553,17 +547,60 @@ unset under Bazel and unset for `#[cfg(test)] mod tests` inside
 
 A small set of `@requires-astap`-tagged BDD scenarios runs against
 the real ASTAP binary, gated by a runtime check on the
-`ASTAP_BINARY` environment variable. Scenarios skip silently when
-the env var is unset (the PR-required path). They fire when the env
-var is set, which is the dedicated nightly cross-platform smoke
-workflow's job. To fire them on a developer's machine,
+`ASTAP_BINARY` environment variable: the scenario filter in
+`tests/bdd.rs` leaves them out when the env var is unset (the
+PR-required path). They fire when the env var is set, which is the
+job of the nightly cross-platform smoke workflow,
+`plate-solver-smoke.yml`. To fire them on a developer's machine,
 `bazel run //.github/actions:install -- astap` installs the CLI and
 the D20 database the smoke pins into `~/.local/opt/astap` and prints
 the `ASTAP_BINARY` and `ASTAP_DB_DIR` to set; then run
 `cargo test -p plate-solver --all-features --test bdd`, as the smoke
-does. See `docs/plans/archive/plate-solver.md` §"Real-ASTAP
-coverage: cadence and gating" for the rationale and the `bdd.rs`
-filter snippet.
+does.
+
+The mock-backed scenarios cover the wrapper's own contract on every
+pull request. The real-ASTAP ones catch what `mock_astap` cannot: a
+real ASTAP whose `.wcs` shape, CLI surface or banner differs from
+what the mock claims, on Linux, macOS and Windows. They run
+nightly, on a push that touches the service, the workflow or the
+actions it uses, and on demand — not on every pull request, because
+each OS leg downloads ASTAP and the ~400 MB D20 database. Each leg
+installs both with the `install-astap` action, which takes its OS's
+archive from a table of SHA-256-pinned archives
+(`.github/actions/install-astap/assets.json`); on macOS the workflow
+then clears the quarantine flag on `astap_cli`. The install alone —
+the pinned archives and the binary's banner — is the
+`install-astap.yml` workflow's to check, on every supported platform.
+
+`tests/features/real_astap_smoke.feature` holds three scenarios: the
+committed M 101 fixture solved without hints (`m101_blind`) and with
+them (`m101_hinted`), each recording its duration, and a star-less
+FITS (`degenerate_no_stars.fits`) that must fail with `solve_failed`.
+The fixture, `tests/fixtures/m101_known.fits`, is a 1024×1024 crop of
+a real capture with its pointing keywords — `RA`, `DEC`, `OBJCTRA`,
+`OBJCTDEC`, `OBJECT` — stripped. Left in, ASTAP would start from the
+header's position ([Hint Mapping](#hint-mapping)) and the request
+without hints would finish in milliseconds too; stripped, that
+request walks ASTAP's search spiral, so the gap between the two
+scenarios measures what the hints buy. The duration step appends a
+`label,elapsed_ms` row to the CSV that `PLATE_SOLVER_PERF_CSV` names,
+and does nothing when that is unset; the workflow uploads each leg's
+CSV as the `plate-solver-perf-<os>` artifact.
+
+The workflow's "Log and check solve times" step (the
+`plate-solver-times` action) puts the times in the log however the
+BDD run ended, and guards them after a run that passed. Per OS it
+requires the blind solve to stay at least 10× slower than the hinted
+solve — a dropped hint flag in `runner/astap.rs` collapses that
+ratio — and enforces coarse absolute ceilings (hinted ≤ 5 s,
+blind ≤ 180 s) to catch a uniform slowdown. A breach fails the smoke
+run, which on a scheduled run opens or updates the
+`plate-solver-nightly` tracking issue. The thresholds are coarse by
+design: the ratio normalises itself and so tolerates a slow or
+contended runner, and the ceilings sit well above the slowest times
+hosted runners show (`.github/actions/plate-solver-times/times.mjs`
+holds those times), the blind one under the scenario's 300 s request
+timeout.
 
 ## Supervision and recovery
 
@@ -571,19 +608,25 @@ The wrapper sits inside a layered supervision design with three
 distinct failure domains. **The preferred supervisor for this
 service is Sentinel's
 [service health supervision](sentinel.md#service-health-supervision)**:
-it polls `GET /health` on a configurable cadence and runs an
-operator-configured restart command after consecutive failures, which
-covers both crashes *and* hangs (a wedged wrapper whose process is
-still alive). The operator's OS-level process supervisor (systemd /
-launchd / NSSM) remains a documented alternative — and the natural
-executor of Sentinel's restart command; see the
-[README's per-OS recipes](../../services/plate-solver/README.md#process-supervisor-recipes).
+it polls `GET /health` every 30 s and, after three consecutive
+failures, runs the restart command it derives for the installed unit,
+which covers both crashes *and* hangs (a wedged wrapper whose process
+is still alive). The service manager that runs the unit carries out
+that restart command, and relaunches a wrapper that exits on a
+failure (systemd's `Restart=on-failure`, the Windows service's
+failure actions). An OS-level process supervisor set up by hand
+(systemd / launchd / NSSM; see the
+[README's per-OS recipes](../../services/plate-solver/README.md#process-supervisor-recipes))
+relaunches the wrapper on exit too, but the recipes name it
+`plate-solver` (`com.rusty-photon.plate-solver` under launchd), which
+Sentinel's discovery of `rusty-photon-*` units does not find, so it
+covers crashes and not hangs.
 
 ### Failure Domains
 
 | Domain | Supervisor | Detection | Action |
 |--------|------------|-----------|--------|
-| `rp` (gateway) | Sentinel health supervision and/or the operator's process supervisor (systemd / launchd / NSSM) | Sentinel `GET /health` probes; process exit (panic, OOM, etc.) | Sentinel runs the configured restart command after consecutive failed probes (with backoff); the OS supervisor restarts on exit per its policy (`Restart=on-failure`, `KeepAlive`, etc.) |
+| `rp` (gateway) | Sentinel health supervision and/or the operator's process supervisor (systemd / launchd / NSSM) | Sentinel `GET /health` probes; process exit (panic, OOM, etc.) | Sentinel runs the derived restart command after consecutive failed probes (with backoff); the OS supervisor restarts on exit per its policy (`Restart=on-failure`, `KeepAlive`, etc.) |
 | `plate-solver` (this service) | Sentinel health supervision and/or the operator's process supervisor | Sentinel `GET /health` probes (crash **and** hang coverage); process exit | Same as above. The wrapper exits non-zero on config-validation failure and on internal panic; a hung-but-alive wrapper fails its probes and gets restarted by Sentinel. |
 | `astap_cli` (child) | This service | Per-request wall-clock deadline | Graceful signal → 2 s grace → force-kill of the child's tree. Unix: `SIGTERM` → `SIGKILL` to its process group. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) → `TerminateJobObject`. |
 
@@ -625,21 +668,23 @@ autonomous restart. The wrapper's graceful-shutdown semantics
 ### In scope for v1
 
 - One solve endpoint, one health endpoint, one config file.
-- Single ASTAP runner. Architecturally swappable for `solve-field`
-  (per ADR-005), but only ASTAP is implemented.
-- Single-flight default; queueing is built in but unused at default.
-- BYO ASTAP per ADR-005. No bundled binary, no install scripts.
+- Single ASTAP runner. Architecturally swappable for `solve-field`,
+  but only ASTAP is implemented.
+- Single-flight by default (`max_concurrency` 1); overlapping
+  requests queue.
+- BYO ASTAP. No bundled binary, no install scripts.
 
 ### Out of scope for v1
 
-- `solve-field` runner. Trait shape exists; impl deferred.
+- `solve-field` runner. The `AstapRunner` trait is the swap point; no
+  `solve-field` implementation exists.
 - Background solving by subscribing to rp's `exposure_complete`
   events. The wrapper is request/response only.
 - Solve cache or warm process pool. Explicitly excluded by
   stateless-across-requests.
 - An MCP server surface. The wrapper speaks HTTP only; rp owns the
   `plate_solve` MCP tool name.
-- Pixel transport over HTTP. File path only, per ADR-005.
+- Pixel transport over HTTP. File path only.
 
 ## References
 

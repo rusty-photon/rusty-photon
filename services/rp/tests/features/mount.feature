@@ -89,8 +89,7 @@ Feature: Mount tools
 
   # OmniSim rejects SyncToCoordinates with `InvalidOperationException`
   # when tracking is off, so this scenario explicitly enables tracking
-  # before the sync. (Previously the test passed only because earlier
-  # scenarios incidentally left tracking enabled.)
+  # before the sync.
   Scenario: sync_mount sets the mount's reported position
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator

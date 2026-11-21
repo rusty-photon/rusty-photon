@@ -432,13 +432,15 @@ function psLiteral(text) {
 }
 
 /**
- * Unpacks each zip `[file, dir]` in `zips` into its directory, for a vendor's
- * zip that may hold a name Windows' code page cannot: Windows' tar.exe
- * (bsdtar 3.8.8) skips such an entry, then fails, and ZWO's EFW and EAF SDKs
- * each hold one ("EFW SDK快速入门.pdf"). So on Windows PowerShell's
- * Expand-Archive unpacks them, which reads the names as Unicode: all of them
- * in one PowerShell, which takes a second or more to start. Elsewhere unpack
- * does.
+ * Unpacks each zip `[file, dir]` in `zips` into its directory, which holds
+ * none of its files, for a vendor's zip that may hold a name Windows' code
+ * page cannot: Windows' tar.exe (bsdtar 3.8.8) skips such an entry, then
+ * fails, and ZWO's EFW and EAF SDKs each hold one ("EFW SDK快速入门.pdf"). So
+ * on Windows .NET's ZipFile.ExtractToDirectory unpacks them, which reads the
+ * names as Unicode: all of them in one Windows PowerShell, which takes a
+ * second or more to start. Not Expand-Archive: the version of its module a
+ * runner provides can call a ZipFile overload that Windows PowerShell's .NET
+ * Framework lacks, and then fails. Elsewhere unpack does.
  */
 export async function unpackZips(zips, { platform = process.platform, run = command } = {}) {
   if (platform !== 'win32') {
@@ -446,10 +448,10 @@ export async function unpackZips(zips, { platform = process.platform, run = comm
     return;
   }
   if (zips.length === 0) return;
-  const expand = zips.map(([file, dir]) => `Expand-Archive -LiteralPath ${psLiteral(file)} -DestinationPath ${psLiteral(dir)} -Force`);
+  const expand = zips.map(([file, dir]) => `[System.IO.Compression.ZipFile]::ExtractToDirectory(${psLiteral(file)}, ${psLiteral(dir)})`);
   const script =
-    "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; " +
-    `try { ${expand.join('; ')} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
+    "$ErrorActionPreference = 'Stop'; " +
+    `try { Add-Type -AssemblyName System.IO.Compression.FileSystem; ${expand.join('; ')} } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
   await run(powershellProgram(), ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
 }
 

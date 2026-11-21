@@ -1,6 +1,6 @@
 Feature: rp MCP transport is session-less
   rp speaks MCP 2026-07-28 and serves every request statelessly (rp.md
-  § MCP Server, ADR-021). No response carries an Mcp-Session-Id header
+  § MCP Server). No response carries an Mcp-Session-Id header
   and no request needs one: a client bootstraps with server/discover
   and then sends self-contained requests — the MCP-Protocol-Version
   header, Mcp-Method (and Mcp-Name on a tools/call), and the
@@ -38,10 +38,8 @@ Feature: rp MCP transport is session-less
     Then the MCP client should have negotiated protocol version "2026-07-28"
     And the MCP tool catalog should include "get_safety_status"
 
-  # There is no idle timer left to outlast (rmcp's legacy sessions
-  # closed after 300 s; that registry is gone), so the idle here is a
-  # few seconds: enough to separate the two calls, not a wait for a
-  # timer that no longer exists.
+  # A session-less transport has no idle timer to outlast, so the idle
+  # here is a few seconds: enough to separate the two calls.
   Scenario: A client idle between calls completes its next call
     Given a temp rp config with no equipment
     And rp is started with that config file

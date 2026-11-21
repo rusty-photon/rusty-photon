@@ -1,6 +1,5 @@
-//! Device claims: the runtime half of a camera driver's `usb_devices` list
-//! ([device-claims plan](../../../docs/plans/archive/device-claims-and-phd2-camera.md),
-//! Part A), behind this crate's `claims` feature.
+//! Device claims: the runtime half of a camera driver's `usb_devices` list,
+//! behind this crate's `claims` feature.
 //!
 //! The pure half — the list's validation, the join that places each SDK
 //! camera on a port, the reason a listed number is held, the placeholder's
@@ -9,7 +8,7 @@
 //! reads. What lives here is what that crate cannot hold, being neither an
 //! ASCOM nor an async one: the placeholder Camera device a driver registers at
 //! a listed number whose camera it cannot serve, the background re-scan a
-//! failed USB scan starts, the run loop that rebuilds the server after a
+//! failed USB scan or a missing SDK library starts, the run loop that rebuilds the server after a
 //! reload or a re-scan, and the driver's own part of its setup pages — the
 //! Cameras section that edits the list, each camera's page, and each filter
 //! wheel's where the list declares them. `rusty-photon-camera-core` is by its

@@ -6,24 +6,24 @@
 //! disk, the filter in the wheel); a hand-rolled mock `Ephemeris` can
 //! drive it deterministically in tests.
 //!
-//! v1 implements five of the rp.md §"Dynamic Planner" decision-logic
-//! bullets: altitude elimination (the first half of bullet 1),
-//! transit preference (bullet 2), progress + filter tie-breaking
-//! (bullets 3–4: survivors within [`TRANSIT_TIE_BAND_HOURS`] of the
-//! best |HA| count as equally transiting, and among them least
-//! completed-to-goal fraction wins, then a next-exposure filter
-//! matching the last recorded frame, then target-store list order),
-//! and bullet 6 in full — an exhausted target (every plan entry's
-//! `count` met per the `record_exposure` counters) is eliminated,
-//! all targets exhausted is `EndOfSession`, and otherwise when no
-//! target survives, the Sun-elevation cut-off plus the Sun's
+//! It implements five of the six decision-logic bullets of rp.md
+//! § Decision Logic (inside `get_next_target`): altitude elimination
+//! (the first half of bullet 1), transit preference (bullet 2),
+//! progress + filter tie-breaking (bullets 3–4: survivors within
+//! [`TRANSIT_TIE_BAND_HOURS`] of the best |HA| count as equally
+//! transiting, and among them least completed-to-goal fraction wins,
+//! then a next-exposure filter matching the filter in the wheel, then
+//! target-store list order), and bullet 6 in full — an exhausted target
+//! (every plan entry's `count` met by its derived good frames) is
+//! eliminated, all targets exhausted is `EndOfSession`, and otherwise
+//! when no target survives, the Sun-elevation cut-off plus the Sun's
 //! trend separates `WaitForTwilight` (dusk side), `EndOfSession`
 //! (dawn side: the night is over), and `AllBelowMinAltitude` (true
-//! astronomical night). Documented gaps: the set-time half of
+//! astronomical night). Not implemented: the set-time half of
 //! bullet 1 and explicit bullet 5 (meridian-flip-aware exposure-fit
 //! check; the choice of smallest-|HA| target satisfies it
-//! indirectly) — tracked in the rp.md §"v1 implementation status"
-//! callout.
+//! indirectly) — the section's "What `get_next_target` implements"
+//! callout lists both.
 //!
 //! The returned `NextTargetReason` is a structured discriminant so
 //! a planner plugin can branch without parsing free-form text.
@@ -103,10 +103,11 @@ pub struct ExposureSpec {
     pub filter: Option<String>,
     /// Exposure duration in seconds; positive and finite.
     pub duration_secs: f64,
-    /// Integration goal for this entry (frames), tracked by the
-    /// `record_exposure` counters. `None` = no finite goal: the entry
-    /// recommends forever and its target never exhausts. Skipped on the
-    /// wire — a decision input, not part of the tool result.
+    /// Integration goal for this entry (frames), met by its good frames
+    /// on disk (rp.md § Progress derivation). `None` = no finite goal:
+    /// the entry recommends forever and its target never exhausts.
+    /// Skipped on the wire — a decision input, not part of the tool
+    /// result.
     #[serde(skip)]
     pub count: Option<u32>,
 }
@@ -136,8 +137,7 @@ pub struct NextTargetRecommendation {
     /// The recommended target's *effective* framing angle: its own
     /// `position_angle_degrees`, else the caller-supplied train
     /// default, else 0.0 north-up (rp.md § Target Store → Position
-    /// angle, plan Decision 5). `None` exactly when `target` is
-    /// `None`.
+    /// angle). `None` exactly when `target` is `None`.
     pub position_angle_degrees: Option<f64>,
 }
 
@@ -212,8 +212,8 @@ pub fn next_target(
         // (bullet 3), then a matching filter (bullet 4 — negated so
         // `false` = match sorts first), then the in-band |HA| itself
         // so two otherwise-equal candidates still prefer the closer
-        // transit. Config order wins remaining exact ties via the
-        // strict `<`.
+        // transit. Target-store list order wins remaining exact ties
+        // via the strict `<`.
         let key = (progress.fraction(t), !filter_matches_wheel, ha);
         let better = match &chosen {
             None => true,
@@ -261,12 +261,11 @@ const fn none_with(reason: NextTargetReason) -> NextTargetRecommendation {
 /// Step 1: eliminate. A target whose computed alt is below
 /// `min_altitude_degrees` (per-target if set, else default) is
 /// dropped, and so is an exhausted one — every `exposures[]`
-/// entry's `count` met per the `record_exposure` counters
-/// (rp.md §"Dynamic Planner" bullet 6's "met its integration
-/// goal"). Set-time elimination (the "will set before one
-/// exposure can complete" half of rp.md §"Dynamic Planner"
-/// bullet 1) is a documented v1 gap — see the §"v1 implementation
-/// status" callout in `docs/services/rp.md`.
+/// entry's `count` met by its derived good frames (rp.md § Decision
+/// Logic bullet 6's "met its integration goal"). Set-time elimination
+/// (the set-time half of bullet 1) is not implemented — the section's
+/// "What `get_next_target` implements" callout in
+/// `docs/services/rp.md` says so.
 fn eliminate<'a>(
     eph: &impl Ephemeris,
     site: &Site,
@@ -285,9 +284,8 @@ fn eliminate<'a>(
             continue;
         }
         // The validated plan coordinate converts total-ly to the
-        // ephemeris crate's computed coordinate (ADR-019 boundary
-        // bridge — a valid plan coord is always a valid transform
-        // input).
+        // ephemeris crate's computed coordinate: a valid plan coord is
+        // always a valid transform input.
         let coords: rp_ephemeris::IcrsCoord = t.coord.into();
         let aa = match eph.alt_az(site, coords, now) {
             Ok(aa) => aa,
@@ -324,7 +322,7 @@ fn eliminate<'a>(
 /// tells the two bright ends of the night apart: a climbing Sun
 /// (re-sampled `SUN_TREND_SAMPLE_SECS` ahead) is the dawn side — the
 /// night is over, `EndOfSession` — while a descending Sun matches
-/// rp.md's "astronomical dusk has not yet begun", `WaitForTwilight`.
+/// rp.md's "the night has not started", `WaitForTwilight`.
 /// A level Sun (only at the culminations) ties to waiting, because a
 /// wait loop re-asks and self-corrects while ending a session is
 /// final.
@@ -369,8 +367,7 @@ pub fn signed_hour_angle(lst_hours: f64, target_ra_hours: f64) -> f64 {
 }
 
 /// Project a store-backed [`rp_targets::Target`] onto a [`PlannerTarget`]
-/// candidate for `next_target` (Decision 9 — altitude-gating parity,
-/// `docs/plans/archive/planetarium-target-import.md`). `name` carries the
+/// candidate for `next_target` (rp.md § Target Store). `name` carries the
 /// target's `slug` (its stable identity — `display_name` is freely
 /// operator-editable and unsuited as a lookup key). The validated
 /// `coord` is shared directly — both types hold the same
@@ -636,8 +633,8 @@ mod tests {
     #[test]
     fn nautical_twilight_returns_wait_for_twilight_not_all_below_min_altitude() {
         // Sun at -10° (nautical twilight, between civil at -6° and
-        // astronomical at -18°). Per rp.md prose, "astronomical dusk
-        // has not yet begun" → WaitForTwilight, not AllBelowMinAltitude.
+        // astronomical at -18°). Per rp.md bullet 6, the night has not
+        // started → WaitForTwilight, not AllBelowMinAltitude.
         let eph = MockEphemeris {
             alt_overrides: vec![((0.7123, 41.27), 10.0)],
             sun_alt: -10.0,
@@ -1276,9 +1273,9 @@ mod tests {
 
     // --- get_next_target wire shape ------------------------------------
     // The derived `Serialize` of a `NextTargetRecommendation` *is* the
-    // tool result (no hand-built view any more), so these pin its
-    // contract: a nested `coord` object, a nested `exposure` object, and
-    // the decision-only `exposures` / `count` fields kept off the wire.
+    // tool result, so these pin its contract: a nested `coord` object,
+    // a nested `exposure` object, and the decision-only `exposures` /
+    // `count` fields kept off the wire.
 
     #[test]
     fn serialized_no_targets_branch_nulls_target_and_exposure() {

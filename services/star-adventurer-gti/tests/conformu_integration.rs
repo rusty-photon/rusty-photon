@@ -11,7 +11,6 @@
 //! clean — no error, issue or configuration alert; the design doc's section
 //! on running `ConformU` manually carries the expected report.
 #![cfg(feature = "conformu")]
-#![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -36,10 +35,7 @@
 )]
 
 use bdd_infra::{run_conformu, ConformuRun, ServiceHandle};
-use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
-
-static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 /// What the service logs during the run when the caller has not set
 /// `RUST_LOG` itself.
@@ -61,8 +57,6 @@ const SERVICE_LOG_FILTER: &str = "info,star_adventurer_gti=debug";
 
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let _lock = CONFORMU_LOCK.lock().unwrap();
-
     let _ = fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

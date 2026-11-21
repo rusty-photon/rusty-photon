@@ -56,8 +56,8 @@ pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// Result of a single attempt inside [`retry_connect_attempt`]. The
 /// `Permanent` / `Transient` split is what makes this a retry helper
 /// rather than a sleep-and-hope wrapper: the connect closures map each
-/// failure mode to its own variant. Today only "device-not-found at
-/// the requested index in the Alpaca server's reply", an identity pin
+/// failure mode to its own variant. Only "device-not-found at the
+/// requested index in the Alpaca server's reply", an identity pin
 /// the listed `UniqueID` contradicts (`binding::establish_listed`) and a
 /// placeholder's refused `set_connected` ([`connect_refused`]) are
 /// `Permanent` inside the closure — every other failure inside the
@@ -65,8 +65,8 @@ pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// unreachable host, `get_devices` timeouts, other `set_connected`
 /// errors, `OmniSim` under GC pressure, a blank listed `UniqueID` a pin cannot
 /// be checked against yet) is `Transient` and goes through the
-/// retry/backoff path. Note: `Client::new` failures are filtered
-/// out *before* the retry loop, so that case never produces an
+/// retry/backoff path. Note: [`build_alpaca_client`] failures are
+/// filtered out *before* the retry loop, so that case never produces an
 /// `AttemptOutcome` at all.
 ///
 /// `P` is what a permanent failure carries back to the caller, so a
@@ -187,35 +187,27 @@ pub(super) const ALPACA_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// device that accepts the TCP connection but never answers — an `OmniSim`
 /// wedged under heavy parallel CI load, or a real mount / USB-serial
 /// bridge that stalls mid-request during an unattended night — hangs the
-/// awaiting tool handler **forever**.
-///
-/// That unbounded `await` is the root cause of issue #319's
-/// `center_on_target` timeout: a per-iteration mount read stalled, the
-/// loop never returned, rmcp tore the MCP transport down at its 300 s
-/// keep-alive, and the BDD `MCP_CALL_TIMEOUT` tripped at 360 s. The
-/// blocking-op deadlines in `mcp::internals` (120 s capture, 300 s slew)
-/// guard *poll loops*, not a single in-flight request, so they cannot
-/// interrupt this — only a client-level timeout can.
+/// awaiting tool handler **forever**: the deadlines of rp's blocking
+/// operations bound *poll loops*, not a request in flight, so they cannot
+/// interrupt it (rp.md § ASCOM Alpaca Devices, § `center_on_target`
+/// Contract).
 ///
 /// A *read* timeout (resets on every chunk received, vs. a total request
 /// deadline) bounds a genuine stall without capping a legitimately large
 /// `image_array` download on a slow link. 10 s is far above any healthy
-/// single Alpaca round-trip yet well below rp's 120 s / 300 s
-/// blocking-op deadlines and the 360 s BDD backstop, so a stall now
-/// surfaces as a fast, legible equipment error instead of a hang.
+/// single Alpaca round-trip.
 pub(super) const ALPACA_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Build an Alpaca client with per-request timeouts, optional HTTP Basic
 /// Auth credentials, and optional CA certificate trust.
 ///
-/// Both the auth and no-auth paths go through `new_with_client` so the
-/// timeouts apply uniformly — the no-auth path must **not** fall back to
-/// `Client::new`, whose default reqwest client has no timeout (the #319
-/// hang). See [`ALPACA_READ_TIMEOUT`].
+/// Every client goes through `new_with_client`, with or without auth, so
+/// the timeouts apply uniformly — never `Client::new`, whose default
+/// reqwest client has no timeout. See [`ALPACA_READ_TIMEOUT`].
 ///
 /// `ca_cert_path` is the observatory CA (`Config::ca_cert_path`, rp.md
-/// §Configuration): without it, an `https://` `alpaca_url` signed by that
-/// CA fails certificate verification regardless of `auth` (issue #609).
+/// § ASCOM Alpaca Devices): without it, an `https://` `alpaca_url` signed
+/// by that CA fails certificate verification regardless of `auth`.
 pub(super) fn build_alpaca_client(
     url: &str,
     auth: Option<&ClientAuthConfig>,
@@ -483,14 +475,14 @@ mod tests {
         );
     }
 
-    // ----- per-request timeout (the #319 root-cause regression) -------
+    // ----- per-request timeout ----------------------------------------
     //
     // A device that accepts the TCP connection but never sends a
     // response must surface as an error, not hang forever. `start_paused`
     // advances virtual time so reqwest's read timeout fires in real-time
-    // milliseconds; the outer `tokio::time::timeout` only trips if the
-    // fix regresses (no client-level timeout), turning a silent infinite
-    // hang into a loud test failure.
+    // milliseconds; the outer `tokio::time::timeout` only trips when the
+    // client has no request timeout, turning a silent infinite hang into
+    // a loud test failure.
     #[tokio::test(start_paused = true)]
     async fn alpaca_client_times_out_on_silently_stalled_device() {
         use crate::equipment::test_support::spawn_stub;
@@ -513,13 +505,12 @@ mod tests {
         );
     }
 
-    // ----- CA trust wiring (issue #609) --------------------------------
+    // ----- CA trust wiring --------------------------------------------
     //
     // Proves `build_alpaca_client` actually plumbs `ca_cert_path` into the
     // underlying reqwest client, not just that the parameter parses: a
     // client trusting the observatory CA connects to a device serving a
-    // CA-signed certificate; a client without that trust rejects it. This
-    // is the end-to-end proof for the gap issue #609 describes — the
+    // CA-signed certificate; a client without that trust rejects it. The
     // config field alone (`Config::ca_cert`) doesn't guarantee the client
     // it feeds actually verifies against it.
     #[tokio::test]

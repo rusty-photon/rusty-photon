@@ -41,9 +41,9 @@ pub struct MeridianFlipParams {
     pub dec: f64,
     #[serde(default)]
     pub time: Option<String>,
-    /// One of `"east"`, `"west"`, `"unknown"`. v1 ignores the value
-    /// (the meridian-flip primitive is symmetric in side-of-pier) but
-    /// requires the field be present, with a `"unknown"` default.
+    /// One of `"east"`, `"west"`, `"unknown"` (the default when omitted).
+    /// The meridian-flip primitive is symmetric in side-of-pier, so the
+    /// value does not change the result.
     #[serde(default = "default_side_of_pier")]
     pub side_of_pier: String,
 }
@@ -130,13 +130,12 @@ impl McpHandler {
     /// The planner's working set: every active target-store row
     /// projected onto the decision candidate type
     /// ([`crate::planner::decision::PlannerTarget`], whose `name` is the
-    /// target's slug). The single source of planner targets since the
-    /// legacy `targets[]` config array was retired — `get_next_target`,
-    /// `record_exposure`, `get_session_progress`, and `get_target_status`
-    /// all read from here. Returns empty when no store is configured or
-    /// the listing fails (logged at `debug!`), which surfaces as
-    /// `no_targets_configured` / an unknown-target error rather than a
-    /// tool failure.
+    /// target's slug). The single source of planner targets:
+    /// `get_next_target`, `record_exposure`, `get_session_progress`, and
+    /// `get_target_status` all read from here. Returns empty when no
+    /// store is configured or the listing fails (logged at `debug!`),
+    /// which surfaces as `no_targets_configured` / an unknown-target
+    /// error rather than a tool failure.
     async fn active_targets(&self) -> Vec<rp_targets::Target> {
         let Some(store) = self.target_store.as_ref() else {
             return Vec::new();
@@ -206,7 +205,7 @@ impl McpHandler {
             })),
             crate::planner::catalog::ResolveOutcome::NotFound { suggestions } => {
                 // CallToolResult::error carries text content; we embed
-                // a small JSON payload so a planner plugin can pick out
+                // a small JSON payload so a client can pick out
                 // suggestions without string parsing.
                 Ok(CallToolResult::error(vec![ContentBlock::text(
                     serde_json::json!({
@@ -321,8 +320,8 @@ impl McpHandler {
 
     #[tool(
         description = "Time-to-flip (seconds) until the target next reaches the meridian \
-                       (HA = 0). v1 ignores side_of_pier but accepts it for forward \
-                       compatibility. Requires `site`."
+                       (HA = 0). side_of_pier is accepted and does not change the \
+                       result. Requires `site`."
     )]
     pub(crate) async fn compute_meridian_flip(
         &self,
@@ -560,7 +559,7 @@ impl McpHandler {
             Some(raw) => {
                 // Both spellings, one derivation: the caller's
                 // `target_name` and its catalog-resolved form go through
-                // the same `from_display_name` every writer used, so the
+                // the same `from_display_name` every writer uses, so the
                 // slug matched here is by construction the slug stored.
                 let wanted: Vec<String> = [raw, name.as_str()]
                     .into_iter()
@@ -605,9 +604,7 @@ impl McpHandler {
                        sun-elevation gating. A store-backed target's altitude \
                        floor is target.scheduling.min_altitude_degrees, \
                        falling back to target_store.default_scheduling.\
-                       min_altitude_degrees from config (Decision 9 — \
-                       altitude-gating parity, docs/plans/\
-                       planetarium-target-import.md). filter and \
+                       min_altitude_degrees from config. filter and \
                        duration_secs are the recommended target's first \
                        incomplete goal per the progress derived from its \
                        frames on disk (null when it has no goals) — a store-backed \
@@ -660,8 +657,8 @@ impl McpHandler {
             },
         };
         let eph = rp_ephemeris::ErfarsEphemeris::new();
-        // Candidates are every active store row (Decision 9), projected
-        // onto the decision candidate type, paired with the progress
+        // Candidates are every active store row, projected onto the
+        // decision candidate type, paired with the progress
         // derived from their frames on disk and the filter in the wheel
         // — both read here, at the tool boundary, so the decision stays
         // pure.

@@ -19,7 +19,6 @@
 // The ConformU settings json! literal exceeds the default macro recursion
 // limit once the full TelescopeTests dictionary is spelled out.
 #![recursion_limit = "256"]
-#![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -45,10 +44,7 @@
 
 use bdd_infra::ServiceHandle;
 use bdd_infra::{run_conformu_from_settings, ConformuRun};
-use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
-
-static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 /// The configuration alerts a clean run raises: one per deselected test, as
 /// `ConformU` words it. The settings deselect only `PulseGuide`; the runner
@@ -58,8 +54,6 @@ const EXPECTED_ALERTS: &[&str] = &["Pulse guide tests were omitted due to Confor
 
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let _lock = CONFORMU_LOCK.lock().unwrap();
-
     let _ = fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()

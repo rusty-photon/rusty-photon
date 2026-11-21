@@ -984,7 +984,7 @@ mod tests {
     }
 
     /// A Windows box with nothing cached: curl downloads write their file,
-    /// and Expand-Archive unpacks what [`zwo_downloads`] says.
+    /// and the unzip unpacks what [`zwo_downloads`] says.
     fn downloading() -> (Script, Rc<RefCell<Vec<String>>>) {
         let expanded = Rc::new(RefCell::new(Vec::new()));
         let seen = Rc::clone(&expanded);
@@ -1030,8 +1030,8 @@ mod tests {
             [
                 format!("curl -fsSL -o {}.part {CAMERA_URL}", zip("asi.zip")),
                 "powershell -NoProfile -NonInteractive -Command $ErrorActionPreference = 'Stop'; \
-                 $ProgressPreference = 'SilentlyContinue'; Expand-Archive -LiteralPath $env:RP_ZIP \
-                 -DestinationPath $env:RP_DEST -Force"
+                 Add-Type -AssemblyName System.IO.Compression.FileSystem; \
+                 [System.IO.Compression.ZipFile]::ExtractToDirectory($env:RP_ZIP, $env:RP_DEST)"
                     .to_owned(),
                 format!("curl -fsSL -o {}.part {EAF_URL}", zip("eaf.zip")),
                 lines[2].clone(),

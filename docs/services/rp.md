@@ -31,8 +31,8 @@ tools on `rp`.
 8. **MCP is the surface.** Every capability a client drives — UI, plugin, or
    external — is an MCP tool on `rp`'s `/mcp` server; that is the one way to
    command `rp`. HTTP/REST is not a second surface: it carries only what
-   cannot ride MCP — raw image bytes (`/api/images/{id}/pixels`), the SSE
-   event stream, and plugin completion callbacks — plus config, which must
+   cannot ride MCP — raw image bytes (`/api/images/{id}/pixels`) and the SSE
+   event stream — plus config, which must
    stay reachable while conditions are unsafe. A REST endpoint that
    mirrors an MCP tool is a design error, not a feature.
 
@@ -69,23 +69,21 @@ and enforces safety. An orchestrator — an MCP client such as
        [Camera]      [Mount]   │ [Analyzer]  [Cloud Backup]
        [Focuser]     [FWheel]  │ [Custom]
        [SafetyMon]             │
-                               │ MCP (tools/call)
-                     ┌─────────┴──────────┐
-                     ▼                    ▼
-              [Orchestrator]       [Guider Service]
-              (session-runner:     (the guide loop)
-               self-started client)
-                     │
-                     │ MCP (tools/call)
-                     ▼
-              [Plate Solver]  [Focus Plugin]  [Centering Plugin]
-              (tool providers — compound tools that call back to rp)
+                               │
+            ┌──────────────────┼──────────────────┐
+            │ HTTP             │ MCP              ▲ MCP (tools/call)
+            ▼                  ▼                  │
+     [Plate Solver]     [focus-model]      [Orchestrator]
+     [Guider Service]   [calibrator-flats] (session-runner:
+     (rp-managed        (tool providers     self-started client)
+      services)          that call back
+                         to rp)
 
             ┌──────────────────────────────────┐
             │          Sentinel                │
-            │  Safety monitor (existing)       │
-            │  Operation watchdog (new)        │
-            │  Corrective actions (new)        │
+            │  Safety monitor                  │
+            │  Operation watchdog              │
+            │  Corrective actions              │
             │  Subscribes to event bus         │
             └──────────────────────────────────┘
 ```
@@ -108,8 +106,8 @@ process boundary:
 | Category | What | Examples | Process boundary | Supervised by |
 |----------|------|----------|------------------|---------------|
 | **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
-| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP / astrometry.net); the [`guider`](guider.md), designed and not yet built, is the control loop | one process per service | Sentinel restarts on hang/crash |
-| **Plugins (extension)** | Separate processes that follow the plugin protocol (event, tool provider): third-party extensions, and first-party capabilities that do not belong in `rp`'s process. | Custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` enforces plugin timeouts and the per-tool safety gate; Sentinel may restart configurable plugins |
+| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP); the [`guider`](guider.md), designed and not yet built, is the control loop | one process per service | Sentinel restarts on hang/crash |
+| **Plugins (extension)** | Separate processes that follow the plugin protocol (event, tool provider): third-party extensions, and first-party capabilities that do not belong in `rp`'s process. | Custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` applies the per-tool safety gate and bounds each webhook delivery and each provider dial, but not a proxied tool call, which runs until the provider answers or the call is cancelled; Sentinel may restart configurable plugins |
 
 The category boundary is **process supervision and lifecycle role**, not
 authorship. Algorithms that are pure Rust math (auto-focus, centering) live
@@ -118,13 +116,11 @@ rp-managed services only when they must wrap an external program (ASTAP
 the binary) that has its own crash and restart behavior.
 A first-party control loop is an rp-managed service too when it runs for
 hours, has device traffic of its own and must keep running while `rp`
-restarts
-([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md),
-decision 3). The guider ([`guider.md`](guider.md), designed
+restarts. The guider ([`guider.md`](guider.md), designed
 and not yet built) is the one component of this kind; an algorithm that is a
 tool call, which starts, runs and returns, stays built-in.
 
-Workflow logic stays out of `rp` (design tenet 7), but not as a
+Workflow logic stays out of `rp`, but not as a
 plugin: an orchestrator is an ordinary MCP client that `rp` neither
 registers nor starts (§ [Orchestration](#orchestration)), so a
 different imaging type is a different client — `session-runner` with a
@@ -186,16 +182,18 @@ frame's facts from:
 So the header should never carry a fact the sidecar lacks, and
 `rp`'s own work should never depend on a fact the header carries:
 beyond the structural cards that describe the pixel array, the
-`DOC_ID` check is the one read rule 1 allows. These are not yet in
-line with the rules, each tracked by its own issue:
+`DOC_ID` check is the one read rule 1 allows.
 
-- [Progress derivation](#progress-derivation) takes a past frame's
-  target, frame type, filter, binning and exposure time from its file
-  and directory names, parsed through the naming patterns as
-  configured now, rather than from its sidecar. A frame whose name the
-  current patterns no longer parse is not counted. `{frame_number}`
-  counts earlier frames the same way, so after a pattern edit the
-  numbering starts again at 001 ([#1498](https://github.com/rusty-photon/rusty-photon/issues/1498)).
+Counting past frames reads their names instead, by design.
+[Progress derivation](#progress-derivation) takes a past frame's
+target, frame type, filter, binning and exposure time from its file
+and directory names, parsed through the naming patterns as configured
+now, rather than from its sidecar, so a frame whose name the current
+patterns no longer parse is not counted. `{frame_number}` counts
+earlier frames the same way, so after a pattern edit the numbering
+starts again at 0001. A frame renamed by hand, or a pattern edited
+under frames already taken, is the operator's deliberate act, and the
+count follows the names.
 
 ### Core Fields (owned by `rp`)
 
@@ -228,13 +226,10 @@ line with the rules, each tracked by its own issue:
   "offset": 30,
   "readout_mode": 1,
   "readout_mode_name": "High Gain Mode 16BIT",
-  "exposure_time_secs": 300,
-  "planned_at": "2026-03-02T01:15:00Z",
+  "duration": "5m",
   "exposure_started_at": "2026-03-02T01:15:00.412+00:00",
   "captured_at": "2026-03-02T01:20:02Z",
   "file_path": "/data/lights/M31/M31_L_5m_001.fits",
-  "session_id": "session-2026-03-01",
-  "sequence_number": 42,
   "max_adu": 65535,
   "sensor_type": "Monochrome",
   "cooler_setpoint_c": -10,
@@ -303,16 +298,12 @@ line with the rules, each tracked by its own issue:
 }
 ```
 
-**`target` and `frame_type` are landed (Decision 11); `filter` and the
-other per-frame acquisition facts below are landed (issue #1180);
-`session_id`, `sequence_number`, and `planned_at` remain aspirational —
-no code path writes them onto the document yet.** `target` and
-`frame_type` are populated only when `capture`'s `frame_type` parameter
+`target` and `frame_type` are populated only when `capture`'s `frame_type` parameter
 was supplied — see [Capture Tool Details](#capture-tool-details) for
 the full resolution rules (target-store lookup for `Light`, the
 reserved `"dark"`/`"flat"`/`"bias"` slugs for calibration frames
 without an explicit `target`). Both fields are omitted (absent, not
-`null`) when `frame_type` was omitted — today's flat `<doc_uuid_8>.fits`
+`null`) when `frame_type` was omitted — the flat `<doc_uuid_8>.fits`
 capture path.
 
 `light_source` is `capture`'s `light_source` parameter, verbatim: what
@@ -360,7 +351,7 @@ cooling skipped or unreachable, or the temperature read failed. See
 [Camera Cooling](#camera-cooling); like `optics`, both are auxiliary
 metadata, never gating capture.
 
-**Per-frame acquisition facts** (issue #1180) record what the rig was
+**Per-frame acquisition facts** record what the rig was
 doing while the frame was exposed. Like `optics`, each is auxiliary: a
 failed read drops that one field (logged at `debug!`), never the
 capture, and an unavailable field is omitted (absent, not `null`). The
@@ -389,7 +380,7 @@ sidecar is the record ([Ground rules](#ground-rules)).
   `rp`'s clock as `StartExposure` returned for the usual asynchronous
   driver, and never the end of the exposure for one whose
   `StartExposure` blocks through it. Present on every frame this
-  version captures. `captured_at` is unchanged: it marks capture *completion*
+  version captures. `captured_at` marks capture *completion*
   (after readout), which is what `{night_date}` is keyed on.
 - `camera_name` — the driver's ASCOM `Name` (e.g. `"QHY600M"`), read
   once per connection with the other invariants and cached on
@@ -416,7 +407,7 @@ sidecar is the record ([Ground rules](#ground-rules)).
   position on a dark is noise) and when the train has no wheel, or the
   wheel is disconnected, moving, fails the read, or — when the frame's
   filename does not depend on it — does not answer within 3 s (a
-  templated capture waits the wheel out, as it always has, rather than
+  templated capture waits the wheel out rather than
   lose a finished exposure to a slow read; a cancel, the unsafe
   transition's among them, still ends the capture once the frame's
   reads have run 3 s — [In-Flight Tool Calls](#in-flight-tool-calls)).
@@ -627,7 +618,7 @@ since binning changes how the same sky area is sampled, not how much
 of it lands on the sensor. That is why `plate_solve`'s `fov_hint_deg`
 can be sourced from `optics.fov_height_deg` at any binning. Optical
 variation the operator makes mid-session (a focal reducer screwed in)
-is still out of scope: the block reflects the operator-declared static
+is out of scope: the block reflects the operator-declared static
 optical train.
 
 The `plate_solve` built-in tool sends the document's
@@ -788,10 +779,13 @@ most of them under N.I.N.A.'s cards, one device's entry for a list
   In both lists an entry with no reading is left out, and the list is
   omitted when it would be empty.
 
-### Plugin Sections (contributed via API)
+### Sections
 
-Plugins write results into named sections. `rp` merges them into the
-document and persists the sidecar JSON. Each section is opaque to `rp` — it stores and serves whatever the plugin provides.
+Results live in named sections. `rp`'s own analysis tools and
+`plate_solve` write theirs in-process (`image_analysis`, `wcs`, …); no
+route lets another process write one. `rp` merges each section into the
+document and persists the sidecar JSON. Each section is opaque to `rp`
+— it stores and serves whatever its writer provides.
 
 ```json
 {
@@ -819,16 +813,6 @@ document and persists the sidecar JSON. Each section is opaque to `rp` — it st
       "background_mean": 1200,
       "background_stddev": 45
     },
-    "guiding_stats": {
-      "rms_ra_px": 0.45,
-      "rms_dec_px": 0.38,
-      "total_rms_px": 0.59
-    },
-    "weather": {
-      "temperature_c": -5.2,
-      "humidity_pct": 42,
-      "dewpoint_c": -15.1
-    },
     "image_stats": {
       "median_adu": 32768,
       "mean_adu": 32450.7,
@@ -854,14 +838,12 @@ document's full UUID v4 (`<doc_uuid_8>`):
 
 The optional `session.file_naming_pattern` config, together with
 `session.directory_pattern`, is a **round-trippable** filename
-template (P1 of
-[planetarium-target-import.md](../plans/archive/planetarium-target-import.md)):
-`rp` both renders filenames from capture context and parses them back
+template: `rp` both renders filenames from capture context and parses them back
 to recover `(target, filter, binning, exposure_duration)` for goal-progress
 derivation (see [Target Store](#target-store)). The full contract —
 per-token typed shapes and the compiled-anchored-regex requirement —
 lives in
-[`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse).
+[`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render--parse).
 Both patterns are parsed and validated at config-load time — an
 unknown token or an ambiguous adjacent-token pair fails startup, not a
 session; `file_naming_pattern` additionally requires the quota tokens
@@ -932,11 +914,12 @@ natural gesture for turning a field off: the page saves `null` for a
 cleared optional field precisely so that gesture reaches rp as the state
 the operator intended ([rusty-photon-setup](../crates/rusty-photon-setup.md)).
 
-**Landed (Decision 11).** `capture`'s `target`/`frame_type` parameters
-(§ Capture Tool Details) feed `render`, and rendering replaces the flat
-`<doc_uuid_8>.fits` whenever `frame_type` is supplied: the rendered
-directory base is prefixed before the filename base, which is in turn
-prefixed before the UUID-8 suffix, e.g.
+**A typed capture is named by the templates.** `capture`'s
+`target`/`frame_type` parameters (§ Capture Tool Details) feed
+`render`, and once `file_naming_pattern` is configured, rendering
+replaces the flat `<doc_uuid_8>.fits` whenever `frame_type` is
+supplied: the rendered directory base is prefixed before the filename
+base, which is in turn prefixed before the UUID-8 suffix, e.g.
 `m31/2026-07-22/Light/m31_L_1x1_0001_5m_fpos_2_-10C_550e8400.fits`.
 The disk-fallback resolver walks `data_directory` to
 `directory_pattern`'s component depth — the same depth the progress
@@ -979,8 +962,8 @@ the sidecar, from the same capture-time values, it may be lossy, and
 document alone (the table gives each card's field), so the header
 carries no fact the sidecar lacks. The one exception is `ROWORDER`,
 which describes how the file lays out its pixel array, not the
-exposure. The keyword set below is what `rp` writes
-today, pinned field by field in
+exposure. The keyword set below is what `rp` writes,
+pinned field by field in
 `services/rp/tests/features/capture_fits_header.feature`. It is not a
 promise that every fact in the document reaches the header.
 `cooler_power_pct` is recorded in the sidecar only, because no card for
@@ -1174,15 +1157,18 @@ disk", not "live as long as `rp` is up".
 
 ## Event System
 
-`rp` emits events. Plugins and services subscribe via webhooks.
+`rp` emits events. Plugins subscribe via webhooks, and services such
+as Sentinel read the [Real-Time Stream](#real-time-stream).
 The application does not know or care what subscribers do with events.
 
 Every blocking operation emits a lifecycle *triple* — a `*_started`
-event at entry and a matching `*_complete` or `*_failed` at exit —
-correlated by a shared `operation_id` and wrapped in the uniform
-[Event Envelope](#event-envelope) below. (`sync_mount` is instant, so it
-emits only `_complete` / `_failed`, with no `_started`.) Point events
-(e.g. `filter_switch`, `safety_changed`) carry no `operation_id`.
+event at entry and a matching `*_complete` or `*_failed` at exit
+(`*_settled` for a start of guiding and a dither, which end when
+guiding settles) — correlated by a shared `operation_id` and wrapped in
+the uniform [Event Envelope](#event-envelope) below. (`sync_mount` is
+instant, so it emits only `_complete` / `_failed`, with no `_started`.)
+Point events (e.g. `filter_switch`, `safety_changed`) carry no
+`operation_id`.
 
 ### Events
 
@@ -1237,22 +1223,16 @@ emits only `_complete` / `_failed`, with no `_started`.) Point events
 | `cooler_unreachable` | camera_id, floor_c, warmest_target_c | No configured rung reachable tonight; cooler switched off, session proceeds uncooled |
 | `cooler_warmup_started` | camera_id, from_c, target_c | Warm-up ramp begins at session end |
 | `cooler_warmup_complete` | camera_id | Warm-up ramp finished, cooler off |
-| `meridian_flip_started` | hour_angle | Flip initiated |
-| `meridian_flip_complete` | — | Flip and re-center done |
-| `target_switch` | old_target, new_target | Planner decided to switch targets |
 | `filter_switch` | camera_id, old_filter, new_filter | Filter change on a camera |
-| `frame_rejected` | document_id, plugin, reason | Immediate correction rejected a frame |
-| `plugin_timeout` | plugin, event_id | Plugin did not respond within `max_duration` |
-| `document_updated` | document_id, section_name | Plugin contributed a section |
 | `document_persistence_failed` | document_id, file_path, error | Sidecar write failed during capture. The FITS file is on disk but the cache is not populated and no sidecar exists; `document_id`-keyed lookups return 404 (disk fallback requires the sidecar). Recover by reading the FITS via `file_path` from the payload. See [Capture Tool Details](#capture-tool-details). |
 
 ### Event Envelope
 
-Every emitted event is wrapped in a uniform envelope. The envelope is
-**additive** over the historical webhook body: `event_id`, `event`,
-`timestamp`, and `payload` keep their exact meaning and contents, so
-existing webhook plugins are unaffected. New fields are carried alongside
-and absent optional fields are omitted from the JSON.
+Every emitted event is wrapped in a uniform envelope, which is both the
+webhook body and the [Real-Time Stream](#real-time-stream)'s `data:`
+payload. Absent optional fields are omitted from the JSON, so a point
+event carries only `event_id`, `event_seq`, `event`, `timestamp` and
+`payload`.
 
 ```json
 {
@@ -1270,28 +1250,26 @@ and absent optional fields are omitted from the JSON.
 
 | Field | Meaning |
 |-------|---------|
-| `event_id` | Per-emission UUID. Unchanged; the routing key for the plugin completion contract (`POST /api/plugins/{event_id}/complete`). |
+| `event_id` | Per-emission UUID. |
 | `event_seq` | Monotonically increasing per-emission counter. Total order across all events; the SSE `id` (and `Last-Event-ID` replay key) for the [Real-Time Stream](#real-time-stream). |
-| `operation_id` | Correlation key shared by an operation's `*_started`, `*_complete`, and `*_failed` events. Omitted for point events (e.g. `filter_switch`, `safety_changed`). |
+| `operation_id` | Correlation key shared by an operation's `*_started` event and the event that ends it: `*_complete` or `*_failed`, or `*_settled` for a guide start or a dither. Omitted for point events (e.g. `filter_switch`, `safety_changed`). |
 | `event` | The event-type string, e.g. `"slew_started"`. |
-| `timestamp` | ISO-8601 emission time. Unchanged historical format. |
-| `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started`/`*_complete`/`*_failed` triple; `ended_at` only on `*_complete`/`*_failed`. |
-| `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`. |
-| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Populated (Phase 2) on: `slew_started` — `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`; `park_started` — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle` (worst-case traverse; rp can't read the park position via Alpaca), `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)`; `move_focuser_started` — per leg, `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` and a backlash-compensated move is the overshoot hop then the return hop (see [Focuser Tool Details](#focuser-tool-details)); `predicted` and `max` are the sums over the legs; `exposure_started` — `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom (advisory only — rp does not enforce it; the camera driver owns the exposure, and rp keeps a separate, more generous internal readout backstop); `centering_started` — outer-loop only (advisory; per-iteration slews/captures carry their own deadlines): `per_iter = duration + centering.solve_time_estimate (default 30 s) + centering.slew_overhead_estimate (default 10 s)`, `predicted = per_iter` (single-pass convergence), `max = max_attempts × per_iter`. Omitted for operations not yet converted to predictive deadlines. |
-| `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`, the outcome (or `{"error": "..."}` on failure). |
+| `timestamp` | ISO-8601 emission time in whole seconds (`2026-05-19T20:14:33Z`). |
+| `started_at` / `ended_at` | RFC-3339 (millisecond) operation start / end. `started_at` is on the `*_started` event and the event that ends it; `ended_at` only on the ending event (`*_complete`, `*_failed` or `*_settled`). |
+| `elapsed_ms` | Wall-clock operation duration, on `*_complete`/`*_failed`/`*_settled`. |
+| `predicted_duration_ms` / `max_duration_ms` | The operation's expected duration and hard-ceiling deadline, in integer milliseconds (a boundary serialization of an internal `Duration`). Carried on: `slew_started` — `predicted = great-circle distance / mount.slew_rate_arcsec_per_sec + settle`, `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`; `park_started` — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle` (worst-case traverse; rp can't read the park position via Alpaca), `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)`; `move_focuser_started` — per leg, `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` and a backlash-compensated move is the overshoot hop then the return hop (see [Focuser Tool Details](#focuser-tool-details)); `predicted` and `max` are the sums over the legs; `exposure_started` — `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom (advisory only — rp does not enforce it; the camera driver owns the exposure, and rp keeps a separate, more generous internal readout backstop); `centering_started` — outer-loop only (advisory; per-iteration slews/captures carry their own deadlines): `per_iter = duration + centering.solve_time_estimate (default 30 s) + centering.slew_overhead_estimate (default 10 s)`, `predicted = per_iter` (single-pass convergence), `max = max_attempts × per_iter`; and `guide_started` / `dither_started` when a settle timeout is resolved (see [Events](#events)). Every other event omits them, and so do a slew, a park and a focuser move whose prediction cannot be sized (a failed pre-move read, or no mount configured), which fall back to a fixed ceiling. |
+| `payload` | Operation detail. For `*_started`, the inputs; for `*_complete`/`*_failed`/`*_settled`, the outcome (or `{"error": "..."}` on failure). |
 
-A blocking operation emits a **triple** — a `*_started` envelope at the
-entry point and a `*_complete` or `*_failed` envelope at the end, all
-sharing one `operation_id`. (`sync_mount`, being instant per ASCOM, emits
-only `*_complete` / `*_failed`.) See
-[`docs/plans/archive/predictive-deadlines-and-watchdog.md`](../plans/archive/predictive-deadlines-and-watchdog.md)
-for the deadline-monitoring design this envelope feeds.
+The deadline fields feed Sentinel's operation watchdog
+([sentinel.md § Operation Watchdog](sentinel.md#operation-watchdog),
+§ [Sentinel Watchdog Integration](#sentinel-watchdog-integration)).
 
 ### Delivery: Webhooks
 
 Plugins register a callback URL and subscribed events in the configuration.
-`rp` POSTs events to each registered URL. All plugins use the same
-asynchronous request-response pattern.
+`rp` POSTs each event's envelope to every registration subscribed to it,
+and reads only the response's status: delivery is fire-and-forget,
+bounded at 5 s per delivery, connect included, and never retried.
 
 **A `type: "event"` registration must be deliverable.** `name`,
 `webhook_url`, and a `subscribes_to` list holding at least one
@@ -1324,32 +1302,26 @@ credential" and answered 401 on the first delivery of the night. A
 registration is otherwise opaque to `rp` — unknown keys are the plugin
 author's business — and `rp` reads neither field on a registration it
 does not dial, so a tool-provider entry carrying its own
-differently-shaped `auth` key is left alone. A `ca_cert` the delivery
-client cannot be built from fails startup the same way. Doctor reports
+differently-shaped `auth` key is left alone. One client, built once at
+startup, serves every subscriber: a `ca_cert` it cannot be built from
+fails startup the same way, and with no subscriber registered no client
+is built at all, so a rig without event plugins is never failed by a
+`ca_cert` it would not use. Doctor reports
 the join between `plugins[].webhook_url` and the plugin service's own
 `server.tls`/`server.auth` as `joins.client-transport` /
 `joins.client-auth`, and `doctor --fix` wires both (see
 [doctor.md § Client-target joins](doctor.md#client-target-joins)).
+
 Any number of event subscribers may be registered, because `rp`
 delivers each event to all of them. Getting a registration wrong is
-quiet: delivery is fire-and-forget with no retry, so the event is
-simply lost and the night continues. A plugin that *answers* with a
+quiet: an event that is not delivered is simply lost, and the night
+continues. A plugin that *answers* with a
 non-success status — a 401 from
 a wrong credential, a 500 from a plugin bug — is logged at `warn!` with
 that status, because that line is the only signal an operator gets that a
 subscriber is silently doing nothing; a plugin that cannot be reached at
 all stays at `debug!`, since an unreachable subscriber is the ordinary
 case for a plugin that is simply not running.
-`rp` reads a callback URL and `auth` only on the registrations it
-dials — the event kind — so a tool provider's own
-differently-shaped `auth` key is left alone. One client, built once at
-startup, serves every subscriber; a `ca_cert` it cannot be built from
-fails startup, and with no subscriber registered no client is built at
-all. Doctor reports the join between `plugins[].webhook_url` and the
-plugin service's own `server.tls`/`server.auth` as
-`joins.client-transport` / `joins.client-auth`, and `doctor --fix` wires
-both (see
-[doctor.md § Client-target joins](doctor.md#client-target-joins)).
 
 #### Request
 
@@ -1358,260 +1330,34 @@ POST <plugin_webhook_url>
 Content-Type: application/json
 
 {
-  "event_id": "evt-550e8400-e29b-41d4",
+  "event_id": "550e8400-e29b-41d4-a716-446655440000",
+  "event_seq": 1251,
+  "operation_id": "6f1d2c3b-8a4e-4f0a-9b7c-2d5e8f1a3c40",
   "event": "exposure_complete",
   "timestamp": "2026-03-02T01:25:02Z",
+  "started_at": "2026-03-02T01:20:01.874Z",
+  "ended_at": "2026-03-02T01:25:02.311Z",
+  "elapsed_ms": 300437,
   "payload": {
-    "document": { ... },
+    "document_id": "d4e5f6a7-0b1c-4d2e-8f3a-5b6c7d8e9f01",
     "file_path": "/data/lights/M31/M31_L_5m_001.fits"
   }
 }
 ```
 
-#### Step 1: Acknowledgment (immediate HTTP response)
-
-The plugin responds immediately to the webhook HTTP request with an
-acknowledgment declaring how long it expects to take:
-
-```json
-{
-  "estimated_duration": "20s",
-  "max_duration": "30s"
-}
-```
-
-- `estimated_duration`: humantime string for how long the plugin expects
-  processing to take. The planner uses this for scheduling decisions.
-  Provided dynamically per invocation — a plate solve on a wide-field
-  image may differ from a narrow-field one.
-- `max_duration`: hard timeout. If the plugin doesn't complete within
-  this time, `rp` proceeds and emits a warning.
-
-`rp` records the durations and continues with the orchestration. The next
-exposure can start immediately after `exposure_complete` — the plugin
-processes in parallel.
-
-#### Step 2: Completion (callback POST to `rp`)
-
-When the plugin finishes processing, it POSTs a completion to `rp`:
-
-```
-POST /api/plugins/{event_id}/complete
-Content-Type: application/json
-
-{
-  "status": "complete"
-}
-```
-
-Or, to request a corrective action:
-
-```json
-{
-  "status": "complete",
-  "correction": {
-    "action": "focus",
-    "reason": "HFR degraded from 2.3 to 4.8 — likely focus drift",
-    "urgency": "immediate"
-  }
-}
-```
-
-- `correction` (optional): requests that the orchestrator perform a
-  corrective action (see Corrections below).
-  - `action`: the corrective action to take (e.g., `"focus"`,
-    `"center"`). Must be a recognized action name.
-  - `reason`: human-readable explanation, logged and included in events.
-  - `urgency`: either `"immediate"` (abort in-flight operations, reject
-    the frame) or `"after_current"` (queue until the current operation
-    completes naturally, frame counts normally).
-
-#### Barriers
-
-A plugin can optionally declare **barrier gates** — MCP tools that must
-not proceed until the plugin has posted its completion for the most
-recent webhook. This tells `rp`: "if you haven't heard back from me yet,
-block these tools until you have."
-
-```json
-{
-  "name": "image-analyzer",
-  "webhook_url": "http://localhost:11140/webhook",
-  "subscribes_to": ["exposure_complete"],
-  "barrier_gates": ["slew", "set_filter"]
-}
-```
-
-When the orchestrator calls a gated tool, `rp` checks whether any
-barrier plugin still has an outstanding (uncompleted) webhook. If so,
-`rp` blocks the tool call — up to `max_duration` from the
-acknowledgment — before executing. All outstanding plugins are waited on
-in parallel.
-
-A plugin with no `barrier_gates` (or an empty list) is never waited on.
-Its completion is still processed when it arrives, but `rp` never blocks
-on it.
-
-If a barrier plugin completes with a correction while a tool call is
-blocked, the gated tool returns the correction to the orchestrator
-instead of executing (see Corrections below).
-
-#### Corrections
-
-A plugin can request that the orchestrator perform a corrective action
-by including a `correction` in its completion. Corrections have two
-urgency levels that determine how `rp` delivers them to the
-orchestrator:
-
-**`immediate`** — the current frame is unusable. `rp` aborts any
-in-flight operation (e.g., aborts the active camera exposure), returns
-the correction to the orchestrator in the aborted tool call's result,
-and rejects the frame:
-
-```json
-{
-  "status": "aborted",
-  "correction": {
-    "action": "focus",
-    "reason": "HFR 4.8, frame unusable",
-    "source": "image-analyzer"
-  }
-}
-```
-
-**`after_current`** — the current frame is still usable, but a
-corrective action should happen before the next exposure. `rp` queues
-the correction and surfaces it in the result of the current in-flight
-tool call when it completes naturally:
-
-```json
-{
-  "image_path": "/data/lights/M31/M31_L_5m_004.fits",
-  "document_id": "doc-043",
-  "pending_correction": {
-    "action": "focus",
-    "reason": "HFR 3.0, trending worse",
-    "source": "image-analyzer"
-  }
-}
-```
-
-In both cases the orchestrator decides **what to do** with the
-correction. `rp` controls **when** the orchestrator hears about it.
-
-**Conflict resolution:** when multiple plugins request corrections,
-the most disruptive action wins. If one plugin requests refocus and
-another requests recenter, recenter wins because it includes refocusing.
-
-**Frame rejection:** an `immediate` correction implicitly rejects the
-frame that triggered the event. `rp`:
-
-1. Does not count the rejected frame toward the exposure goal.
-2. Marks the exposure document with the rejection reason.
-3. Emits a `frame_rejected` event.
-
-An `after_current` correction does not reject the frame. The current
-exposure counts normally.
-
-**Barrier interaction:** when a barrier plugin completes with a
-correction while a gated tool call is blocked, `rp` returns the
-correction to the orchestrator instead of executing the gated tool.
-The orchestrator sees the correction and acts accordingly (e.g.,
-refocuses instead of slewing to a new target).
-
-#### Timeout Behavior
-
-When `max_duration` (from the acknowledgment) expires without a
-completion:
-
-1. `rp` proceeds as if the plugin completed with `"complete"` and no
-   correction.
-2. If a tool call was blocked on this barrier, it unblocks and executes
-   normally.
-3. A `plugin_timeout` warning event is emitted.
-4. The timeout is logged.
-
-Webhook delivery failures (connection refused, HTTP errors) are treated
-as immediate completion with no correction. Plugins are responsible for
-their own reliability.
-
-#### Example: Image Analyzer Flow
-
-Setup: 5 exposures on the same target, 5m each, analysis takes 20s.
-
-```
-Exposure 3 completes
-  → rp POSTs exposure_complete to analyzer
-  → analyzer responds immediately:
-      {"estimated_duration": "20s", "max_duration": "30s"}
-  → rp records outstanding barrier, starts exposure 4 (not gated)
-
-  Case A — frame OK, no target switch pending:
-    → analyzer POSTs completion: {"status": "complete"}
-    → rp notes completion, clears barrier
-    → capture continues normally
-
-  Case B — frame bad (immediate), exposure 4 in-flight:
-    → analyzer POSTs completion:
-        {"status": "complete", "correction": {"action": "focus",
-         "reason": "HFR 4.8", "urgency": "immediate"}}
-    → rp aborts exposure 4, returns capture with:
-        {"status": "aborted", "correction": {"action": "focus", ...}}
-    → orchestrator refocuses, resumes capture
-
-  Case C — frame marginal (after_current), exposure 4 in-flight:
-    → analyzer POSTs completion:
-        {"status": "complete", "correction": {"action": "focus",
-         "reason": "HFR 3.0, trending", "urgency": "after_current"}}
-    → rp queues correction, exposure 4 continues
-    → exposure 4 completes, capture returns with:
-        {"image_path": "...", "pending_correction": {"action": "focus", ...}}
-    → orchestrator refocuses before starting exposure 5
-
-  Case D — frame bad, slew pending (barrier in action):
-    → orchestrator calls slew → rp blocks (outstanding barrier)
-    → analyzer POSTs completion with immediate correction
-    → rp returns slew with correction instead of executing:
-        {"status": "blocked_by_correction",
-         "correction": {"action": "focus", ...}}
-    → orchestrator refocuses, stays on current target
-```
-
-### Plugin Section Updates
-
-After processing an event, plugins POST their results back to `rp`:
-
-```
-POST /api/documents/{document_id}/sections
-Content-Type: application/json
-
-{
-  "section_name": "wcs",
-  "data": {
-    "ra_center": 10.6848,
-    "dec_center": 41.2690,
-    "pixel_scale_arcsec": 1.05,
-    "rotation_deg": 12.3,
-    "solver": "astap-0.9.1"
-  }
-}
-```
-
-`rp` merges the section into the document and persists the updated
-sidecar JSON.
-
 ## Action System
 
 The action system complements the event system. Where events flow outward
-from `rp` to plugins (notifications), actions flow inward from plugins to
-`rp` (requests). Actions are the primitives that plugins use to control
-equipment and trigger computations through `rp`.
+from `rp` to plugins (notifications), actions flow inward from clients to
+`rp` (requests). Actions are the primitives that orchestrators, plugins
+and other clients use to control equipment and trigger computations
+through `rp`.
 
 The action system uses the
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) as its
 wire protocol. `rp` runs an MCP server that exposes all available actions
-as **MCP tools**. Workflow plugins connect as MCP clients to discover and
-call tools.
+as **MCP tools**. Orchestrators and other clients connect as MCP
+clients to discover and call tools.
 
 MCP provides:
 
@@ -1622,7 +1368,7 @@ MCP provides:
 - **Formal schemas** — every tool's parameters and return types are
   described by JSON Schema, derived from Rust types at compile time
   (via `#[tool]` + `JsonSchema` derives in the `rmcp` crate).
-- **Language-agnostic** — plugins can be written in any language with an
+- **Language-agnostic** — a client can be written in any language with an
   MCP client library (Rust, Python, TypeScript, Go, etc.).
 
 `rp` never exposes raw device access. Every tool validates parameters,
@@ -1679,13 +1425,11 @@ hostname, an ACME DNS name — is admitted by pointing
 The endpoint sits behind the same server-wide `server.tls` /
 `server.auth` as every other route — there is no unauthenticated MCP
 carve-out. First-party MCP clients are built through the shared
-`rp-mcp-client` crate, which presents the D6 observatory credential over
-verified TLS only
-([ADR-017](../decisions/017-standard-mcp-client-construction.md)).
+`rp-mcp-client` crate, which presents the observatory credential over
+verified TLS only.
 
 **Protocol posture.** `rp` speaks MCP 2026-07-28 and serves every
-request **statelessly**
-([ADR-021](../decisions/021-session-less-mcp-and-the-safety-contract.md)):
+request **statelessly**:
 
 - There are no sessions. No response ever carries an `Mcp-Session-Id`
   header, and no request is expected to. A client bootstraps with
@@ -1699,13 +1443,13 @@ request **statelessly**
   disagrees with its header is rejected with the transport's
   header-mismatch error before dispatch.
 - A client speaking an older revision (`2025-03-26` … `2025-11-25`)
-  still works: its `initialize` is answered — with no session id — and
+  is served too: its `initialize` is answered — with no session id — and
   its later requests are served statelessly like everyone else's.
   Nothing in `rp` depends on the handshake having happened.
 - Nothing is required per request beyond the protocol signals above:
   `stateless_protocol_metadata_required` stays off, so a request that
   omits the 2026-07-28 `_meta` fields is served as a legacy request
-  rather than rejected (mcp-sessionless plan, O4).
+  rather than rejected.
 - A `tools/call` is answered as plain JSON unless the body emits a
   `notifications/progress` first, in which case the response is an SSE
   stream carrying the notifications and then the result. There is no
@@ -1737,16 +1481,18 @@ identical to MCP clients:
 1. **Built-in tools** — implemented directly in `rp` (hardware primitives,
    image analysis, planner, V-curve auto-focus, iterative centering).
 2. **rp-managed service tools** — built-in tool surface that proxies to a
-   separate process `rp` supervises (guider, plate solver). The MCP tool
-   itself lives in `rp`; the wrapped logic runs in the supervised service.
+   separate process Sentinel supervises: the plate solver, and the guider,
+   whose service is designed and not built (§ [Guider
+   Service](#guider-service)). The MCP tool itself lives in `rp`; the
+   wrapped logic runs in the supervised service.
 3. **Third-party plugin tools** — aggregated from plugins running their own
    MCP servers. Discovered at startup via `tools/list` and proxied through
    `rp`'s server (§ [Plugin-Provided Tools](#plugin-provided-tools)). A
    name a provider shares with a built-in or with another provider fails
    startup: the catalog has no precedence rule to guess at.
 
-Workflow plugins discover available tools via the standard MCP
-`tools/list` call. Each tool includes its JSON Schema, so plugins know
+Clients discover available tools via the standard MCP
+`tools/list` call. Each tool includes its JSON Schema, so a client knows
 the exact parameter types and return structure.
 
 Every tool also has a **safety class** — gated or ungated (§ Safety →
@@ -1767,12 +1513,12 @@ Operators can move any tool across the line with `safety.gate`
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `capture` | Per call: gated for a frame that needs the sky, ungated otherwise | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), light_source (optional: `panel`/`sky`, with a `Flat` or an untyped capture), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. While conditions are unsafe, only a `Dark`, a `Bias` or a capture with `light_source: panel` is taken; any other is refused with the `SafetyUnsafe` error before the camera is touched, and one in flight when conditions turn unsafe is cancelled, while a dark, a bias or a panel flat in flight runs to its end (§ Safety → [In-Flight Tool Calls](#in-flight-tool-calls)). Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
-| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `max_adu` is read from the driver on every call, because a readout-mode change can change it ([Core Fields](#core-fields-owned-by-rp)); a failed read is a tool error. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
+| `capture` | Per call: gated for a frame that needs the sky, ungated otherwise | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), light_source (optional: `panel`/`sky`, with a `Flat` or an untyped capture), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. While conditions are unsafe, only a `Dark`, a `Bias` or a capture with `light_source: panel` is taken; any other is refused with the `SafetyUnsafe` error before the camera is touched, and one in flight when conditions turn unsafe is cancelled, while a dark, a bias or a panel flat in flight runs to its end (§ Safety → [In-Flight Tool Calls](#in-flight-tool-calls)). Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop is a separate, more generous `duration + 120 s` ceiling. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
+| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `max_adu` is read from the driver on every call, because a readout-mode change can change it ([Core Fields](#core-fields-owned-by-rp)); a failed read is a tool error. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at |
 | `move_focuser` | Ungated | focuser_id, position, lease_id (optional, a held [train lease](#train-lease)) | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Moves through one focuser run one at a time; one that names no lease, of a focuser a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with its travel bounds and backlash block — `min_position` / `max_position`, the configured bounds narrowed to the driver's travel of `0` to `MaxStep` and falling back to it where the config sets none (`max_position` is `null` only when the config sets none and `MaxStep` could not be read), and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor. `temperature_c` is null for a focuser without a probe (its driver answers `Temperature` with `NOT_IMPLEMENTED`); any other failed read is a tool error. An id rp does not know is the tool error `focuser not found: <id>`, which focus-model reads as a mistyped stand-in sensor ([focus-model.md § The temperature source](focus-model.md#the-temperature-source)) |
-| `move_rotator` | Ungated | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. Moves through one rotator run one at a time, and one of a rotator a [train lease](#train-lease) holds still waits for the lease to end. See [Rotator Tool Details](#rotator-tool-details) |
+| `move_rotator` | Ungated | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — the rotator config has no rate to size one from). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. Moves through one rotator run one at a time, and one of a rotator a [train lease](#train-lease) holds still waits for the lease to end. See [Rotator Tool Details](#rotator-tool-details) |
 | `get_rotator_position` | Ungated | rotator_id *or* train_id (exactly one) | rotator_id, angle, mechanical_angle, is_moving | Read the rotator's sky angle, mechanical angle, and motion state |
 | `slew` | Gated | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise. Bounded by a **predicted deadline**: `predicted = great-circle(current, target) / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. The current pointing is read before the slew to size the deadline; if that read fails it falls back to a 300 s ceiling. On timeout `slew` best-effort aborts (unlike `park`); `predicted`/`max` ride the `slew_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
 | `sync_mount` | Ungated | ra, dec | — | Sync mount position to given coordinates |
@@ -1865,12 +1611,12 @@ accepted, `document_id` takes precedence.
 
 | Action | Parameters | Returns | Description |
 |--------|-----------|---------|-------------|
-| `compute_image_stats` | document_id or image_path | median_adu, mean_adu, min_adu, max_adu, pixel_count | Pixel-level statistics. Implemented. |
-| `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. **MVP image analysis tool.** |
-| `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. Implemented. |
-| `measure_stars` | document_id or image_path, max_area, min_area (unless `stars`), threshold_sigma (optional), stars (optional: \[{x, y, radius}\]), stamp_half_size (optional) | stars: \[{x, y, radius, hfr, fwhm, eccentricity, flux, snr}\], star_count, hfr, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics, measured in the same apertures as `measure_basic`. Runs `detect_stars` internally, or measures the listed `stars` where they were last seen. Implemented. |
-| `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. Implemented. |
-| `compute_snr` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | snr, signal, noise, star_count, background_mean, background_stddev | Median per-star SNR via the CCD-equation approximation. Implemented. |
+| `compute_image_stats` | document_id or image_path | median_adu, mean_adu, min_adu, max_adu, pixel_count | Pixel-level statistics; with a `document_id`, persisted as the document's `image_stats` section. See [Image Statistics Tool Details](#image-statistics-tool-details). |
+| `measure_basic` | document_id or image_path, threshold_sigma (optional) | hfr, star_count, background_mean, background_stddev | Detect stars, compute aggregate HFR and background. See [`measure_basic` Contract](#measure_basic-contract). |
+| `detect_stars` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | stars: \[{x, y, flux, peak, saturated_pixel_count}\], star_count, saturated_star_count, background_mean, background_stddev | Locate stars via thresholded connected-components on background-subtracted pixels. |
+| `measure_stars` | document_id or image_path, max_area, min_area (unless `stars`), threshold_sigma (optional), stars (optional: \[{x, y, radius}\]), stamp_half_size (optional) | stars: \[{x, y, radius, hfr, fwhm, eccentricity, flux, snr}\], star_count, hfr, median_fwhm, median_hfr, background_mean, background_stddev | Per-star photometry and PSF metrics, measured in the same apertures as `measure_basic`. Runs `detect_stars` internally, or measures the listed `stars` where they were last seen. |
+| `estimate_background` | document_id or image_path, k (optional), max_iters (optional) | mean, stddev, median, pixel_count (sigma-clipped) | Robust background estimation. |
+| `compute_snr` | document_id or image_path, min_area, max_area, threshold_sigma (optional) | snr, signal, noise, star_count, background_mean, background_stddev | Median per-star SNR via the CCD-equation approximation. |
 
 **Compute (plate solving)**
 
@@ -1886,8 +1632,8 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `auto_focus` | Ungated | train_id (the guiding train); step_size, half_width, min_fit_points, confirmation_tolerance (all optional, each falling back to the guiding train's `auto_focus` config block) | best_position, best_hfd, fit_r_squared, confirmation, confirmed, final_position, final_hfd, samples_used, curve_points, temperature_c | The guiding train's guide-metric V-curve sweep: the median HFD of fresh guide frames per position, the hyperbola fitted, the fitted position confirmed with one more sample set and the best measured sample taken when the confirmation fails. Requires active guiding; never captures through the guide camera; refuses an imaging train, which the focus-model provider's `focus_train` focuses, and a focuser an imaging train holds. The sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
-| `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts, binning (optional) | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
+| `auto_focus` | Ungated | train_id (the guiding train); step_size, half_width, min_fit_points, confirmation_tolerance (all optional, each falling back to the guiding train's `auto_focus` config block) | best_position, best_hfd, fit_r_squared, confirmation, confirmed, final_position, final_hfd, samples_used, curve_points, temperature_c | The guiding train's guide-metric V-curve sweep: the median HFD of fresh guide frames per position, the hyperbola fitted, the fitted position confirmed with one more sample set and the best measured sample taken when the confirmation fails. Requires active guiding; never captures through the guide camera; refuses an imaging train, which the focus-model provider's `focus_train` focuses, and a focuser an imaging train holds. The sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). |
+| `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts, binning (optional) | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). |
 
 **Planner — Ephemeris primitives**
 
@@ -1925,7 +1671,7 @@ hours, `dec` is degrees. See
 
 `add_target`, `get_target`, `list_targets`, `update_target`,
 `delete_target`, `set_goals` — CRUD over the plan-data store where
-targets now live — and `get_target_context`, the read of what a target
+targets live — and `get_target_context`, the read of what a target
 is checked against and inherits from the rig's config. See
 [Target Store](#target-store) for the full contract.
 
@@ -1935,10 +1681,8 @@ There are no session-state tools: `rp` keeps no run state (progress
 needs no persisting at all — it is derived from the frames on disk, see
 [What Survives an rp Restart](#what-survives-an-rp-restart)), and an
 orchestrator's own resume state is its own concern (`session-runner`'s
-blackboard). An earlier design sketched `save_session_state` /
-`get_session_state` tools; they were dropped — no orchestrator had a
-use for them that the planner's `get_session_progress` doesn't already
-cover.
+blackboard). An orchestrator reads a session's progress from the
+planner's `get_session_progress`.
 
 All built-in tools validate parameters before execution. `move_focuser`
 checks position bounds. `capture` checks that the camera is connected and
@@ -1960,6 +1704,18 @@ that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
 written atomically (stage to a sibling temp file, fsync, rename, fsync
 parent directory). See
 [Persistence](#persistence) for the full rule set.
+
+**A failed exposure ends the capture.** While the frame is not ready,
+a camera that reads `Error` fails the capture at once with
+`exposure_failed`, carrying the reason the camera's `image_array` read
+returns, rather than being polled as still exposing: a camera that
+fails an exposure reads `Error` and never reports `image_ready`. A
+camera that reads `Idle` on two polls in a row, still with no image,
+had its exposure aborted, and the capture ends then too. The readout
+backstop, `duration` + 120 s from the moment the camera accepts the
+exposure, fails a capture whose camera stays in any other state —
+`Waiting`, `Exposing`, `Reading` or `Download` — without reporting the
+frame ready.
 
 **Pixel geometry.** Alpaca's `image_array` is width-major — the
 `[x][y]` array of the ASCOM specification, `x` varying slowest on the
@@ -2161,27 +1917,24 @@ step 2 catches a re-bin that lands before the read-back, but nothing
 in `rp` can see one that lands after it. Capture through a camera from
 one client at a time.
 
-**Target linkage (Decision 11 — landed).** `capture` gains two optional
+**Target linkage.** `capture` takes two optional
 parameters: `target` (a slug string) and `frame_type`
 (`Light`/`Dark`/`Flat`/`Bias`). `rp` itself has no session-side notion
 of "the current target" — that state lives entirely in the
 orchestrator's workflow (`session-runner`'s blackboard:
 `session.target_name`/`session.target_ra`/`session.target_dec` in
-`deep_sky.json`), which already sets it right after every `slew` and
-re-supplies it explicitly to whichever tool call needs it next (today,
-that's only `record_exposure`, called immediately after `capture` in
-the same workflow step). Adding `target` to `capture`'s own schema is
-the same idiom applied one tool call earlier — no new subsystem, no
-rp-side session-target tracking — the workflow already holds the value
-at the moment `capture` runs; it was simply never passed.
+`deep_sky.json`), which sets it whenever it acquires a target and
+passes it explicitly to the tool calls that need it: `capture`, and
+`record_exposure` straight after it. The workflow holds the value at
+the moment `capture` runs, so `rp` needs no session-target tracking of
+its own.
 
 `frame_type` switches the document stamping: omitted (the default),
-`capture` behaves exactly as before — a flat `<doc_uuid_8>.fits`, no
-`target`/`frame_type` on the exposure document, `target` ignored if
-somehow supplied anyway. This is what every caller that hasn't been
-updated for Decision 11 keeps doing unchanged, including a focus
-provider's sweep captures, `center_on_target`'s internal captures (see
-below) and any orchestrator predating this feature.
+`capture` writes a flat `<doc_uuid_8>.fits`, puts no
+`target`/`frame_type` on the exposure document, and ignores a `target`
+supplied anyway. A focus provider's sweep captures,
+`center_on_target`'s internal captures (see below) and every other
+caller that names no frame type take this path.
 
 **The templated path is a second, independent switch:
 `session.file_naming_pattern`** (§ Persistence). Supplying `frame_type`
@@ -2189,8 +1942,8 @@ without it is *not* an error — the document still records what the
 frame is and what it is of, and the file keeps the flat
 `<doc_uuid_8>.fits` name. The two are deliberately decoupled because
 the shipped `deep_sky` workflow passes `frame_type: Light` on every
-frame: coupling them would make a rig that never configured a naming
-pattern fail every capture the moment it adopted the current workflow.
+frame: coupling them would fail every capture of a rig that runs that
+workflow without a naming pattern.
 The cost of leaving the pattern unset is that nothing on disk carries a
 target, so no progress can be derived from it and the planner never
 exhausts a goal (§ Progress derivation) — a rig running plans wants the
@@ -2208,8 +1961,9 @@ When `frame_type` is `Dark`/`Flat`/`Bias` (calibration frames —
 `calibrator-flats`' `take_flats` and any future dark/bias capture
 flow, neither of which images a sky object), `target` is
 optional: if supplied it resolves against the store exactly like a
-Light frame (reserved for a future per-target flat-capture flow, see
-below); if omitted, `capture` uses a **reserved slug equal to the
+Light frame (accepted for a per-target flat-capture flow —
+[`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render--parse));
+if omitted, `capture` uses a **reserved slug equal to the
 lowercased frame type** (`"dark"`/`"flat"`/`"bias"`) — a single shared
 bucket per calibration type, `target` on the document carrying just
 that slug (`display_name`/`ra_hours`/`dec_degrees` stay `None`, since
@@ -2291,8 +2045,8 @@ same `(filter, binning, exposure_duration)` sub-spec via
 `CompiledTemplate::parse` and using `count + 1` — nothing is stored,
 consistent with the "derive progress from disk" design (rp-targets.md
 § Progress derivation). Counting earlier frames by their names rather
-than their sidecars is a gap [Ground rules](#ground-rules) lists:
-after a pattern edit, the numbering starts again at 001. A render
+than their sidecars is deliberate ([Ground rules](#ground-rules)):
+after a pattern edit, the numbering starts again at 0001. A render
 failure (a missing field, a filter
 name outside its token shape, a failed sensor-temperature read when
 the pattern references `{sensor_temp}`) fails the whole `capture`
@@ -2301,16 +2055,16 @@ call — after the exposure has already completed, since
 wasted exposure on a misconfiguration for never silently mis-filing a
 frame; the operator fixes the configuration and retries.
 
-**Deferred, not yet decided:** organizing a focus sweep's captures and
-`center_on_target`'s internal diagnostic captures the same way. Unlike
-calibration frames, these can run multiple times against the same
-target in one night (repeated focus/centering attempts), so they'd
-need a directory shape that doesn't exist yet (something like
-`_diagnostics/<train>/focus/...`) and a naming-template token at
-finer-than-`{night_date}` granularity — there is no `{time}` token in
-[`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render-and-parse)
-today. Both keep calling `capture` with `frame_type` omitted
-(today's flat-file behavior) until this is designed.
+**Diagnostic captures are not filed by target.** A focus sweep's
+captures and `center_on_target`'s internal diagnostic captures call
+`capture` with `frame_type` omitted and land as flat files. Unlike
+calibration frames, these can run several times against the same
+target in one night (repeated focus/centering attempts), so filing them
+would need a directory shape such as `_diagnostics/<train>/focus/...`
+and a naming-template token at finer-than-`{night_date}` granularity,
+and
+[`rp-targets.md` § File-naming template](../crates/rp-targets.md#file-naming-template-render--parse)
+has no `{time}` token. How to file them is an open design question.
 
 **Sidecar failure contract.** If the sidecar write fails after a
 successful FITS write, `capture` still returns success with
@@ -2396,6 +2150,22 @@ omitted, the calibrator is turned on at maximum brightness. The four
 actuating tools block until the operation completes by polling the
 device state (same pattern as `set_filter`), bounded by a 60 s ceiling.
 
+**A refusal carries the device's ASCOM code.** When the device answers
+`calibrator_on` with an ASCOM error, the tool error's text names it
+(`failed to turn calibrator on: ASCOM error INVALID_VALUE: …`), and its
+structured content carries the device's code and message:
+
+```json
+{ "ascom_error": { "code": 1025, "message": "brightness 128 is below the configured minimum 250 (…)" } }
+```
+
+A brightness outside what the panel accepts is `INVALID_VALUE`
+(`0x401`, 1025): above `max_brightness`, or below a minimum the panel
+keeps and ASCOM has no property for, as `dsd-fp2`'s `min_brightness`.
+A client that has to tell a refused brightness from a lamp that failed
+reads the code, never the text; `rp-mcp-client`'s `ascom_error_code`
+reads it from a tool result.
+
 **Addressing.** All five tools take **exactly one of `calibrator_id`
 or `train_id`** — the `set_filter` shape (each tool's input schema
 publishes the alternatives as a presence-only `oneOf`). `train_id`
@@ -2414,7 +2184,7 @@ them, so a caller closing the main train's flip-flat learns that the
 OAG guide train went dark too (the `moved_trains` precedent of
 `move_rotator`).
 
-**Gating is unchanged by addressing.** `open_cover` is gated (it
+**Gating does not depend on addressing.** `open_cover` is gated (it
 exposes the optics); the other four are ungated — reads, protective
 or indoor — whichever way they are addressed.
 
@@ -2425,10 +2195,9 @@ ASCOM `Position` frame, which honors any sync offset the driver
 holds — in degrees, `0.0 ≤ angle < 360.0`. The angle is validated
 before any motion; a non-finite or out-of-range value errors without
 touching the device. The tool then polls `IsMoving` every 100 ms
-until idle, bounded by a fixed 120 s ceiling: there is no
-per-rotator rate config yet, so the `move_rotator_started` envelope
-carries no `predicted_duration_ms`/`max_duration_ms` (the standard
-posture for operations not yet converted to predictive deadlines).
+until idle, bounded by a fixed 120 s ceiling: the rotator config has
+no rate to size a prediction from, so the `move_rotator_started`
+envelope carries no `predicted_duration_ms`/`max_duration_ms`.
 On idle it reads back `Position` and `MechanicalPosition` for the
 result.
 
@@ -2510,8 +2279,8 @@ then polls `IsMoving` every 100 ms and treats
 the move as **settled** only when the device reports idle **and**
 its read-back `Position` equals the target. A driver whose status
 lags the command — reporting idle for a moment right after `Move`,
-or a `Position` that catches up one poll later — therefore no longer
-ends the call early with the pre-move position: rp keeps polling
+or a `Position` that catches up one poll later — therefore does not
+end the call early with the pre-move position: rp keeps polling
 until the read-back matches, bounded by that leg's predicted deadline
 (sized as in the [envelope table](#event-envelope)). If the deadline
 expires while
@@ -2637,43 +2406,36 @@ image files.
 Image analysis in `rp` follows a **pure Rust on ndarray** approach.
 All algorithms are implemented as custom code on top of well-established
 building blocks — no single crate covers the full range of astronomical
-image analysis needed. Tools accept either a `document_id` (resolved
-via the [Image and Document Cache](#image-and-document-cache)) or an
-`image_path` (FITS file on disk read via `rp-fits`); `document_id` is
-preferred for the post-capture fast path because it avoids re-decoding
-the image just written.
+image analysis needed. The kernels are the `rp-image-analysis` crate
+(`crates/rp-image-analysis`): pure functions over an `ArrayView2`,
+free of I/O, which `rp`'s imaging tools compose and which the
+[guider](guider.md#star-selection-and-measurement) is designed to
+measure its guide stars with. Tools accept either a `document_id`
+(resolved via the [Image and Document Cache](#image-and-document-cache))
+or an `image_path` (FITS file on disk read via `rp-fits`); `document_id`
+is preferred for the post-capture fast path because it avoids
+re-decoding the image just written.
 
-#### Current Capabilities
-
-- **Pixel statistics** (median, mean, min, max ADU) — stdlib iterators
-  and `select_nth_unstable` for median (iterative O(n) quickselect).
-  Used by `compute_image_stats` for flat calibration exposure targeting.
-- **FITS I/O** — `rp-fits` workspace crate (reads via `fitsrs`, writes
-  via a hand-rolled pure-Rust BITPIX 8/16/32 writer). See ADR-001
-  Amendment A.
-
-#### Planned Capabilities and Crate Strategy
-
-The kernels these choices build are the `rp-image-analysis` crate
-(`crates/rp-image-analysis`), which `rp` shares with the guider.
+#### Capabilities and Crate Strategy
 
 | Capability | Approach | Crates |
 |------------|----------|--------|
-| Pixel statistics | Custom | stdlib (`select_nth_unstable`, iterators) |
-| FITS I/O | Crate | `rp-fits` (wraps `fitsrs` for reads, hand-rolled writer) |
-| 2D image operations | Crate | `ndarray` (already in workspace) |
-| Gaussian smoothing, morphology | Crate | `ndarray-ndimage` (Gaussian filter, dilation/erosion). Connected components is hand-rolled BFS on `Array2<bool>` because `ndarray-ndimage` 0.6's `label` is 3D-only |
-| Star detection | Custom | Threshold + connected components on background-subtracted image, then shape filtering |
+| Pixel statistics (median, mean, min, max ADU), which `compute_image_stats` reports for flat exposure targeting | Custom | stdlib iterators, and `select_nth_unstable` for the median (iterative O(n) quickselect) |
+| FITS I/O | Crate | `rp-fits` (wraps `fitsrs` for reads; writes BITPIX 8/16/32 through its own pure-Rust writer) |
+| 2D image operations | Crate | `ndarray` |
+| Gaussian smoothing | Crate | `ndarray-ndimage` (`gaussian_filter`). Connected components is hand-rolled BFS on `Array2<bool>` because `ndarray-ndimage` 0.6's `label` is 3D-only |
+| Star detection | Custom | Hot-pixel suppression, smoothing, a threshold above the background and connected components, then the area, border, flux and HFR-floor filters (`measure_basic` steps 3–8) |
 | Centroiding | Custom | Intensity-weighted center of mass on ndarray subframes |
 | HFR / HFD | Custom | Curve of growth in an aperture that follows the star (centre and radius iterated, local annulus background) |
 | FWHM | Custom + crate | 2D Gaussian fitting via `rmpfit` (chosen over `levenberg-marquardt` for native parameter bounds — σ > 0, amplitude > 0 — and lighter dependency footprint: no `nalgebra`. `rmpfit` is also a Rust port of MPFIT, the de-facto astronomy fitting library) |
-| Eccentricity / elongation | Custom | Second central moments from detected star pixels |
-| Background estimation | Custom | Sigma-clipped mesh statistics on ndarray |
-| Noise / SNR | Custom | Sigma-clipped statistics |
+| Eccentricity / elongation | Custom + crate | √(1 − (σmin/σmax)²) from the axis sigmas of the same 2D Gaussian fit |
+| Background estimation | Custom | Iterative sigma clip over the whole frame; a star's local background over an annulus around its aperture (`measure_basic` step 9) |
+| Noise / SNR | Custom | The CCD equation with the dark and read noise folded into the sigma-clipped background variance (`compute_snr`) |
 
-#### MVP: `measure_basic` Contract
+#### `measure_basic` Contract
 
-The first analysis tool to implement. Behavioral contract:
+`measure_basic` reports a frame's aggregate HFR, its star count and its
+background. Behavioral contract:
 
 **Input**:
 - `document_id` (preferred — resolves to cached pixels) **or** `image_path`
@@ -2832,12 +2594,12 @@ neighbours.
 **Why hot pixels are removed before smoothing.** Smoothing spreads a
 single hot pixel into a blob of 5–25 pixels that passes any `min_area` a
 caller would choose for real stars, and its HFR, measured on the raw
-pixels, is close to 0. On an uncooled QHY600M those blobs outnumbered the
-stars many times over and pulled the median HFR to about 0.004 px, so
-a focus sweep saw a flat curve. The only way out was a `min_area` large
-enough to exclude them, which also excluded the compact stars at best
-focus. PixInsight's star detector and Hocus Focus also remove hot pixels
-before they blur, for the same reason.
+pixels, is close to 0. Without the step, on an uncooled QHY600M those
+blobs outnumber the stars many times over and pull the median HFR to
+about 0.004 px, so a focus sweep sees a flat curve, and the only
+`min_area` large enough to exclude them also excludes the compact stars
+at best focus. PixInsight's star detector and Hocus Focus also remove
+hot pixels before they blur, for the same reason.
 
 A structure of up to four bright pixels holds no body, so single hot
 pixels, pairs and 2×2 clusters are removed. A star with at least five
@@ -2858,7 +2620,7 @@ keep whole. The body level sits at 2σ above the background mean,
 not at the detection threshold, because a faint star at the detection
 limit, centred on a pixel corner or undersampled, has only one to four
 pixels above the threshold, while the median of nine background pixels
-scatters by only about 0.4σ. A body level at the threshold erased up to
+scatters by only about 0.4σ. A body level at the threshold erases up to
 18% of the stars on rig2's bin-2 frames and up to 42% at bin 4.
 
 **Why windows on every second row and column.** `rp` measures a colour
@@ -2881,8 +2643,8 @@ global background, so where the sky is brighter than the frame's mean,
 in a gradient, a hot pixel's windows can reach the body level and the
 pixel survives suppression. It survives as a single bright pixel whose
 HFR is close to 0, and the floor removes it. A window built on the local
-background instead does not let it through, but on rig2's frames that
-kept only 23–57% of the stars on a frame of defocused donuts, whose
+background instead does not let it through, but on rig2's frames it
+keeps only 23–57% of the stars on a frame of defocused donuts, whose
 annulus raises the local background. On rig2's frames the floor removes 14–103 such
 detections per frame. In a frame taken hours or days later, 96–100% of
 them are bright at the same sensor pixel, as a hot pixel is; for the
@@ -2896,7 +2658,7 @@ reported 566–747 detections with a median component HFR of
 0.002–0.003 px. With them, the frames report 36–202 detections, and
 their component HFRs trace the V-curve (3.77, 2.44, 1.75, 1.14, 0.95,
 1.00, 1.35, 2.16 and 2.49 px). The confirmation frame reports 146
-detections at 0.87 px, against 2 at the settings that run had to use
+detections at 0.87 px, against 2 at the settings that run used
 (`threshold_sigma 10`, `min_area 40`). At those settings, all ten
 frames report the same result with and without the two steps. Of the
 detections the detector
@@ -2941,7 +2703,8 @@ them at 0 would add the positive half of every pixel's noise.
 **Why one star per aperture.** The detector reports components, and a
 defocused star near the threshold is many of them. At
 `threshold_sigma 8` and `min_area 6`, the 2026-09-08 frame 800 steps
-outside focus (`tests/fixtures/star_detection/qhy600m_defocused_crop.fits`
+outside focus
+(`services/rp/tests/fixtures/star_detection/qhy600m_defocused_crop.fits`
 is a crop of it) splits three of its stars into 20 or more components
 each. Their apertures settle on their star's centre within 0.1 px and
 measure its HFR within 0.01 px. The fragments whose
@@ -2964,9 +2727,8 @@ fewer, because a bright artefact lands in the brightest list: the
 star, nine detections with component HFRs of 4–92 px and aperture
 fluxes in the frame's top ten. The size cap removes them at focus; where one stays
 under it, ten are needed to move a median of twenty. A flux-weighted
-mean was rejected for the same reason: one object 12 times brighter
-than any star in the 2026-09-26 best-focus frame pulls it from 1.08 to
-1.90 px.
+mean fails the same way: one object 12 times brighter than any star in
+the 2026-09-26 best-focus frame pulls it from 1.08 to 1.90 px.
 
 **Why the size cap.** Those structures measure 42–55 px in apertures
 at focus, where the stars measure about 1 px. A cap needs a scale, and
@@ -2979,9 +2741,9 @@ component above `max_area`, because whether a star is one component or
 many depends on the threshold. The defocused fixture's star is one
 component at `threshold_sigma` 4 to 6 and 32 at 8, and measures
 38.10–38.17 px at each; with components above `max_area` dropped, it
-measured nothing below 8. At focus-model's default `max_area` of 500,
-the rig2 frames whose stars measure 8–10 px lost about half their
-stars to that filter and read 4–7% low.
+would measure nothing below 8. At focus-model's default `max_area` of
+500, the rig2 frames whose stars measure 8–10 px would lose about half
+their stars to that filter and read 4–7% low.
 
 **Measured on rig2's QHY600M, in apertures.** Each 2026-09 sweep that
 brackets focus, fitted with `focus-model`'s hyperbola over the samples
@@ -2997,8 +2759,8 @@ the default sparse gate (`min_star_fraction 0.1`) accepts, at
 | 2026-09-26 sizing, 25-step | σ 10, area 40 | 29744, 3.47, 0.992 | 29742, 4.14, 0.995 |
 | the same | σ 8, area 6 | 29746, 2.85, 0.950 | 29742, 4.12, 0.990 |
 
-Slopes are in px per 100 steps. In apertures the slope no longer
-depends on the threshold, and the vertex moves by at most six steps,
+Slopes are in px per 100 steps. In apertures the slope does not
+depend on the threshold, and the vertex moves by at most six steps,
 inside the ~31-step critical focus zone. The sizing sweep's
 confirmation frame measures 144 stars at 0.96 px at
 `threshold_sigma 8` and `min_area 6`; at the settings that run used it
@@ -3065,9 +2827,9 @@ slope that sweep's own V-curve rises at.
   rig2's bin-2 frames, with stars at a FWHM of about 1.5 px, 96–100% of
   what the floor removed were hot pixels; a setup that samples its stars
   more coarsely at best focus loses some of them there.
-- Neither step needs a large `min_area`. A value chosen to exclude hot
-  pixels now only excludes faint and compact stars. A `min_area` in the
-  single digits admits every star the threshold finds.
+- Neither step needs a large `min_area`. A value large enough to
+  exclude hot pixels excludes only faint and compact stars. A
+  `min_area` in the single digits admits every star the threshold finds.
 - Two stars whose apertures overlap are one star (step 10): the
   brighter one keeps the fainter one's light in its aperture, which
   raises its HFR. On rig2's fields the stars are hundreds of pixels
@@ -3120,9 +2882,8 @@ slope that sweep's own V-curve rises at.
   or fine (cloudy frame still useful for stats).
 
 **Persistence**: when called with `document_id`, results are written into
-the exposure document as the `image_analysis` section per the rule that
-"all tool results that produce image metrics MUST be written into the
-exposure document as a section."
+the exposure document as the `image_analysis` section, as every
+built-in image-metric tool's are.
 
 #### `estimate_background` Contract
 
@@ -3169,9 +2930,10 @@ Returns the detections `measure_basic` finds before it measures them
 fluxes without HFR (centering, quality screens, custom plate-solver
 hints). They are components, not apertures: a defocused star that
 fragments at the threshold is several detections here and one star in
-`measure_basic` and `measure_stars`. Also persists the list so
-follow-up tools (`measure_stars`) can skip re-detection on the same
-exposure.
+`measure_basic` and `measure_stars`. Also persists the list on the
+exposure document (**Persistence**, below); `measure_stars` does not
+read it back, and detects again or measures the `stars` its caller
+passes.
 
 **Input**:
 - `document_id` (preferred — resolves to cached pixels) **or** `image_path`
@@ -3391,12 +3153,13 @@ against outliers (saturated stars, hot-pixel spikes).
   background variance and assumes gain ≈ 1 ADU/electron. SNR values are
   comparable across frames from the *same camera*, **not** absolute
   photometric SNRs. Cross-camera comparisons need per-camera gain and
-  read-noise inputs that this MVP does not surface.
+  read-noise inputs that the tool does not take.
 - Saturated stars are *included* in the median, the same way
   `measure_basic` includes them. Their effective signal is clipped, so
-  they bias the median low; aggressive callers can pre-filter via
-  `detect_stars` and call `compute_snr` on a subset (deferred — the
-  optional `stars` input from `measure_stars` will land here too).
+  they bias the median low. `compute_snr` takes no list of stars and
+  aggregates every star it detects; a caller that wants a subset
+  measures it with `measure_stars`, whose per-star `snr` applies the
+  same noise model over each star's aperture.
 
 **Error cases**:
 - Neither `document_id` nor `image_path` → MCP error mentioning
@@ -3418,8 +3181,8 @@ imaging tools coexist on one document.
 This approach follows what N.I.N.A. does: custom astronomical algorithms
 on top of general-purpose image processing primitives. The algorithms
 (HFR, centroiding, eccentricity) are well-documented and not complex.
-SEP (Source Extractor as a library) was considered via `sep-sys` but
-rejected due to LGPL license constraints and C FFI maintenance burden.
+SEP (Source Extractor as a library, through `sep-sys`) is not used: it
+brings an LGPL licence and a C FFI to maintain.
 
 ### Image and Document Cache
 
@@ -3464,7 +3227,8 @@ pub struct CachedImage {
 }
 
 ImageCache::insert(document_id: &str, image: CachedImage);
-ImageCache::get(document_id: &str) -> Option<Arc<CachedImage>>;
+ImageCache::get(document_id: &str) -> Option<Arc<CachedImage>>;      // memory only
+ImageCache::resolve(document_id: &str) -> Option<Arc<CachedImage>>;  // memory, then disk
 ImageCache::put_section(document_id: &str, name: &str, value: Value)
     -> Result<()>;  // mutates the cached document AND persists sidecar
 ```
@@ -3542,17 +3306,17 @@ they now are.
 
 #### Storage Type Selection (u16 vs i32)
 
-The cache primarily stores **`u16`**. All current consumer/prosumer
-astro cameras (ZWO ASI series, QHY, Atik, Moravian, SBIG) emit
+The cache primarily stores **`u16`**. Consumer and prosumer astro
+cameras (ZWO ASI series, QHY, Atik, Moravian, SBIG) emit
 non-negative pixel values within the 16-bit range — CCDs are uniformly
 16-bit; CMOS is 12-, 14-, or 16-bit ADC; sensor output is a
 photoelectron count, physically non-negative. Storing `u16` halves
 cache memory and `/pixels` bandwidth versus `i32` at no information
 loss for any camera in this category.
 
-The `CachedPixels::I32` variant exists so the structure can accept
-future scientific cameras (Andor, Hamamatsu sCMOS HDR modes, etc.)
-that genuinely emit values outside `u16` range, without a refactor.
+The `CachedPixels::I32` variant holds the frames of scientific cameras
+(Andor, Hamamatsu sCMOS HDR modes, etc.) that genuinely emit values
+outside the `u16` range.
 
 Selection policy at `capture` time:
 
@@ -3590,22 +3354,23 @@ the FITS+sidecar pair), the variant choice comes from the sidecar's
 `max_adu` is null (capture-time read failed), the rehydration falls
 back to serving from disk for each request rather than caching.
 
-Analysis code is generic over the pixel type via a small trait
-(e.g. `Pixel: Copy + Into<i64> + ...`) implemented for both `u16` and
-`i32`. Each algorithm is written once, monomorphized for both types.
-Tools dispatch:
+Analysis code is generic over the pixel type via `rp-image-analysis`'s
+`Pixel` trait (`Copy + Send + Sync`, with `to_f64` for the arithmetic
+and `to_u32` for the saturation comparison), implemented for both
+`u16` and `i32`. Each algorithm is written once, monomorphized for both
+types. Tools dispatch through the `dispatch_pixels!` macro, which
+expands to:
 
 ```rust
 match &cached.pixels {
-    CachedPixels::U16(arr) => measure_basic_impl(arr.view()),
-    CachedPixels::I32(arr) => measure_basic_impl(arr.view()),
+    CachedPixels::U16(arr) => measure_basic(&arr.view(), /* … */),
+    CachedPixels::I32(arr) => measure_basic(&arr.view(), /* … */),
 }
 ```
 
 FITS writes preserve the cache pixel type: 16-bit sensors land on
-disk as BITPIX=16+BZERO=32768 (half the byte cost of the previous
-BITPIX=32 widening); cameras with `max_adu > u16::MAX` fall through
-to BITPIX=32 (lossless). Reads always normalise to `i32` — the
+disk as BITPIX=16+BZERO=32768 (half the bytes of BITPIX=32); cameras
+with `max_adu > u16::MAX` fall through to BITPIX=32 (lossless). Reads always normalise to `i32` — the
 imaging pipeline is uniform regardless of on-disk bit depth. The
 ASCOM `ImageArray` interface contract — which mandates `Int32` — is
 honored at any point we surface pixels through that API; internally
@@ -3616,7 +3381,6 @@ we use `u16` whenever possible.
 | Endpoint | Returns | Description |
 |----------|---------|-------------|
 | `GET /api/documents/{document_id}` | JSON | Full exposure document with all sections. Resolves through the cache (hit → return; miss → disk fallback; not found → 404). See [Document Resolution](#document-resolution). |
-| `POST /api/documents/{document_id}/sections` | — | Plugin section update. Requires the document be resolvable; persists the sidecar atomically and updates the cached entry. |
 | `GET /api/images/{document_id}` | JSON metadata | Width, height, bitpix, FITS path, exposure document link, in-cache flag. Resolves through the same cache + disk fallback. `fits_path` is the file the lookup found, not the sidecar's recorded `file_path` ([Document Resolution](#document-resolution)). |
 | `GET /api/images/{document_id}/pixels` | `application/imagebytes` | Raw pixel data in [ASCOM Alpaca ImageBytes](https://ascom-standards.org/api/) format: 44-byte header (metadata version, error number, transaction IDs, data offset, image element type, transmission element type, rank, dimensions) followed by little-endian pixel bytes in the Alpaca width-major order (`x` varies slowest: pixel `(x, y)` sits at index `x × height + y`). |
 
@@ -3664,7 +3428,8 @@ HTTP-proxying a file consumers can already open is unnecessary overhead.
 
 #### Wire Format Choice
 
-ImageBytes was chosen over a custom format or NumPy `.npy` because:
+`/pixels` serves ImageBytes rather than a custom format or NumPy
+`.npy` because:
 - It's the format the camera already produced; same parser code is
   reusable by plugins that already consume Alpaca devices directly.
 - The 44-byte header carries everything we need (rank, dimensions,
@@ -3675,9 +3440,8 @@ ImageBytes was chosen over a custom format or NumPy `.npy` because:
   (`ImageElementType=UInt16` for `CachedPixels::U16`,
   `ImageElementType=Int32` for `CachedPixels::I32`). Consumers parse
   the header and handle the type — no client-side assumption baked
-  in. This means a future Andor / Hamamatsu integration that bumps
-  the cache to `I32` for those frames is a transparent wire change,
-  not an API break.
+  in. A camera whose frames the cache holds as `I32` (an Andor or a
+  Hamamatsu) changes the element type in the header, not the API.
 
 ### Plugin-Provided Tools
 
@@ -3702,18 +3466,18 @@ no other provider uses — there is no shadowing; see
 (Orchestrators such as `session-runner` and `polar-align` are not
 plugins: they *consume* tools as MCP clients and `rp` registers nothing
 for them — see [Plugin Types](#plugin-types). `calibrator-flats` is
-the first first-party tool provider: it serves `train_flats`,
-`take_flats` and `get_flat_training` through this catalog and drives
-the rig by calling `rp` back — [calibrator-flats.md](calibrator-flats.md).
-`focus-model` is the second: it serves `focus_train` and its seven
-companion tools the same way, and owns knowing how to focus a train —
+a first-party tool provider: it serves `train_flats`, `take_flats` and
+`get_flat_training` through this catalog and drives the rig by calling
+`rp` back — [calibrator-flats.md](calibrator-flats.md). `focus-model`
+is another: it serves `focus_train` and its seven companion tools the
+same way, and owns knowing how to focus a train —
 [focus-model.md](focus-model.md).)
 
 ```
 ┌─────────────────┐  tools/list   ┌──────────────────┐
 │  star-analyzer   ├─────────────►│                  │
 │  (MCP server)    │              │       rp         │  tools/list + tools/call
-│  measure_eccen.. │◄─────────────┤  (MCP server +   ├──────────────────────────►  workflow plugins
+│  measure_eccen.. │◄─────────────┤  (MCP server +   ├──────────────────────────►  orchestrators
 └─────────────────┘  tools/call   │   MCP client)    │                             (MCP clients)
                                   │                  │
 ┌─────────────────┐  tools/list   │  Aggregates all  │
@@ -3733,18 +3497,19 @@ with `rp`):
 | `measure_wavefront` | wavefront-analyzer | Optical aberration analysis from defocused star images |
 | `score_field_flatness` | tilt-analyzer | Detect sensor tilt by per-quadrant HFR comparison |
 
-**All tool results that produce image metrics MUST be written into the
-exposure document as a section.** This is the one rule — the document is
-the shared data bus. `rp` enforces this: compute tool results are merged
-into the document before being returned to the caller.
+**`rp`'s own image-metric tools write their results into the exposure
+document as a section.** The document is the frame's record: `rp`'s
+imaging tools and `plate_solve` write their sections themselves when
+called on a document. A provider's result is relayed verbatim to its
+caller (below), and `rp` writes nothing for it.
 
 #### How a proxied call behaves
 
 `rp` dials each provider at startup through the standard client
-(`rp-mcp-client`, [ADR-017](../decisions/017-standard-mcp-client-construction.md)
-— the same credential policy every first-party client follows: the
-registration's `auth` is presented as HTTP Basic over verified HTTPS
-only, trusting the top-level `ca_cert`), runs `tools/list`, and adds
+(`rp-mcp-client`, with the credential policy every first-party client
+follows: the registration's `auth` is presented as HTTP Basic over
+verified HTTPS only, trusting the top-level `ca_cert`), runs
+`tools/list`, and adds
 one proxy route per discovered tool under the provider's own `Tool`
 record (name, description, input and output schemas, annotations),
 unchanged. From then on:
@@ -3789,7 +3554,7 @@ role:
 
 | Type | Role | Interface | Typical authorship |
 |------|------|-----------|-------------------|
-| **Event** | React to events asynchronously | Webhook (receive events, post completion) | Either |
+| **Event** | React to events asynchronously | Webhook (receive events) | Either |
 | **Tool provider** | Add tools beyond `rp`'s built-in catalog | MCP server (rp aggregates their tools) | Mostly third-party |
 
 A plugin can combine types. For example, a focus plugin can be a
@@ -3800,9 +3565,7 @@ does) and also an **event plugin** (subscribes to
 **Orchestrators are not a plugin type.** The client that drives the
 imaging session (`session-runner`, `polar-align`) is an MCP client that
 starts itself — an operator posts to its `/runs` — and `rp` needs no
-registration to serve it, so it keeps none. (`calibrator-flats` left
-this list when it became a tool provider — [calibrator-flats.md](calibrator-flats.md).) A
-`plugins[]` entry with `"type": "orchestrator"` is rejected at config
+registration to serve it, so it keeps none. A `plugins[]` entry with `"type": "orchestrator"` is rejected at config
 load, by a setup-page save and by `rp doctor` with a message naming
 the migration (orchestrator registrations were removed; start runs at
 `session-runner` — see [session-runner.md](session-runner.md)), as is a
@@ -3832,7 +3595,7 @@ among tool providers, because it is how a proxied tool's errors, the
 `provider_changed` event and the startup log identify the provider.
 `auth`, when present, is the observatory credential
 (`{"username", "password"}`, the shape every first-party client
-presents — [ADR-017](../decisions/017-standard-mcp-client-construction.md));
+presents);
 `rusty-photon-doctor` joins `mcp_server_url` and `auth` against the
 provider's own server config like every other client target
 ([doctor.md § Client-target joins](doctor.md#client-target-joins)).
@@ -3866,8 +3629,8 @@ slew. A registration opts a tool out per name with `"gate": "none"`:
 }
 ```
 
-The first shipped provider, `calibrator-flats`
-([calibrator-flats.md](calibrator-flats.md)), registers with its three
+The shipped provider `calibrator-flats`
+([calibrator-flats.md](calibrator-flats.md)) registers with its three
 tools opted out — flats run behind a closed cover, and the only tool
 that exposes the optics is `rp`'s own gated `open_cover` — and with the
 `rp` tools it calls as its dependency list. A fresh install without this
@@ -3889,8 +3652,8 @@ entry has no flats tools; one without the `gate` map has them gated:
 }
 ```
 
-The second shipped provider, `focus-model`
-([focus-model.md](focus-model.md)), registers the same way: all eight
+The shipped provider `focus-model`
+([focus-model.md](focus-model.md)) registers the same way: all eight
 of its tools opted out — `rp`'s line is "moves the mount or exposes the
 optics", and none of them does — plus the `focus_tools` declaration
 (below) that makes `rp` bracket `focus_train` with the focus events:
@@ -3918,8 +3681,11 @@ optics", and none of them does — plus the `focus_tools` declaration
 }
 ```
 
-The packaged `rusty-photon-rp.service` orders itself `After=` each
-provider's unit so a cold boot finds them up before `rp` dials them.
+The packaged `rusty-photon-rp.service` orders itself `After=` the units
+of the two shipped providers, `calibrator-flats` and `focus-model`, so a
+cold boot finds them up before `rp` dials them. It is ordering only,
+not a requirement: a config that registers no provider starts either
+way.
 
 A `gate` key naming a tool the provider does not offer fails startup.
 The operator's `safety.gate` overrides (§ Configuration) apply on top,
@@ -3949,17 +3715,15 @@ focuser and reads the focuser's position and temperature — a failed
 read is `null` in `focus_started`, not a refusal; whether the sweep
 can run is the provider's call. After the call, `focus_complete`
 takes `position`, `hfr`, `best_position`, `best_hfr`, `confirmed`,
-`fit_r_squared`, `samples_used` and `steps` from the result's
-top-level fields of those names (a missing field is `null`, a missing
-`steps` absent), and a tool error, a cancellation or an unreachable
+`fit_r_squared`, `samples_used`, `attempts` and `steps` from the
+result's top-level fields of those names (a missing field is `null`,
+a missing `attempts` or `steps` absent), and a tool error, a cancellation or an unreachable
 provider is `focus_failed` carrying that error. A call whose argument
 is missing, names no known train, or names a train without a focuser
 or camera is forwarded without the bracket and the provider answers
 with its own error. A `focus_tools` key naming a tool the provider
 does not offer, or a value that is not a non-empty string, fails
-startup naming the entry. The `focus-model` provider registers
-`focus_train` this way
-([focus-model plan](../plans/focus-model.md), D15).
+startup naming the entry.
 
 #### Example: ML Quality Classifier (third-party tool provider)
 
@@ -3975,7 +3739,6 @@ Orchestrator calls: tools/call classify_image_quality {document_id: "doc-042"}
     → GET /api/images/doc-042/pixels  (Alpaca ImageBytes)
     ← raw pixel bytes
     → runs inference locally
-    → POST /api/documents/doc-042/sections {section_name: "ml_quality", data: {...}}
 
   ml-quality-classifier returns to rp:
     ← {score: 0.87, classification: "keep", model: "psf-cnn-v3"}
@@ -3985,19 +3748,21 @@ Orchestrator calls: tools/call classify_image_quality {document_id: "doc-042"}
 ```
 
 The plugin reuses `rp`'s image cache HTTP API for pixel access (no FITS
-re-decode), and writes its results back into the exposure document via
-the section endpoint. The built-in compound tool `center_on_target`
+re-decode), and its result reaches the orchestrator through `rp`'s relay.
+The built-in compound tool `center_on_target`
 follows the same orchestration pattern but without the MCP-over-HTTP
 hop — see [Compound Tools](#compound-tools).
 
 ### Safety Guardrails
 
-There is no per-workflow scoping — any workflow plugin can call any tool
+There is no per-workflow scoping — any MCP client can call any tool
 in the catalog. Safety is enforced at the tool level, universally:
 
-- **Parameter validation**: focuser position within min/max bounds,
-  exposure duration within configured limits, slew coordinates above
-  horizon.
+- **Parameter validation**: a focuser target within the focuser's
+  travel bounds, a capture's binning within what the camera reports it
+  can do, slew coordinates within RA [0, 24) h and Dec [−90°, 90°].
+  `rp` does not check an exposure's duration against the camera's
+  limits, nor a slew target's altitude.
 - **State sequencing**: a capture through a camera that is already
   capturing waits for it to finish
   ([Capture Tool Details](#capture-tool-details), Concurrency), and a
@@ -4061,8 +3826,8 @@ Supported ASCOM device types:
 | CoverCalibrator | Dust cover control (open, close) and flat panel control (on, off, brightness); train-addressable as the first device of an optical train |
 | Switch | Power-box outputs, read and switched through the power map (`get_switch`, `set_switch`; § [Power Switching](#power-switching)) |
 | Rotator | Absolute sky-angle move + position readback (`move_rotator`, `get_rotator_position`); train-addressable |
-| ObservingConditions | Roster membership and connectivity status only — no MCP tool integration yet |
-| Dome | Roster membership and connectivity status only — no MCP tool integration yet |
+| ObservingConditions | Every sensor it reports, read by each capture into the frame's [rig state](#rig-state); no MCP tool |
+| Dome | Roster membership and connectivity status only; no MCP tool |
 
 **Mount site properties.** On telescope connect, `rp` reads
 `SiteLatitude` and `SiteLongitude` to validate the configured `site`
@@ -4073,18 +3838,38 @@ skipped with a `debug!()` log. See
 [Site Validation Against the ASCOM Mount](#site-validation-against-the-ascom-mount).
 
 **CA trust for `https://` devices.** An `alpaca_url` may be `https://`
-when the device's own service is TLS-enabled (e.g. via doctor's D6
-provisioning). `rp`'s Alpaca client verifies that certificate against
+when the device's own service is TLS-enabled, as doctor provisions it
+([doctor.md § Provisioning](doctor.md#provisioning--tls-and-the-observatory-credential-d6a)).
+`rp`'s Alpaca client verifies that certificate against
 the top-level `ca_cert` config (see [Configuration](#configuration)) —
 an observatory runs one self-signed CA, so one rp-level setting covers
-every device, the plate-solver service, the guider service, and the
-event plugins alike.
+every device, the plate-solver service, the guider service, the tool
+providers and the event plugins alike.
 Setting `ca_cert` makes it the client's **only** trusted root
-(`tls_certs_only`, ADR-002): the platform trust store no longer
-applies, so a public-CA `https://` target becomes unreachable
+(`tls_certs_only`): the platform trust store does not
+apply, so a public-CA `https://` target is unreachable
 alongside the observatory CA. Without `ca_cert` set, an `https://`
 device signed by that CA fails certificate verification regardless of
 per-device `auth` credentials.
+
+**Credentials.** Each roster entry's optional `auth`
+(`{username, password}`) is the HTTP Basic Auth credential `rp` sends on
+every request to that device's service, which needs one once its own
+`server.auth` is on; `doctor --fix` fills an absent one from the
+observatory credential. The header is marked sensitive, so a debug print
+of the client does not show it. The plate-solver and guider clients take
+credentials of their own (§ [Plate Solver](#plate-solver),
+§ [Guider Service](#guider-service)).
+
+**Request timeouts.** Every Alpaca request `rp` sends has a 5 s connect
+timeout and a 10 s read timeout, which restarts with each chunk
+received. reqwest's client has no default timeout and `ascom-alpaca`'s
+client adds none, so without them a device that accepts the connection
+and never answers would hang the tool call awaiting it for good; the
+poll deadlines of the blocking operations bound a loop, not one request
+in flight, and cannot interrupt it. A read timeout rather than a total
+deadline bounds a stall without capping a large `image_array` download
+on a slow link.
 
 ### Device Identity Pin
 
@@ -4097,18 +3882,23 @@ this repo and OmniSim do, that position is the Alpaca `DeviceNumber`.
 On a server that does not, rp's position and the handle's
 `DeviceNumber` differ, and the per-pass re-check below can refuse a
 correct session or miss a swap; keying on the listed `DeviceNumber`
-instead is tracked in
-[#1471](https://github.com/rusty-photon/rusty-photon/issues/1471).
+instead is the subject of
+[issue 1471](https://github.com/rusty-photon/rusty-photon/issues/1471).
 Nothing in the address says
-*which* device it is. A driver that numbers its devices in USB
-enumeration order can put a different device behind the same number
-after a power cycle. On Starfront `rig2` one `qhy-camera` service serves
-a QHY600M (imaging) and a QHY5III678M (guiding); after a power cycle the
-two swapped numbers, and `rp` bound the guide camera as the imaging
-camera without complaint (issue #1184). The lasting fix is that drivers
-pin numbers to USB ports
-([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md),
-Part A). The pin below is the cheap guard `rp` adds in the meantime.
+*which* device it is, and a driver can put a different device behind
+the same number from one start to the next. One that numbers its
+devices in USB enumeration order can do so after any power cycle, and
+`qhy-camera`, `zwo-camera` and `svbony-camera` without a `usb_devices`
+list number their cameras in USB port order, so a camera missing or
+refused at start moves every camera after it down a number. On
+Starfront `rig2` one `qhy-camera` service serves a QHY600M (imaging)
+and a QHY5III678M (guiding): should the guide camera come up at the
+imaging camera's number, an entry that names only the number binds it
+as the imaging camera without complaint. A camera driver's
+`usb_devices` list pins each USB port to a number and holds the number
+of a camera it cannot serve with a placeholder
+([zwo-camera.md](zwo-camera.md) U4); the pin below is `rp`'s own guard,
+for every kind of device behind any driver.
 
 **Every equipment entry, of every kind, takes an optional
 `unique_id`**: the Alpaca `UniqueID` the device behind `device_number`
@@ -4127,7 +3917,7 @@ Recovery](#device-session-recovery)):
    that locates the device anyway, so the pin adds no request, and the
    identity checked is the one listed for the very entry whose device
    URL `rp` binds.
-2. **No pin:** the entry binds exactly as it always has.
+2. **No pin:** the entry binds with no identity check.
 3. **The pin matches** the listed `UniqueID`: the entry binds. The
    comparison is exact and case-sensitive. Any whitespace the driver
    pads its listed `UniqueID` with is stripped, since the pin itself
@@ -4139,12 +3929,12 @@ Recovery](#device-session-recovery)):
    the expected `UniqueID`. When the pinned `UniqueID` is listed at
    another position of the same kind on that server, the error names
    that `device_number` too, so the operator can re-point the entry.
-   `rp` does **not** re-resolve the entry to that position itself: the
-   device-claims plan makes the USB port the only device key (D1) and
-   gives drivers stable numbers (D4.7). Re-keying by `UniqueID` in `rp`
-   would be a second keying mechanism beside it, and a silent re-bind
-   is exactly the failure this guard exists to stop.
-5. **The device is a placeholder**: its `UniqueID` has the device-claims
+   `rp` does **not** re-resolve the entry to that position itself: a
+   camera driver keys its devices by USB port, and its `usb_devices`
+   list is what gives a device a stable number. Re-keying by `UniqueID`
+   in `rp` would be a second keying mechanism beside it, and a silent
+   re-bind is exactly the failure this guard exists to stop.
+5. **The device is a placeholder**: its `UniqueID` has the placeholder
    form `placeholder:<service>:<usb_port>` (§ [Device Session
    Recovery](#device-session-recovery)). It is refused before its
    `UniqueID` is compared with the pin, and before `Connected = true`,
@@ -4162,8 +3952,8 @@ Recovery](#device-session-recovery)):
    connect is refused, naming why. A pin that cannot be checked
    never passes, and the blank device is never switched on. A list
    that cannot be read, or one
-   with no entry at `device_number`, fails the connect as it always
-   has, pinned or not: without the list there is no device to bind, so
+   with no entry at `device_number`, fails the connect, pinned or not:
+   without the list there is no device to bind, so
    there is no case where an unread identity is waved through.
 
 **Live sessions are re-checked too.** The supervisor's health check
@@ -4231,8 +4021,7 @@ not, logs one `info!` line with the kind, the roster `id`, `alpaca_url`,
 whether a pin was checked. It is once per established session (the
 supervisor's own "re-established" line is a `debug!`, so a re-establish
 logs one `info!` line, not two), and it is the line that shows which
-physical device an entry is on: the line that would have made the
-`rig2` swap visible. To pin an entry, copy the
+physical device an entry is on. To pin an entry, copy the
 `UniqueID` from that line or from `GET /api/equipment`
 (§ [Equipment](#equipment)), which reports the bound device's
 `device_name` and `unique_id` for every connected entry.
@@ -4251,10 +4040,6 @@ physical device an entry is on: the line that would have made the
     another port, but it follows the socket: a serial-less camera moved
     to another port is another device, and its pin is refused until it
     is re-copied.
-  - Before the device-claims plan's C5 that fallback was
-    `noserial-{index}`, the enumeration index, so the C5 upgrade changed
-    those `UniqueID`s, and every pin on a serial-less camera is refused
-    loudly until it is re-copied.
 - **The check and the connect are two requests.** The listing read and
   `Connected = true` cannot be made atomic: Alpaca has no
   identity-checked connect. If a server renumbers its devices between
@@ -4358,8 +4143,8 @@ devices:
 - **A placeholder device is permanent for the pass.** A camera driver
   with a `usb_devices` list holds a listed number whose camera it cannot
   serve tonight with a placeholder, whose `Connected = true` fails with
-  ASCOM error `0x540` ([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md)
-  D4.5, [svbony-camera.md](svbony-camera.md) U4,
+  ASCOM error `0x540` ([qhy-camera.md](qhy-camera.md) U4,
+  [svbony-camera.md](svbony-camera.md) U4,
   [zwo-camera.md](zwo-camera.md) U4). Retrying it cannot
   help — a placeholder becomes a device only when its driver restarts, or
   reloads and finds the camera —
@@ -4372,8 +4157,8 @@ devices:
   the placeholder form (`placeholder:<service>:<usb_port>`) as well: the
   `0x500`–`0xFFF` range is every Alpaca driver's to use, so another
   driver's `0x540` is still retried. The connect routine every kind
-  shares classifies it (`alpaca::connect_refused`), so the plan's C4
-  placeholder filter wheels need no rp change. A pinned entry refuses a
+  shares classifies it (`alpaca::connect_refused`), so `qhy-camera`'s
+  placeholder filter wheels are taken the same way. A pinned entry refuses a
   placeholder by its `UniqueID` alone, before switching it on and with
   the same plain failure (§ [Device Identity Pin](#device-identity-pin),
   item 5), so the driver's reason reaches it through the placeholder's
@@ -4391,7 +4176,7 @@ an entry that was already disconnected.
 
 Consequences and constraints:
 
-- **Fail-safe behavior is unchanged.** Until recovery succeeds, a
+- **Recovery leaves fail-safe behavior as it is.** Until recovery succeeds, a
   safety monitor still reads as unsafe and a device call still errors.
   Recovery is an availability mechanism, not a safety mechanism.
 - **Tenet 3 applies to the reconnect path exactly as to first
@@ -4420,11 +4205,10 @@ Consequences and constraints:
   turned it off or why.
 - `GET /api/equipment`'s `connected` flags reflect this live state, not
   the startup snapshot (see [Equipment](#equipment)).
-- The Sentinel watchdog's [Recovery Flow](#recovery-flow) ends with
-  "notify `rp` to reconnect". The supervisor makes that step pull-based
-  and self-contained: `rp` notices and reconnects on its own cadence
-  regardless of who restarted the service, and no notify endpoint is
-  required.
+- The Sentinel watchdog's [Recovery Flow](#recovery-flow) restarts a
+  service and leaves the reconnect to this supervisor: `rp` notices and
+  reconnects on its own cadence regardless of who restarted the
+  service, and has no notify endpoint.
 
 **The tool-provider lane.** The same pass, after the devices, walks
 every registered tool provider (§ [Plugin-Provided
@@ -4443,13 +4227,16 @@ keeps using it, as an in-flight device call keeps its handle.
 ### Power Switching
 
 A workflow switches a power box's outputs through `rp`, and takes every
-device on an output out of `rp`'s hands before it cuts the output
-([daily power cycle plan](../plans/daily-power-cycle.md), decisions 3,
-8 and 11). Five tools carry it: `disconnect_device` and
+device on an output out of `rp`'s hands before it cuts the output. Five
+tools carry it: `disconnect_device` and
 `connect_device`, which hold a device out of the reconnect supervisor
 and give it back, `get_switch` and `set_switch`, which read and switch
 a power box's outputs through the power map, and `restart_service`,
-which has a held-out device's driver service restart (decision 5).
+which has a held-out device's driver service restart. The tools are
+built; the `session-runner` dusk and dawn documents that drive them,
+which this section names as their callers, are designed in the
+[daily power cycle plan](../plans/daily-power-cycle.md) and not written
+yet.
 
 #### The power map
 
@@ -4485,9 +4272,9 @@ A `switches[]` entry lists its power box's outputs under `outputs`:
   the power box's own link (its serial bridge, the hub between it and
   the host), a safety monitor, or another power box. Cutting the first
   two leaves no remote way to switch the output back on. pier1's Pi runs
-  off its PPBA's Adjustable Output (the plan's Validation). A safety
+  off its PPBA's Adjustable Output. A safety
   monitor stays powered and connected because dusk waits for it to read
-  safe (decision 7).
+  safe.
 
 `rp` checks the map when it loads its configuration, and the setup
 page's save checks it with the same rules:
@@ -4528,8 +4315,8 @@ off: `rp` cannot know what it feeds. `get_switch` still reads it.
    the device at that moment is waited out first, inside the deadline,
    so the last request `rp` sends the driver is the disconnect. A close
    that fails, or has not returned when the deadline passes, leaves the
-   device held out all the same. A wedged camera can hang its close
-   (decision 11), and nothing waits on it.
+   device held out all the same. A wedged camera can hang its close,
+   and nothing waits on it.
 
 The result is `{device_id, kind, close}`, where `close` is `closed`,
 `timed_out`, `failed` (with an `error`), or `no_session` when `rp`
@@ -4545,7 +4332,7 @@ held-out safety monitor reads unsafe, as an unreachable one does
 or `set_switch`. A held-out mount is not parked by the unsafe
 transition: `rp` holds no handle to send the park through, and logs a
 warning that it skipped the mount. A workflow parks the mount before it
-holds it out, as dawn does (decision 3).
+holds it out, as dawn does.
 
 `connect_device {device_id}` releases the hold-out and connects the
 device there and then, with the connect routine's full budget, before it
@@ -4554,7 +4341,7 @@ returns:
 - **A session that reads connected** is checked through the driver's
   `Connected` and, when that reads true, left as it is. A connect
   through `rp` never cycles a session: the service restart that dusk
-  makes is what makes a session fresh (decision 3).
+  makes is what makes a session fresh.
 - **Any other session** is established as the supervisor would establish
   it: the identity pin, `Connected = true`, a fresh read of the
   connect-time cache, and an `equipment_changed` event with
@@ -4572,7 +4359,7 @@ is a tool error. Both actuate nothing (tenet 3).
 A hold-out lives in `rp`'s memory. An `rp` restart drops it, and the
 supervisor then reconnects a held-out device that stayed on the bus. The
 restart of the device's service that dusk makes before connecting it is
-what makes its session fresh in that case too (decision 3).
+what makes its session fresh in that case too.
 
 #### Reading and switching an output
 
@@ -4596,8 +4383,8 @@ its minimum). It refuses, with a tool error that names the reason:
 - an output the power map does not list;
 - `on: false` on a protected output, quoting its `protected` text;
 - `on: false` while a device the map puts on the output is not held
-  out. Every one must have been through `disconnect_device` first
-  (decision 3), and the error names those still in `rp`'s hands. A
+  out. Every one must have been through `disconnect_device` first,
+  and the error names those still in `rp`'s hands. A
   device `rp` cannot reach is no exception: unless it is held out, the
   supervisor connects it as soon as the output is back on, possibly
   while it is still powering up;
@@ -4612,10 +4399,10 @@ no device can be connected between the two.
 #### Restarting a device's service
 
 `restart_service {device_id}` has the driver service that serves the
-device restart, so the service meets its device in a fresh process
-(decision 5). The dusk document asks for it once the device's output is
+device restart, so the service meets its device in a fresh process.
+The dusk document asks for it once the device's output is
 back on and the device has settled, before `connect_device`, and its
-wedge retry asks for it again after the second cut (decision 11).
+wedge retry asks for it again after the second cut.
 
 - **The service is the device's `alpaca_url`**: its scheme, host and
   port. Every roster entry whose `alpaca_url` has the same three is a
@@ -4658,7 +4445,7 @@ out of `rp` until `connect_device`.
 
 #### The guider across a power cycle
 
-Nothing restarts the guider at dusk (decision 10). It holds no camera
+Nothing restarts the guider at dusk. It holds no camera
 SDK and never writes `Connected`
 ([guider.md § Devices and connections](guider.md#devices-and-connections)).
 A guide camera on a switched output is held out, has its driver service
@@ -4668,11 +4455,10 @@ reads the fresh driver at its next request.
 All five tools are ungated (§ [In-Flight Tool
 Calls](#in-flight-tool-calls)). A dawn document cuts power whatever the
 weather, and a dusk document powers devices up only once `rp`'s safety
-monitors read safe with the roof open (decision 7), a check that belongs
+monitors read safe with the roof open, a check that belongs
 to the document. `set_switch` is the one tool here that actuates, and it
 does so only on a tool call: power is switched by a workflow or an
-operator, never by a connect path or the supervisor (decision 1,
-tenet 3).
+operator, never by a connect path or the supervisor (tenet 3).
 
 ### Optical Trains
 
@@ -4681,10 +4467,7 @@ ordered list of roster device ids, objective side first, terminating
 in a camera. Membership expresses coupling, position expresses optical
 order, and rp derives focus pairing and ordering, rotation effects,
 and the guider's focus dependency from the lists instead of being told
-each pairing per workflow. The design rationale and the phasing of the
-consumers live in
-[`docs/plans/optical-trains.md`](../plans/optical-trains.md); the
-decisions recorded there are fixed.
+each pairing per workflow.
 
 ```jsonc
 "optical_trains": [
@@ -4714,7 +4497,7 @@ Semantics:
   **first** entry, and a train holds **at most one**: a rig with a
   motorized dust cap *and* a separate light panel (two CoverCalibrator
   devices, one cover-only, one calibrator-only) is not modeled — the
-  error says so (calibrator-flats-provider plan, D3 and O1). One
+  error says so. One
   calibrator may be first in several trains: a flip-flat over the OTA
   covers the main camera and the OAG guide camera alike, and the
   merged-order rule below holds because it is first everywhere. The
@@ -4776,8 +4559,8 @@ Semantics:
   `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected
   at load otherwise. Optional. It is layer two of the three-layer
   effective position angle (target value → this default → `0.0`
-  north-up; [Target Store → Position angle](#position-angle), plan
-  Decision 5): for a rotator-less train it documents the camera's
+  north-up; [Target Store → Position angle](#position-angle)): for a
+  rotator-less train it documents the camera's
   fixed mounting angle as a physical fact of that light path — set it
   once, dial the same angle into the planetarium's FOV indicator, and
   frames match. Resolution happens at read time by design, so
@@ -4808,8 +4591,8 @@ Semantics:
   setup-page save, naming the train and `focus-model.json`; the
   operator removes it by hand.
 - Trains attach implicitly to the singular `equipment.mount`. Devices
-  left out of every train stay legal and behave exactly as today —
-  trains are enrichment, not a gate.
+  left out of every train stay legal and behave as on a rig with no
+  trains — trains are enrichment, not a gate.
 
 Validation happens at load and on every save of the [setup
 page](#setup-page), which refuses a file whose trains break these rules
@@ -4842,8 +4625,7 @@ the offending entry:
   train and `focus-model.json`, at its `auto_focus`), and a guiding
   train's block holds only the metric sweep's fields.
 
-Derivation rules — the questions the derived train model answers.
-Consumers land phase by phase per the plan:
+Derivation rules — the questions the derived train model answers:
 
 | Question | Rule |
 |---|---|
@@ -4851,7 +4633,7 @@ Consumers land phase by phase per the plan:
 | AF sequence after a refocus trigger on train T | Shared focusers of T upstream-first, then T's terminal focuser, each run in its *run train*: a focuser an imaging train holds runs in that imaging train, through its camera (an imaging T's sequence is its own focuser alone), and only a focuser no imaging train holds runs in the guiding train, as its metric step — `get_refocus_plan` returns it as a read, and the focus-model provider's `focus_train {shared: true}` walks it |
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (when one is the guiding train and a guider is configured, `move_rotator` runs the rotate-while-guiding ladder — see [Rotator Tool Details](#rotator-tool-details)) |
-| What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only — optical-trains.md § Reference rigs the model must handle, item 5), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (on imaging trains, and on a guiding train since the focus-model plan's S10: a guiding train has an offset table of its own when it focuses independently of the imaging train and the wheel is in its light path — that plan's O4 rules 1 and 5. Any guiding train `rp` can address can hold offsets entered by hand through `set_focus_offsets`, invalidated by this row like any other, but `determine_filter_offsets` measures them only under a [train lease](#train-lease), granted with the guider idle and holding off `rp`'s starts of guiding, and refuses one whose terminal focuser belongs to an imaging train ([focus-model.md § Training runs on a guiding train](focus-model.md#training-runs-on-a-guiding-train)); a guide camera in no `rp` train has no offset path of either kind) |
+| What does a filter change on wheel W invalidate? | Focus offset of trains containing W — the guiding train too, whenever the wheel is in the guide path: upstream of an OAG pick-off (a pick-off in front of the wheel is the normal case and leaves the wheel imaging-only), or in front of a shared-aperture guide sensor as on a duo camera. The per-filter offsets themselves belong to the `focus-model` provider, which measures and stores them per train (on imaging trains, and on a guiding train that focuses independently of the imaging train and has the wheel in its light path, which has an offset table of its own. Any guiding train `rp` can address can hold offsets entered by hand through `set_focus_offsets`, invalidated by this row like any other, but `determine_filter_offsets` measures them only under a [train lease](#train-lease), granted with the guider idle and holding off `rp`'s starts of guiding, and refuses one whose terminal focuser belongs to an imaging train ([focus-model.md § Training runs on a guiding train](focus-model.md#training-runs-on-a-guiding-train)); a guide camera in no `rp` train has no offset path of either kind) |
 | What does cover calibrator C cover or light? | Every train containing C — reported as `trains` on every calibrator tool result |
 | What is in train T? | `get_train_info`: the terminal camera, the sole filter wheel with its filter names and wavelengths, the calibrator, the focusers, the sole rotator |
 | What are train T's optics? | `get_train_info.optics`: the train's `focal_length_mm`, `aperture_mm` and `obstruction_mm`, the terminal camera's pixel size, the terminal focuser's `microns_per_step` (configured, else the driver's `StepSize`), and the derived focal ratio, obstruction ratio and pixel scale — see [Train optics](#train-optics) |
@@ -4894,8 +4676,8 @@ Consumers of the derived model:
   train the cover or panel affects — see
   [CoverCalibrator Tool Details](#covercalibrator-tool-details).
 - `get_train_info` describes a train's resolved members without
-  touching a device, so a tool provider addressed by `train_id` (the
-  calibrator-flats-provider plan) can learn the camera to read, the
+  touching a device, so a tool provider addressed by `train_id`, such as
+  calibrator-flats, can learn the camera to read, the
   wheel's filter names and the calibrator to drive while `rp` stays
   the only owner of the train model; its `optics` block and
   `filter_wavelengths_nm` give a focus provider the numbers it sizes a
@@ -4921,8 +4703,7 @@ focused by the focus-model provider, which captures through rp's tools.
 The metric sweep moves only a
 focuser no imaging train holds: a focuser an imaging train holds is
 focused through the imaging camera alone, the guide camera being taken
-as parfocal with it (the owner's rule of 2026-10-15, the focus-model
-plan's O4 rules 2, 4 and 8). So the AF sequence runs such a focuser in
+as parfocal with it. So the AF sequence runs such a focuser in
 an imaging train, and `auto_focus` on a guiding train whose terminal
 focuser an imaging train holds is refused, naming that imaging train. A
 client's capture through a guiding train's camera holds the
@@ -4937,8 +4718,7 @@ lease, which holds the guard for the whole run. See the
 #### Train optics
 
 Four configured facts and two connect-time reads make up a train's
-optics — the numbers a focus provider sizes a sweep from
-([focus-model plan](../plans/focus-model.md), D9 and D14):
+optics — the numbers a focus provider sizes a sweep from:
 
 - `optical_trains[].aperture_mm` — the clear aperture (above).
 - `optical_trains[].obstruction_mm` — the central obstruction, a
@@ -5035,8 +4815,7 @@ Acquisition rules:
 | `capture` through a camera terminating **any** train, imaging or guiding — including the internal captures of `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent captures share freely. A capture takes its camera's slot first and the gate second, so one queued behind another capture through the same camera holds no permit while it waits ([Capture Tool Details](#capture-tool-details), Concurrency). A capture cancelled mid-exposure gives its permit back as soon as its abort is sent. A capture under a [train lease](#train-lease) takes no permit of its own: it runs under the lease's |
 | A granted [train lease](#train-lease) | Shared | Taken after the lease's slots, held from the grant until the lease ends and no capture under it that was not cancelled is in flight. Slews, dithers and flips wait for it, so none lands between two samples of a training run |
 
-Queueing semantics (Decision 5 of the
-[optical-trains plan](../plans/optical-trains.md)):
+Queueing semantics:
 
 - A **pending exclusive blocks new shared acquires** — no
   starvation: in-flight subs complete, the motion runs and settles,
@@ -5072,8 +4851,8 @@ Exemptions — operations that deliberately bypass the gate:
   are sub-arcsecond by design and are the one motion imaging coexists
   with.
 - **`capture` through a camera outside every train.** Trains are
-  enrichment, not a gate (plan Decision 10): a rig without trains
-  behaves exactly as before this feature. A guiding train's camera
+  enrichment, not a gate: on a rig without trains no capture waits for
+  mount motion. A guiding train's camera
   is not exempt. None of rp's own operations captures through it, but
   a client's capture through it is a focus sample that a dither or
   slew mid-exposure would trail, so it waits for a mount motion in
@@ -5096,23 +4875,23 @@ the gate: they perturb only the trains containing them, and a focus
 sweep sequences its own samples around its moves. A
 [train lease](#train-lease) holds them off a training run's light
 path. Otherwise, coordinating a manual `move_rotator` against
-another train's exposure remains the orchestrator's concern (the
-rotate-while-guiding ladder is plan phase T4).
+another train's exposure is the orchestrator's concern; the
+rotate-while-guiding ladder ([Rotator Tool
+Details](#rotator-tool-details)) coordinates a rotation with the
+guider, not with exposures.
 
 **Driver-internal flips.** The gate presumes rp is the sole source
 of non-guiding mount motion. A driver that moves the mount on its
 own schedule — concretely, star-adventurer-gti's opt-in
 `auto_flip.enabled` — flips invisibly underneath
-the gate and would trail any in-flight sub. Settled as prevention
-over detection: driver-planned auto-flip **must stay disabled on
+the gate and would trail any in-flight sub. The posture is prevention,
+not detection: driver-planned auto-flip **must stay disabled on
 rp-orchestrated rigs**, which is both its shipped default and the
 GTi design doc's stated posture (hosts like rp own flip timing
 themselves via `SetSideOfPier`); rp does not subscribe to
-`SideOfPier` changes or invalidate in-flight subs. A doctor
-cross-check (warn when rp orchestrates a GTi mount whose config
-enables auto-flip) is recorded as backlog in the optical-trains
-plan. When rp grows scheduled flips of its own, they will be
-rp-issued slews behind this gate like any other.
+`SideOfPier` changes or invalidate in-flight subs, and doctor does
+not warn when rp orchestrates a GTi mount whose config enables
+auto-flip.
 
 ### Train Lease
 
@@ -5127,9 +4906,7 @@ the first as far as `rp` can: a guiding train's lease is granted only
 with the guider `idle`, and keeps `rp` from starting it
 ([the guide camera guard](#the-guide-camera-guard)). The caller takes
 it before the first move, passes its id on every call of the run, and
-releases it after the put-back
-([device-claims plan](../plans/archive/device-claims-and-phd2-camera.md) D12,
-"Settled in C7", and its decision 20). rp takes no lease on its own: it
+releases it after the put-back. rp takes no lease on its own: it
 cannot tell a training run from the in-session walk a focus provider
 also makes through it, and that walk runs while the guider guides.
 
@@ -5279,7 +5056,7 @@ take an optional `lease_id`.
 move through the internal paths, and meet a lease as a call without an
 id does. An `auto_focus` sweep, the guiding train's metric sweep,
 enters the reservation table for its length, put-back included: its
-train's camera and its focuser. It takes its slots per call, as today, and holds none across
+train's camera and its focuser. It takes its slots per call and holds none across
 calls: a sweep that held slots across calls would take them in another
 order than a lease and could deadlock with one. An acquire whose
 reservation overlaps a running sweep's is refused at once, naming the
@@ -5329,9 +5106,7 @@ the guide loop, is an Alpaca client of the guide camera and the mount,
 and serves an HTTP API to `rp` — contract, error envelope and
 supervision posture in [`docs/services/guider.md`](guider.md). It is a
 separate process because the loop runs for hours and goes on through a
-restart of `rp`
-([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md));
-Sentinel supervises and restarts it via the standard
+restart of `rp`; Sentinel supervises and restarts it via the standard
 rp-managed-service flow. `rp` talks to it through the
 `crates/rp-guider` HTTP client, configured by the optional
 `equipment.mount.guiding` block (url, timeout, calibration timeout,
@@ -5363,9 +5138,9 @@ and has no backend selector.
 
 Guider operations are exposed as built-in MCP tools (`start_guiding`,
 `stop_guiding`, `dither`, `pause_guiding`, `resume_guiding` and
-`get_guiding_stats`), which `rp` proxies to the guider's HTTP API. A
-workflow plugin (e.g., a meridian flip plugin) therefore controls
-guiding through the same MCP tool mechanism as any other equipment.
+`get_guiding_stats`), which `rp` proxies to the guider's HTTP API. An
+orchestrator therefore controls guiding through the same MCP tool
+mechanism as any other equipment.
 
 **The same camera and mount.** The guider's devices and `rp`'s are
 configured apart: the guider's in its own `devices` block, `rp`'s in
@@ -5433,8 +5208,7 @@ image slot and one `AbortExposure` for all its clients, and no session
 that would tell them apart, so a capture of `rp`'s through the guide
 camera and a run of the guider's must not overlap. `rp` keeps them
 apart on its own, with the guide camera guard, which lives in its
-memory; the guider serves nothing for it
-([ADR-026](../decisions/026-rp-keeps-its-guide-camera-captures-and-the-guider-apart.md)).
+memory; the guider serves nothing for it.
 The guard exists while `equipment.mount.guiding` is configured, on the
 guiding train's camera. With no guider configured, or no guiding train,
 there is no guard, and nothing reads the guider for a capture or a
@@ -5567,7 +5341,7 @@ counts towards it nor ends it. The guider waits in `star_lost` for as
 long as the run lasts and never selects stars again by itself
 ([guider.md § Star selection and measurement](guider.md#star-selection-and-measurement)),
 so the event repeats, and an orchestrator can ask for a new selection
-at each one until a frame has stars.
+at each one until a frame has enough stars.
 
 The shipped `deep_sky.json` wires both (session-runner.md
 § `deep_sky.json`). On `guide_star_lost` it reads the guider's state
@@ -5718,29 +5492,26 @@ This shape (service rather than built-in Rust code) is chosen because:
 - Sentinel can restart the wrapper via the standard rp-managed-service
   supervision flow (see [Sentinel Watchdog Integration](#sentinel-watchdog-integration)).
 
-The plate solver can also subscribe to `exposure_complete` events for
-background solving (deferred to v2; v1 is request/response only).
+The plate solver solves on request only: background solving of each
+frame on `exposure_complete` is not implemented.
 
-The choice of solver and the supervision posture are settled by
-[ADR-005](../decisions/005-plate-solver.md). The service's own design
+The service's own design
 doc — HTTP contract, supervision contract, configuration, mock test
 double — lives at [`docs/services/plate-solver.md`](plate-solver.md).
 `rp`'s `crates/rp-plate-solver` client trusts the top-level `ca_cert`
 (see [Configuration](#configuration)) for an `https://` `plate_solver.url`,
 the same as every other outbound client `rp` builds. An optional
 `plate_solver.auth` (`{username, password}`) sends HTTP Basic Auth
-credentials to an auth-enabled plate-solver service (issue #620);
+credentials to an auth-enabled plate-solver service;
 `doctor --fix` wires it from the observatory credential once the
 plate-solver service's own `server.auth` is on (`joins.client-auth`,
 `docs/services/doctor.md` §Client-target joins).
-Implementation sequencing is in
-[`docs/plans/archive/plate-solver.md`](../plans/archive/plate-solver.md).
 
 ### File Accessibility
 
 Plugins and `rp` are assumed to share a filesystem (local paths
-work). Distributed deployments where plugins run on separate machines are a
-future concern and out of scope for the initial design.
+work). Distributed deployments, with plugins on separate machines, are
+out of scope.
 
 ## Camera Cooling
 
@@ -5950,15 +5721,14 @@ what order, and when to switch targets — is driven by an
 **orchestrator**: an MCP client that a person, a scheduler or the
 orchestrator service's own startup starts, and that calls tools on `rp`
 until it is done. `rp` registers nothing for it, keeps no record of it,
-and treats its calls like any other client's (decision D6 in
-[`mcp-sessionless.md`](../plans/archive/mcp-sessionless.md)).
+and treats its calls like any other client's.
 
 Different imaging types use different orchestrators:
 
 | Workflow | Shape | Ships as |
 |----------|-------|----------|
-| deep-sky | slew → center → focus → capture loop, with refocus triggers, meridian flips, planner-driven target switching | `session-runner` document `deep_sky.json` (guide/dither steps join it as the remaining slice of the guider integration, issue #464) |
-| calibrator-flats | read cover state → close cover → calibrator on → per-filter: find exposure time iteratively (halving panel brightness while pinned over-bright) → capture N flats → calibrator off → restore the cover's initial state | the `calibrator-flats` **tool provider**: `train_flats` learns the timing per train and filter into its store, and a night document (or an operator) takes flats with one `take_flats` call and a `train_id` through `rp`'s catalog. The former `session-runner` document port was retired with the provider (D1/D2 in [`calibrator-flats-provider.md`](../plans/archive/calibrator-flats-provider.md)) |
+| deep-sky | slew → center → focus → guide → capture loop, with dithering, refocus triggers, meridian flips, planner-driven target switching | `session-runner` document `deep_sky.json`; its guiding and dithering steps run when its `guide` and `dither_every` parameters ask for them |
+| calibrator-flats | read cover state → close cover → calibrator on → per-filter: find exposure time iteratively (halving panel brightness while pinned over-bright) → capture N flats → calibrator off → restore the cover's initial state | the `calibrator-flats` **tool provider**: `train_flats` learns the timing per train and filter into its store, and a night document (or an operator) takes flats with one `take_flats` call and a `train_id` through `rp`'s catalog |
 | sky-flat | point at the zenith → per-filter during twilight: capture with per-frame exposure adaptation against the changing sky | `session-runner` document `sky_flat.json` |
 | planetary | slew → focus → high-fps capture, no guiding or plate solving | not yet built |
 
@@ -5971,8 +5741,7 @@ home of the first-party workflow documents: `deep_sky.json` and
 `services/session-runner/workflows/` and install with that service —
 one `session-runner` runs whichever document a `POST /runs` names.
 `rp` cannot tell the difference between the two shapes — both are MCP
-clients, and hand-written services remain first-class (decision D2 in
-[`workflow-dsl.md`](../plans/archive/workflow-dsl.md)). Authoring
+clients, and hand-written services are first-class. Authoring
 documents is covered in
 [`docs/references/workflow-documents.md`](../references/workflow-documents.md);
 the format and engine are specified in
@@ -6066,13 +5835,15 @@ Orchestrator connects to rp MCP server
 
 Loop:
   → tools/call get_next_target {}
-  ← {name: "M31", ra: 10.6847, dec: 41.2689, filter: "Luminance", ...}
+  ← {target: {name: "M31", coord: {ra_hours: 10.6847, dec_degrees: 41.2689}},
+     exposure: {filter: "Luminance", duration_secs: 300}, ...}
 
   → tools/call slew {ra: 10.6847, dec: 41.2689}
   ← {actual_ra: 10.6845, actual_dec: 41.2688}
 
-  → tools/call center_on_target {ra: 10.6847, dec: 41.2689, tolerance: 5}
-    (compound tool — centering plugin handles internally)
+  → tools/call center_on_target {camera_id: "main-cam", ra: 10.6847, dec: 41.2689,
+                                  duration: "5s", tolerance_arcsec: 5, max_attempts: 5}
+    (built-in compound tool — rp runs the loop internally)
   ← {final_error_arcsec: 2.1, attempts: 3}
 
   → tools/call focus_train {train_id: "main"}
@@ -6080,7 +5851,7 @@ Loop:
   ← {position: 12450, hfr: 2.1}
 
   → tools/call start_guiding {}
-  ← {rms_ra: 0.4, rms_dec: 0.3}
+  ← {state: "guiding", rms_ra_arcsec: 0.4, rms_dec_arcsec: 0.3, ...}
 
   Capture loop:
     → tools/call capture {camera_id: "main-cam", duration: "5m"}
@@ -6321,9 +6092,7 @@ Requirements, checked before any motion:
   nearly constant, so there is no sparse gate to starve the fit, and
   the star-lost bracket at deep defocus is the expected curve edge;
   every extra sweep would defocus the guide star under active
-  corrections for another full grid. The guiding train's focus policy
-  is an open item of the focus-model plan (O4), and a retry can follow
-  it there.
+  corrections for another full grid.
 - The confirmation sample costs `frames_per_step` guide frames per run
   and is always collected. It catches a fit that landed away from the
   measured minimum.
@@ -6337,8 +6106,8 @@ The train model's AF sequence, as a read: which focusers a refocus of
 a train touches, in what order, and through which camera each one is
 measured. A focus provider walks the plan without learning the train
 model — the focus-model provider's `focus_train {shared: true}` does
-([focus-model plan](../plans/focus-model.md), D16) — and `rp` moves
-nothing in answering.
+([focus-model.md § `focus_train`](focus-model.md#focus_train-train_id-filter-shared))
+— and `rp` moves nothing in answering.
 
 **Input**: `train_id` — required, an `equipment.optical_trains[]` id.
 
@@ -6450,9 +6219,10 @@ from the live mount and never from the FITS header
 The document is the one `document_id` names, or for `image_path` the
 sidecar found beside the file (see Persistence below). The recorded
 `pointing` is what the mount reported as the exposure started, in its
-own equatorial system; the difference from J2000, under half a degree
-today, sits well inside a search radius of a few degrees. A frame
-with no position, a file another program wrote among them, is solved
+own equatorial system; the difference from J2000, mostly precession
+of at most about 50″ for each year since 2000, sits well inside a
+search radius of a few degrees. A frame with no position, a file
+another program wrote among them, is solved
 blind rather than left to ASTAP, which would take a position from the
 header or from its previous solve
 ([plate-solver.md § Hint Mapping](plate-solver.md#hint-mapping)). A
@@ -6567,8 +6337,9 @@ coordinates and gets back the converged pointing without having to
 implement its own centering loop.
 
 **Input**:
-- `camera_id` — required. Camera that captures each iteration's
-  frame.
+- `camera_id` *or* `train_id` — exactly one is required. The camera
+  that captures each iteration's frame, named directly or as the
+  train's terminal camera.
 - `ra` — required, decimal hours `∈ [0, 24)`. Target right
   ascension. Same unit as `slew` and `sync_mount` (Alpaca's
   `RightAscension`).
@@ -6577,9 +6348,9 @@ implement its own centering loop.
 - `duration` — required, humantime string (e.g. `"5s"`,
   `"500ms"`). Per-iteration exposure. No default: the right value
   depends on focal ratio, sky brightness, and target field, none
-  of which `center_on_target` can infer. v1 uses the same
-  `duration` for every iteration; if low star count blocks a
-  solve, the caller re-runs with a longer duration.
+  of which `center_on_target` can infer. Every iteration uses the
+  same `duration`; if low star count blocks a solve, the caller
+  re-runs with a longer duration.
 - `tolerance_arcsec` — required, positive `f64`. Convergence
   threshold on the great-circle residual between the solved center
   and `(ra, dec)`. No default: the right value depends on rig
@@ -6637,10 +6408,11 @@ exactly one mount.
   fired, residual was already inside tolerance, no slew issued).
 
 **Algorithm**:
-1. Resolve `camera_id` and the singular mount. Emit
+1. Resolve the camera (`camera_id`, or the terminal camera of
+   `train_id`) and the singular mount. Emit
    `centering_started` carrying `{camera_id, ra, dec,
    tolerance_arcsec, max_attempts}` plus an **advisory outer-loop
-   deadline** (§2.5): `per_iter = duration +
+   deadline**: `per_iter = duration +
    centering.solve_time_estimate + centering.slew_overhead_estimate`,
    `predicted_duration_ms = per_iter`, `max_duration_ms = max_attempts
    × per_iter`. rp does not enforce this (each inner `capture`/`slew`
@@ -6687,8 +6459,9 @@ exactly one mount.
    position; `center_on_target` does not auto-recover.
 
 **Error cases**:
-- `camera_id` missing or names a camera that doesn't exist /
-  isn't connected → MCP error naming the field/condition (parameter
+- Neither or both of `camera_id` and `train_id`, an unknown train or
+  one with no camera, or a camera that doesn't exist / isn't
+  connected → MCP error naming the field/condition (parameter
   validation runs in input order, same convention as
   `measure_basic`).
 - `ra`, `dec`, `duration`, `tolerance_arcsec`, `max_attempts`
@@ -6706,31 +6479,31 @@ exactly one mount.
   `iterations[]` entries are not returned (the failure surfaces as
   an MCP error, not a partial success).
 - Unresponsive device → bounded, never an indefinite hang. Every
-  Alpaca request rp issues carries a per-request connect + read
-  timeout (`equipment::alpaca`), so a device that accepts the
+  Alpaca request `rp` sends carries a 5 s connect timeout and a 10 s
+  read timeout (`equipment::alpaca`), so a device that accepts the
   connection but stops answering — an overloaded simulator in CI, a
-  stalled mount/USB-serial bridge at night — surfaces as a timeout
-  error instead of wedging the loop forever. The capture's mount read,
-  whose recorded `pointing` is the solve's hint, and the slew's
-  `Slewing` poll additionally ride out a transient read failure before
-  giving up, so a brief device hiccup does not abort the whole tool. (This is
-  the fix for the issue #319 `center_on_target` timeout: a stalled
-  mount read had no client-side timeout and hung indefinitely; the
-  blocking-op poll deadlines guard loops, not a single in-flight
-  request.)
-- Progress emission during long polls → companion fix on the same
-  PR (#319), kept after the transport went session-less
-  (§ [MCP Server](#mcp-server)). While `rp` still ran rmcp's legacy
-  sessions, their 300 s idle keep-alive raced a long slew, park or
-  exposure: when both fired near the same moment the SSE response
-  stream EOFed and the client's `call_tool` future never resolved
-  (BDD's 360 s `MCP_CALL_TIMEOUT` was the only backstop). Each poll
-  loop emits `notifications/progress` every `PROGRESS_INTERVAL` (5 s)
-  — see `mcp::progress` — which reset that timer. There is no
-  keep-alive left to reset, but the emission stays: a
-  `progressToken`-bearing caller sees the loop advance, and it is a
-  no-op when the client did not supply one in `_meta`; unit tests
-  pass `None`.
+  stalled mount or USB-serial bridge at night — surfaces as a timeout
+  error instead of wedging the loop. The read timeout restarts with
+  every chunk received, so it bounds a stall without capping a large
+  `ImageArray` download on a slow link. The deadlines of the blocking
+  operations cannot stand in for it: they bound poll loops, and a
+  loop awaits each request it sends, so one request that never
+  answered would hold its loop past any deadline. A failed read is
+  ridden out before it costs the tool: the capture's mount read,
+  whose recorded `pointing` is the solve's hint, retries a failed RA,
+  Dec or `Slewing` read, three attempts in all, 100 ms and then
+  200 ms apart; the slew's `Slewing` poll takes a read error for "not
+  idle yet" and gives up at the fifth in a row, or at the slew's
+  deadline.
+- Progress during long polls → the capture's exposure and readout
+  and the slew's poll emit `notifications/progress` every
+  `PROGRESS_INTERVAL` (5 s, `mcp::progress`): a phase label
+  (`exposing`, `reading_out`, `slewing`) and the elapsed time against
+  the step's budget, so a caller that sent a `progressToken` in
+  `_meta` sees the loop advance. Without a token the emission is a
+  no-op. Progress is feedback, not liveness: whether the call is
+  still running, and cancelling it, belong to the in-flight registry
+  (§ [In-Flight Tool Calls](#in-flight-tool-calls)).
 - Loop exits without convergence → `tolerance_not_reached` error
   citing the last residual and `max_attempts`.
 
@@ -6750,11 +6523,11 @@ sections.
   asserted via the stub plate solver in BDD; the live OmniSim
   camera and mount still exercise the capture / sync / slew
   surface.
-- v1 has no `min_improvement_arcsec` early exit. A run that stops
-  improving but keeps barely missing tolerance will burn through
-  `max_attempts` before erroring. Add the parameter when the first
+- There is no `min_improvement_arcsec` early exit. A run that stops
+  improving but keeps barely missing tolerance burns through
+  `max_attempts` before erroring. The parameter is added when a
   workflow needs it.
-- v1 has no per-iteration exposure scaling. If the first solve
+- There is no per-iteration exposure scaling. If the first solve
   fails for star-count reasons, the caller re-runs with a longer
   `duration` rather than letting the tool widen automatically.
 - `center_on_target` is a built-in compound tool; a tool-provider
@@ -6841,12 +6614,9 @@ that runs it, not inferred from which plugin happened to be configured.
 (`rp-ephemeris`) and an embedded deep-sky object catalog
 (`rp-catalog`). Together they let an orchestrator answer "image M41
 right now" from a name string, without the operator having to paste
-coordinates by hand or trust the mount's pointing model.
-
-The implementation plan that introduces both crates lives at
-[`docs/plans/archive/rp-planning-tools.md`](../plans/archive/rp-planning-tools.md).
-This section describes the resulting design as it appears to MCP
-clients and to operators editing the config file.
+coordinates by hand or trust the mount's pointing model. This section
+describes the design as it appears to MCP clients and to operators
+editing the config file.
 
 ### Site Configuration
 
@@ -6865,10 +6635,11 @@ load with a named field.
 
 The IANA timezone (`America/Los_Angeles`, `Europe/Madrid`,
 `America/Santiago`, …) is derived once at startup from `(lat, lon)`
-via the `tzf-rs` crate. System tzdata then supplies DST rules.
-Startup logs an `info!("site: {site}")` line carrying lat/lon and
-the derived timezone, so a misconfigured location surfaces as a
-visibly-wrong timezone before it produces wrong twilight times.
+via the `tzf-rs` crate. The copy of the IANA database built into the
+`chrono-tz` crate then supplies DST rules. Startup logs an `info!`
+line, `site lat=… lon=… tz=…`, carrying lat/lon and the derived
+timezone, so a misconfigured location surfaces as a visibly-wrong
+timezone before it produces wrong twilight times.
 
 Building `tzf-rs`'s finder over its default polygon dataset takes the
 process to ≈46 MiB peak RSS (release build, x86_64 Linux). That is a
@@ -6879,15 +6650,16 @@ deployment posture. The crate itself is MIT-licensed (an additional
 "Anti CSDN License" footnote forbids the Chinese aggregator CSDN
 specifically and has no practical effect on this workspace's use).
 
-**No elevation in v1.** Sidereal time depends only on longitude, the
+**No elevation.** Sidereal time depends only on longitude, the
 mount's refraction model handles pressure/temperature, and elevation
 matters only for solar-system parallax (≤1° for the Moon, sub-arcsec
 for planets) and horizon-dip in twilight (≈1° at 4000 m). Adding
 `elevation_meters` later is a backwards-compatible config addition.
 
-**No horizon profile in v1.** A single `min_altitude_degrees` (per
-target, with a planner-wide default in the `planner` block) covers
-the common case. Per-azimuth obstruction profiles are deferred.
+**No horizon profile.** A single `min_altitude_degrees` (per target,
+falling back to the target store's default and then the planner's —
+§ [Target Store](#target-store)) covers the common case. Per-azimuth
+obstruction profiles are not implemented.
 
 ### Site Validation Against the ASCOM Mount
 
@@ -6932,33 +6704,21 @@ For `rp`'s purposes, the relevant guarantees are:
 
 ### Catalog (`rp-catalog`)
 
-`rp-catalog` ships one embedded catalog spanning two entry classes
-(issue #767): ~19k deep-sky objects — Messier + NGC + IC (OpenNGC)
-plus the astrophoto catalogs (Sharpless, Barnard, LDN, LBN, vdB, RCW,
-Gum, Cederblad, Abell planetaries, Arp, Hickson, Collinder, Melotte,
-Stock, Trumpler) — and ~354k stars, every HD/HDE/HDEC designation in
-the Tycho-2/HD cross-index with J2000 Tycho-2-derived positions. The
-~400 stars with IAU proper names are canonical under that name
-(`"Vega"`); the HD designation resolves to the same entry. Per-source
-attribution lives in `crates/rp-catalog/src/data/LICENSE-DATA`.
-
-Resolution is case-, whitespace-, and dash-insensitive with
-catalog-prefix rewrites — `"M41"`, `"Messier 41"`, `"NGC 2287"` (an
-alias), `"Sharpless 101"` / `"Sh2-101"`, `"Barnard 33"`, and
-`"HDE 227018"` / `"HD 227018"` all resolve. Object type and
-approximate magnitude are returned alongside RA/Dec.
-
-Everything is packed into a single committed binary
-(`catalog.bin`, ~5.5 MB, generated by `scripts/pack_catalog.py` from
-the committed per-catalog CSVs plus the fetched star layer) that the
-crate reads zero-copy — lookups binary-search the blob in place, star
-names are formatted on demand, and unit tests lock the blob to its
-CSV sources so they cannot drift.
+`rp-catalog` is the sky catalog embedded in `rp`: about 19k deep-sky
+objects (Messier, NGC, IC and the astrophoto catalogs) and 354k HD
+stars, resolved by name without a network — `"M41"`, `"NGC 2287"`,
+`"Sh2-101"`, `"Vega"` and `"HD 227018"` all resolve, to coordinates,
+object type and approximate magnitude. `resolve_target` and the
+`catalog_ref` form of `add_target` look names up in it, and a target
+imported as bare coordinates is named after the nearest entry within
+the import's tolerances ([Import form](#import-form-source)). Its
+contents and sources, its name normalization and its packed format
+are designed in [`docs/crates/rp-catalog.md`](../crates/rp-catalog.md).
 
 The catalog is offline-first: typing a Messier number and getting
 coordinates is too core to require a plugin install, and offline
-operation matters at remote dark sites. A future SIMBAD-backed plugin
-ships its lookup as a tool-provider tool under its own name (say
+operation matters at remote dark sites. A SIMBAD-backed plugin would
+ship its lookup as a tool-provider tool under its own name (say
 `resolve_target_simbad`); a built-in's name cannot be taken over (see
 [Config-Time Validation](#config-time-validation)).
 
@@ -7000,14 +6760,11 @@ is imperceptible.
 
 ## Target Store
 
-*(P1 of [planetarium-target-import.md](../plans/archive/planetarium-target-import.md)
-— the store, its CRUD/goals MCP tools, and the planner's cutover to
-reading the store have landed; the frame-scan-based progress derivation
-below has not.)* The plan data model,
-`TargetStore` trait, and `RedbTargetStore` implementation live in the
-`rp-targets` crate ([design doc](../crates/rp-targets.md)); this
-section is the authoritative rp-side integration contract that crate
-doc's "rp Integration" section summarizes.
+The plan data model, `TargetStore` trait, and `RedbTargetStore`
+implementation live in the `rp-targets` crate
+([design doc](../crates/rp-targets.md)); this section is the
+authoritative rp-side integration contract that crate doc's "rp
+Integration" section summarizes.
 
 Targets are rows in a redb-backed `rp-targets` database that `rp` opens
 once at startup (`target_store.db_path`, default
@@ -7018,15 +6775,20 @@ edit a target.
 Targets live exclusively in the store: `get_next_target` (§ Dynamic
 Planner), `record_exposure`, `get_session_progress`, and
 `get_target_status` all read the store's active rows and nothing else.
-`get_next_target` applies altitude gating to store rows (Decision 9,
-below), reading `target.scheduling.min_altitude_degrees`, falling back
-to `target_store.default_scheduling.min_altitude_degrees`, falling back
-in turn to the planner-wide `planner.min_altitude_degrees`.
+`get_next_target` eliminates store rows below their altitude floor
+(§ Decision Logic, bullet 1), reading
+`target.scheduling.min_altitude_degrees`, falling back to
+`target_store.default_scheduling.min_altitude_degrees`, falling back in
+turn to the planner-wide `planner.min_altitude_degrees`. The other
+`SchedulingConstraints` fields (moon separation, moon illumination,
+meridian window) are stored and settable like the floor, but no
+selection enforces them
+([rp-targets.md § MVP scope](../crates/rp-targets.md#mvp-scope)).
 
 Progress everywhere — `get_target` / `list_targets`, the two progress
 tools, and the planner's own decision logic — is **derived on demand
 from the frames on disk** (§ Progress derivation). Nothing is stored:
-`record_exposure` no longer increments a counter, because `capture`
+`record_exposure` increments no counter, because `capture`
 already wrote the frame the derivation finds on its next read. One
 consequence is the point of the whole target store: a target's plan
 spans however many nights it takes to reach its goals, so frames
@@ -7034,34 +6796,16 @@ captured on previous nights count, and a resumed or restarted session
 picks up where the disk left off rather than starting the night at
 zero.
 
-**Fixed migration requirements.** Two behaviors the planner already had
-carried over to the store:
-
-- **Altitude-gating parity (Decision 9) — landed.** The planner
-  eliminates targets below `min_altitude_degrees` (§ Decision Logic,
-  bullet 1); `get_next_target` applies that check to store-backed
-  candidates — reading `target.scheduling.min_altitude_degrees`,
-  falling back to `target_store.default_scheduling.min_altitude_degrees`
-  from config, falling back in turn to the planner-wide
-  `planner.min_altitude_degrees`. `add_target` / `update_target` accept a `scheduling`
-  parameter (field-for-field `SchedulingConstraints`) so a caller can
-  set the per-target override; `update_target`'s `scheduling`
-  replaces the whole overrides object rather than merging field-wise.
-  The other `SchedulingConstraints` fields (moon separation, moon
-  illumination, meridian window) are stored but their *enforcement*
-  stays deferred, per `rp-targets.md`'s MVP scope — this amends that
-  crate doc's deferred list rather than silently overriding it,
-  because altitude gating is not new ephemeris work (the shipped
-  planner already evaluates it via `rp-ephemeris`).
-- **A minimal operator surface (Decision 10) — landed.** The 6
-  CRUD/goals MCP tools (`add_target` / `get_target` / `list_targets` /
-  `update_target` / `set_goals` / `delete_target`) give list/edit/
-  activate against the store, so a target that arrives with no UI (e.g.
-  a planetarium-bridge import) is never stranded — this works with no
-  UI running. Reachable only through MCP, gated the same as every
-  other tool (§ Safety); the browser-facing target UI —
-  [ui-htmx's targets inbox](ui-htmx.md#targets-inbox-targets) — is
-  accordingly an MCP client like the orchestrator, not a REST caller.
+The six CRUD/goals MCP tools (`add_target` / `get_target` /
+`list_targets` / `update_target` / `set_goals` / `delete_target`) list,
+edit and activate store rows with no UI running, so a target that
+arrives with no UI (e.g. a planetarium-bridge import) is never
+stranded. They are reachable only through MCP and are classed like
+every other tool — the target-store writes are ungated
+(§ [In-Flight Tool Calls](#in-flight-tool-calls)); the browser-facing
+target UI — [ui-htmx's targets inbox](ui-htmx.md#targets-inbox-targets)
+— is accordingly an MCP client like the orchestrator, not a REST
+caller.
 
 ### Slug allocation (add-time)
 
@@ -7069,19 +6813,19 @@ carried over to the store:
 calling `TargetStore::upsert_target` (full algorithm and rationale in
 [`rp-targets.md` § Slug allocation](../crates/rp-targets.md#slug-allocation-add-time)):
 
-1. Base = `TargetSlug::new(catalog_ref.unwrap_or(display_name))`.
+1. Base = `TargetSlug::from_display_name(catalog_ref.unwrap_or(display_name))`.
 2. Absent in the store → use the base.
-3. Present and the same object (matching `catalog_ref`, or coordinates
-   within a small tolerance) → in-place edit: reuse the slug and
+3. Present and the same object (the stored coordinates within a small
+   tolerance of the new ones) → in-place edit: reuse the slug and
    upsert.
 4. Present and a different object → allocate the lowest unused
    `"{base}-{n}"` (`n` from 2).
 
-The same-`catalog_ref` branch is additionally gated on coordinate
-proximity: a manual catalog add of an object whose framed coordinates
-differ beyond tolerance from an existing same-`catalog_ref` row
-allocates a new suffixed slug instead of overwriting it in place. This
-protects a precisely-framed target (e.g. one that arrived via the P3
+A matching `catalog_ref` alone does not make the same object: a manual
+catalog add of an object whose framed coordinates differ beyond
+tolerance from an existing same-`catalog_ref` row allocates a new
+suffixed slug instead of overwriting it in place. This protects a
+precisely-framed target (e.g. one that arrived via the planetarium
 bridge) from being silently clobbered by a later catalog-centroid add
 of the same object — the protection applies to every writer, not only
 the bridge.
@@ -7103,8 +6847,8 @@ beside the timestamps: every operator-surface write
 `"operator"` on `updated_by`; an [import](#import-form-source) stamps
 `source.kind`. The store preserves `created_at` *and* `created_by`
 across `upsert_target` of an existing slug, so creation attribution
-survives later edits. Rows written before these fields existed
-deserialize as operator-owned (serde defaults; no redb schema step).
+survives later edits. A stored row without these fields deserializes
+as operator-owned (serde defaults; no redb schema step).
 "Pending and unedited since import" is the first-class predicate
 `!active && updated_by == source.kind` — what the import dedup below
 keys on, and what the [ui-htmx targets
@@ -7115,8 +6859,10 @@ last".
 
 `add_target`'s third parameter form, the one the planetarium
 bridge sends ([planetarium-bridge.md](planetarium-bridge.md)): bare
-`ra_hours` + `dec_degrees` + `source {kind, client, received_at}`. `catalog_ref`, `display_name`, `active`, `notes`, and
-`position_angle_degrees` are all rejected alongside `source` — naming
+`ra_hours` + `dec_degrees` + `source {kind, client, received_at}`.
+`catalog_ref`, `display_name`, `active`, `notes`,
+`position_angle_degrees` and `grading` are all rejected alongside
+`source` — naming
 is rp's job here, imports always land paused (`active: false`) with no
 framing angle (no planetarium channel carries one; per-target angles
 are entered in the ui-htmx targets inbox —
@@ -7172,10 +6918,9 @@ Semantics that differ from an operator add:
 
 ### Position angle
 
-*(P2 of [planetarium-target-import.md](../plans/archive/planetarium-target-import.md),
-Decision 5.)* `Target` carries `position_angle_degrees` — the sky
-position angle this target should be framed at, in degrees east of
-north (`0.0 ≤ angle < 360.0`, finite; the same sky frame as
+`Target` carries `position_angle_degrees` — the sky position angle
+this target should be framed at, in degrees east of north
+(`0.0 ≤ angle < 360.0`, finite; the same sky frame as
 `move_rotator`'s `angle`). The **effective** angle is a three-layer
 fallback resolved at read time, homed per optical train:
 
@@ -7205,21 +6950,18 @@ The field is operator-owned: `add_target` (non-import forms) and
 `update_target` accept it, the [import form](#import-form-source)
 rejects it, and imports always land with no angle (inherit). On
 `update_target` an explicit `null` clears the field back to
-inherit-the-train-default — the only `update_target` field with
-explicit-null semantics, because "blank" (inherit) and "0.0"
-(explicit north-up) must stay distinguishable for the [ui-htmx targets
-inbox](ui-htmx.md#targets-inbox-targets)
-(plan § P4 note).
+inherit-the-train-default — one of the two `update_target` fields with
+explicit-null semantics, with `grading` — because "blank" (inherit) and
+"0.0" (explicit north-up) must stay distinguishable for the [ui-htmx
+targets inbox](ui-htmx.md#targets-inbox-targets).
 
 ### Capture-time target linkage
 
 `rp` has no session-side "current target" — see [Capture Tool
 Details](#capture-tool-details) for the full mechanism: `capture`'s
-new optional `target` (slug) parameter, sourced from orchestrator
-workflow state the same way `session-runner` already threads
-`get_next_target`'s effective position angle through its blackboard
-into a later `move_rotator` call (P2's precedent, [Decision
-5](../plans/archive/planetarium-target-import.md#decisions-fixed--settled-interactively-2026-07-22-revised-same-day-after-adversarial-review)).
+`target` (slug) parameter, sourced from orchestrator workflow state the
+same way `session-runner` threads `get_next_target`'s effective
+position angle through its blackboard into a later `move_rotator` call.
 This is what supplies the naming template's `{target}` token (§
 Persistence) and the exposure document's `target` field (§ Exposure
 Document).
@@ -7228,7 +6970,7 @@ Document).
 
 | Tool | Parameters | Returns | Description |
 |------|-----------|---------|-------------|
-| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` *or* `ra_hours` + `dec_degrees` + `source {kind, client, received_at}` (the [import form](#import-form-source)) — exactly one form; `active` (optional, default `true`; rejected with `source`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional; rejected with `source`), `position_angle_degrees` (optional — degrees east of north, `0.0 ≤ angle < 360.0`, see [Position angle](#position-angle); rejected with `source`), `grading` (optional — field-for-field `GradingThresholds`; omitted fields fall back to `target_store.default_grading`; rejected with `source`) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above (proximity-only dedup and rp-side naming for the import form). `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) (Decision 10) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session |
+| `add_target` | `catalog_ref` (name, resolved via `resolve_target`) *or* `display_name` + `ra_hours` + `dec_degrees` *or* `ra_hours` + `dec_degrees` + `source {kind, client, received_at}` (the [import form](#import-form-source)) — exactly one form; `active` (optional, default `true`; rejected with `source`), `goals[]` (optional — defaults to `target_store.default_goals` from config when omitted), `scheduling` (optional — field-for-field `SchedulingConstraints`; omitted fields fall back to `target_store.default_scheduling`), `notes` (optional; rejected with `source`), `position_angle_degrees` (optional — degrees east of north, `0.0 ≤ angle < 360.0`, see [Position angle](#position-angle); rejected with `source`), `grading` (optional — field-for-field `GradingThresholds`; omitted fields fall back to `target_store.default_grading`; rejected with `source`) | slug, created, target | Create or upsert a target per the slug-allocation and dedup rules above (proximity-only dedup and rp-side naming for the import form). `created` is `false` when the call resolved to an in-place edit of an existing row. Goal filter names are validated against the connected rig's configured filter roster (union of every `equipment.filter_wheels[].filters`; permissive when none are configured) — an unknown name fails the call at add time, naming the offending goal, rather than failing at capture time mid-session |
 | `get_target` | slug | target, progress | Fetch one target with derived progress (below) |
 | `list_targets` | active_only (optional) | targets: [{...target fields, progress}] | List all targets, optionally filtered to `active == true` — the shape both `get_next_target`'s candidate set and the ui-htmx targets inbox read. Each element is the flattened target plus a `progress` field (not the `{target, progress}` nesting `get_target` uses) |
 | `update_target` | slug, any subset of `display_name` / `ra_hours` / `dec_degrees` / `active` / `priority` / `scheduling` / `notes` / `position_angle_degrees` / `grading` | target | Edit fields in place. Does not touch the slug or on-disk frames. Setting `active: true` is how an operator (or the ui-htmx targets inbox) accepts a pending target into the rotation. `scheduling` and `grading`, when supplied, each replace the whole overrides object rather than merging field-wise; an explicit `null` on `grading` clears the override back to inherit-`default_grading`. Re-grading is free — thresholds are applied at read time, so tightening one immediately re-partitions `good`/`total` with nothing on disk renamed or moved. `position_angle_degrees` additionally accepts an explicit `null` to clear the per-target angle back to inherit-the-train-default (see [Position angle](#position-angle)) |
@@ -7240,8 +6982,8 @@ The `target` objects these tools return are `Target`'s **derived** serde
 serialization — there is no separate hand-maintained response shape. That
 works because the plan value types serialize as their canonical wire
 strings: `binning` as `"AxB"` (e.g. `"1x1"`), `exposure_duration` as a
-humantime string (e.g. `"5m"`), `coord` as `{ra_hours, dec_degrees}`
-(ADR-019). Input `goals[]` entries use the same
+humantime string (e.g. `"5m"`), `coord` as `{ra_hours, dec_degrees}`.
+Input `goals[]` entries use the same
 `{filter, binning, exposure_duration, desired_count}` shape (deserialized
 via `GoalWire` first, for friendlier per-field errors than raw serde's), so
 what a tool accepts is byte-for-byte what it returns. One consequence of
@@ -7252,16 +6994,17 @@ rather than overriding it.
 ### Plan schema and validation
 
 The plan-data analogue of what a service's setup pages do for its
-configuration — describe its shape and check a candidate (ADR-019, and
-[rp-vocabulary.md § Schema + validate protocol](../crates/rp-vocabulary.md#schema--validate-protocol-the-decision-1-role)):
+configuration — describe its shape and check a candidate
+([rp-vocabulary.md § Schema + validate protocol](../crates/rp-vocabulary.md#schema--validate-protocol-the-decision-1-role)):
 two read-only MCP tools that let any surface discover the shape of plan
 data and check a candidate against **the same rules the write tools
 enforce**, without writing anything.
 
 **MCP only — there is no REST counterpart.** rp's HTTP surface covers
-service-level concerns (health, the setup page, session lifecycle,
-documents, events); plan data lives entirely on the MCP surface, so these
-tools add no routes.
+service-level concerns (health, the setup page, equipment status,
+documents and images, events — § [REST
+Endpoints](#rest-endpoints)); plan data lives entirely on the MCP
+surface, so these tools add no routes.
 
 | Tool | Parameters | Returns | Notes |
 |---|---|---|---|
@@ -7301,12 +7044,10 @@ catalog. `validate_plan` reports a payload that is well-formed and
 rule-compliant; it does not predict which slug an `add_target` would land
 on, and says so rather than guessing.
 
-Consolidating the rules closed a real gap in the writers rather than
-merely exposing them: `add_target` and `update_target` never
-range-checked their `grading` and `scheduling` parameters, so a negative
-or `NaN` threshold was accepted as a per-target override while config
-load rejected the identical value for `target_store.default_grading`.
-Both now go through the shared validator.
+`update_target` range-checks its `grading` and `scheduling` overrides
+through the same functions, as `add_target` does, so a negative or
+`NaN` threshold is refused as a per-target override exactly as config
+load refuses it for `target_store.default_grading`.
 
 ### Progress derivation
 
@@ -7321,15 +7062,12 @@ good/rejected against its sidecar's grading section and the target's
 effective `GradingThresholds` (its own overrides, field-wise over
 `target_store.default_grading`). `get_target`/`list_targets` report, per
 target, a list of `{filter, binning, exposure_duration, desired_count, good, total}` —
-one entry per `AcquisitionGoal` — superseding the filter-only
-`{completed, goal}` shape `get_target_status.progress` and
-`get_session_progress` used to return, which could not distinguish two
-goals that share a filter (e.g. `Ha` at two different exposure
-lengths).
+one entry per `AcquisitionGoal`, so two goals that share a filter (e.g.
+`Ha` at two different exposure lengths) are reported apart.
 
 Taking a past frame's target, frame type and sub-spec from its file
-and directory names, rather than from its sidecar, is a gap
-[Ground rules](#ground-rules) lists: a frame whose name the current
+and directory names, rather than from its sidecar, is deliberate
+([Ground rules](#ground-rules)): a frame whose name the current
 patterns no longer parse is not counted.
 
 **When derivation is inert.** The whole scan is predicated on a
@@ -7402,9 +7140,11 @@ under this rule, on disk and in progress alike — do not name a filter
 **Good vs rejected.** For each counted frame `rp` reads the sidecar's
 `grading` section and applies the target's **effective** thresholds
 (`target.grading` field-wise over `target_store.default_grading`).
-The section is a plugin section like any other (§ Plugin Sections) —
-`rp` neither writes nor validates it; the grading plugin that measures
-frames is a separate component and is not part of this service. `rp`
+The section is opaque to `rp` like any other (§ [Sections](#sections)) —
+`rp` neither writes nor validates it. It is a separate grading
+component's to write, and no component writes one today: `rp` serves no
+route through which another process could, so every frame counts as good
+(below). `rp`
 reads four optional numeric metrics, each paired with the threshold
 that judges it:
 
@@ -7450,17 +7190,15 @@ to be invalidated by exactly the events (`capture` writing a frame, a
 plugin writing a verdict, an operator editing a threshold or culling
 files by hand) that the on-demand read already observes for free.
 
-`record_exposure` no longer increments a counter — `capture` already
-wrote the frame the derivation finds. It survives as the orchestrator's
-per-frame progress readback. The planner's filter-batching tie-break
+`record_exposure` increments no counter — `capture` already wrote the
+frame the derivation finds; it is the orchestrator's per-frame progress
+readback. The planner's filter-batching tie-break
 (§ Decision Logic bullet 4) reads the filter wheel itself — the one fact
 the filesystem cannot supply, *which filter is in the wheel*, comes
 from the device that holds it, not from a remembered frame. See its row
 in [Planner Tools](#planner-tools).
 
 ### Configuration
-
-Landed today:
 
 ```jsonc
 "target_store": {
@@ -7490,22 +7228,22 @@ The three `import` tunables drive the [`source` import
 form](#import-form-source); each must be a finite positive number
 (config load rejects anything else, naming the field).
 
-`default_goals` is rp-owned policy (Decision 10): `add_target` applies
+`default_goals` is rp-owned policy: `add_target` applies
 it when the caller supplies no `goals[]`, so a target created with no
 explicit plan (e.g. a bare bridge import) still gets a sane default
 rather than silently having none. `default_scheduling` is the value a
 store-backed target's `None` `scheduling` fields fall back to in
-`get_next_target` (Decision 9 — landed for `min_altitude_degrees`; the
-other three fields are stored but their *enforcement* stays deferred,
-per `rp-targets.md`'s MVP scope).
+`get_next_target`; the planner enforces `min_altitude_degrees`, and the
+other three fields are stored and not enforced (§ [Target
+Store](#target-store)).
 
 `default_grading` is the value a target's `None` `grading` override
 fields fall back to (§ Progress derivation). Every field is optional
 and `null` means "don't judge this metric"; an entirely absent or
 empty `default_grading`, with no per-target override, means no frame
 is ever rejected and `good == total`. Each supplied field must be a
-finite number (config load rejects anything else, naming the field),
-and `min_star_count` is a non-negative integer.
+finite, non-negative number (config load rejects anything else, naming
+the field), and `min_star_count` is an integer.
 
 The frame scan `default_grading` feeds needs
 `session.file_naming_pattern` to be configured (§ Persistence) — that
@@ -7516,10 +7254,10 @@ first place. With no naming pattern configured, `capture` writes flat
 `default_grading` without `file_naming_pattern` is a config-load
 error rather than a silent no-op.
 
-The legacy `targets[]` config array is gone — a breaking, pre-1.0 hard
-cutover. `Config` has `deny_unknown_fields`, so a stray `targets` key,
-or an array shape under `target_store`, fails loudly at config load;
-each target is (re-)added via the `add_target` MCP tool into the store.
+Targets have no config form. `Config` has `deny_unknown_fields`, so a
+`targets` key fails loudly at config load, as does an array in place of
+the `target_store` object; every target enters the store through the
+`add_target` MCP tool.
 
 ## Dynamic Planner
 
@@ -7549,11 +7287,9 @@ order:
 ]
 ```
 
-This replaces the filter-keyed `{completed, goal}` map these tools
-returned before the frame scan landed. The old shape could not
-distinguish two goals sharing a filter, and its `completed` counted
-only frames recorded in the current session; `good`/`total` count
-every frame on disk for the target, across every night.
+Two goals that share a filter are two entries, and `good`/`total`
+count every frame on disk for the target, across every night, not only
+tonight's.
 
 ### Decision Logic (inside `get_next_target`)
 
@@ -7570,10 +7306,11 @@ inputs — the filesystem is read at the tool boundary, not inside the
 ranking.
 
 1. Eliminate targets whose `compute_alt_az` altitude is below
-   `min_altitude_degrees` (per-target value, falling back to the
-   planner-wide `min_altitude_degrees` from config), or whose
-   `compute_rise_set` set time leaves less than the
-   `dawn_buffer_minutes` plus a single full exposure.
+   `min_altitude_degrees` (per-target value, falling back to
+   `target_store.default_scheduling` and then to the planner-wide
+   `planner.min_altitude_degrees` — § [Target Store](#target-store)),
+   or whose `compute_rise_set` set time leaves less than a dawn
+   buffer plus a single full exposure.
 2. Among the survivors, prefer targets that are transiting —
    smallest absolute hour-angle from `compute_transit` against the
    current `get_local_sidereal_time` (highest altitude, best
@@ -7584,8 +7321,8 @@ ranking.
    target whose next exposure uses the filter currently in the wheel.
 5. Account for meridian flip timing — avoid starting a long
    exposure if `compute_meridian_flip` returns a `time_to_flip`
-   shorter than the per-target `exposures[].duration_secs` plus a
-   safety margin.
+   shorter than the target's next exposure (its first incomplete
+   goal's `exposure_duration`) plus a safety margin.
 6. If no targets are viable, return a `WaitForTwilight`
    recommendation when the night has not started (the Sun is above
    astronomical dusk, −18°, and not rising — wait and re-ask), or
@@ -7595,10 +7332,10 @@ ranking.
 The orchestrator decides when to call `get_next_target` — typically
 after each exposure, after each target switch, or when conditions change.
 
-> **v1 implementation status.** Five of the six bullets land at
-> least partially in v1: the altitude half of bullet 1 (per-target /
-> per-planner-default floor), bullet 2 (smallest-|HA| transit
-> preference), bullets 3–4 (progress + filter tie-breaking, below),
+> **What `get_next_target` implements.** Five of the six bullets, some
+> in part: the altitude half of bullet 1 (the per-target floor and its
+> fallbacks), bullet 2 (smallest-|HA| transit preference), bullets 3–4
+> (progress + filter tie-breaking, below),
 > and bullet 6 in full — when no target survives, either **every**
 > target has met its integration goal (all plans complete per the
 > derived progress) and the answer is `EndOfSession`, or
@@ -7639,23 +7376,20 @@ after each exposure, after each target switch, or when conditions change.
 > **incomplete** plan entry in plan order (`exposure` is null when the
 > target defines none) — 40 completed Luminance frames rotate the
 > recommendation to the plan's Red entry.
-> Documented v1 gaps:
+> Not implemented:
 >
-> - **Bullet 1 set-time elimination** — `next_target` does *not*
->   currently check `compute_rise_set` against
->   `exposures[].duration_secs`. A target that rose ten minutes
->   before now and sets in five minutes can still be recommended;
+> - **Bullet 1 set-time elimination** — `get_next_target` does *not*
+>   check `compute_rise_set` against the next exposure's
+>   `exposure_duration`. A target that rose ten minutes before now and
+>   sets in five minutes can still be recommended;
 >   the orchestrator must catch the short-set case and re-call
 >   `get_next_target`.
 > - **Bullet 5 (meridian-flip avoidance)** — satisfied *indirectly*:
 >   a target whose transit was in the recent past has a large
 >   positive HA and ranks lower than a target approaching transit,
 >   so the smallest-|HA| pick tends to avoid imminent flips. The
->   planner does *not* check `time_to_flip` against
->   `exposures[].duration_secs` explicitly.
->
-> A follow-up will close these gaps once session state is wired
-> through.
+>   planner does *not* check `time_to_flip` against the next
+>   exposure's `exposure_duration` explicitly.
 
 ### Target Definition
 
@@ -7700,11 +7434,7 @@ There is deliberately no "conditions have changed" (daytime /
 all-goals-met) check in `rp` — deciding whether the night is over is
 planner work. A run resumed after dawn asks `get_next_target`, receives
 `end_of_session` (the sun-trend rule — § Dynamic Planner) and completes
-normally. An earlier revision kept a session registry in `rp` that
-re-invoked the orchestrator after a restart and after a safety
-interruption; it went with decision D6 of
-[`mcp-sessionless.md`](../plans/archive/mcp-sessionless.md) once orchestrators
-started, paused and resumed their own runs.
+normally.
 
 ## Safety
 
@@ -7977,11 +7707,13 @@ is independent of cancellation.
 
 ### Sentinel Watchdog Integration
 
-Sentinel is extended beyond safety monitoring to serve as an operation watchdog
-and supervisor for the entire system. It connects to `rp`'s real-time event
+Besides safety monitoring, Sentinel is the operation watchdog and the
+supervisor of the whole system. It connects to `rp`'s real-time event
 stream (`/api/events/subscribe`) and monitors operation deadlines. The stream
-connection also serves as a health signal — if `rp` itself crashes or hangs,
-the disconnection is an immediate trigger for Sentinel to attempt recovery.
+connection also serves as a health signal: if `rp` itself crashes or hangs,
+the disconnection makes Sentinel reconnect, and a reconnect that keeps
+failing is escalated as "rp unresponsive"
+([sentinel.md § Liveness pulse](sentinel.md#liveness-pulse-stream-disconnect)).
 
 #### Monitored Operations
 
@@ -7991,27 +7723,34 @@ the disconnection is an immediate trigger for Sentinel to attempt recovery.
 | Slew | `slew_started` | `slew_complete` | `max_duration_ms` from the `slew_started` envelope (rp-computed: `(distance / rate + settle) × 3`, floored at `MIN_SLEW_DEADLINE`) |
 | Park | `park_started` | `park_complete` | `max_duration_ms` from the `park_started` envelope (rp-computed worst-case traverse: `(180° / rate + settle) × 2`, floored at `MIN_PARK_DEADLINE`) |
 | Move focuser | `move_focuser_started` | `move_focuser_complete` | `max_duration_ms` from the `move_focuser_started` envelope (rp-computed: `(\|target − current\| / steps_per_sec) × 2`, floored at `MIN_FOCUSER_DEADLINE`) |
-| Focus | `focus_started` | `focus_complete` | configurable max focus time |
+| Focus | `focus_started` | `focus_complete` | none: `focus_started` carries no `max_duration_ms`, so Sentinel tracks the run open with no timer ([sentinel.md § What it tracks](sentinel.md#what-it-tracks)) |
 | Guide settle | `guide_started` | `guide_settled` | `max_duration_ms` from the `guide_started` envelope (`calibration_timeout` + the resolved settle timeout + 15 s; omitted when no settle timeout is configured per-call or in the `equipment.mount.guiding` block). `dither_started` → `dither_settled` carries the resolved settle timeout + 15 s |
 | Centering | `centering_started` | `centering_complete` | `max_duration_ms` from the `centering_started` envelope (rp-computed advisory outer-loop deadline: `max_attempts × (duration + centering.solve_time_estimate + centering.slew_overhead_estimate)`; per-iteration ops carry their own deadlines) |
 
 #### Corrective Actions
 
-When a deadline expires without the expected completion event:
+When a deadline expires without the expected completion event, Sentinel
+acts on the operation family's `on_expiry` policy
+([sentinel.md § Escalation](sentinel.md#escalation-corrective-action-ladder)).
+`notify_only`, the default, sends a push notification. `abort_then_restart`
+runs a ladder against the service that owns the family, then notifies:
 
-1. **Health check** — Sentinel pings the relevant Alpaca service endpoint
-   to determine if it is responsive.
+1. **Health check** — Sentinel asks the service's Alpaca endpoint whether it
+   is responsive.
 2. **Responsive but stuck** — Sentinel commands an abort via the device's
-   Alpaca API (e.g., `PUT camera/0/abortexposure`). Notifies `rp` to re-plan.
-3. **Unresponsive** — Sentinel executes the configured restart command for
-   that service (e.g., `systemctl restart qhyccd-alpaca`). After restart,
-   notifies `rp` to reconnect and resume.
+   Alpaca API (e.g., `PUT camera/0/abortexposure`). The aborted operation
+   ends with a `*_failed` or `*_complete` event, as any operation does.
+3. **Unresponsive, a failed abort, or no abort verb** — Sentinel
+   restarts the service with the restart command it derives from the
+   platform service manager (e.g., `systemctl restart
+   rusty-photon-qhy-camera`) and waits for it to answer again.
 4. **Notification** — Sentinel sends a push notification (Pushover or other
-   configured notifier) describing the failure and corrective action taken.
+   configured notifier) describing the failure and the rungs that ran.
 
-The restart commands are configured per service, not hardcoded. Sentinel does
-not know how to restart any specific service — it just executes the configured
-command.
+Sentinel makes no call to `rp`. `rp` sees the aborted operation end on its
+own, and its [reconnect supervisor](#device-session-recovery) re-establishes
+the session with a restarted driver on its own cadence, whoever restarted
+the service.
 
 #### Recovery Flow
 
@@ -8020,12 +7759,11 @@ Sentinel detects: exposure_started 300s ago, no exposure_complete
   │
   ├─► Health check camera driver endpoint
   │     │
-  │     ├─► Responsive → PUT abortexposure → notify `rp`
+  │     ├─► Responsive → PUT abortexposure → the exposure ends `*_failed`
   │     │
-  │     └─► Unresponsive → run restart command → wait for service
-  │           │
-  │           └─► Service back → notify `rp` → `rp` reconnects;
-  │                                                 the orchestrator resumes
+  │     └─► Unresponsive → run the derived restart command → wait for the
+  │           service; `rp`'s reconnect supervisor reconnects on its own
+  │
   └─► Send push notification describing what happened
 ```
 
@@ -8037,8 +7775,7 @@ TLS and Basic Auth as every other route: `GET /setup` answers the form,
 [`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate, as every
 driver's server page is, so its rules (the file as the base of a save, the
 origin check on a `POST`, the Security section, file-only fields) are that
-crate's; this section states what is `rp`'s own
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md), D4–D6, D13).
+crate's; this section states what is `rp`'s own.
 `rp` is not an Alpaca device, so it has no device pages; the equipment
 roster takes their place on this one page.
 
@@ -8095,7 +7832,7 @@ camera's `gain`, …), with a field
 the form cannot render named as edited in the file (a filter wheel's
 `filters`, a focuser's `backlash`, a switch's `outputs`, the mount's
 `guiding`), its `unique_id`
-pin under a collapsed **Identity** disclosure (D2), its credential, and a
+pin under a collapsed **Identity** disclosure, its credential, and a
 **Remove** box. Below each kind's rows an **Add** block offers a blank
 entry of that kind, its fields at their defaults; the mount's is offered
 only while the file has none.
@@ -8140,7 +7877,7 @@ restart.
 ### Credentials
 
 Each entry's `auth` block is two fields, a username and a password. `rp`
-keeps the password in plaintext, as a client must to present it (ADR-003),
+keeps the password in plaintext, as a client must to present it,
 but a page never carries it back: the password input is empty, and blank
 means unchanged.
 
@@ -8160,7 +7897,7 @@ means unchanged.
 
 Doctor's minted observatory credential stays the zero-touch default:
 `doctor --fix` fills an absent block, and a block set here is the
-operator's intent doctor leaves alone (D6).
+operator's intent doctor leaves alone.
 
 ### Links to a driver's pages: the host rule
 
@@ -8172,7 +7909,7 @@ carries the host the browser reached `rp`'s page by — the request's `Host`
 without its port. Any other host is used as written. When the substituted
 host is an IP address the row notes that a doctor-issued certificate names
 an IP address only when doctor was given `--extra-san`, so the browser may
-refuse it (D5).
+refuse it.
 
 ### What stays in the file
 
@@ -8187,18 +7924,19 @@ route: the page is where its configuration is edited, and the file.
 `rp`'s client surface is MCP (Tenet 8): every capability a UI, plugin, or
 external client drives is an MCP tool on `/mcp`. The HTTP/REST routes below
 are **not** a second surface that mirrors those tools — they carry only what
-cannot ride MCP: raw image bytes, the SSE event stream, plugin completion
-callbacks, and config (which must stay reachable while conditions are
-unsafe), plus a few operational reads (`/health`, equipment status).
+cannot ride MCP: raw image bytes, the SSE event stream, and config
+(which must stay reachable while conditions are unsafe), plus a few
+operational reads (`/health`, equipment status).
 Whatever REST serves, it stays a dumb pipe — no application logic.
 
 ### REST Endpoints
 
-The router serves only the unmarked routes below. A bullet marked
-*(planned)* for a client **action** — device connect/disconnect,
-planner introspection — is a leftover REST sketch: per Tenet 8 that
-capability lands as an MCP tool, not a new REST route. Nothing here mirrors
-the target-store CRUD tools; those are MCP-only (§ Target Store).
+The router serves only the unmarked routes below; a route marked
+*(planned)* is one the design keeps a place for that the router does not
+serve. A client **action** — device connect/disconnect, planner
+introspection — is an MCP tool, never a REST route (Tenet 8). Nothing
+here mirrors the target-store CRUD tools; those are MCP-only (§ Target
+Store).
 
 #### Equipment
 - `GET /api/equipment` — live connection status per configured device. The
@@ -8253,10 +7991,6 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   on-disk fallback; returns `404` only when neither cache nor disk has
   the document. See
   [Document Resolution](#document-resolution).
-- `POST /api/documents/{id}/sections` — add/update a section (plugin
-  endpoint). Requires the document be resolvable; persists the sidecar
-  atomically. *(planned — plugins deliver sections through
-  `POST /api/plugins/{id}/complete` today)*
 
 #### Images
 - `GET /api/images/{document_id}` — image metadata (width, height, bitpix,
@@ -8268,14 +8002,9 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   wanting FITS read the file directly from the path in the exposure
   document.
 
-#### Plugins
-- `POST /api/plugins/{id}/complete` — event plugin completion callback
-  (status, optional `correction`). The `{id}` is the delivery's
-  `event_id`.
-
 #### MCP
-- `/mcp` — MCP server endpoint (streamable HTTP transport). Workflow
-  plugins connect here as MCP clients to discover and call tools.
+- `/mcp` — MCP server endpoint (streamable HTTP transport). MCP clients
+  (orchestrators, the web UI) connect here to discover and call tools.
 
 #### System
 - `GET /health` — health check
@@ -8289,7 +8018,8 @@ stream (`Content-Type: text/event-stream`) carrying every event the
 webhooks, plus stream-control frames. Any consumer that needs live events
 connects here: UIs for rendering state, and the Sentinel operation watchdog
 for tracking deadlines and rp liveness. It is the primary mechanism for
-passive consumers — push updates without the webhook ack/completion protocol.
+passive consumers: a consumer connects and receives, with no plugin
+registration in `rp`'s config.
 
 **Frame format.** Each event is one SSE frame:
 
@@ -8353,11 +8083,14 @@ access to `%PROGRAMDATA%`, while macOS — where `brew services` runs as the
 invoking user, who cannot write `/var/lib` — puts session data beside the
 config under its own platform root. An explicit `--config`
 naming a missing file stays a hard error. Equipment is listed with Alpaca
-connection details. Plugins register their webhook URLs and command endpoints.
-Every block (top-level `Config` and each equipment/service sub-config) rejects
-unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key
-removed by a schema change fails loudly at load instead of being silently
-ignored.
+connection details. Plugins register their webhook URLs or MCP server URLs.
+Every typed block (top-level `Config` and each equipment/service sub-config)
+rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a
+key removed by a schema change fails loudly at load instead of being
+silently ignored. Two places are read field by field instead, and ignore a
+key `rp` does not read: a `plugins[]` registration, whose other keys are the
+plugin's business (§ [Delivery: Webhooks](#delivery-webhooks)), and the
+`planner` block, of which `rp` reads only `min_altitude_degrees`.
 
 `rp doctor [--config <file>] [--json]` diagnoses this service's own config
 read-only without starting it — see
@@ -8376,13 +8109,13 @@ trains (declared in `equipment.optical_trains`, see
 [Optical Trains](#optical-trains)); `mount` stays singular. Multi-mount
 support is in
 [Future Considerations](#future-considerations). The optional
-`mount.guiding` block configures the guider rp-managed service —
+`mount.guiding` block configures `rp`'s client of the guider service —
 guiding is mount-scoped, so it nests here rather than at top level.
-The retired shapes from before the optical-trains model — a top-level
-`guider` block, `cameras[].focal_length_mm`, and the `camera_id`
-back-references on `focusers[]` / `filter_wheels[]` — are rejected at
-load by `deny_unknown_fields` like any other unknown key (pre-1.0 hard
-cutover; existing configs need a one-time hand edit).
+The retired shapes — a top-level `guider` block,
+`cameras[].focal_length_mm`, and a `camera_id` on `focusers[]` /
+`filter_wheels[]` — are rejected at load by `deny_unknown_fields` like
+any other unknown key: the focal length and the coupling of a camera to
+its focuser and wheel are the train's.
 `mount.settle_after_slew`
 is applied by `slew` after the mount reports `Slewing == false`; per-call
 `settle_after` on `slew` overrides this value (including `"0s"` to skip
@@ -8420,7 +8153,7 @@ Every equipment entry, each kind's array entries and the singular
 `mount` alike, takes an optional `unique_id`: the Alpaca `UniqueID` the
 device at `device_number` must report, or the connect is refused (see
 [Device Identity Pin](#device-identity-pin)). Omitted, the entry binds
-whatever device its server lists there, as before. An empty value, or
+whatever device its server lists there. An empty value, or
 one with leading or trailing whitespace, is rejected at load: the
 listed side is compared with any padding stripped, so a padded pin
 could never match. Entries of one kind that pin the same `UniqueID` at
@@ -8432,16 +8165,19 @@ every outbound HTTPS connection it makes as a client — Alpaca devices
 (`equipment.*[].alpaca_url`), the plate-solver service, the guider
 service, event plugins' `webhook_url`, and tool providers'
 `mcp_server_url`. An observatory
-runs one self-signed CA (doctor's D6
-provisioning), so this is a single rp-level setting rather than a
+runs one self-signed CA, which `doctor` provisions
+([doctor.md § Provisioning](doctor.md#provisioning--tls-and-the-observatory-credential-d6a)),
+so this is a single rp-level setting rather than a
 per-device or per-service one; `doctor --fix` writes it automatically
-once the CA exists (`services/doctor/src/provision/mod.rs`
-`CA_ONLY_WIRING_SERVICES`); the setup page names it as edited in the
+once the CA exists (`CLIENT_WIRING` in
+`services/doctor/src/provision/mod.rs`); the setup page names it as edited in the
 file rather than editing it (§ [Setup Page](#setup-page)). Setting it
 makes it the client's **only**
-trusted root (`tls_certs_only`, ADR-002) — it replaces, not adds to,
-the platform trust store, so a public-CA `https://` target becomes
-unreachable alongside the observatory CA. Omitted (the default), only
+trusted root (`tls_certs_only`) — it replaces, not adds to,
+the platform trust store, because the platform's verifier (on macOS, the
+Security framework) rejects a self-signed CA that is not in the system
+keychain. A public-CA `https://` target therefore becomes unreachable
+alongside the observatory CA. Omitted (the default), only
 the platform trust store applies, so an `https://` target signed by
 the observatory CA fails certificate verification regardless of the
 device's `auth` credentials — see
@@ -8661,8 +8397,7 @@ return a structured "site not configured" error.
       "name": "image-analyzer",
       "type": "event",
       "webhook_url": "http://localhost:11140/webhook",
-      "subscribes_to": ["exposure_complete"],
-      "barrier_gates": ["slew", "set_filter"]
+      "subscribes_to": ["exposure_complete"]
     },
     {
       "name": "cloud-backup",
@@ -8720,10 +8455,7 @@ return a structured "site not configured" error.
     }
   },
   "planner": {
-    "min_altitude_degrees": 20,
-    "dawn_buffer_minutes": 30,
-    "prefer_transiting": true,
-    "minimize_filter_changes": true
+    "min_altitude_degrees": 20
   },
   "safety": {
     "poll_interval": "10s",
@@ -8748,15 +8480,33 @@ return a structured "site not configured" error.
 
 ```
 services/rp/src/
-  main.rs               CLI entry point (clap + tracing)
-  lib.rs                Public API, ServerBuilder + BoundServer, module declarations
-  config.rs             Configuration types + load_config()
-  error.rs              AppError enum (thiserror)
+  main.rs               CLI entry point (clap): serve (also the bare
+                        `rp` and `rp --config`) and doctor; serves under
+                        rusty-photon-service-lifecycle's ServiceRunner,
+                        whose Shutdown ends the server
+  lib.rs                Public API, ServerBuilder + BoundServer, module
+                        declarations; opens the rp-targets store at
+                        target_store.db_path (§ Target Store)
+  doctor.rs             The doctor subcommand: read-only diagnosis of
+                        this config through the load path a start uses
+  error.rs              RpError enum (thiserror)
+
+  # Configuration
+  config/
+    mod.rs              Config + load_config(); re-exports every
+                        block's types
+    <block>.rs          One module per block: session, site,
+                        equipment, one per device kind, optical_train,
+                        the mount-scoped guiding, imaging, centering,
+                        cooling, safety, plate_solver, target_store,
+                        server (the shared AdvertisingServerConfig)
+    naming_template.rs  session.file_naming_pattern and
+                        session.directory_pattern: validated at load
+                        and compiled into the engine that names the
+                        files capture writes, and that the progress
+                        scan parses those names back with
 
   # Core domain
-  target.rs             rp-targets store wiring: opens RedbTargetStore
-                        at startup (target_store.db_path), slug allocation,
-                        dedup/upsert policy (§ Target Store)
   cooling.rs            Camera-cooling controller behind the
                         start_cooldown / start_warmup tools:
                         setpoint-ladder selection, adoption, hold,
@@ -8806,89 +8556,111 @@ services/rp/src/
                         flag, connect-time metadata, the hold-out, and
                         the lock one entry's connects and disconnect
                         take turns on
+    slot.rs             A device's slot, which one of rp's calls
+                        through the device holds at a time (a capture,
+                        a move, a filter change, a rotation, a train
+                        lease); on the registry entry, so it outlives
+                        a reconnect
     power.rs            The power map at run time (§ Power Switching):
                         an output's name resolved to the box's switch id,
                         the set_switch refusals, the get_switch reads,
                         and a driver service's restart request and the
                         wait for its new process
-    alpaca.rs           Generic Alpaca client (reqwest-based)
+    alpaca.rs           Alpaca client glue: the basic-auth header and
+                        the retry/backoff every connect shares
     binding.rs          The connect routine shared by every kind:
                         locate the entry's device in configureddevices,
                         check its pinned UniqueID, switch it on, log
                         what was bound (§ Device Identity Pin)
-    camera.rs           Camera device wrapper (expose, abort, cooler, readout)
-    mount.rs            Mount wrapper (slew, park, flip, tracking, side of pier)
-    focuser.rs          Focuser wrapper (move, temperature)
-    filter_wheel.rs     Filter wheel wrapper (set/get position)
-    safety_monitor.rs   SafetyMonitor wrapper (poll is_safe)
-    cover_calibrator.rs CoverCalibrator wrapper (cover open/close, calibrator on/off)
+    <kind>.rs           One module per device kind (camera, mount,
+                        focuser, filter_wheel, rotator, safety_monitor,
+                        cover_calibrator, switch, observing_conditions,
+                        dome): its registry entry and its connect
+                        routine over binding.rs, which reads the
+                        properties fixed for a session once, at
+                        connect, for the kinds that have them (camera,
+                        focuser, filter wheel, rotator)
     trains.rs           TrainModel: the derived optical-train coupling
                         model (§ Optical Trains) — graph validation +
                         the derivation queries (focuser-for-camera,
                         AF sequence, invalidations, focal length)
-
-  # Services (non-Alpaca integrations, backing built-in MCP tools)
-  # Per-service HTTP clients live in workspace crates following the
-  # `crates/rp-*` convention. plate_solve's MCP tool wiring lives in
-  # mcp/built_in/plate_solve.rs with transport/types in
-  # crates/rp-plate-solver; the guiding tools live in
-  # mcp/built_in/guider.rs with transport/types in crates/rp-guider.
-  services/
-    mod.rs              Service trait, service manager
+    test_support.rs     spawn_stub: the in-test Alpaca server the
+                        device, supervisor, power, safety, cooling and
+                        watch tests run against (§ I/O Abstractions)
 
   # Safety enforcement
-  safety.rs             SafetyMonitor polling loop, the safety status
-                        the gate reads, session interrupt/resume,
-                        in-flight cancellation, exposure abort,
-                        guiding stop, mount park
+  safety.rs             SafetyMonitor polling loop (fail-unsafe), the
+                        safety status the gate reads, and the unsafe
+                        transition: in-flight cancellation, exposure
+                        abort, guiding stop, mount park; the safe
+                        transition opens the gate and nothing else
 
   # Planning (exposed as MCP tools — see Planning and Ephemeris)
   # Math and catalog data live in workspace crates rp-ephemeris and
   # rp-catalog; this sub-tree is the MCP-tool wrapping plus the
   # decision logic that composes the primitives.
   planner/
-    mod.rs              Module root; tool registration helpers
-    primitives.rs       MCP wrappers for the 10 ephemeris primitives
-    catalog.rs          MCP wrapper for resolve_target (over rp-catalog)
+    mod.rs              Module root
+    primitives.rs       Helpers behind the ephemeris primitive tools
+    catalog.rs          Helpers behind resolve_target (over rp-catalog)
     convenience.rs      Derived-`Serialize` view helpers for
-                          get_target_status, get_meridian_status, and the
-                          progress views (get_next_target has no helper —
+                          get_target_status and get_meridian_status
+                          (get_next_target has no helper —
                           it serializes decision.rs's recommendation type
                           directly)
     decision.rs         The decision logic from §"Dynamic Planner",
                           parameterised by an `Ephemeris` impl + an
                           explicit `now` so tests are deterministic
+    progress.rs         The derived progress snapshot decision.rs
+                          ranks against
+    progress_scan.rs    The on-disk scan that derives it: each frame's
+                          name parsed back through the naming templates
+                          (§ Progress derivation)
+    goal_wire.rs        The JSON shape of an acquisition goal that
+                          add_target, set_goals and
+                          target_store.default_goals share
 
   # Event system
-  events/
-    mod.rs              Event types, EventBus
-    webhook.rs          Webhook delivery (fire-and-forget HTTP POST)
+  events.rs             EventBus and the event envelope: fire-and-forget
+                        webhook delivery to event plugins, and the
+                        in-process broadcast with the 512-event history
+                        the SSE stream replays from
 
   # MCP tool system
   # Pattern: each tool category gets its own #[tool_router(router = X,
-  # vis = "pub")] impl block on McpHandler in its own file. McpHandler::new
-  # merges the per-category routers via `+`, and a single
-  # #[tool_handler(router = self.tool_router)] impl ServerHandler glues
-  # them into rmcp's transport. Adding a new tool category = one new
-  # file in built_in/, one line in built_in/mod.rs, one `+` in
-  # handler::McpHandler::new — no edits to existing categories.
+  # vis = "pub")] impl block on McpHandler in its own file.
+  # McpHandler::merged_tool_router sums the per-category routers with
+  # `+`, and a single #[tool_handler(router = self.tool_router)] impl
+  # ServerHandler glues them into rmcp's transport. Adding a new tool
+  # category = one new file in built_in/, one line in built_in/mod.rs,
+  # one `+` in merged_tool_router — no edits to existing categories.
+  # Per-service HTTP clients live in workspace crates: plate_solve's
+  # transport and types in crates/rp-plate-solver, the guiding tools'
+  # in crates/rp-guider.
   mcp/
     mod.rs              Module root: declares submodules, holds the
                           shared private macros (tool_success!, tool_error!,
                           resolve_device!) exposed via `pub(crate) use`,
-                          and the explicit
-                          `#[tool_handler(router = self.tool_router)]
-                           impl ServerHandler for McpHandler {}` block.
+                          and the one `#[tool_handler]
+                          impl ServerHandler for McpHandler` block, whose
+                          call_tool registers each call in flight and
+                          refuses a gated one while conditions are unsafe.
                           Re-exports `McpHandler`.
     handler.rs          The McpHandler struct (state fields plus
-                          `tool_router: ToolRouter<Self>`),
-                          `new()`/`with_planner_config()`/
-                          `with_plate_solver()`/`with_guider()`/
-                          `with_providers()`.
-                          `new()` merges per-category routers via
-                          `Self::tool_router_<category>() + …`;
+                          `tool_router: ToolRouter<Self>`), `new()`, the
+                          `with_*()` builders the startup path wires the
+                          optional parts through, and
+                          `merged_tool_router()`;
                           `with_providers()` adds one proxy route per
                           provider tool.
+    gate.rs             The tool classes (§ In-Flight Tool Calls):
+                          gated or ungated per tool, the class of a
+                          capture call read from its arguments, and the
+                          SafetyUnsafe error.
+    inflight.rs         The in-flight tool-call registry the unsafe
+                          transition cancels gated calls through.
+    progress.rs         MCP progress notifications from the
+                          long-running blocking helpers.
     providers.rs        Tool-provider aggregation (§ Plugin-Provided
                           Tools): dial + discover at startup, the merge
                           and `requires_tools` checks, the proxy body
@@ -8907,27 +8679,28 @@ services/rp/src/
     internals.rs        Private/`pub(crate)` helpers shared across
                           categories: do_capture, do_move_focuser_blocking,
                           persist_capture_artifact, do_plate_solve,
+                          do_slew_blocking, do_park_blocking,
                           resolve_mount, the `*_via_document`/`*_via_path`
                           dispatch helpers, and small private types
-                          (Resolved*Params, BackgroundOutcome,
-                          PollIdleError) plus free fns clip_outcome,
+                          plus free fns clip_outcome,
                           detect_outcome, star_to_json,
                           poll_slewing_until_idle, resolve_solve_hints.
-    tests.rs            Current home for the full mcp test module
-                          (~3,400 lines including six mock-device
-                          types, six EquipmentRegistry builders, and
-                          the assert_tool_error / ok_text / ok_json
-                          helpers). A planned follow-up (see below)
-                          will distribute these tests across each
-                          built_in/<category>.rs file matching the
-                          imaging/ convention, and split the shared
-                          mock-device fixtures into a sibling
-                          test_support.rs module.
+    tests.rs            The mcp test module: the tool tests, with the
+                          mock devices (hand-written implementations of
+                          the ascom_alpaca device traits), the
+                          EquipmentRegistry builders and the
+                          assert_tool_error / ok_text / ok_json
+                          helpers they share. Moving its tests into
+                          per-category `#[cfg(test)] mod tests` blocks
+                          beside the tools, as several built_in/ files
+                          and imaging/ already keep theirs, and its
+                          shared fixtures into a sibling test_support.rs,
+                          is planned.
     built_in/
       mod.rs            Declares the per-category submodules.
       camera.rs         CaptureParams, CameraIdParams + capture +
                           get_camera_info.
-      imaging.rs        6 imaging param structs + compute_image_stats,
+      imaging.rs        The imaging param structs + compute_image_stats,
                           measure_basic, estimate_background,
                           detect_stars, measure_stars, compute_snr.
       filter_wheel.rs   SetFilterParams, FilterWheelIdParams +
@@ -8954,6 +8727,9 @@ services/rp/src/
                           the guiding train's guide-metric sweep
                           (median HFD per position over the guider
                           metrics window).
+      center_on_target.rs The center_on_target tool: the live
+                          capture, plate-solve and mount adapters for
+                          the loop in imaging/tools/.
       rotator.rs        MoveRotatorParams, RotatorPositionParams +
                           move_rotator, get_rotator_position
                           (rotator_id / train_id addressing, blocking
@@ -8964,6 +8740,10 @@ services/rp/src/
                           SetSwitchParams + disconnect_device,
                           connect_device, get_switch, set_switch,
                           restart_service (§ Power Switching).
+      cooling.rs        start_cooldown, start_warmup (§ Camera
+                          Cooling); the bodies are cooling.rs's.
+      safety.rs         get_safety_status: the state the safety gate
+                          acts on.
       plate_solve.rs    PointingHint, PlateSolveParams + plate_solve
                           tool.
       guider.rs         6 guider param structs + the 6 guiding tools
@@ -8971,43 +8751,52 @@ services/rp/src/
                           pause_guiding, resume_guiding,
                           get_guiding_stats), proxying to the guider
                           service via crates/rp-guider.
-      planner.rs        13 planner param structs + 10 ephemeris
-                          primitive tools + 3 convenience tools
-                          (get_target_status, get_next_target,
-                          get_meridian_status).
+      planner.rs        The ephemeris primitive tools and get_site,
+                          resolve_target, and the planner tools
+                          (get_target_status,
+                          get_next_target, get_meridian_status,
+                          record_exposure, get_session_progress).
       targets.rs        Target CRUD tools (add_target, get_target,
                           list_targets, update_target, delete_target,
                           set_goals) over crates/rp-targets'
-                          TargetStore (§ Target Store), and
-                          get_target_context.
-    # Planned follow-up: distribute the centralized tests.rs into
-    # per-category `#[cfg(test)] mod tests` blocks inside each
-    # built_in/<category>.rs (matching the imaging/ test-colocation
-    # convention) and extract the shared mock-device fixtures and
-    # registry builders into a sibling test_support.rs module.
-    #
-    # Planned (not in tree yet):
-    # - aggregator.rs    Connects to plugin MCP servers, proxies their
-    #                    tools. Lands when the third-party plugin
-    #                    protocol does.
+                          TargetStore (§ Target Store), add_target's
+                          slug allocation, and get_target_context.
+      plan_schema.rs    get_plan_schema, validate_plan (§ Plan schema
+                          and validation): read-only.
+      plan_validation.rs The plan-data rules, held once: validate_plan
+                          and the writers (add_target, set_goals) all
+                          call them.
 
-  # Imaging (the compositional tools that bind the analysis kernels)
-  # The kernels themselves are crates/rp-image-analysis, which the guider
-  # shares: pure, generic over Pixel, over ArrayView2, no I/O, no async.
-  # Async, I/O, and on-disk layout live in `persistence/` so the analysis
-  # path stays unit-testable without a runtime.
+  # Imaging (the compositional tools that bind the analysis kernels,
+  # and the compound tools that drive equipment loops)
+  # The kernels themselves are crates/rp-image-analysis, kept apart
+  # from rp so the native guider can use them too: pure, generic over
+  # Pixel, over ArrayView2, no I/O, no async. Async, I/O, and on-disk
+  # layout live in `persistence/` so the analysis path stays
+  # unit-testable without a runtime.
   imaging/
     mod.rs              Module root: re-exports the flat `imaging::*` API
                           shape that callers use, the kernels of
                           crates/rp-image-analysis among it, whichever
                           module or crate a symbol is defined in.
-    tools/              Compositional analyzers — bind multiple kernels
-                          together to answer one MCP-tool-shaped question.
-                          Pure functions; the MCP wrapper in `mcp.rs`
-                          resolves pixels and serializes results.
+    tools/              One MCP tool per file. The compositional
+                          analyzers bind multiple kernels together to
+                          answer one MCP-tool-shaped question: pure
+                          functions, whose MCP wrappers in
+                          mcp/built_in/ resolve pixels and serialize
+                          results. The compound tools' driving logic
+                          runs over traits, so tests drive it with
+                          synthetic adapters.
       mod.rs
       measure_basic.rs  measure_basic tool: background + stars + hfr
       measure_stars.rs  measure_stars tool: per-star photometry + PSF fit
+      center_on_target.rs center_on_target's capture → solve → sync →
+                          slew loop, over CaptureOps, PlateSolveOps and
+                          MountOps
+      ops.rs            CaptureOps, the capture a compound tool drives
+      auto_focus.rs     The pure parts of the guiding train's
+                          auto_focus: the grid and its walk order, the
+                          lowest-sample choice, the confirmation verdict
 
   # Persistence (FITS I/O, image+document cache, exposure-document storage)
   persistence/
@@ -9026,14 +8815,14 @@ services/rp/src/
                           16-bit sensors, BITPIX=32 fallback when max_adu
                           exceeds u16::MAX; reads normalise to i32; embeds
                           the document UUID in DOC_ID).
-
-  # Post-capture pipeline
-  pipeline/
-    mod.rs              Pipeline orchestrator: dispatch async tasks after capture
-    save.rs             Write FITS to final location, create sidecar JSON
+    fits_header.rs      The standard keywords capture writes into each
+                          frame's primary header, every card but
+                          ROWORDER projected from the exposure document
+                          (§ FITS header).
 
   # HTTP layer — the technical-exception surface (Tenet 8); the
-  # client surface is MCP. One flat file, no api/ package.
+  # client surface is MCP. routes.rs is one flat file, no api/
+  # package; the setup page is setup/.
   routes.rs             Axum router mounting /mcp (rmcp streamable
                         HTTP, session-less — § MCP Server) alongside
                         the HTTP routes: /health, /api/equipment,
@@ -9042,9 +8831,13 @@ services/rp/src/
                         /api/events/subscribe (SSE).
                         No /api/targets — target CRUD is MCP-only
                         (§ Target Store); no application logic here.
-
-  # I/O abstractions
-  io.rs                 Traits for HTTP client, clock, filesystem (testability)
+  setup/
+    mod.rs              The setup page's router, /setup (§ Setup Page)
+    driver.rs           rp's ConfigurableDriver: validation by rp's
+                          load rules, the secret and file-only fields,
+                          SaveDisposition::Restart
+    roster.rs           rp's own part of the page: the equipment block
+                          with its roster, and the registered plugins
 ```
 
 ## Testing Strategy
@@ -9062,8 +8855,8 @@ Testing follows the conventions in `docs/skills/testing.md`.
   holds and the exposure abort that skips its camera).
 - **Document**: Serialization round-trips, section merging, atomic persistence.
 - **Configuration**: Deserialization, validation, defaults.
-- **Config-time validation**: Missing tools, conflicting plugins, circular
-  dependencies.
+- **Config-time validation**: a required tool missing from the merged
+  catalog, a tool name offered twice.
 - **Sky calculations**: covered by `rp-ephemeris`'s own
   reference-value tests against Astropy-generated values
   (alt/az / transit / rise/set / sun / moon / twilight). `rp`'s
@@ -9082,7 +8875,9 @@ Behavioral specifications for `rp`'s responsibilities:
   frame; safe lifts the gate — the end-to-end pause and resume of a
   run against a real engine lives in
   `services/session-runner/tests/features/recovery.feature`)
-- Config rejection of the removed orchestrator surface (D11)
+- Config rejection of an orchestrator registration and of a
+  `session.session_state_file` key (`retired_config.feature`): `rp`
+  starts no runs, so it refuses at load a config that says it would
 - Tool-provider aggregation (`tool_providers.feature`, against the
   `bdd-infra` stub provider): provider tools in the catalog, a proxied
   call and its result, a colliding name failing startup, a safety stop
@@ -9125,7 +8920,7 @@ Note: orchestration workflow tests (capture loops, target switching,
 meridian flips) belong to the orchestrator plugin, not to `rp`. For
 example, end-to-end flat calibration scenarios live in
 `services/calibrator-flats/tests/` and spawn `rp` via the `rp-harness`
-feature of `bdd-infra`. Each new workflow plugin owns its own BDD
+feature of `bdd-infra`. Each new orchestrator or tool provider owns its own BDD
 suite rather than adding scenarios here.
 
 #### Prerequisites
@@ -9143,46 +8938,17 @@ to choose elsewhere) and prints the `OMNISIM_PATH` to set. In CI, the
 `.github/actions/install-omnisim` composite action does the same install
 and exports `OMNISIM_PATH`.
 
-**CI pins a patched fork**, not upstream: `REPO` and `VERSION` in
-`.github/actions/install-omnisim/omnisim.mjs` name
-[`ivonnyssen/ASCOM.Alpaca.Simulators` `v0.5.0-467.3`](https://github.com/ivonnyssen/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0-467.3).
-The `467.x` releases (issue #467) add the `--multi-instance` flag (467.1,
-skips upstream's machine-global single-instance mutex; 467.3, also skips
-the Windows tray icon, whose identity is just as machine-global and which
-instances starting together crash on — `docs/references/omnisim.md`
-§ "The Windows tray icon is machine-global too") and the
-`OMNISIM_SETTINGS_DIR` env var (467.2, re-roots the profile store per
-instance on every platform — the default store is not redirectable on
-Windows or macOS). The harness always spawns OmniSim with both, so **the
-fork is a hard requirement for BDD runs now**, local ones included: every
-test process (parallel suites, `rp:bdd` shards) gets a private simulator
-on its own port with a private profile store. It also carries the
-`326.x` series of `TelescopeHardware` fixes
-for the `center_on_target` slew-state hang/flake (issues #326, #319):
-326.1/.2 put the slew-engine writers and the
-`IsSlewing`/RA/Dec/`AtPark`/`SlewState` readers under `hardwareLock`;
-326.3 disposes the per-`Init()` slew timer (it leaked one live timer on
-each per-scenario "restart to clean state" reset, accumulating tick sources
-that raced the single static slew engine) and resets the slew state —
-including the `slewing` flag — under `hardwareLock`. Those addressed the
-locking/leak races but **not** the underlying wedge: 326.4 fixes it
-(issue #319). The real cause is geometric — a GEM goto whose
-shortest-path primary rotation crosses the hour-angle software limit
-(`180 + hourAngleLimit`) gets undone by `CheckAxisLimits` every tick, so
-the slew never finishes and `IsSlewing` stays `true` forever.
-`center_on_target`'s sync-then-slew-to-near-the-same-coords triggers it
-for the `RA < 180` off-target row at certain sidereal times (hence the
-intermittent CI flake). 326.4 makes `DoSlew` take the limit-avoiding
-rotation to the *same* target (pier side unchanged, so ConformU stays
-clean) and adds a no-progress guard. Reverting `REPO` and `VERSION` to
-upstream
-[`v0.5.0`](https://github.com/ASCOMInitiative/ASCOM.Alpaca.Simulators/releases/tag/v0.5.0)
-is no longer a one-line change: upstream has no `--multi-instance`, so
-the `bdd-infra` spawn path (and the parallel/sharded BDD scheduling
-built on it) would have to be reverted too. For local runs, use the
-pinned fork — upstream `v0.5.0` lacks `--multi-instance` (every BDD
-suite fails at OmniSim spawn) and still carries the #326 races and the
-sidereal-time-gated #319 wedge.
+**The fork, not upstream.** The release CI pins is one of the fork
+`ivonnyssen/ASCOM.Alpaca.Simulators`, and every BDD run needs it, a
+local one included. The harness spawns each OmniSim
+with the fork's `--multi-instance` flag and `OMNISIM_SETTINGS_DIR`
+variable, which give every test process — a parallel suite, an `rp:bdd`
+shard — a private simulator on its own port with a private profile store;
+upstream `v0.5.0` has neither. The fork's telescope also finishes the
+slews `center_on_target`'s scenarios make, where upstream's can leave
+`IsSlewing` true for good. [omnisim.md](../references/omnisim.md) says
+what the fork changes and why, the telescope under
+[§ The fork's slew engine](../references/omnisim.md#the-forks-slew-engine).
 
 #### Graceful Shutdown and Coverage
 
@@ -9192,8 +8958,9 @@ captured from the child process, two conditions must be met:
 1. **Graceful shutdown via SIGTERM.** LLVM coverage writes `.profraw`
    files through an `atexit` handler, which only runs on clean process
    exit. `SIGKILL` skips `atexit`, so no coverage data is written.
-   `lib.rs` handles `SIGTERM` (and `Ctrl-C`) via `tokio::signal` to
-   trigger a clean shutdown.
+   `main.rs` serves under `rusty-photon-service-lifecycle`'s
+   `ServiceRunner`, which turns `SIGTERM` (and `Ctrl-C`) into a clean
+   shutdown.
 
 2. **Explicit `stop()` before `Drop`.** The `ServiceHandle` (from the
    shared `bdd-infra` crate) is created with `kill_on_drop(true)` as a
@@ -9213,40 +8980,67 @@ emitted. See `.bazelrc` (`--config=coverage`) and `crates/bdd-infra/src/lib.rs`.
 
 ### Integration Tests
 
-- MCP tool tests with mock equipment
-- Tool provider aggregation (proxy plugin-provided tools)
-- Event delivery to webhook endpoints
+`rp` has no integration-test target between its unit tests and the BDD
+suite; what such a tier would hold lives in those two:
+
+- MCP tool tests with mock equipment: in process, in `src/mcp/tests.rs`
+- Tool provider aggregation (proxy plugin-provided tools): the merge and
+  its checks in `mcp/providers.rs`'s unit tests, a proxied call in
+  `tool_providers.feature`
+- Event delivery to webhook endpoints: `events.rs`'s unit tests and
+  `event_delivery.feature`
 
 ### I/O Abstractions
 
-All external I/O (HTTP calls, filesystem, clock) goes through traits defined in
-`io.rs`. Tests inject mocks to verify behavior without real devices or network.
+`rp` has no I/O trait layer of its own. A test substitutes the seam the
+code under test already has, by the rule of
+[testing.md § 6.7](../skills/testing.md#67-mock-strategy-hand-written-vs-mockall-vs-axum-stub):
+
+- **Alpaca devices.** The `ascom_alpaca` device traits are too wide for
+  `mockall`, so the connect routine, the reconnect supervisor, the power map,
+  the safety poll, cooling and the temperature watch run against an
+  in-test axum server that speaks the Alpaca wire format: `spawn_stub`
+  in `equipment/test_support.rs` binds it on `127.0.0.1:0`, and each test
+  gives it the routes its case needs. The MCP tool tests put hand-written
+  implementations of the device traits in the `EquipmentRegistry`
+  instead.
+- **The plate solver and the guider** are reached through narrow client
+  traits, `rp_plate_solver::PlateSolveClient` and
+  `rp_guider::GuiderClient`, which tests replace with their `mockall`
+  mocks or a hand-written double.
+- **Compound tools and the planner** take their equipment and their time
+  as arguments: `center_on_target`'s loop runs over the `CaptureOps`,
+  `PlateSolveOps` and `MountOps` traits, and `planner/decision.rs` over
+  an `Ephemeris` impl and an explicit `now`.
+- **Files** are real, in a temporary directory.
 
 ## Future Considerations
 
-Items explicitly out of scope for the initial implementation:
+Out of scope, and not built:
 
 - **Distributed plugins** — plugins on remote machines accessing FITS files
   over the network
 - **Plugin marketplace / registry** — discovery and installation of third-party
   plugins
-- **Multiple mounts** — the current design assumes one mount; extending to
+- **Multiple mounts** — the design assumes one mount; extending to
   multiple mounts is a separate concern
 - **Dome control** — the `domes` equipment kind covers roster membership and
-  connectivity status only (§ Equipment Integration); actual dome behavior
-  (open/close, sync-to-scope) is still out of scope
+  connectivity status only (§ Equipment Integration); dome behavior
+  (open/close, sync-to-scope) is not built
 - **Mosaic planning** — multi-panel target definitions
 - **Ambient-aware cooldown preflight** — skipping obviously unreachable
   cooler rungs (and warning early) from an ObservingConditions ambient
   reading. The `observing_conditions` equipment kind (§ Equipment
-  Integration) now exists, satisfying the prerequisite; the preflight
-  feature itself is still out of scope. Ambient stays a preflight
-  optimization, never the rung decider (§ Camera Cooling).
+  Integration) supplies the reading; the preflight is not built. Ambient
+  stays a preflight optimization, never the rung decider (§ Camera
+  Cooling).
 - **Abort-on-unreachable cooling** — an opt-in knob to end the session
   when no dark-library rung is reachable, instead of the default
   proceed-uncooled-with-warning (§ Camera Cooling).
 - **Automated dark-library capture per rung** — a cloudy-night
   orchestrator job, sibling of calibrator-flats.
 
-Note: flat/dark frame automation is no longer out of scope — it can be
-implemented as a calibration orchestrator plugin without changes to `rp`.
+Calibration-frame automation needs no change to `rp`: it is a plugin
+driving `rp`'s tools, as the calibrator-flats tool provider does for
+flats ([calibrator-flats.md](calibrator-flats.md)), and the dark-library
+job above would be one too.

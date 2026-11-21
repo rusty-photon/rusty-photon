@@ -2,14 +2,14 @@ Feature: POST /api/v1/solve — request handling and error surface
 
   The solve endpoint accepts a FITS path plus optional pointing/FOV/
   search-radius hints, runs ASTAP under the request's deadline, and
-  returns the parsed WCS solution or one of the five frozen error codes.
+  returns the parsed WCS solution or one of the five error codes.
   `blind: true` asks for a whole-sky search, ASTAP's `-r 180`, so a
   position ASTAP would take from the FITS header or its previous solve
   can no longer limit where it looks. A blind request carries no
   position and no search radius; it may carry a field-of-view hint.
 
   The complete HTTP contract — request fields, response fields, error
-  code table — lives in `docs/plans/archive/plate-solver.md` §"HTTP contract".
+  code table — lives in `docs/services/plate-solver.md` § HTTP API.
   Each scenario below exercises that contract one branch at a time.
 
   Background:

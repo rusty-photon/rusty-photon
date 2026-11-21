@@ -25,6 +25,10 @@ cargo run -p sentinel -- -c my-config.json
 
 ```
 sentinel [OPTIONS]
+sentinel doctor [--config <PATH>] [--json]
+
+Commands:
+  doctor                         Diagnose this service's configuration without starting it; read-only, exits 1 on failing checks
 
 Options:
   -c, --config <PATH>            Path to JSON configuration file
@@ -35,11 +39,11 @@ Options:
   -V, --version                  Print version
 ```
 
-If no config file is provided, sentinel starts with an empty default configuration (no monitors, no notifiers, dashboard on port 11114).
+Without `-c`, sentinel reads `sentinel.json` from the platform config directory (`~/.config/rusty-photon/` on Linux, `%PROGRAMDATA%\rusty-photon\` on Windows), creating it on first start with the default configuration: no monitors, no notifiers, dashboard on port 11114.
 
 ## Configuration
 
-Configuration is a JSON file where every section is optional. The sections below cover monitoring and notification; the `operation_watchdog` block is documented in the [design document](../../docs/services/sentinel.md). The services sentinel supervises are **not configured** — they are discovered from the platform service manager (see the design document's [Service Discovery](../../docs/services/sentinel.md#service-discovery) section); a config still carrying the retired `services` map fails loudly at load. See [`examples/config.json`](examples/config.json) for a complete example.
+Configuration is a JSON file where every section is optional. The sections below cover monitoring and notification; the `operation_watchdog` block is documented in the [design document](../../docs/services/sentinel.md). The services sentinel supervises are **not configured** — they are discovered from the platform service manager (see the design document's [Service Discovery](../../docs/services/sentinel.md#service-discovery) section); a `services` key in the config fails loudly at load. See [`examples/config.json`](examples/config.json) for a complete example.
 
 ### Monitors
 
@@ -62,7 +66,7 @@ Monitors poll ASCOM Alpaca devices at a configured interval.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `type` | *(required)* | Monitor type. Currently only `alpaca_safety_monitor`. |
+| `type` | *(required)* | Monitor type; `alpaca_safety_monitor` is the only one. |
 | `name` | *(required)* | Display name, referenced in transition rules. |
 | `host` | `localhost` | ASCOM Alpaca device hostname or IP. |
 | `port` | `11111` | ASCOM Alpaca device port. |
@@ -92,7 +96,7 @@ Notifiers deliver alerts when transitions occur. A Pushover POST the endpoint ha
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `type` | *(required)* | Notifier type. Currently only `pushover`. |
+| `type` | *(required)* | Notifier type; `pushover` is the only one. |
 | `api_token` | *(required)* | Pushover application API token. |
 | `user_key` | *(required)* | Pushover user/group key. |
 | `default_title` | `Observatory Alert` | Default notification title. |
@@ -174,4 +178,4 @@ When the dashboard is enabled, the following endpoints are available:
 
 ## Design Documentation
 
-For architecture details, module structure, edge-case behavior, and implementation notes, see the [design document](../../docs/services/sentinel.md).
+For architecture details, module structure and edge-case behavior, see the [design document](../../docs/services/sentinel.md).

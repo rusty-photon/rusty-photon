@@ -1,17 +1,17 @@
 //! Wire-format parsing for [`rp_targets::AcquisitionGoal`].
 //!
-//! This is the JSON shape `add_target`/`set_goals`/`targets.default_goals`
+//! This is the JSON shape `add_target`/`set_goals`/`target_store.default_goals`
 //! (config) all share — `binning` as `"AxB"` and `exposure_duration` as
 //! a humantime string (`"5m"`). `AcquisitionGoal`'s **derived**
 //! `Serialize` produces
 //! this exact shape (`Binning` serializes as its canonical string,
 //! exposure via `humantime_serde`), so the output side needs no
 //! conversion at all; [`GoalWire`] and its `TryFrom` into
-//! `AcquisitionGoal` remain the *input* parser for friendlier per-field
+//! `AcquisitionGoal` are the *input* parser for friendlier per-field
 //! errors than raw serde's, and a test here locks the two shapes
 //! together. Shared by
 //! [`crate::mcp::built_in::targets`] (the MCP tool bodies) and
-//! [`crate::config::target_store`] (parsing `targets.default_goals`) so
+//! [`crate::config::target_store`] (parsing `target_store.default_goals`) so
 //! the two stay byte-for-byte consistent.
 
 use rp_targets::{AcquisitionGoal, Binning};
@@ -19,7 +19,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The wire shape of one `goals[]` entry, as accepted by `add_target`,
-/// `set_goals`, and `targets.default_goals` in config.
+/// `set_goals`, and `target_store.default_goals` in config.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 pub struct GoalWire {
     pub filter: String,
@@ -118,8 +118,8 @@ mod tests {
 
     #[test]
     fn wire_from_goal_encodes_a_sub_second_bias_exposure() {
-        // The motivating case: a sub-second exposure the old whole-second
-        // encoding could not represent now survives the wire.
+        // A sub-second exposure survives the wire rather than rounding to
+        // whole seconds.
         let goal = AcquisitionGoal::try_from(&wire("Dark", "1x1", "32us", 50)).unwrap();
         assert_eq!(goal.exposure_duration, Duration::from_micros(32));
         assert_eq!(GoalWire::from(&goal).exposure_duration, "32us");

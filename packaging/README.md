@@ -1,8 +1,7 @@
 # Packaging assets
 
-Canonical shared files for the per-service `.deb`/`.rpm` packages described
-in [`docs/plans/archive/service-packaging.md`](../docs/plans/archive/service-packaging.md)
-and [ADR-012](../docs/decisions/012-service-packaging-architecture.md).
+Canonical shared files for the per-service `.deb`/`.rpm` packages
+([ADR-012](../docs/decisions/012-service-packaging-architecture.md)).
 Operator-facing docs (building, installing, configuring) live in
 [`docs/packaging.md`](../docs/packaging.md).
 
@@ -29,6 +28,10 @@ packaged, per ADR-013; zwo-camera and zwo-focuser bundle their MIT blobs
 instead, so the pointer is a no-op for both — `zwo-focuser`'s package name
 doesn't even end in `-camera`, so the substitution leaves the helper path
 unchanged and permanently missing, which is exactly the desired no-op).
+`svbony-camera` ships a udev rule too, but its `postinst` is its own: it
+keeps the common preamble and spells out the udev reload and the pointer
+to its SDK helper, `/usr/sbin/rusty-photon-svbony-sdk-install`, a name the
+stanza's substitution does not produce.
 These `pkg/` dirs additionally hold the udev rule file and the native-SDK
 payload pieces, all listed as plain `assets` in the metadata blocks:
 sentinel ships `50-rusty-photon-sentinel.rules` into
@@ -42,7 +45,9 @@ daily TLS renewal; a second `[[package.metadata.deb.systemd-units]]`
 entry enables and starts the timer, the rpm scriptlets enable it — no
 `rusty-photon-doctor` package exists, sentinel's artifact is the
 vehicle);
-qhy-camera the firmware helper; zwo-camera and zwo-focuser each their own
+qhy-camera the firmware helper; svbony-camera the SDK helper, which
+installs the operator-downloaded SDK where the RUNPATH finds it (SVBony
+grants no licence to ship it, ADR-018); zwo-camera and zwo-focuser each their own
 committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy vendored
 with the libzwo-sys headers) plus a gitignored `lib/` dir into which
 `cargo ci build-packages` stages that service's ONE MIT SDK blob right

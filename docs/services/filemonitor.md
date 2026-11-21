@@ -258,10 +258,11 @@ The service uses Rust's `PathBuf` for cross-platform path handling:
 
 #### Linux (Debian/Ubuntu) — `.deb` package
 ```bash
-sudo dpkg -i rusty-photon-filemonitor_0.1.0-1_amd64.deb
+sudo apt-get install ./rusty-photon-filemonitor_*.deb
 ```
 
-This installs the binary to `/usr/bin/rusty-photon-filemonitor`, enables and
+`apt-get install ./<file>`, not `dpkg -i`, so that the package's runtime
+dependencies resolve. This installs the binary to `/usr/bin/rusty-photon-filemonitor`, enables and
 starts the `rusty-photon-filemonitor` systemd unit, and creates the shared
 `rusty-photon` system user (see
 [ADR-012](../decisions/012-service-packaging-architecture.md)). The package
@@ -273,16 +274,26 @@ Upgrades never touch the config; package purge removes it.
 
 #### Linux (Fedora/RHEL) — `.rpm` package
 ```bash
-sudo rpm -i rusty-photon-filemonitor-0.1.0-1.x86_64.rpm
+sudo dnf install ./rusty-photon-filemonitor-*.rpm
+sudo systemctl start rusty-photon-filemonitor
 ```
 
-Same layout and config behavior as the `.deb` package.
+Same layout and config behavior as the `.deb` package, with two
+differences: the rpm enables the unit without starting it (the Fedora
+convention), hence the `systemctl start`; and rpm has no purge, so erasing
+the package keeps the config, which you delete by hand to clean up. The
+signed apt and dnf repositories, upgrades and downgrades are in
+[docs/packaging.md](../packaging.md).
 
 #### macOS — Homebrew
 ```bash
 brew tap rusty-photon/rusty-photon
-brew install filemonitor
+brew install rusty-photon-filemonitor
+brew services start rusty-photon-filemonitor   # nothing runs until started
 ```
+
+The formula's `service do` block makes it a launchd service; see
+[docs/packaging-macos.md](../packaging-macos.md).
 
 #### Windows — suite `.msi` installer
 filemonitor ships as a feature of the family-wide
@@ -304,8 +315,9 @@ cargo build --release -p filemonitor
 
 #### Linux (systemd)
 A hardened systemd unit is provided at `pkg/rusty-photon-filemonitor.service`
-(network-only service class per ADR-012). When installed via the `.deb` or
-`.rpm` package, the unit is automatically enabled and started. Manual setup:
+(network-only service class per ADR-012). The `.deb` package enables and
+starts the unit on install; the `.rpm` package enables it, and it starts at
+the next boot or with `systemctl start`. Manual setup:
 
 ```bash
 sudo cp pkg/rusty-photon-filemonitor.service /etc/systemd/system/
@@ -331,8 +343,10 @@ console mode logs to stderr unchanged.
 **Installer-side registration:** On Windows the suite MSI registers the
 `rusty-photon-filemonitor` service (LocalSystem, auto-start, restart-on-
 failure actions) — see [docs/packaging-windows.md](../packaging-windows.md).
-macOS (launchd) registration is not implemented; running the binary
-directly is the supported mode there.
+On macOS the Homebrew formula's `service do` block makes it a launchd
+service, which `brew services start rusty-photon-filemonitor` registers,
+and launchd respawns it if it exits — see
+[docs/packaging-macos.md](../packaging-macos.md).
 
 ### Monorepo Structure
 

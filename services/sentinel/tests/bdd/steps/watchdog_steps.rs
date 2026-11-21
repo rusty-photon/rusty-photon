@@ -35,6 +35,22 @@ async fn slew_completes_in_time(world: &mut SentinelWorld) {
         .await;
 }
 
+#[given("rp is streaming a guide start that settles within its deadline")]
+async fn guide_start_settles_in_time(world: &mut SentinelWorld) {
+    world.sentinel_has_notifiers = true;
+    // rp ends a guide start with `guide_settled`, not `guide_complete`.
+    world
+        .start_rp_event_stub(vec![
+            format!(
+                "event: guide_started\nid: 1\ndata: {{\"event_seq\":1,\"event\":\"guide_started\",\"operation_id\":\"{OP_ID}\",\"max_duration_ms\":500}}"
+            ),
+            format!(
+                "event: guide_settled\nid: 2\ndata: {{\"event_seq\":2,\"event\":\"guide_settled\",\"operation_id\":\"{OP_ID}\"}}"
+            ),
+        ])
+        .await;
+}
+
 #[given("rp is streaming a slew operation that never completes")]
 async fn slew_never_completes(world: &mut SentinelWorld) {
     world.sentinel_has_notifiers = true;

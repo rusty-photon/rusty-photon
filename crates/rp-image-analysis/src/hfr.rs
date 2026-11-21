@@ -165,11 +165,10 @@ mod tests {
 
     #[test]
     fn hfr_gaussian_psf_is_in_expected_range() {
-        // 2D Gaussian with sigma = 2.0. The continuous half-flux radius is
-        // ≈ σ × √(2 ln 2) ≈ 2.355σ ≈ 2.355 for σ=2.0... wait that's FWHM/2.
-        // Half-flux for a circular Gaussian: 1 - exp(-r²/2σ²) = 0.5 →
-        // r = σ√(2 ln 2) ≈ 1.1774 σ ≈ 2.355 for σ=2.0. With pixel quantization
-        // and finite sampling tolerance is generous.
+        // 2D Gaussian with sigma = 2.0. Half-flux for a circular Gaussian:
+        // 1 - exp(-r²/2σ²) = 0.5 → r = σ√(2 ln 2) ≈ 1.1774 σ ≈ 2.355 for
+        // σ=2.0. Pixel quantization and finite sampling make the tolerance
+        // generous.
         let sigma = 2.0_f64;
         let cx = 10.0_f64;
         let cy = 10.0_f64;

@@ -1,7 +1,33 @@
 //! Step definitions for `sync_offset.feature`
 
 use crate::world::FalconRotatorWorld;
-use cucumber::{then, when};
+use cucumber::{given, then, when};
+
+#[given("a pa-falcon-rotator process whose sync-offset record cannot be written")]
+async fn process_with_unwritable_record(world: &mut FalconRotatorWorld) {
+    world.start_process_with_unwritable_sync_record().await;
+}
+
+#[when("the process stops and starts again on the same config")]
+async fn restart_on_same_config(world: &mut FalconRotatorWorld) {
+    world.restart_process().await;
+}
+
+#[then(expr = "the record {word} beside the config holds sync_offset_deg {float}")]
+async fn record_holds_offset(world: &mut FalconRotatorWorld, name: String, expected: f64) {
+    let path = world.process_file(&name);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let record: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("{} does not parse: {e}\n{text}", path.display()));
+    let actual = record["sync_offset_deg"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("{} has no numeric sync_offset_deg:\n{text}", path.display()));
+    assert!(
+        (actual - expected).abs() < 1e-6,
+        "expected sync_offset_deg {expected}, got {actual}"
+    );
+}
 
 #[when(expr = "I call Sync with {float}")]
 async fn call_sync(world: &mut FalconRotatorWorld, position: f64) {

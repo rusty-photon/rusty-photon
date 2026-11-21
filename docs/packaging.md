@@ -2,19 +2,17 @@
 
 How to build, install, and operate the rusty-photon `.deb` / `.rpm`
 packages on an observatory machine. Architecture decisions live in
-[ADR-012](decisions/012-service-packaging-architecture.md) (naming, config
-model, shared user, unit classes) and
+[ADR-012](decisions/012-service-packaging-architecture.md) (native
+packages, naming, config model, shared user, unit classes) and
 [ADR-013](decisions/013-native-sdk-payload-policy.md) (native camera-SDK
-payloads); the full design in
-[docs/plans/archive/service-packaging.md](plans/archive/service-packaging.md); the
-maintainer-script invariants in [packaging/README.md](../packaging/README.md).
+payloads); the maintainer-script invariants in
+[packaging/README.md](../packaging/README.md).
 
-Deployment is native packages by explicit decision — the drivers' USB /
-udev / firmware needs and ASCOM Alpaca's UDP discovery defeat containers
-(ADR-012).
+Deployment is native packages: the drivers' USB / udev / firmware needs
+defeat containers.
 
 Windows ships as one suite MSI instead of per-service packages — see
-[docs/packaging-windows.md](packaging-windows.md) (ADR-015). macOS ships
+[docs/packaging-windows.md](packaging-windows.md). macOS ships
 per-service Homebrew formulas from the `rusty-photon/homebrew-rusty-photon`
 tap — see [docs/packaging-macos.md](packaging-macos.md).
 
@@ -63,7 +61,7 @@ credential lifecycle — [docs/services/doctor.md](services/doctor.md))
 plus the TLS renewal units `rusty-photon-renew.service` /
 `rusty-photon-renew.timer`. There is no separate doctor package:
 sentinel is the always-installed supervisor, so its artifact is the
-delivery vehicle (ADR-016).
+delivery vehicle.
 
 ## Building packages
 
@@ -91,11 +89,12 @@ the next one".
 The tool installs apt build prerequisites, stages the pinned native
 SDKs into `~/.cache/rusty-photon-pkg/` (QHYCCD static lib for the
 link; per zwo service its ONE MIT blob, which also becomes that package's
-payload per ADR-013 + ADR-014), then release-builds with the RUNPATH the
-zwo packages need — the two zwo services each in their own cargo
-invocation, so feature unification cannot re-union their per-device SDK
-links — and runs `cargo deb` (and `cargo generate-rpm` with `--rpm`) per
-service. Artifacts land in `dist/<version>/` with a `SHA256SUMS.txt`.
+payload; SVBony's library, which svbony-camera links and its package
+never ships), then release-builds with the RUNPATH the zwo packages and
+svbony-camera load their SDKs through — the two zwo services each in their
+own cargo invocation, so feature unification cannot re-union their
+per-device SDK links — and runs `cargo deb` (and `cargo generate-rpm` with
+`--rpm`) per service. Artifacts land in `dist/<version>/` with a `SHA256SUMS.txt`.
 
 The QHY SDK's version and sha256s are pinned once, in the tools crate's
 [`packaging/qhy.rs`](../tools/rusty-photon-ci/src/packaging/qhy.rs), which the
@@ -238,8 +237,9 @@ git checkout <known-good-sha>
 cargo ci build-packages --version "<base>+nightly.<datetime>.g<short-sha>"
 ```
 
-(`<base>` = the workspace version at that commit. A commit from before
-the tool existed has `scripts/build-packages.sh --deb-version` instead.)
+(`<base>` = the workspace version at that commit. A commit without
+`cargo ci build-packages` has `scripts/build-packages.sh --deb-version`
+in its place.)
 
 ## Installing
 
@@ -290,7 +290,7 @@ The cameras and the network-only services serve with no hardware attached.
 
 ## First wiring: rusty-photon-doctor
 
-The installer puts bytes on disk; doctor wires the configs (ADR-016).
+The installer puts bytes on disk; doctor wires the configs.
 After installing — or later adding — packages, run once:
 
 ```sh
@@ -323,7 +323,7 @@ systemctl list-timers rusty-photon-renew.timer   # shows the next fire
 ```
 
 Running services pick renewed certificates up without a restart
-(mtime-triggered in-process reload; ADR-002). Sentinel's watchdog
+(mtime-triggered in-process reload). Sentinel's watchdog
 deliberately ignores the renew unit — it is a scheduled job, not a
 daemon to supervise.
 
@@ -376,9 +376,8 @@ restarts every 5 s until the device answers.
 
 ## Camera specifics
 
-**qhy-camera** — QHYCCD's SDK is proprietary and never redistributed
-(ADR-013). After installing the package, run once, as root, with internet
-access:
+**qhy-camera** — QHYCCD's SDK is proprietary and never redistributed.
+After installing the package, run once, as root, with internet access:
 
 ```sh
 sudo rusty-photon-qhy-firmware-install
@@ -394,10 +393,11 @@ camera just stays unusable until the helper has run.
 **zwo-camera / zwo-focuser** — nothing to do: each package bundles its own
 MIT-licensed SDK blob at `/usr/lib/rusty-photon/` (`libASICamera2.so` /
 `libEAFFocuser.so`; license in the package docdir), so the two co-install
-cleanly (ADR-014). ZWO devices keep firmware in onboard flash.
+cleanly. ZWO devices keep firmware in onboard flash.
 
-**svbony-camera** — SVBony's SDK carries no license grant at all (ADR-018),
-so unlike ZWO it is never bundled. After installing the package, run once,
+**svbony-camera** — SVBony's SDK carries no license grant at all
+([ADR-018](decisions/018-svbony-sdk-no-license-payload-policy.md)), so
+unlike ZWO it is never bundled. After installing the package, run once,
 as root, with internet access:
 
 ```sh
@@ -506,15 +506,16 @@ unit stays inert until `plate-solver.json` exists.
 
 ```sh
 sudo apt-get remove rusty-photon-<svc>   # keeps the service's config + state
-sudo apt-get purge rusty-photon-<svc>    # also deletes its config + state dir
+sudo apt-get purge rusty-photon-<svc>    # also deletes its config, the state records beside it, and its state dir
 ```
 
 The shared user, `/var/lib/rusty-photon`, and the `/etc/rusty-photon`
 symlink are never removed (shared across packages, Debian convention for
 system users). rpm has no purge lifecycle: erase behaves like `remove`;
 to fully clean up after an erase, delete
-`/var/lib/rusty-photon/.config/rusty-photon/<svc>.json` and
-`/var/lib/rusty-photon/<svc>/` by hand.
+`/var/lib/rusty-photon/.config/rusty-photon/<svc>.json`, the state
+records beside it (`<svc>.*.json`) and `/var/lib/rusty-photon/<svc>/` by
+hand.
 
 ## Verifying a build
 
@@ -538,19 +539,21 @@ drivers are held to handshake-attempted plus config-self-created, since
 with no device attached they exit and restart rather than serve; the port
 probe applies to them only once a driver settles into a steady `active`
 (the check waits that out, because a `Type=simple` unit already reads
-`active` while the doomed process is still retrying its open). zwo-camera
-additionally proves via `ldd` that each zwo binary resolves exactly its own
-bundled blob through the RUNPATH — and does not link the other services'
-SDKs (ADR-014). Rootless podman cannot apply the units' sandboxing, so
-the tool resets the hardening inside the container — hardening is
+`active` while the doomed process is still retrying its open). Each zwo
+service additionally proves via `ldd` that its binary resolves exactly its
+own bundled blob through the RUNPATH and links none of the other ZWO SDKs;
+svbony-camera's run first checks that the package does not ship its SDK,
+installs it with the package's helper as an operator would, and proves
+the same RUNPATH resolution. Rootless podman cannot apply the units'
+sandboxing, so the tool resets the hardening inside the container — hardening is
 verified on real hosts with `systemd-analyze security
 rusty-photon-<svc>.service`. An interrupted run leaves its container,
 `rusty-photon-verify-<pid>`, running; `podman rm -f` it.
 
 Expected `lintian` findings (accepted, not bugs):
 `custom-library-search-path` on every package (the RUNPATH is injected
-uniformly; only the zwo packages use it); `no-changelog` / `no-manual-page` /
-`copyright-without-copyright-notice` pre-1.0; `unstripped-binary-or-object`
+uniformly; only the zwo packages and svbony-camera use it); `no-changelog` /
+`no-manual-page` / `copyright-without-copyright-notice` pre-1.0; `unstripped-binary-or-object`
 and `hardening-no-relro` on the vendored ZWO blobs (shipped exactly as
 published); `embedded-library` on qhy-camera's statically linked SDK;
 `appstream-metadata-missing-modalias-provide` on the camera packages' udev

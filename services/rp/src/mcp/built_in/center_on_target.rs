@@ -178,8 +178,8 @@ impl McpHandler {
     }
 
     /// Emit the `centering` started envelope with its advisory
-    /// outer-loop deadlines (§2.5): per-iteration slews/captures carry
-    /// their own deadlines; this sizes the whole loop for the Sentinel
+    /// outer-loop deadlines: per-iteration slews/captures carry their
+    /// own deadlines; this sizes the whole loop for the Sentinel
     /// watchdog. rp does not enforce it.
     fn emit_centering_started(
         &self,

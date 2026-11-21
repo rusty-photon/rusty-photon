@@ -8,8 +8,6 @@
 //! `Skipped` (so the test passes without `ConformU` installed); CI sets it.
 #![cfg(feature = "conformu")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-// The serialization mutex is intentionally held across the ConformU awaits.
-#![allow(clippy::await_holding_lock)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
     clippy::needless_pass_by_ref_mut,
@@ -32,17 +30,10 @@
     clippy::struct_excessive_bools
 )]
 
-use std::sync::Mutex;
-
 use bdd_infra::{ConformuRun, ServiceHandle};
-
-/// Serialize `ConformU` runs (each binds its own port, but `ConformU` itself and the
-/// shared cache directory are global).
-static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error>> {
-    let _lock = CONFORMU_LOCK.lock().unwrap();
     let _ = tracing_subscriber::fmt::try_init();
 
     let temp_dir = bdd_infra::scratch::new_dir("conformu-svbony-camera-")?;

@@ -4,9 +4,10 @@
 # build) and `cargo ci verify-msi` (silent install -> per-service-class
 # checks -> failure-actions proofs -> feature remove -> uninstall) on
 # windows-latest. Triggers: PRs that touch the packaging inputs (the
-# iteration loop): the installer, the two tools and what they share, and
+# iteration loop): the installer, the two tools and what they share,
 # install-zwo-sdk's module, whose links the build downloads ZWO's SDKs
-# from; and workflow_dispatch for on-demand runs. release.yml runs the
+# from, and the service-lifecycle crate, whose SCM dispatch only this
+# verify runs; and workflow_dispatch for on-demand runs. release.yml runs the
 # same two tools as the release gate, and the msi leg of
 # nightly-packages.yml runs them nightly with the nightly version stamp
 # (phase N3 of docs/plans/archive/nightly-releases.md) — the schedule lives
@@ -24,6 +25,7 @@ on:
       - tools/rusty-photon-ci/src/packaging/**
       - tools/rusty-photon-ci/src/process.rs
       - .github/actions/install-zwo-sdk/zwo-sdk.mjs
+      - crates/rusty-photon-service-lifecycle/**
       - .github/workflows/msi.yml
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

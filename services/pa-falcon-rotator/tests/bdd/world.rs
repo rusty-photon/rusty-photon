@@ -270,6 +270,35 @@ impl FalconRotatorWorld {
         self.adopt_process(handle, config_path).await;
     }
 
+    /// Stop the spawned process and start it again on the same config file
+    /// and directory, so whatever it keeps beside its config is still there.
+    pub async fn restart_process(&mut self) {
+        if let Some(mut handle) = self.process.take() {
+            handle.stop().await;
+        }
+        self.start_process().await;
+    }
+
+    /// Spawn the binary with a directory where its sync-offset record goes,
+    /// which no write can replace on any platform.
+    pub async fn start_process_with_unwritable_sync_record(&mut self) {
+        let dir = self
+            .process_dir
+            .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
+        std::fs::create_dir(dir.path().join("config.sync-offset.json"))
+            .expect("failed to put a directory where the record goes");
+        self.start_process().await;
+    }
+
+    /// The path of `name` in the spawned process's config directory.
+    pub fn process_file(&self, name: &str) -> std::path::PathBuf {
+        self.process_dir
+            .as_ref()
+            .expect("no spawned process directory")
+            .path()
+            .join(name)
+    }
+
     /// Spawn the binary with `serial.port` pinned by a `--port` override,
     /// so the server page shows the field pinned and never persists it.
     pub async fn start_process_with_serial_override(&mut self, serial_port: &str) {

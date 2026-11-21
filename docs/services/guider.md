@@ -9,7 +9,8 @@ with `PulseGuide` on one ASCOM Alpaca Telescope. `rp` commands it over
 an HTTP API.
 
 **The service is designed and not yet built.** This document is the
-design the implementation is written against.
+design the implementation is written against. Of the guiding core,
+`crates/rp-guiding`, the star selection and measurement are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
 records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
@@ -305,7 +306,7 @@ camera's frame depends on `SensorType`:
 - **Saturation.** A star with a pixel at full scale is not chosen as a
   guide star. Full scale is the saturation level of the camera's frame,
   by the rule `rp` measures with
-  ([rp.md § MVP: `measure_basic` Contract](rp.md#mvp-measure_basic-contract)):
+  ([rp.md § `measure_basic` Contract](rp.md#measure_basic-contract)):
   the frame's own clip when it shows one, `MaxADU` otherwise, and the
   lower of the two when both are known. `MaxADU` alone is not enough:
   `qhy-camera` reports the top of its 16-bit container, and its frames
@@ -383,21 +384,62 @@ After `mount.max_failures` consecutive such cycles the run stops with
 
 ### Star selection and measurement
 
+**The frame's background.** Selection and measurement both measure
+against the frame's background, estimated from a sample of its pixels:
+every *s*-th pixel of every *s*-th row, *s* the whole square root of the
+frame's pixels over 50,000 and at least 1, so the sample holds at least
+50,000 pixels, or every pixel of a smaller frame. The sample is sigma-clipped as `rp`'s background is, at 3
+standard deviations for at most five rounds. Its mean is the level
+detection measures above, and its standard deviation the noise a
+signal-to-noise ratio is measured against. The whole frame would take
+most of the time a frame's measurement takes on a Raspberry Pi 5
+([native-guider.md § Staging](../plans/native-guider.md#staging), "What
+G1 found"), and 50,000 pixels fix the standard deviation to a fraction
+of a percent.
+
 **Selection.** The guider detects the stars of one frame and keeps up
 to `stars.max` of them as its guide stars, ranked by signal-to-noise
 ratio. A detection is passed over when it is saturated, when it is
 closer to the frame's edge than `calibration.distance_px` plus
 `stars.search_region_px`, when it is too sharp to be a star (a hot
 pixel), or when another star is so close that the two would be
-confused. A frame that yields no guide star refuses `calibrate`,
+confused. A frame that yields fewer guide stars than `stars.min`
+yields none: a run could not guide on them. It refuses `calibrate`,
 `guiding/start` and `star/reselect` with `no_stars`. `loop` is not
 refused: it answers with a `star_count` of 0, and the guider selects
-again on each frame of `looping` until one has stars.
+again on each frame of `looping` until one has enough stars.
+
+**How selection detects.** The guider detects stars as `rp`'s measuring
+tools do ([rp.md § `measure_stars` Contract](rp.md#measure_stars-contract)):
+in the frame smoothed by a Gaussian of 1 px, at 5 standard deviations
+above the background, in components of at least 5 pixels. It then
+measures each detection in an aperture that follows it, one star per
+aperture; a star whose half-flux disc is larger than 1,000 px² is no
+star. A star's signal-to-noise ratio is its aperture's flux against the
+frame's standard deviation σ, `flux / √(flux + π·radius²·σ²)`. A
+detection is passed over when:
+
+- **it is saturated:** its aperture holds a pixel at full scale
+  ([Sensor handling](#sensor-handling));
+- **it is close to the edge:** its aperture's centre is nearer an edge
+  of the frame than `calibration.distance_px` plus
+  `stars.search_region_px`;
+- **it is too sharp:** its half-flux radius is under 0.25 px, the floor
+  below which detection admits nothing, since such a component carries
+  its light in one pixel;
+- **it is too faint:** its signal-to-noise ratio is under
+  `stars.min_snr`, so that it would not be usable in the frame it is
+  selected in;
+- **it would be confused:** another star the apertures keep in the
+  frame, a guide star or not, lies within `stars.search_region_px` of
+  it, where a search for either could settle on the other. Both are
+  passed over. A fainter star inside a brighter one's aperture is part
+  of that star's measurement, as it is in every later frame.
 
 Selection happens on the first frame of `looping` and on each later one
-until a frame has stars, when a run begins from `idle` or `looping`,
-and on `star/reselect`. The guider never selects stars again on its own
-in the middle of a run.
+until a frame has enough stars, when a run begins from `idle` or
+`looping`, and on `star/reselect`. The guider never selects stars again
+on its own in the middle of a run.
 
 **Measurement.** In each later frame every guide star is looked for
 within `stars.search_region_px` of its position in the last frame in
@@ -409,6 +451,25 @@ over all of them while it has fewer. The frame a star was selected in
 is its first usable frame. The frame's offset is the median, on each
 sensor axis, of the usable stars' offsets from their reference
 positions.
+
+**How a frame is measured.** Each guide star is measured in an aperture
+that starts at its position in the last frame in which it was usable,
+with the radius it was measured in there, and follows its light, as
+`rp`'s `measure_stars` measures a listed star. The star is found when its
+aperture settles as a star no further than `stars.search_region_px` from
+where it started, and not inside the aperture of a brighter guide star
+found in the frame. Each star is measured on its own and only then held
+against the others, so that a lost star's aperture, growing as it looks
+for its star, never takes another star out.
+Nothing is detected after selection: the hot pixels selection found are
+left out of every measurement until the next selection. A star that is
+found is usable or not by the tests above.
+
+- A usable star's reference position is its position in the frame it
+  was selected in, and its offset is its position less that one.
+- With an even number of usable stars, the median of an axis is the
+  mean of the middle two.
+- A star's half-flux diameter is twice its aperture's half-flux radius.
 
 **A change of brightness that lasts.** A frame that fails the flux test
 adds nothing to the reference, so a change larger than
@@ -422,7 +483,9 @@ sharpness test keeps a hot pixel from becoming the reference while the
 star is behind cloud, and ten frames in a row keep out noise that
 reaches `stars.min_snr` in a frame now and then. Ten is a starting
 value of this design, for the frames the reference is taken over and
-for the frames in a row alike.
+for the frames in a row alike. The tenth frame is judged against the
+new reference, and a frame in which the star is usable, not found or
+too faint ends the row.
 
 **A star-lost frame** is one with fewer than `stars.min` usable stars.
 It gives no offset and is followed by no pulse. In `guiding` it moves
@@ -727,8 +790,9 @@ Starts the camera loop without guiding.
 
 - From `idle`: clears the metrics window, writes the frame settings,
   takes the first frame, selects guide stars on it and answers. A first
-  frame with no star still answers `looping`, with `star_count` 0, and
-  the guider selects again on each frame until one has stars.
+  frame with fewer guide stars than `stars.min` still answers `looping`,
+  with `star_count` 0, and the guider selects again on each frame until
+  one has enough.
 - In `looping`: answers with the current values and changes nothing.
 - In a run state: `not_idle`.
 
@@ -819,8 +883,8 @@ does depends on the state it finds:
 
 - `recalibrate: true` runs a calibration first in each of these states.
   A calibration is always followed by a new lock.
-- A frame with no star answers `no_stars` and leaves the state, the
-  guide stars and the lock as they were.
+- A frame with fewer guide stars than `stars.min` answers `no_stars` and
+  leaves the state, the guide stars and the lock as they were.
 - A calibration that fails answers `calibration_failed`. The guider
   returns to `idle` or `looping` if the request found it there, and
   stops the run with the reason `calibration_failed` otherwise.
@@ -909,8 +973,8 @@ Selects the guide stars anew on the next frame. Takes no fields.
   pause.
 - In a run, the new stars' positions become the run's home and the lock
   offset returns to zero.
-- A frame with no star answers `no_stars` and keeps the previous guide
-  stars.
+- A frame with fewer guide stars than `stars.min` answers `no_stars`
+  and keeps the previous guide stars.
 
 #### `GET /api/v1/calibration`
 
@@ -1146,7 +1210,7 @@ left out when there is nothing to attach):
 | `stopped` | 409 | A `guiding/stop` arrived while the request was waiting or queued |
 | `dither_aborted` | 409 | A `dither/abort` arrived while the `dither` waited to settle |
 | `camera_unsupported` | 422 | A sensor type the guider cannot measure, or a `camera.binning` the camera cannot do |
-| `no_stars` | 422 | Star selection found no guide star |
+| `no_stars` | 422 | Star selection found fewer guide stars than `stars.min` |
 | `calibration_failed` | 422 | A calibration leg ran out of steps or time, or a cross-check failed |
 | `guide_failed` | 422 | The run or the loop stopped by itself while the request waited. `details.stop_reason` holds the reason |
 | `device_unreachable` | 502 | A device does not answer when a request starts the loop or a run |
@@ -1442,7 +1506,8 @@ clients as they cover `rp`'s.
 
 - **The core in simulated time.** `rp-guiding` takes its time and its
   randomness as arguments, so unit tests step a run frame by frame, and
-  closed-loop tests run it against `guide-simulator`'s mount model for
+  closed-loop tests run it against `guide-simulator`'s mount model
+  ([docs/crates/guide-simulator.md](../crates/guide-simulator.md)) for
   simulated hours in seconds: drift, periodic error, backlash, a mount
   that delivers short pulses coarsely, seeing, clouds, a slew in the
   middle of a run.

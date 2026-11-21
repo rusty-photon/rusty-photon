@@ -34,10 +34,10 @@ const fn pin_imaging_cache_max_images(world: &mut RpWorld, max_images: usize) {
 
 #[when("rp is restarted")]
 async fn restart_rp(world: &mut RpWorld) {
-    // Drop the MCP client first — its session is bound to the old port,
-    // and rp's graceful shutdown blocks on its own MCP sessions
-    // terminating. Matches the pattern documented in
-    // docs/skills/testing.md.
+    // Drop the MCP client first — it addresses the old process's port,
+    // and its long-lived streaming connection would keep rp's graceful
+    // shutdown blocked. Matches the pattern documented in
+    // docs/skills/testing.md §5.4.
     world.mcp_client = None;
     if let Some(mut handle) = world.rp.take() {
         handle.stop().await;

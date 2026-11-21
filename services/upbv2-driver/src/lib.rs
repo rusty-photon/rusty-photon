@@ -72,7 +72,7 @@ pub mod switches;
 
 pub use codec::{Upbv2Codec, Upbv2CodecError, Upbv2Response};
 pub use config::{
-    AlpacaServerConfig, Config, DeviceConfig, ObservingConditionsConfig, SerialConfig, SwitchConfig,
+    AlpacaServerConfig, Config, ObservingConditionsConfig, SerialConfig, SwitchConfig,
 };
 pub use error::{Result, Upbv2Error};
 pub use manager::{CachedState, Upbv2Manager};

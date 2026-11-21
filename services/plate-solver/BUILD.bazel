@@ -80,9 +80,9 @@ rust_test(
     ),
 )
 
-# Drives AstapCliRunner::solve() end-to-end against mock_astap in each of its
-# modes (success / ExitStatus / NoWcs / MalformedWcs / both timeouts). Spawns
-# mock_astap; bazel sets MOCK_ASTAP_BINARY via env so the test discovers it.
+# Drives AstapCliRunner::solve() end-to-end against mock_astap (success /
+# ExitStatus / NoWcs / MalformedWcs / both timeouts) and against a binary that
+# cannot start. Bazel sets MOCK_ASTAP_BINARY via env so the test discovers it.
 rust_test(
     name = "runner_integration",
     size = "small",
@@ -113,7 +113,7 @@ rust_test(
 # var (unset here, so they're skipped); @unix scenarios self-gate on cfg(unix).
 rust_test(
     name = "bdd",
-    # Spawns a service process per scenario (26 scenarios); generous timeout.
+    # Spawns a service process per scenario; generous timeout.
     size = "large",
     srcs = ["tests/bdd.rs"] + glob(["tests/bdd/**/*.rs"]),
     aliases = aliases(

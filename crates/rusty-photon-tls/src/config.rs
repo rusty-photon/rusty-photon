@@ -46,25 +46,26 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 impl TlsConfig {
-    /// Resolve cert and key paths, expanding `~` to the home directory.
+    /// Resolve the certificate path, expanding `~` to the home directory.
     #[must_use]
     pub fn resolved_cert_path(&self) -> PathBuf {
         expand_tilde(&self.cert)
     }
 
-    /// Resolve cert and key paths, expanding `~` to the home directory.
+    /// Resolve the private key path, expanding `~` to the home directory.
     #[must_use]
     pub fn resolved_key_path(&self) -> PathBuf {
         expand_tilde(&self.key)
     }
 }
 
-/// CA cert and key filenames within the PKI directory.
+/// The CA certificate, `ca.pem`, within the PKI directory.
 #[must_use]
 pub fn ca_cert_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("ca.pem")
 }
 
+/// The CA private key, `ca-key.pem`, within the PKI directory.
 #[must_use]
 pub fn ca_key_path(pki_dir: &Path) -> PathBuf {
     pki_dir.join("ca-key.pem")

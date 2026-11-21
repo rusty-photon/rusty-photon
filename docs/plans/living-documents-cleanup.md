@@ -448,11 +448,11 @@ for every batch.
 | Plan | Merged 2026-11-12 | [the plan](https://github.com/rusty-photon/rusty-photon/pull/1696) |
 | B1 — Star Adventurer GTi | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1763), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1767) |
 | B2 — doctor, ui-htmx, the installer | Merged: the docs on 2026-11-16, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1798), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1806) |
-| B3 — rp and its client crates | Not started | — |
+| B3 — rp and its client crates | Merged: the docs on 2026-11-19, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1841), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1847) |
 | B4 — BDD infrastructure and OmniSim | Merged: the docs on 2026-11-15, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1790), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1793) |
 | B5 — shared transport and the serial drivers | Merged: the docs on 2026-11-17, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1819), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1822) |
 | B6 — cameras and SDK crates | Merged: the design docs on 2026-11-14, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1779), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1783) |
-| B7 — guiding, solving, sentinel, lifecycle, TLS | Not started | — |
+| B7 — guiding, solving, sentinel, lifecycle, TLS | Merged: the docs on 2026-11-18, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1823), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1827) |
 | B8 — catalog, planner, focus | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1758), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1759) |
 | B9 — build, CI, runners; the empty table | Not started | — |
 | B9 — the root `Cargo.toml`, a trial slice of the method | Merged 2026-11-11 | [trial slice](https://github.com/rusty-photon/rusty-photon/pull/1744) |

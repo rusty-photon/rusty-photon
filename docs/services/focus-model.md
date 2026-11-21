@@ -1521,7 +1521,7 @@ Linux, `%PROGRAMDATA%\rusty-photon\focus-model.json` on Windows) via
 | `sweep.points` | int | 9 | Samples the derived step aims for across the sweep; at least 3. The critical-focus-zone floor on the step can leave the grid with fewer, which is what the plan's `points` reports |
 | `sweep.seeing_fwhm_arcsec` | float | 2.5 | The focused HFR's stand-in until a filter has a last good focus; positive |
 | `trains.<id>.duration` | humantime | `"3s"` | Per-frame exposure |
-| `trains.<id>.min_area` / `max_area` | int | 4 / 500 | Star detection area bounds passed to `measure_stars` for the reference frame ([The sweep](#the-sweep), step 2); `max_area` also bounds the stars it measures, whose half-flux disc must fit in it (an HFR of at most 12.6 px at 500 — [rp.md § `measure_basic` Contract](rp.md#mvp-measure_basic-contract)) |
+| `trains.<id>.min_area` / `max_area` | int | 4 / 500 | Star detection area bounds passed to `measure_stars` for the reference frame ([The sweep](#the-sweep), step 2); `max_area` also bounds the stars it measures, whose half-flux disc must fit in it (an HFR of at most 12.6 px at 500 — [rp.md § `measure_basic` Contract](rp.md#measure_basic-contract)) |
 | `trains.<id>.threshold_sigma` | float or null | null | Detection threshold; null leaves `rp`'s default |
 | `trains.<id>.frames_per_step` | int | 1 | Frames measured per grid point; 1 to 20 |
 | `trains.<id>.min_fit_points` | int | 5 | Accepted samples the fit needs; at least 3 |

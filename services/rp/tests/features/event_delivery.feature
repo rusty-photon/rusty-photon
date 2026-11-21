@@ -2,7 +2,7 @@
 Feature: Event delivery to webhook subscribers
   rp emits events when equipment operations occur. Plugins subscribe to
   events via webhook URLs configured at startup. rp POSTs events to each
-  subscriber and records their acknowledgment. Unsubscribed plugins do
+  subscriber and reads only each delivery's response status. Unsubscribed plugins do
   not receive events. Unreachable plugins do not block operations.
 
   Scenario: Exposure complete event is delivered to subscribed plugin
@@ -32,16 +32,6 @@ Feature: Event delivery to webhook subscribers
     And an MCP client connected to rp
     When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Red"
     Then the test webhook receiver should receive a "filter_switch" event
-
-  Scenario: Plugin acknowledges event with timing estimates
-    Given a running Alpaca simulator
-    And a test webhook receiver subscribed to "exposure_complete"
-    And the test webhook receiver acknowledges with estimated 5 seconds and max 10 seconds
-    And rp is running with a camera on the simulator and the test plugin
-    And an MCP client connected to rp
-    When the MCP client calls "capture" with camera "main-cam" for 1000 ms
-    Then the test webhook receiver should receive an "exposure_complete" event
-    And rp should have recorded the plugin timing estimates
 
   Scenario: Unsubscribed plugin does not receive events
     Given a running Alpaca simulator

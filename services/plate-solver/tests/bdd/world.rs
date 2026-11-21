@@ -244,10 +244,10 @@ impl PlateSolverWorld {
     /// the 2 min default: the real-ASTAP scenarios raise it to 300 s in
     /// `real_astap_steps.rs` so a ~48 s blind solve has room on slower
     /// legs, which puts the worst legitimate response at 300 s + the 2 s
-    /// force-kill grace. 360 s clears that, and stays well inside the
-    /// `large` test target's 900 s so the named failure is what surfaces.
-    /// Raising `max_solve_timeout` in any scenario means raising this
-    /// too.
+    /// force-kill grace + the reap's 5 s. 360 s clears that, and stays
+    /// well inside the `large` test target's 900 s so the named failure
+    /// is what surfaces. Raising `max_solve_timeout` in any scenario
+    /// means raising this too.
     pub fn http_client() -> reqwest::Client {
         static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
         CLIENT

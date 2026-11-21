@@ -92,6 +92,15 @@ struct Args {
     #[arg(long, hide = true, value_name = "PATH")]
     usb_inventory: Option<PathBuf>,
 
+    /// Test-only: the simulated QHYCCD SDK library loads only once a file
+    /// exists at this path, to exercise a service started without the SDK
+    /// library and its install while the service serves (contracts PF4–PF6).
+    /// Without it the library always loads. Only meaningful when built with
+    /// `--features simulation`.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH")]
+    simulation_sdk_library: Option<PathBuf>,
+
     /// Subcommand; running with none starts the ASCOM Alpaca driver.
     #[command(subcommand)]
     command: Option<Command>,
@@ -179,14 +188,16 @@ fn main() -> ServiceResult {
         server_port: args.port,
     };
     #[cfg(feature = "simulation")]
-    let simulation_empty = args.simulation_empty;
-    #[cfg(feature = "simulation")]
-    let simulation_departure_file = args.simulation_departure_file;
-    #[cfg(feature = "simulation")]
-    let simulation_temperature_file = args.simulation_temperature_file;
-    #[cfg(feature = "simulation")]
-    let usb_source = qhy_camera::claims::usb_source_from_flag(args.usb_inventory)
-        .map_err(qhy_camera::QhyCameraError::UsbInventory)?;
+    let simulation = Simulation {
+        empty: args.simulation_empty,
+        departure_file: args.simulation_departure_file,
+        temperature_file: args.simulation_temperature_file,
+        usb_source: qhy_camera::claims::usb_source_from_flag(args.usb_inventory)
+            .map_err(qhy_camera::QhyCameraError::UsbInventory)?,
+        sdk_library: args
+            .simulation_sdk_library
+            .map_or_default(qhy_camera::SdkLibrary::staged),
+    };
 
     // Startup chatter stays at debug! per docs/AGENTS.md Rule 9; the
     // user-facing "Service started successfully on <addr>" info! lives in
@@ -197,26 +208,13 @@ fn main() -> ServiceResult {
     debug!("Configuration path: {}", config_path.display());
 
     // A setup-page save triggers an in-process reload: the loop re-reads the
-    // effective config, re-enumerates, and rebuilds the server. A failed USB
-    // scan's re-scan rebuilds it from the configuration it serves (U6).
+    // effective config, re-enumerates, and rebuilds the server. A re-scan
+    // rebuilds it from the configuration it serves (U6, PF6).
     ServiceRunner::new("qhy-camera")
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
             let restart = shutdown.restart();
-            // Windows real-SDK builds delay-load qhyccd.dll (see build.rs):
-            // resolve it BEFORE any SDK call and keep it resident, or fail
-            // with the one distinctive, actionable error (PF1–PF4). This
-            // runs INSIDE the run closure, not in main before the runner: in
-            // SCM mode the wrapper registers and reports Running before the
-            // closure, so a missing DLL becomes a clean ServiceSpecific(1)
-            // stop + 5 s restart (the missing-serial-device contract). An
-            // exit before SCM registration is a start FAILURE — msiexec
-            // aborts the whole install with error 1920 during StartServices.
-            // Simulation builds skip this: their real FFI is cfg'd out, so
-            // nothing ever calls into qhyccd.dll (PF5).
-            #[cfg(all(windows, not(feature = "simulation")))]
-            qhy_camera::preflight::ensure_qhyccd_dll()?;
             serve_and_rebuild(
                 shutdown.token(),
                 reload.clone(),
@@ -235,32 +233,49 @@ fn main() -> ServiceResult {
                         .with_reload_signal(reload.clone())
                         .with_restart(restart.clone());
                     #[cfg(feature = "simulation")]
-                    let builder = {
-                        let builder = builder.with_usb_source(usb_source.clone());
-                        if simulation_empty {
-                            builder.with_sdk(qhyccd_rs::Sdk::new_simulated())
-                        } else if simulation_departure_file.is_some()
-                            || simulation_temperature_file.is_some()
-                        {
-                            let mut camera =
-                                qhyccd_rs::simulation::SimulatedCameraConfig::sdk_default();
-                            if let Some(departure) = &simulation_departure_file {
-                                camera = camera.with_departure_file(departure);
-                            }
-                            if let Some(temperature) = &simulation_temperature_file {
-                                camera = camera.with_temperature_file(temperature);
-                            }
-                            let mut sdk = qhyccd_rs::Sdk::new_simulated();
-                            sdk.add_simulated_camera(camera);
-                            builder.with_sdk(sdk)
-                        } else {
-                            builder
-                        }
-                    };
+                    let builder = simulation.shape(builder);
                     async move { builder.build().await?.start(stop).await }
                 },
             )
             .await?;
             Ok(())
         })
+}
+
+/// The simulation build's test-only flags, which shape every server it
+/// builds.
+#[cfg(feature = "simulation")]
+struct Simulation {
+    empty: bool,
+    departure_file: Option<PathBuf>,
+    temperature_file: Option<PathBuf>,
+    usb_source: qhy_camera::UsbSource,
+    sdk_library: qhy_camera::SdkLibrary,
+}
+
+#[cfg(feature = "simulation")]
+impl Simulation {
+    /// Shape `builder` by the flags: its USB scan, its SDK library, and the
+    /// simulated SDK it injects, if any.
+    fn shape(&self, builder: ServerBuilder) -> ServerBuilder {
+        let builder = builder
+            .with_usb_source(self.usb_source.clone())
+            .with_sdk_library(self.sdk_library.clone());
+        if self.empty {
+            builder.with_sdk(qhyccd_rs::Sdk::new_simulated())
+        } else if self.departure_file.is_some() || self.temperature_file.is_some() {
+            let mut camera = qhyccd_rs::simulation::SimulatedCameraConfig::sdk_default();
+            if let Some(departure) = &self.departure_file {
+                camera = camera.with_departure_file(departure);
+            }
+            if let Some(temperature) = &self.temperature_file {
+                camera = camera.with_temperature_file(temperature);
+            }
+            let mut sdk = qhyccd_rs::Sdk::new_simulated();
+            sdk.add_simulated_camera(camera);
+            builder.with_sdk(sdk)
+        } else {
+            builder
+        }
+    }
 }

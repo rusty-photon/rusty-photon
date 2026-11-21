@@ -6,10 +6,11 @@ exports_files(
     visibility = ["//visibility:public"],
 )
 
-# CA trust for an `https://` guider-service `url` (issue #609) and
-# Basic Auth credentials (issue #620) route through the serving crates
-# directly, so they need the explicit intra-workspace deps list every
-# Bazel target here shares.
+# rusty-photon-tls builds the client that trusts rp's top-level
+# `ca_cert` for an `https://` guider `url`, and rp-auth holds the
+# `equipment.mount.guiding.auth` Basic Auth credentials. First-party
+# crates are not `@cr` entries, so every target here names them as
+# Bazel labels.
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-tls:rusty-photon-tls",
@@ -20,7 +21,7 @@ _INTRA_WORKSPACE_DEPS = [
 # Cargo gets the same shape via `[dev-dependencies] rp-guider =
 # { features = ["mock"] }`; Bazel needs an explicit second target
 # because crate_features is a compile-time attribute of the library
-# output (see docs/plans/archive/bazel-migration.md "Mockall mock variants").
+# output.
 rust_library(
     name = "rp-guider",
     srcs = glob(["src/**/*.rs"]),

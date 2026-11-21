@@ -1,9 +1,9 @@
 //! Step definitions for `real_astap_smoke.feature`.
 //!
-//! `@requires-astap` keeps these from running in PR jobs even after
-//! Phase 4 removed `@wip` — the dedicated nightly cross-platform
-//! workflow (Phase 6) sets `ASTAP_BINARY` so they fire there only.
-//! Phase 4 ships the test bodies; Phase 6 wires the cron + matrix.
+//! `@requires-astap` keeps these out of a run without `ASTAP_BINARY`
+//! set, so pull-request jobs skip them; the nightly cross-platform smoke
+//! workflow sets it
+//! ([§ Real-ASTAP Coverage Cadence](../../../../../docs/services/plate-solver.md#real-astap-coverage-cadence)).
 
 use crate::world::PlateSolverWorld;
 use bdd_infra::ServiceHandle;

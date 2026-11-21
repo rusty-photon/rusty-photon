@@ -5,7 +5,7 @@
 //! should contain ...`). The exposure-document fetch step
 //! (`I fetch the exposure document for the captured document_id`) and the
 //! generic section-presence assertions live in `measure_basic_steps.rs`
-//! and are reused here -- all four imaging tools persist into the same
+//! and are reused here -- every imaging tool persists into the same
 //! exposure document, so the document-fetch plumbing is shared.
 
 use cucumber::gherkin::Step;

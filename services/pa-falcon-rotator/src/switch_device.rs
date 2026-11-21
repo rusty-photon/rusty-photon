@@ -183,27 +183,13 @@ impl Device for FalconStatusSwitchDevice {
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
-                let session = self
-                    .manager
-                    .transport()
-                    .acquire()
-                    .await
-                    .map_err(FalconRotatorError::from)?;
+                let session = self.manager.acquire().await?;
                 *slot = Some(session);
                 debug!("Status Switch device connected");
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
-                    session.close().await.map_err(FalconRotatorError::from)?;
-                }
-                // Reset the driver-side state only when the transport is
-                // unavailable after the close — reconnecting or shut down
-                // (see `FalconManager::clear_session_state`). While it is
-                // available the rotator may still hold a session that
-                // reads the same state. Mirrors the guard on
-                // `FalconRotatorDevice::set_connected`.
-                if !self.manager.is_available() {
-                    self.manager.clear_session_state().await;
+                    self.manager.release(session).await?;
                 }
                 debug!("Status Switch device disconnected");
             }

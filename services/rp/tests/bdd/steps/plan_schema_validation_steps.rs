@@ -2,9 +2,10 @@
 //! (`plan_schema_validation.feature`, rp.md § Plan schema and
 //! validation).
 //!
-//! Reuses the shared `the tool call should succeed` / `... should return
-//! an error` / `the error message should contain` steps from
-//! `tool_steps`, and `list_targets should report exactly N targets` from
+//! Reuses the shared `the tool call should succeed` step from
+//! `cover_calibrator_steps`, the `... should return an error` / `the
+//! error message should contain` steps from `tool_steps`, and
+//! `list_targets should report exactly N targets` from
 //! `target_store_crud_steps`.
 
 use cucumber::{then, when};

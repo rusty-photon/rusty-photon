@@ -117,28 +117,13 @@ impl Device for FalconRotatorDevice {
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
-                let session = self
-                    .manager
-                    .transport()
-                    .acquire()
-                    .await
-                    .map_err(FalconRotatorError::from)?;
+                let session = self.manager.acquire().await?;
                 *slot = Some(session);
                 debug!("Rotator device connected");
             }
             (false, true) => {
                 if let Some(session) = slot.take() {
-                    session.close().await.map_err(FalconRotatorError::from)?;
-                }
-                // Reset the driver-side state (sync_offset, target_position,
-                // limit-detect edge tracker) only when the transport is
-                // unavailable after the close — reconnecting or shut down
-                // (see `FalconManager::clear_session_state`). While it is
-                // available the status switch may still hold a session that
-                // reads the same state. Mirrors the guard on
-                // `FalconStatusSwitchDevice::set_connected`.
-                if !self.manager.is_available() {
-                    self.manager.clear_session_state().await;
+                    self.manager.release(session).await?;
                 }
                 debug!("Rotator device disconnected");
             }
@@ -737,7 +722,7 @@ mod mock_tests {
     }
 
     #[tokio::test]
-    async fn disconnect_then_reconnect_resets_sync_offset() {
+    async fn disconnect_then_reconnect_keeps_the_sync_offset() {
         let factory = Arc::new(MockFalconTransportFactory::default());
         let (device, _manager, factory) = connected_device_with(factory);
         device.set_connected(true).await.unwrap();
@@ -747,28 +732,20 @@ mod mock_tests {
         device.set_connected(false).await.unwrap();
         device.set_connected(true).await.unwrap();
 
-        // After reconnect, the sync offset must be reset by
-        // `clear_session_state`: the rotator was the only session holder,
-        // so its disconnect was the 1→0 that closed this `LazyAcquire`
-        // transport. Position == MechanicalPosition confirms it.
+        // Only Sync changes the offset: the last client's disconnect, which
+        // here also closes this `LazyAcquire` transport, keeps it.
         let pos = device.position().await.unwrap();
-        let mech = device.mechanical_position().await.unwrap();
         assert!(
-            (pos - mech).abs() < 1e-9,
-            "expected sync_offset reset on reconnect: position={pos}, mechanical={mech}"
+            (pos - 30.0).abs() < 1e-9,
+            "expected the synced 30° after reconnecting, got {pos}"
         );
     }
 
     #[tokio::test]
-    async fn rotator_disconnect_preserves_state_while_switch_still_connected() {
-        // With the status switch still holding a session, the rotator's
-        // disconnect must NOT clear the shared driver state (sync_offset,
-        // target_position, limit-detect edge tracker): the switch's
-        // `read_status` calls rely on the edge tracker. The offset is 270
-        // before the rotator disconnects and must still be 270 after; a
-        // reset would read 0. `set_connected` clears the state only when
-        // the transport is unavailable after the close, and the switch's
-        // session keeps this `LazyAcquire` transport open.
+    async fn rotator_disconnect_keeps_the_target_while_switch_still_connected() {
+        // With the status switch still connected, the rotator's disconnect
+        // leaves a client, so the stored target must survive it; only the
+        // release that leaves no client clears it.
         use crate::switch_device::FalconStatusSwitchDevice;
         use crate::SwitchConfig;
 
@@ -777,34 +754,23 @@ mod mock_tests {
         let rotator = FalconRotatorDevice::new(RotatorConfig::default(), Arc::clone(&manager));
         let switch = FalconStatusSwitchDevice::new(SwitchConfig::default(), Arc::clone(&manager));
 
-        // Connect both devices; seed sync_offset via the rotator.
         rotator.set_connected(true).await.unwrap();
         switch.set_connected(true).await.unwrap();
-        factory.set_mech_position_deg(120.0).await;
-        rotator.sync(30.0).await.unwrap();
-        let offset_before = manager.sync_offset().await.value();
-        assert!(
-            (offset_before - 270.0).abs() < 1e-9,
-            "offset_before={offset_before}"
-        );
+        rotator.move_absolute(90.0).await.unwrap();
 
-        // Disconnect ONLY the rotator. The switch is still holding a
-        // session, so the transport remains available and the shared
-        // state must stay intact.
         rotator.set_connected(false).await.unwrap();
-        assert!(
-            manager.is_available(),
-            "switch still holds a session — transport must stay open"
-        );
-        let offset_after = manager.sync_offset().await.value();
-        assert!(
-            (offset_after - offset_before).abs() < 1e-9,
-            "sync_offset must not be cleared while another device still holds a session; \
-             before={offset_before}, after={offset_after}"
+        assert_eq!(
+            manager.target_position().await,
+            Some(SkyDegrees::new(90.0)),
+            "the switch still holds a client, so the target must stay"
         );
 
-        // Cleanup.
         switch.set_connected(false).await.unwrap();
+        assert_eq!(
+            manager.target_position().await,
+            None,
+            "the last client's disconnect clears the target"
+        );
     }
 
     #[tokio::test]

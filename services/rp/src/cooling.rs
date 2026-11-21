@@ -152,8 +152,8 @@ impl<'a> CooldownPhase<'a> {
             .samples
             .iter()
             .all(|(_, t, _)| (t - f64::from(self.target)).abs() <= self.config.tolerance_c);
-        // `all` on an empty iterator is true, matching the original
-        // "no readable power ⇒ the headroom criterion is disabled".
+        // `all` on an empty iterator is true: with no readable power the
+        // headroom criterion is disabled.
         let power_ok = self
             .readable_powers()
             .all(|p| p <= self.config.max_cooler_power_pct);
@@ -429,10 +429,10 @@ impl CoolingController {
             .await;
     }
 
-    /// The single cooldown pass (rp.md § Camera Cooling → Selection at
-    /// session start). Ends in exactly one of: stabilized at a rung
-    /// (`cooler_stabilized`), uncooled (`cooler_unreachable`, cooler
-    /// off), or an aborted command sequence (cooler off, no event).
+    /// The single cooldown pass (rp.md § Camera Cooling → Selection). Ends
+    /// in exactly one of: stabilized at a rung (`cooler_stabilized`),
+    /// uncooled (`cooler_unreachable`, cooler off), or an aborted command
+    /// sequence (cooler off, no event).
     async fn cooldown_pass(
         self: &Arc<Self>,
         camera_id: &str,
@@ -756,7 +756,8 @@ pub(crate) mod test_support {
         pub(crate) can_set: bool,
         pub(crate) can_get_power: bool,
         /// When false the stub answers every `CCDTemperature` read with
-        /// an ASCOM error — the backstop-with-no-reading regression.
+        /// an ASCOM error — a camera only the `max_cooldown` backstop can
+        /// end a pass on.
         pub(crate) temp_readable: bool,
         /// `Some` makes `HeatSinkTemperature` readable (warm-up ramps to
         /// it); `None` answers `NOT_IMPLEMENTED` (fallback to config).

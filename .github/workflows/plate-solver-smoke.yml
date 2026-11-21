@@ -8,12 +8,13 @@
 # the mock-based BDD but trip a `@requires-astap`-tagged scenario
 # here.
 #
-# Cadence: nightly cron + workflow_dispatch (manual). Not on every
-# PR (PRs already pay for the mock BDD; ASTAP install + DB download
-# would be ~400 MB per run × 3 OSes per PR for marginal benefit).
+# Cadence: nightly cron, a push that touches the service, this workflow
+# or the actions it uses, and workflow_dispatch. Not on every PR (PRs
+# already pay for the mock BDD; ASTAP install + DB download would be
+# ~400 MB per run × 3 OSes per PR for marginal benefit).
 #
-# See docs/plans/plate-solver.md §"Real-ASTAP coverage: cadence
-# and gating" for the rationale and the bdd.rs filter snippet.
+# docs/services/plate-solver.md § Real-ASTAP Coverage Cadence holds the
+# fixture, the timings and their guard.
 
 name: plate-solver-smoke
 
@@ -22,9 +23,9 @@ permissions:
 
 on:
   schedule:
-    # Every day at 03:30 UTC. Pick a slot away from the install-astap
-    # smoke (which runs on every PR) so the two don't fight for the
-    # same upstream SourceForge endpoint at the same minute.
+    # Every day at 03:30 UTC, an hour before install-astap's nightly
+    # run, so the two don't fight for the same upstream SourceForge
+    # endpoint at the same minute.
     - cron: "30 3 * * *"
   workflow_dispatch:
   # The only workflow that installs the D20 database, so a change to the
@@ -37,8 +38,11 @@ on:
       - ".github/actions/plate-solver-times/**"
       - ".github/workflows/plate-solver-smoke.yml"
 
+# A newer push to a ref cancels that ref's older push run. The event name
+# keeps a push to main from cancelling the scheduled run, which alone opens
+# or updates the tracking issue.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -76,10 +80,8 @@ jobs:
 
       # The mac binary is ad-hoc-signed by the upstream maintainer.
       # First-run quarantine flagging would block exec without
-      # surfacing a useful error. ADR-005 §"Open questions" item 1
-      # tracks whether re-signing under our own Developer ID is
-      # required; until that's settled, this clear-on-each-run mirrors
-      # what an operator would do by hand.
+      # surfacing a useful error. The service README tells an operator
+      # to clear it by hand on first run, and every CI run is a first run.
       - name: macOS — clear quarantine on astap_cli
         if: runner.os == 'macOS'
         shell: bash
@@ -97,16 +99,11 @@ jobs:
         shell: bash
         env:
           # ASTAP_BINARY and ASTAP_DB_DIR are set by install-astap.
-          # Their presence flips the bdd.rs filter to fire the
-          # @requires-astap scenarios.
+          # ASTAP_BINARY flips the bdd.rs filter to fire the
+          # @requires-astap scenarios, which read both.
           RUST_LOG: plate_solver=debug
           # The "I record the solve duration as ..." BDD step appends a
-          # row to this file. Issue #236: the M 101 fixture's pointing
-          # breadcrumbs are stripped, so the blind scenario walks the
-          # full ASTAP search spiral (~30–60 s) while the hinted
-          # scenario stays sub-second. The delta is the perf-trending
-          # signal; future regressions in ASTAP's `-r` optimization
-          # or in our argv-mapping will show up as the ratio collapsing.
+          # `label,elapsed_ms` row to this file.
           PLATE_SOLVER_PERF_CSV: ${{ runner.temp }}/plate-solver-perf.csv
         run: |
           set -euo pipefail
@@ -125,10 +122,7 @@ jobs:
           check: ${{ steps.bdd.outcome == 'success' }}
 
       - name: Upload timing CSV artifact
-        # Per-OS artifact so a nightly run produces three CSVs the
-        # operator (or a future trend-aggregator) can download. The
-        # regression assertion landed (issue #234 — the step above);
-        # trend visualization across runs remains forward work.
+        # Per-OS artifact, so a run leaves one CSV per OS to download.
         if: always()
         uses: actions/upload-artifact@v7
         with:

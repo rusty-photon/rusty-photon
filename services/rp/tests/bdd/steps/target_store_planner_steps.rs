@@ -1,7 +1,8 @@
-//! BDD step definitions for planner altitude-gating parity against the
-//! target store (`target_store_planner.feature`, Decision 9, P1).
+//! BDD step definitions for the planner's altitude gating of
+//! target-store targets (`target_store_planner.feature`, rp.md § Decision
+//! Logic (inside `get_next_target`)).
 //!
-//! Unlike the other `target_store`_*.feature suites these scenarios boot
+//! Unlike the other `target_store_*.feature` suites these scenarios boot
 //! rp the ordinary OmniSim/mount way (`tool_steps::start_rp`), matching
 //! `planner.feature`'s convention, since they exercise `get_next_target`
 //! against a real site/ephemeris — `write_target_store_config`'s
@@ -30,7 +31,7 @@ fn default_min_altitude(world: &mut RpWorld, degrees: f64) {
 // the no-survivors branch the dusk/dawn scenarios pin). Coordinates are
 // ra 0 / dec 0 — an exact transit tie between two such targets, so the
 // progress tie-breaker decides. Seeded post-boot via the `add_target`
-// MCP tool (the legacy `targets[]` config array was retired).
+// MCP tool: targets live in the store, not in config.
 // -----------------------------------------------------------------------
 
 #[given(expr = "the MCP client has added the always-visible target {string}")]

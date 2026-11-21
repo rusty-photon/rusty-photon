@@ -63,8 +63,9 @@ const CENTRE_TOLERANCE: f64 = 0.05;
 /// … and the radius changes by less than this fraction of itself.
 const RADIUS_TOLERANCE: f64 = 0.05;
 
-/// The SNR a listed star must exceed to count as measured: the
-/// threshold `CCDciel`'s autofocus keeps a star at.
+/// The SNR a listed star must exceed for `rp`'s measuring tools to count
+/// it as measured ([`measure_listed`]'s `min_snr`): the threshold
+/// `CCDciel`'s autofocus keeps a star at.
 pub const MIN_LISTED_SNR: f64 = 3.0;
 
 /// A star to measure where it was last seen.
@@ -207,9 +208,9 @@ pub fn measure_in_apertures<T: Pixel>(
 /// last measured is larger than its last aperture, and a small aperture
 /// on the dark centre of a defocused star finds no light. A listed star
 /// is measured when its aperture settles as a star, lies inside no
-/// brighter listed star's aperture, and its SNR exceeds
-/// [`MIN_LISTED_SNR`]. Returns, in the order given, each listed star as
-/// measured, or `None`; `background_stddev` is the frame's, for the SNR.
+/// brighter listed star's aperture, and its SNR exceeds `min_snr`.
+/// Returns, in the order given, each listed star as measured, or `None`;
+/// `background_stddev` is the frame's, for the SNR.
 #[must_use]
 pub fn measure_listed<T: Pixel>(
     view: &ArrayView2<T>,
@@ -217,6 +218,7 @@ pub fn measure_listed<T: Pixel>(
     hot: &[(usize, usize)],
     background_stddev: f64,
     max_area: usize,
+    min_snr: f64,
 ) -> Vec<Option<MeasuredStar>> {
     let max_hfr = half_flux_radius_cap(max_area);
     let mut rejected = Rejections::default();
@@ -233,7 +235,7 @@ pub fn measure_listed<T: Pixel>(
         if verdict != Verdict::Star {
             continue;
         }
-        if aperture_snr(aperture.flux, aperture.radius, background_stddev) <= MIN_LISTED_SNR {
+        if aperture_snr(aperture.flux, aperture.radius, background_stddev) <= min_snr {
             rejected.faint = rejected.faint.saturating_add(1);
             continue;
         }
@@ -927,7 +929,7 @@ mod tests {
         stars: &[Listed],
         max_area: usize,
     ) -> Vec<Option<MeasuredStar>> {
-        measure_listed(&arr.view(), stars, &[], 0.0, max_area)
+        measure_listed(&arr.view(), stars, &[], 0.0, max_area, MIN_LISTED_SNR)
     }
 
     #[test]
@@ -1008,9 +1010,23 @@ mod tests {
         // 15 puts its SNR under 3 and one of 1 well over it.
         let mut arr = flat(64, 64);
         add_disc(&mut arr, 32.0, 32.0, 3.0, 10);
-        let noisy = measure_listed(&arr.view(), &[listed(32.0, 32.0, 3.0)], &[], 15.0, 4096);
+        let noisy = measure_listed(
+            &arr.view(),
+            &[listed(32.0, 32.0, 3.0)],
+            &[],
+            15.0,
+            4096,
+            MIN_LISTED_SNR,
+        );
         assert_eq!(noisy, [None]);
-        let quiet = measure_listed(&arr.view(), &[listed(32.0, 32.0, 3.0)], &[], 1.0, 4096);
+        let quiet = measure_listed(
+            &arr.view(),
+            &[listed(32.0, 32.0, 3.0)],
+            &[],
+            1.0,
+            4096,
+            MIN_LISTED_SNR,
+        );
         assert!(quiet[0].is_some(), "{quiet:?}");
     }
 

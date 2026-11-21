@@ -788,8 +788,8 @@ mod tests {
         );
     }
 
-    /// "Not listed" keeps its old class and wording: it is no identity
-    /// refusal, so an unpinned entry's outcome is unchanged.
+    /// "Not listed" is no identity refusal, pinned or not: a missing
+    /// position is a plain failure with the not-found wording.
     #[test]
     fn a_missing_position_is_a_plain_failure_with_the_not_found_wording() {
         assert_eq!(
@@ -884,10 +884,10 @@ mod tests {
         }
     }
 
-    /// The `rig2` failure itself: the pinned imaging camera's number
-    /// now lists the guide camera. The connect is refused as an identity
-    /// refusal before `Connected = true` reaches either camera, and the
-    /// error names where the pinned camera is listed now.
+    /// The swap the pin guards against on `rig2`: the pinned imaging
+    /// camera's number now lists the guide camera. The connect is refused
+    /// as an identity refusal before `Connected = true` reaches either
+    /// camera, and the error names where the pinned camera is listed now.
     #[tokio::test]
     async fn a_swapped_camera_is_refused_without_being_switched_on() {
         let connects = Arc::new(AtomicU32::new(0));

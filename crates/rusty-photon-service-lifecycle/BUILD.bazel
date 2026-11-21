@@ -11,12 +11,12 @@ exports_files(
 # Windows compiles with `scm` on, everything else without — matching what
 # Cargo resolves per platform (every service enables the feature under
 # [target.'cfg(windows)'.dependencies], and Cargo feature-unification applies
-# it to the single lifecycle instance in any binary's graph). Do NOT
-# reintroduce a second `_scm` library variant: with two instantiations, a
-# service lib selecting the variant while a transitive dep (e.g.
-# rusty-photon-driver) referenced the plain target linked BOTH copies of the
-# crate on Windows, and cross-crate types (ReloadSignal, Shutdown) stopped
-# unifying (E0308 "expected ReloadSignal, found a different ReloadSignal").
+# it to the single lifecycle instance in any binary's graph). Do NOT add a
+# second `_scm` library variant: with two instantiations, a service lib
+# selecting the variant while a transitive dep (e.g. rusty-photon-driver)
+# references the plain target links BOTH copies of the crate on Windows, and
+# cross-crate types (ReloadSignal, Shutdown) do not unify (E0308 "expected
+# ReloadSignal, found a different ReloadSignal").
 # windows-service (SCM API) and tracing-appender (rolling-file writer) are
 # only pulled in where the feature is on.
 rust_library(
@@ -33,6 +33,7 @@ rust_library(
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True) + select({
         "@platforms//os:windows": [
+            "//crates/rusty-photon-config",
             "@cr//:tracing-appender",
             "@cr//:windows-service",
         ],
@@ -64,7 +65,7 @@ rust_test(
 # macOS CI too. Deliberately a standalone test compilation (srcs, not
 # `crate = ...`): test binaries are graph leaves, so this second feature
 # combination can never collide with the library instantiation the way a
-# second library variant did (see the comment above).
+# second library variant would (see the comment above).
 rust_test(
     name = "rusty-photon-service-lifecycle_scm_unit_test",
     size = "small",
@@ -84,7 +85,10 @@ rust_test(
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
-    ) + ["@cr//:tracing-appender"] + select({
+    ) + [
+        "//crates/rusty-photon-config",
+        "@cr//:tracing-appender",
+    ] + select({
         "@platforms//os:windows": ["@cr//:windows-service"],
         "//conditions:default": [],
     }),
@@ -93,9 +97,9 @@ rust_test(
 # Doctests — the ServiceRunner usage examples in lib.rs and runner.rs.
 # `cargo test --all-features --doc` compiles+links them in the nightly Cargo
 # safety net; rust_doc_test is the Bazel equivalent, since rules_rust runs no
-# doctests unless a rust_doc_test target declares them. See
-# //crates/qhyccd-rs for the other doctest targets (and the feature gotcha that
-# applies whenever the documented crate has a `crate_features` variant).
+# doctests unless a rust_doc_test target declares them. See //crates/qhyccd-rs
+# for the feature gotcha that applies whenever the documented crate has a
+# `crate_features` variant, as this one has on Windows.
 rust_doc_test(
     name = "rusty-photon-service-lifecycle_doc_test",
     crate = ":rusty-photon-service-lifecycle",

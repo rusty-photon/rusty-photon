@@ -95,7 +95,7 @@ See [docs/services/star-adventurer-gti.md](docs/services/star-adventurer-gti.md)
 
 ### Pa Falcon Rotator
 
-ASCOM Alpaca Rotator + Switch driver for the Pegasus Astro Falcon Rotator (firmware ≥ 1.3). Exposes the rotator as `IRotatorV4` with sky/mechanical position separation (`Sync` is a driver-side offset; the wire-level `SD` command is never issued) and a second `ISwitchV3` device that surfaces the Falcon's raw input voltage and `FA.limit_detect` flag as two read-only switches. Communicates via 9600-baud USB-CDC serial; every property read maps to a live serial command (no cache, no background poller) so the device is always the authoritative source.
+ASCOM Alpaca Rotator + Switch driver for the Pegasus Astro Falcon Rotator (firmware ≥ 1.3). Exposes the rotator as `IRotatorV4` with sky/mechanical position separation (`Sync` is a driver-side offset, kept beside the config file so it survives a restart; the wire-level `SD` command is never issued) and a second `ISwitchV3` device that surfaces the Falcon's raw input voltage and `FA.limit_detect` flag as two read-only switches. Communicates via 9600-baud USB-CDC serial; every property read maps to a live serial command (no cache, no background poller) so the device is always the authoritative source.
 
 See [docs/services/falcon-rotator.md](docs/services/falcon-rotator.md) for design documentation.
 
@@ -231,11 +231,13 @@ rusty-photon/
   CLAUDE.md / AGENTS.md   Operating rules for AI agents and human contributors
   crates/
     bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)
+    guide-simulator/                 Mount model + star renderer in simulated time, for the guider's tests
     rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum + memoised verifier)
     rp-catalog/                      Embedded Messier/NGC/IC catalog with name resolution
     rp-ephemeris/                    Astronomical math (Ephemeris + ERFA wrapper + Site)
     rp-fits/                         FITS reader/writer wrapper
     rp-plate-solver/                 HTTP client for the plate-solver service
+    rp-guiding/                      The guider's core: frames in, guide stars measured, offsets out
     rusty-photon-tls/                TLS serving for inter-service comms (issuance lives in doctor)
     rusty-photon-config/             Config-path + first-run UniqueID + the ConfigurableDriver trait the setup pages use
     rusty-photon-setup/              The setup pages a service serves for its own configuration

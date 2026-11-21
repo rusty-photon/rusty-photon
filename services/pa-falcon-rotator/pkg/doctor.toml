@@ -3,6 +3,11 @@
 class = "alpaca"
 port = 11118
 
+# The sync-offset record the driver writes beside its config
+# (docs/services/falcon-rotator.md §The sync-offset record): runtime
+# state, which doctor must never take for a misnamed config.
+state_file = "pa-falcon-rotator.sync-offset.json"
+
 # Hardware identity (docs/services/doctor.md §Hardware).
 serial_pointer = "/serial/port"
 serial_default_unix = "/dev/ttyUSB0"

@@ -19,7 +19,7 @@ use serde::Serialize;
 use crate::error::{Result, RpError};
 use rp_image_analysis::aperture::{
     aggregate_hfr, aperture_snr, measure_in_apertures, measure_listed, peak_in_aperture, Listed,
-    MeasuredStar,
+    MeasuredStar, MIN_LISTED_SNR,
 };
 use rp_image_analysis::background::{estimate_background, BackgroundStats};
 use rp_image_analysis::fwhm::fit_2d_gaussian;
@@ -169,7 +169,14 @@ pub fn measure_listed_stars<T: Pixel>(
     let background = estimate_background(view)
         .ok_or_else(|| RpError::Imaging("background estimation failed".to_string()))?;
     let hot = hot_pixels(view, &background, threshold_sigma);
-    let measured = measure_listed(view, listed, &hot, background.stddev, max_area);
+    let measured = measure_listed(
+        view,
+        listed,
+        &hot,
+        background.stddev,
+        max_area,
+        MIN_LISTED_SNR,
+    );
 
     let measurements: Vec<StarMeasurement> = listed
         .iter()

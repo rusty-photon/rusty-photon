@@ -3,31 +3,31 @@ Feature: Real-ASTAP smoke (mock-honesty backstop)
 
   Three scenarios exercise the wrapper against the operator's real
   ASTAP install. Gated by the `@requires-astap` tag — they fire only
-  when `ASTAP_BINARY` is set in the environment. The dedicated nightly
-  cross-platform workflow sets that var via the `install-astap` action;
-  PR jobs do not, so these scenarios are skipped on every PR.
+  when `ASTAP_BINARY` is set in the environment. The nightly
+  cross-platform smoke workflow sets that var via the `install-astap`
+  action; the pull-request jobs do not, so they skip these scenarios.
 
   Two M 101 scenarios — one blind, one with explicit hints — solve the
-  same fixture and record per-scenario wall-clock duration. The delta
-  is the hinted-vs-blind perf signal issue #236 trends across nightly
-  runs (recorded into the CSV file named by the `PLATE_SOLVER_PERF_CSV`
+  same fixture and record per-scenario wall-clock duration. The gap
+  between the two is what the hints buy, and the smoke workflow guards
+  it (recorded into the CSV file named by the `PLATE_SOLVER_PERF_CSV`
   env var when set; no-op when unset, so local BDD runs aren't burdened).
 
   The third scenario asserts the wrapper surfaces `solve_failed` on
   ASTAP's expected failure mode (degenerate input with no stars).
 
-  See `docs/plans/archive/plate-solver.md` §"Real-ASTAP coverage:
-  cadence and gating" for the rationale and the bdd.rs filter snippet.
+  See `docs/services/plate-solver.md` § Real-ASTAP Coverage Cadence for
+  the fixture, the timings and their guard.
 
   Scenario: Real ASTAP solves the M 101 fixture blind (no hints)
     # `m101_known.fits` is a 1024×1024 centered crop of a real NINA
     # capture (FSQ106 + QHY600M, B filter, 120 s, 2025-05-20 session),
     # downsized from ~117 MB to ~2 MB while keeping enough stars to
     # solve (88 stars, 4/4 quad match). The fixture's pointing
-    # breadcrumbs (RA, DEC, OBJCTRA, OBJCTDEC, OBJECT) were stripped
-    # in issue #236 so that "no hint flags on the request" produces a
-    # truly blind solve — ASTAP walks the search spiral from an
-    # unbiased start position. On the reference Linux box this takes
+    # breadcrumbs (RA, DEC, OBJCTRA, OBJCTDEC, OBJECT) are stripped,
+    # so "no hint flags on the request" produces a truly blind
+    # solve — ASTAP walks the search spiral from an unbiased start
+    # position. On the reference Linux box this takes
     # ~48 s vs ~0.06 s with explicit hints (the next scenario);
     # cross-platform numbers land in the CSV artifact. The assertion
     # tolerance (0.01°) is far wider than the observed solve scatter,

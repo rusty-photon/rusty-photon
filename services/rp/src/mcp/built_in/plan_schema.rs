@@ -1,5 +1,5 @@
 //! The plan-data `schema` / `validate` MCP tools (rp.md § Plan schema
-//! and validation, ADR-019).
+//! and validation).
 //!
 //! They are the plan-side analogue of what a service's setup pages do for
 //! its configuration: describe its shape and check a candidate.

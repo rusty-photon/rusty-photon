@@ -384,16 +384,30 @@ impl RpMcpClient {
         tool: &str,
         args: Map<String, Value>,
     ) -> Result<Value, McpCallError> {
+        let result = self.call_tool_result(tool, args).await?;
+        tool_result_value(&result)
+    }
+
+    /// Call a tool and return its result verbatim: a tool error stays a
+    /// `CallToolResult` with `is_error` set, so a caller can read what it
+    /// carries beyond its text, such as [`ascom_error_code`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpCallError::SafetyStopped`] if `rp` refused the call
+    /// because conditions are unsafe, and [`McpCallError::Request`] if
+    /// the request itself fails otherwise (`rp` unreachable, transport
+    /// loss).
+    pub async fn call_tool_result(
+        &self,
+        tool: &str,
+        args: Map<String, Value>,
+    ) -> Result<CallToolResult, McpCallError> {
         let mut params = CallToolRequestParams::new(tool.to_string());
         if !args.is_empty() {
             params.arguments = Some(args);
         }
-        let result = self
-            .peer
-            .call_tool(params)
-            .await
-            .map_err(map_service_error)?;
-        tool_result_value(&result)
+        self.peer.call_tool(params).await.map_err(map_service_error)
     }
 
     /// Forward a `tools/call` on behalf of another caller — the proxy
@@ -597,6 +611,25 @@ pub fn tool_result_value(result: &CallToolResult) -> Result<Value, McpCallError>
     parse_content(&result.content)
 }
 
+/// The ASCOM error code a failed `rp` tool relays from its device.
+///
+/// It is the `ascom_error.code` of the result's structured content (rp.md
+/// § `CoverCalibrator` Tool Details): `None` for a success, and for a tool
+/// error that relays no device code.
+#[must_use]
+pub fn ascom_error_code(result: &CallToolResult) -> Option<u16> {
+    if !result.is_error.unwrap_or(false) {
+        return None;
+    }
+    let code = result
+        .structured_content
+        .as_ref()?
+        .get("ascom_error")?
+        .get("code")?
+        .as_u64()?;
+    u16::try_from(code).ok()
+}
+
 /// The one-JSON-text-block result convention.
 fn parse_content(content: &[rmcp::model::ContentBlock]) -> Result<Value, McpCallError> {
     match content {
@@ -694,6 +727,26 @@ mod tests {
 
         let ok = CallToolResult::success(vec![rmcp::model::ContentBlock::text(r#"{"n": 1}"#)]);
         assert_eq!(tool_result_value(&ok).unwrap()["n"], 1);
+    }
+
+    /// A tool error relaying a device's ASCOM error carries the code in
+    /// its structured content; a plain tool error and a success carry none.
+    #[test]
+    fn ascom_error_code_reads_a_relayed_device_code() {
+        let mut relayed = CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+            "failed to turn calibrator on: ASCOM error INVALID_VALUE: too dim",
+        )]);
+        relayed.structured_content = Some(serde_json::json!({
+            "ascom_error": { "code": 1025, "message": "too dim" }
+        }));
+        assert_eq!(ascom_error_code(&relayed), Some(1025));
+
+        let plain = CallToolResult::error(vec![rmcp::model::ContentBlock::text("lamp failure")]);
+        assert_eq!(ascom_error_code(&plain), None);
+
+        let mut success = CallToolResult::success(vec![rmcp::model::ContentBlock::text("{}")]);
+        success.structured_content = Some(serde_json::json!({ "ascom_error": { "code": 1025 } }));
+        assert_eq!(ascom_error_code(&success), None);
     }
 
     #[test]

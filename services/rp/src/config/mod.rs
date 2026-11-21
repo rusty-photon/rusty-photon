@@ -1,14 +1,16 @@
 //! Configuration types and JSON loader.
 //!
 //! Top-level [`Config`] is built by [`load_config`] from a JSON file.
-//! Each domain-specific block lives in a sibling module:
-//! [`session`], [`site`], [`equipment`] (plus the per-device-type
-//! configs [`camera`], [`focuser`], [`mount`], [`filter_wheel`],
-//! [`cover_calibrator`], the [`optical_train`] light-path lists, and
-//! the mount-scoped [`guiding`] service block), [`imaging`],
-//! [`plate_solver`], [`server`].
-//! The submodules' public types are re-exported here so existing
-//! `crate::config::CameraConfig` callsites keep working unchanged.
+//! Each block lives in a sibling module: [`session`], [`site`],
+//! [`target_store`], [`safety`], [`imaging`], [`centering`], [`cooling`],
+//! [`plate_solver`], [`server`], and [`equipment`] with its per-device
+//! configs ([`camera`], [`focuser`], [`mount`] and the mount-scoped
+//! [`guiding`] service block, [`filter_wheel`], [`cover_calibrator`],
+//! [`rotator`], [`dome`], [`switch`], [`safety_monitor`],
+//! [`observing_conditions`]) and the [`optical_train`] light-path lists;
+//! [`naming_template`] validates and compiles the `session` patterns.
+//! The submodules' public types are re-exported here, so callers name
+//! them as `crate::config::CameraConfig`.
 
 pub mod camera;
 pub mod centering;
@@ -87,13 +89,12 @@ pub struct Config {
     pub plugins: Vec<Value>,
     /// Target-store settings (`db_path`, `default_goals`,
     /// `default_scheduling`). Targets themselves live in the redb store
-    /// (added via `add_target`), not in config — the legacy `targets[]`
-    /// planner array was retired. A stray `targets` key or a leftover
-    /// array shape here fails loudly at load (`deny_unknown_fields` +
-    /// the typed field).
+    /// (added via `add_target`) and have no config form: a `targets` key,
+    /// or an array in place of this object, fails loudly at load
+    /// (`deny_unknown_fields` + the typed field).
     #[serde(default)]
     pub target_store: TargetStoreConfigWire,
-    /// Planner knobs read opaquely (`min_altitude_degrees` today). Absent
+    /// Planner knobs read opaquely (`min_altitude_degrees`). Absent
     /// and null are the same state to every reader — `#[serde(default)]`
     /// loads an absent block as `Value::Null` and `Value::get` on it yields
     /// `None` — so the unset block is persisted by omitting the key.
@@ -106,7 +107,7 @@ pub struct Config {
     #[serde(default)]
     pub imaging: ImagingConfig,
     /// Per-rig estimates that size the advisory `center_on_target`
-    /// deadline carried on `centering_started` (§2.5). Always present;
+    /// deadline carried on `centering_started`. Always present;
     /// an omitted block uses [`CenteringConfig`]'s defaults.
     #[serde(default)]
     pub centering: CenteringConfig,
@@ -126,17 +127,18 @@ pub struct Config {
     pub server: ServerConfig,
     /// PEM CA certificate `rp` trusts for every outbound HTTPS connection
     /// it makes as a client: Alpaca devices (`equipment.*[].alpaca_url`),
-    /// the plate-solver service, and the guider service. An observatory
-    /// runs one CA (`rusty_photon_tls`), so this is a single rp-level
-    /// setting rather than per-target — matching the `ca_cert` field
-    /// doctor already wires into sentinel, session-runner, and
-    /// calibrator-flats (`services/doctor/src/provision/mod.rs`
-    /// `CLIENT_WIRING_SERVICES`). `Some` becomes the client's **only**
-    /// trusted root (`tls_certs_only`, ADR-002) — it replaces, not adds
-    /// to, the platform trust store, so a public-CA `https://` target
-    /// becomes unreachable alongside the observatory CA. `None` (the
-    /// default) uses the platform trust store, so an https target signed
-    /// by the observatory's self-signed CA fails certificate verification.
+    /// the plate-solver service, the guider service, event plugins'
+    /// `webhook_url` and tool providers' `mcp_server_url` (rp.md
+    /// § Configuration). An observatory runs one CA (`rusty_photon_tls`),
+    /// so this is a single rp-level setting rather than per-target — the
+    /// `ca_cert` field doctor wires into every client service
+    /// (`CLIENT_WIRING` in `services/doctor/src/provision/mod.rs`). `Some`
+    /// becomes the client's **only** trusted root (`tls_certs_only`) — it
+    /// replaces, not adds to, the platform trust store, so a public-CA
+    /// `https://` target becomes unreachable alongside the observatory CA.
+    /// `None` (the default) uses the platform trust store, so an https
+    /// target signed by the observatory's self-signed CA fails certificate
+    /// verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert: Option<String>,
 }
@@ -168,7 +170,7 @@ impl Config {
 /// session data under a platform-dependent directory — the packaged unit's
 /// `StateDirectory` (`/var/lib/rusty-photon/rp/`) on Linux,
 /// `~/Library/Application Support/rusty-photon/rp/` on macOS,
-/// `%PROGRAMDATA%\rusty-photon\rp\` on Windows (ADR-015). Must stay
+/// `%PROGRAMDATA%\rusty-photon\rp\` on Windows. Must stay
 /// deserializable into [`Config`] — the packaged first-start contract
 /// depends on it.
 #[must_use]
@@ -204,7 +206,7 @@ fn default_data_directory() -> String {
 }
 #[cfg(windows)]
 fn default_data_directory() -> String {
-    program_data_root(std::env::var_os("ProgramData"))
+    rusty_photon_config::program_data_root(std::env::var_os("ProgramData"))
         .join("rusty-photon")
         .join("rp")
         .join("data")
@@ -229,26 +231,11 @@ fn macos_data_directory(config_dir: Option<std::path::PathBuf>) -> String {
     )
 }
 
-/// Pure resolution of the Windows `ProgramData` root from the value of the
-/// `ProgramData` environment variable: the value verbatim when present and
-/// non-empty, else the fixed `C:\ProgramData` fallback. A private copy of the
-/// same rule `rusty-photon-config` applies to the config path (each crate
-/// keeps its own — see the W2 note in `docs/plans/archive/windows-packaging.md`);
-/// compiled on Windows and in test builds on every platform, so the logic
-/// is unit-testable on non-Windows hosts.
-#[cfg(any(windows, test))]
-fn program_data_root(program_data: Option<std::ffi::OsString>) -> std::path::PathBuf {
-    match program_data {
-        Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
-        _ => std::path::PathBuf::from(r"C:\ProgramData"),
-    }
-}
-
 /// Domain validation shared by startup ([`load_config`]) and the setup
 /// page's save (via [`crate::setup::driver::RpConfigDriver`]).
 ///
 /// Empty result means valid. Paths are dotted with array indices
-/// (`equipment.cameras.0.focal_length_mm`) so a UI can render each error
+/// (`equipment.cameras.0.cooler_targets_c`) so a UI can render each error
 /// next to its field; messages name the device id where one exists.
 #[must_use]
 pub fn validate_config(config: &Config) -> Vec<FieldError> {
@@ -361,8 +348,8 @@ pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&
 /// `webhook_url` (an emitted event, rp.md § Delivery: Webhooks) and a
 /// tool provider's `mcp_server_url` (its MCP server, rp.md § Tool
 /// Provider Registration) — and `auth`, the credential it presents there
-/// (the same observatory credential every first-party client presents,
-/// ADR-017). Both are permanent configuration faults when malformed — a
+/// (the same observatory credential every first-party client presents).
+/// Both are permanent configuration faults when malformed — a
 /// half-written credential would be read as "no credential" and 401 every
 /// request; a bad URL would fail every attempt — so both fail at load
 /// rather than at first use, which means `load_config`, the setup page's
@@ -371,10 +358,10 @@ pub fn progress_derivation_warning(session: &session::SessionConfig) -> Option<&
 /// scope decides which registrations doctor offers to wire a credential
 /// into (`RpView::plugin_targets`).
 ///
-/// A `type: "orchestrator"` entry is the one registration rp used to
-/// dial and no longer does (mcp-sessionless D6): it is rejected outright,
-/// naming the migration, because accepting it silently would leave an
-/// operator believing rp will start their session at dusk (D11).
+/// A `type: "orchestrator"` entry is rejected outright, naming the
+/// migration (rp.md § Plugin Types): rp dials no orchestrator, and
+/// accepting the entry silently would leave an operator believing rp
+/// will start their session at dusk.
 fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
     // Each dialed registration is checked by running the very parse its
     // runtime builds from — `EventSubscription::parse` for the bus's
@@ -389,7 +376,7 @@ fn plugin_registration_errors(plugins: &[Value]) -> Vec<FieldError> {
                 Some(FieldError {
                     path: format!("plugins.{index}.type"),
                     msg: format!(
-                        "({}) is an orchestrator registration, which rp no longer serves: \
+                        "({}) is an orchestrator registration, which rp does not serve: \
                          {ORCHESTRATOR_REGISTRATION_REMOVED}",
                         registration_name(plugin)
                     ),
@@ -440,8 +427,8 @@ pub fn has_tool_providers(plugins: &[Value]) -> bool {
 /// The migration message for the retired orchestrator surface.
 ///
 /// Every rejection of a `type: "orchestrator"` entry or a
-/// `session.session_state_file` key ends with it (mcp-sessionless D11),
-/// at load, on a setup-page save and in `rp doctor` alike.
+/// `session.session_state_file` key ends with it, at load, on a
+/// setup-page save and in `rp doctor` alike.
 pub const ORCHESTRATOR_REGISTRATION_REMOVED: &str = "orchestrator registrations were removed; \
      start runs at session-runner — see docs/services/session-runner.md";
 
@@ -601,7 +588,7 @@ pub struct ToolProviderRegistration {
     pub mcp_server_url: String,
     /// The credential presented to the provider — HTTP Basic over
     /// verified HTTPS only, the policy every first-party client follows
-    /// (ADR-017, `rp-mcp-client`).
+    /// (`rp-mcp-client`).
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
     /// The provider's tools the registration opts out of the safety gate
     /// (`"gate": {"<tool>": "none"}`, rp.md § Tool Provider
@@ -851,8 +838,8 @@ fn redact_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
 
 /// Whether a plugin registration is the orchestrator kind.
 ///
-/// The single place that rule is written: the type rp used to dial for
-/// a session start and now rejects at load (mcp-sessionless D11).
+/// The single place that rule is written: rp dials no orchestrator and
+/// rejects the type at load ([`ORCHESTRATOR_REGISTRATION_REMOVED`]).
 pub fn is_orchestrator(plugin: &Value) -> bool {
     plugin.get("type").and_then(Value::as_str) == Some("orchestrator")
 }
@@ -960,28 +947,6 @@ mod tests {
     #[test]
     fn macos_data_directory_falls_back_without_a_home() {
         assert_eq!(macos_data_directory(None), LINUX_STATE_DATA_DIR);
-    }
-
-    #[test]
-    fn program_data_root_uses_env_value_verbatim() {
-        let root = program_data_root(Some(std::ffi::OsString::from(r"D:\CustomData")));
-        assert_eq!(root, std::path::PathBuf::from(r"D:\CustomData"));
-    }
-
-    #[test]
-    fn program_data_root_falls_back_when_env_absent() {
-        assert_eq!(
-            program_data_root(None),
-            std::path::PathBuf::from(r"C:\ProgramData")
-        );
-    }
-
-    #[test]
-    fn program_data_root_falls_back_when_env_empty() {
-        assert_eq!(
-            program_data_root(Some(std::ffi::OsString::new())),
-            std::path::PathBuf::from(r"C:\ProgramData")
-        );
     }
 
     #[test]
@@ -1518,7 +1483,7 @@ mod tests {
     /// A `safety.gate` name that is not a built-in tool may be a
     /// provider's, which only startup can tell: with a provider
     /// registered the load defers the check, without one it rejects the
-    /// name as before (safety.feature "An override naming an unknown tool
+    /// name at load (safety.feature "An override naming an unknown tool
     /// fails startup").
     #[test]
     fn a_gate_override_naming_a_non_builtin_tool_is_deferred_only_with_a_provider() {
@@ -1586,11 +1551,10 @@ mod tests {
         );
     }
 
-    /// An orchestrator registration is the surface rp stopped serving
-    /// (mcp-sessionless D6): accepted silently, it would leave an
-    /// operator believing rp will start their session at dusk, so every
-    /// entry is rejected naming the migration (D11) — complete or stub,
-    /// first or second, whatever else it carries.
+    /// rp dials no orchestrator: an orchestrator registration accepted
+    /// silently would leave an operator believing rp will start their
+    /// session at dusk, so every entry is rejected naming the migration —
+    /// complete or stub, first or second, whatever else it carries.
     #[test]
     fn an_orchestrator_registration_is_rejected_naming_the_migration() {
         for entry in [
@@ -1655,9 +1619,9 @@ mod tests {
         assert!(err.starts_with("site.latitude_degrees "), "{err}");
     }
 
-    /// The other half of the retired surface: the state file the
-    /// registry persisted to. It is parsed on purpose so the rejection
-    /// can say what replaced it, rather than serde's bare "unknown
+    /// The other half of the retired surface: `session.session_state_file`,
+    /// the session registry's state file. It is parsed on purpose so the
+    /// rejection can name the migration, rather than serde's bare "unknown
     /// field" (`an_unknown_session_key_fails_loud` covers a real typo).
     #[test]
     fn a_session_state_file_key_is_rejected_naming_the_migration() {
@@ -1818,8 +1782,8 @@ mod tests {
     /// The opaque half of the same rule: rp interprets `auth` on the
     /// registrations it dials alone, so a differently-shaped `auth` key
     /// on a type it does not dial is its author's business and must not
-    /// fail rp's load. (A tool provider is dialed since mcp-sessionless
-    /// slice 8, so its `auth` *is* held to the client-credential shape —
+    /// fail rp's load. (A tool provider is dialed, so its `auth` *is*
+    /// held to the client-credential shape —
     /// `a_malformed_plugin_auth_block_fails_to_load`.)
     #[test]
     fn an_undialed_plugins_own_auth_shape_is_left_alone() {

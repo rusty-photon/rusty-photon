@@ -1,7 +1,8 @@
 //! `Pixel` trait — the abstraction analysis algorithms are generic over.
 //!
 //! Cameras emit either `u16` (every consumer/prosumer astro camera) or `i32`
-//! (future scientific sCMOS HDR modes; `rp`'s image cache holds both).
+//! (a scientific camera whose values exceed the `u16` range, such as an
+//! sCMOS HDR mode; `rp`'s image cache holds both).
 //! Each analysis algorithm is written once over `T: Pixel` and monomorphized
 //! for both types.
 

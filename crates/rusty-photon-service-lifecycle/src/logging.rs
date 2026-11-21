@@ -13,34 +13,23 @@
 //!    flow to the same destination as the test binary's own output without extra
 //!    wiring.
 //!
-//! Historically, logging to stdout also produced a flood of
-//! `[tracing-subscriber] Unable to write an event ... Broken pipe` noise in CI:
-//! the harness aborted its stdout-drain task before the child exited, closing
-//! the pipe's read end while the child was still writing shutdown-path logs.
-//! That harness defect has since been fixed (the drain stays open until the
-//! child exits), so stderr logging is no longer *required* to avoid the EPIPE —
-//! but it remains the right destination for reasons 1 and 2.
-//!
 //! Filtering follows `RUST_LOG` when set, otherwise falls back to the level the
 //! binary passes in (typically its `--log-level` flag, defaulting to `info`).
-//! This is the same `stderr` + `EnvFilter` pattern `rp` and `plate-solver` used
-//! inline, hoisted here so all services share one implementation.
 //!
 //! **Windows SCM service mode is the one exception to "logs go to stderr".**
 //! Under the Service Control Manager both std handles are absent — everything
 //! written to stderr vanishes. [`init_service_tracing`] therefore swaps the
 //! stderr writer for a `tracing-appender` rolling file under
 //! `%PROGRAMDATA%\rusty-photon\logs\` (daily rotation, 14 files retained) when
-//! a service runs with `--service` (ADR-015 / the windows-packaging plan, W1).
-//! Console mode is byte-for-byte unchanged: `init_service_tracing` with
-//! `scm_mode = false` — or on any non-Windows target, or without the `scm`
-//! cargo feature — is exactly [`init_tracing`].
+//! a service runs with `--service`. In console mode — `scm_mode = false`, any
+//! non-Windows target, or a build without the `scm` cargo feature —
+//! `init_service_tracing` is exactly [`init_tracing`], byte for byte.
 //!
 //! The subscriber additionally carries a [`tracing_error::ErrorLayer`] so
 //! `SpanTrace::capture()` sees the live span stack. This is what lets the
 //! `color-eyre` panic hook installed by [`ServiceRunner`](crate::ServiceRunner)
-//! include the active span context in panic reports (ADR-011); without it the
-//! report would print "span trace disabled".
+//! include the active span context in panic reports; without it the report
+//! would print "span trace disabled".
 
 use tracing::Level;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
@@ -52,7 +41,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 ///
 /// Split out from [`init_tracing`] so the filter logic is unit-testable without
 /// installing a process-global subscriber. `RUST_LOG` takes precedence over
-/// `default_level`, matching the convention `rp`/`plate-solver` established.
+/// `default_level`.
 fn build_env_filter(default_level: Level) -> EnvFilter {
     EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(LevelFilter::from_level(default_level).to_string()))
@@ -156,7 +145,7 @@ pub fn init_service_tracing(
     TracingGuard::inert()
 }
 
-/// SCM-mode rolling-file logging (windows-packaging plan, W1).
+/// SCM-mode rolling-file logging.
 ///
 /// Only the Windows SCM branch of [`init_service_tracing`] calls into this
 /// module in production, but it is compiled on every target (behind the `scm`
@@ -166,24 +155,10 @@ pub fn init_service_tracing(
 #[cfg_attr(not(windows), allow(dead_code))]
 mod scm_file {
     use super::{build_env_filter, init_tracing, Level, SubscriberExt, SubscriberInitExt};
-    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
     /// How many rotated daily log files to retain per service.
     const MAX_LOG_FILES: usize = 14;
-
-    /// Resolve the Windows `ProgramData` directory from the given environment
-    /// value: the `ProgramData` env var when set and non-empty, otherwise the
-    /// stock `C:\ProgramData`.
-    ///
-    /// Private to this crate; `rusty-photon-config` grows its own resolver for
-    /// the Windows config path (W2) — deduplication is a noted follow-up.
-    fn program_data_dir(env_value: Option<OsString>) -> PathBuf {
-        match env_value {
-            Some(v) if !v.is_empty() => PathBuf::from(v),
-            _ => PathBuf::from(r"C:\ProgramData"),
-        }
-    }
 
     /// The service log directory under a `ProgramData` root:
     /// `<program_data>\rusty-photon\logs`.
@@ -192,9 +167,12 @@ mod scm_file {
     }
 
     /// The real SCM-mode log directory:
-    /// `%PROGRAMDATA%\rusty-photon\logs` (per ADR-015).
+    /// `%PROGRAMDATA%\rusty-photon\logs`, under the `ProgramData` root
+    /// `rusty-photon-config` resolves for the config directory.
     pub(super) fn default_log_dir() -> PathBuf {
-        log_dir_under(&program_data_dir(std::env::var_os("ProgramData")))
+        log_dir_under(&rusty_photon_config::program_data_root(std::env::var_os(
+            "ProgramData",
+        )))
     }
 
     /// Build the non-blocking rolling-file writer for a service: daily
@@ -289,24 +267,6 @@ mod scm_file {
     #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use super::*;
-
-        #[test]
-        fn program_data_dir_uses_env_value_when_set() {
-            let dir = program_data_dir(Some(OsString::from(r"D:\CustomData")));
-            assert_eq!(dir, PathBuf::from(r"D:\CustomData"));
-        }
-
-        #[test]
-        fn program_data_dir_falls_back_when_unset() {
-            let dir = program_data_dir(None);
-            assert_eq!(dir, PathBuf::from(r"C:\ProgramData"));
-        }
-
-        #[test]
-        fn program_data_dir_falls_back_when_empty() {
-            let dir = program_data_dir(Some(OsString::new()));
-            assert_eq!(dir, PathBuf::from(r"C:\ProgramData"));
-        }
 
         #[test]
         fn log_dir_is_rusty_photon_logs_under_program_data() {

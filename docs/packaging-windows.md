@@ -194,10 +194,7 @@ match it, the build refuses a mismatch.)
 The MSI ships no config files. Daemons self-create their config on first
 start at `%ProgramData%\rusty-photon\<svc>.json` (the Windows analogue of
 the Linux `/etc/rusty-photon` path). Exceptions: the config-gated six
-(above) never write one; the two cameras and `zwo-focuser` run on
-built-in defaults without writing a file until
-settings are saved on the service's setup page (`/setup`) or one is
-created by hand. To change settings:
+(above) never write one. To change settings:
 
 ```powershell
 notepad $env:ProgramData\rusty-photon\<svc>.json
@@ -249,9 +246,11 @@ until the device answers.
 Install [QHY's All-in-One driver
 pack](https://www.qhyccd.com/download/) first (needed for the signed
 camera driver anyway); it provides the `qhyccd.dll` the service
-delay-loads at startup. Without it the service logs an actionable
-"qhyccd.dll not found" pointer and stops cleanly instead of crashing in
-the loader. The Start-Menu shortcut **QHY Camera Doctor** (or
+delay-loads. Without it the service logs an actionable "qhyccd.dll not
+found" pointer instead of crashing in the loader, and runs serving no
+camera, its listed numbers placeholders that name the DLL. It loads the
+DLL within a minute of the pack's install, without a restart. The
+Start-Menu shortcut **QHY Camera Doctor** (or
 `rusty-photon-qhy-camera.exe doctor` in a console) diagnoses the
 driver-pack/DLL state and reports the SDK version — note the service
 builds against a pinned SDK, so the doctor's version report is the tool

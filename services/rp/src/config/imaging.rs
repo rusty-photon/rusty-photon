@@ -1,7 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Image cache + future analysis-tool tuning. Pi-5-friendly defaults.
+/// Image-cache bounds (rp.md § Image and Document Cache → Lifetime and
+/// Eviction). Pi-5-friendly defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImagingConfig {

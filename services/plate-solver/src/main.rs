@@ -155,7 +155,7 @@ fn main() -> ExitCode {
         Err(e) => {
             let msg = e.to_string();
             // `{e:?}` on the runner's `Report` prints the full multi-line
-            // error chain (ADR-011), matching what the other services get
+            // error chain, matching what the other services get
             // by returning `ServiceResult` from `main`. Through tracing, not
             // eprintln!: console mode reaches stderr via the subscriber, and
             // in SCM service mode this lands in the rolling log file instead

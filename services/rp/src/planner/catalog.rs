@@ -1,15 +1,14 @@
 //! Helpers behind the `resolve_target` MCP tool.
 //!
-//! The MCP method body lives in `crate::mcp` (rmcp's `#[tool_router]`
-//! macro requires a single impl block); the lookup itself is delegated
-//! here so it can be unit-tested in isolation.
+//! The MCP method body lives in `mcp/built_in/planner.rs`; the lookup
+//! itself is delegated here so it can be unit-tested in isolation.
 
 use rp_catalog::{Catalog, ResolvedTarget};
 use serde::Serialize;
 
 /// Outcome of `resolve_target` from the planner's perspective. The
-/// MCP tool body in `mcp.rs` projects this onto a `CallToolResult`
-/// success or structured-error payload.
+/// MCP tool body in `mcp/built_in/planner.rs` projects this onto a
+/// `CallToolResult` success or structured-error payload.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum ResolveOutcome {
@@ -36,9 +35,8 @@ impl From<&ResolvedTarget> for ResolvedTargetView {
         Self {
             name: t.name.clone(),
             object_type: t.object_type.clone(),
-            // The view keeps flat `f64` coordinate fields — the MCP wire
-            // contract is unchanged; only the read routes through the
-            // validated `IcrsCoord` accessors (ADR-019).
+            // The MCP wire carries flat `f64` coordinate fields; the read
+            // goes through the validated `IcrsCoord` accessors.
             ra_hours: t.coord.ra_hours(),
             dec_degrees: t.coord.dec_degrees(),
             magnitude: t.magnitude,
