@@ -85,6 +85,10 @@ the feature file rather than buried in step code).
 - Each ConformU mode runs under a 30-minute deadline — the `conformu.yml`
   step's own limit — so a wedged ConformU fails the test naming the mode
   instead of hanging a local `cargo test`
+- Each ConformU mode writes its log into the run's own scratch directory,
+  never ConformU's per-user log folder, whose file names (the time to the
+  millisecond) collide between runs in parallel. The log goes with the
+  directory; everything in it is also in the test output
 
 **Two runners, one rule.** `bdd_infra::run_conformu` drives ConformU's
 URL-argument verbs, which call `SetFullTest()` after reading any settings

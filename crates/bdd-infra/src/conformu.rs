@@ -486,7 +486,7 @@ pub async fn run_conformu(
     // Always hand ConformU a file: without `--settingsfile` it reads the
     // per-user `conform.settings` the GUI saves into, whose timeouts and
     // tolerances the URL verbs honour. The scratch guard lives across both
-    // suites; the file, and the results file beside it, go with it.
+    // suites; the file, and the results file and logs beside it, go with it.
     let settings = settings.cloned().unwrap_or_default();
     let (settings_dir, settings_path) = settings.write_to_scratch()?;
     let results_path = settings_dir.path().join("conformance-results.json");
@@ -499,6 +499,7 @@ pub async fn run_conformu(
         &conformu,
         "alpacaprotocol",
         &settings_path,
+        settings_dir.path(),
         None,
         Some(&device_url),
     )
@@ -514,6 +515,7 @@ pub async fn run_conformu(
         &conformu,
         "conformance",
         &settings_path,
+        settings_dir.path(),
         Some(&results_path),
         Some(&device_url),
     )
@@ -597,11 +599,15 @@ pub async fn run_conformu_from_settings(
     check_telescope_tests(&settings)
         .map_err(|e| format!("settings file {}: {e}", settings_file.display()))?;
 
+    // The settings file is the caller's; the logs and the results file go
+    // into a scratch directory of the run's own.
+    let run_dir = scratch::new_dir("conformu-run-")?;
     let target = format!("the device in {}", settings_file.display());
     let protocol = run_mode(
         &conformu,
         "alpacaprotocol-settings",
         settings_file,
+        run_dir.path(),
         None,
         None,
     )
@@ -614,12 +620,12 @@ pub async fn run_conformu_from_settings(
         &protocol.output,
     )?;
 
-    let results_dir = scratch::new_dir("conformu-results-")?;
-    let results_path = results_dir.path().join("conformance-results.json");
+    let results_path = run_dir.path().join("conformance-results.json");
     let status = run_mode(
         &conformu,
         "conformance-settings",
         settings_file,
+        run_dir.path(),
         Some(&results_path),
         None,
     )
@@ -651,7 +657,8 @@ struct ModeRun {
 
 /// Run a single `ConformU` mode under [`MODE_DEADLINE`], streaming its output
 /// into the test log, and return its exit status and output for the caller to
-/// judge. `results_file` adds
+/// judge. The mode's log file, `<mode>.log`, goes into `log_dir`, a scratch
+/// directory of the caller's run. `results_file` adds
 /// `--resultsfile` (the conformance suites); `device_url` is the positional
 /// device argument for the URL-based commands and `None` for the `*-settings`
 /// commands, which read the device from the settings file.
@@ -659,16 +666,16 @@ async fn run_mode(
     conformu: &std::ffi::OsStr,
     mode: &str,
     settings_file: &Path,
+    log_dir: &Path,
     results_file: Option<&Path>,
     device_url: Option<&str>,
 ) -> Result<ModeRun, Box<dyn std::error::Error + Send + Sync>> {
     let mut command = Command::new(conformu);
     command.arg(mode);
-    // ConformU writes a per-run log tree under $HOME (e.g.
-    // $HOME/Documents/ascom/logs<date>). Under Bazel's test sandbox the real
-    // $HOME is read-only, so ConformU aborts on startup; point HOME at the
-    // test's writable TEST_TMPDIR. (Under Cargo there is no sandbox and $HOME is
-    // already writable, so this is a no-op there.)
+    // Under Bazel's test sandbox the real $HOME is read-only; point HOME at
+    // the test's writable TEST_TMPDIR, so anything ConformU or its .NET
+    // runtime writes under $HOME goes there instead. (Under Cargo there is no
+    // sandbox and $HOME is already writable, so this is a no-op there.)
     if let Some(tmp) = std::env::var_os("TEST_TMPDIR") {
         command.env("HOME", tmp);
     }
@@ -677,6 +684,17 @@ async fn run_mode(
     // command calls SetFullTest()); for the `*-settings` commands it carries
     // the device and the test selection too.
     command.arg("--settingsfile").arg(settings_file);
+    // Name the log file rather than let ConformU name it. ConformU's own
+    // name is the time of its first log line, to the millisecond, in a
+    // per-user, per-day folder, and it checks that no such file exists before
+    // it creates one, so two runs that log first in the same millisecond (the
+    // tests of one binary run in parallel) pick the same file; on Windows the
+    // second open fails and aborts that run. Inside the caller's scratch
+    // directory the name cannot collide. The log repeats the stdout streamed
+    // below, so it goes with the directory.
+    command
+        .arg("--logfilename")
+        .arg(log_dir.join(format!("{mode}.log")));
     if let Some(path) = results_file {
         command.arg("--resultsfile").arg(path);
     }
@@ -1388,8 +1406,13 @@ mod tests {
             }
         }
 
+        /// The directory of `path`, an argument the stand-in recorded.
+        fn parent_of(path: &str) -> String {
+            Path::new(path).parent().unwrap().display().to_string()
+        }
+
         #[tokio::test]
-        async fn run_conformu_hands_settings_results_and_the_device_url_to_the_suites() {
+        async fn run_conformu_hands_settings_logs_results_and_the_device_url_to_the_suites() {
             let _serial = ONE_AT_A_TIME.lock().await;
             let (dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
@@ -1407,21 +1430,24 @@ mod tests {
             assert_eq!(outcome, ConformuRun::Passed);
             let calls = invocations(&dir);
             assert_eq!(calls.len(), 2, "{calls:?}");
-            assert!(
-                calls[0].starts_with("alpacaprotocol --settingsfile ")
-                    && calls[0]
-                        .ends_with("/conformu-settings.json http://127.0.0.1:1/api/v1/telescope/0"),
-                "{}",
-                calls[0]
+            // The settings file's directory is the run's own scratch
+            // directory: each suite's log and the results file sit beside it.
+            let run_dir = parent_of(calls[0].split(' ').nth(2).unwrap());
+            let device = "http://127.0.0.1:1/api/v1/telescope/0";
+            assert_eq!(
+                calls[0],
+                format!(
+                    "alpacaprotocol --settingsfile {run_dir}/conformu-settings.json \
+                     --logfilename {run_dir}/alpacaprotocol.log {device}"
+                )
             );
-            assert!(
-                calls[1].starts_with("conformance --settingsfile ")
-                    && calls[1].contains("/conformu-settings.json --resultsfile ")
-                    && calls[1].ends_with(
-                        "/conformance-results.json http://127.0.0.1:1/api/v1/telescope/0"
-                    ),
-                "{}",
-                calls[1]
+            assert_eq!(
+                calls[1],
+                format!(
+                    "conformance --settingsfile {run_dir}/conformu-settings.json \
+                     --logfilename {run_dir}/conformance.log \
+                     --resultsfile {run_dir}/conformance-results.json {device}"
+                )
             );
         }
 
@@ -1447,13 +1473,24 @@ mod tests {
             let calls = invocations(&dir);
             let settings_arg = format!("--settingsfile {}", settings.display());
             assert_eq!(calls.len(), 2, "{calls:?}");
-            assert_eq!(calls[0], format!("alpacaprotocol-settings {settings_arg}"));
-            assert!(
-                calls[1].starts_with(&format!(
-                    "conformance-settings {settings_arg} --resultsfile "
-                )) && calls[1].ends_with("/conformance-results.json"),
-                "{}",
-                calls[1]
+            // The logs and the results file go into a scratch directory of
+            // the run's own, never beside the caller's settings file.
+            let run_dir = parent_of(calls[0].rsplit(' ').next().unwrap());
+            assert_ne!(Path::new(&run_dir), settings.parent().unwrap(), "{calls:?}");
+            assert_eq!(
+                calls[0],
+                format!(
+                    "alpacaprotocol-settings {settings_arg} \
+                     --logfilename {run_dir}/alpacaprotocol-settings.log"
+                )
+            );
+            assert_eq!(
+                calls[1],
+                format!(
+                    "conformance-settings {settings_arg} \
+                     --logfilename {run_dir}/conformance-settings.log \
+                     --resultsfile {run_dir}/conformance-results.json"
+                )
             );
         }
 
