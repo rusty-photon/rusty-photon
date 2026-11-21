@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "The guider's core, without I/O: the frame a guider measures, its guide stars' selection and their measurement each frame, and calibration"
+description = "The guider's core, without I/O: the frame a guider measures, its guide stars' selection and their measurement each frame, calibration, control, dither and settling"
 
 [lints]
 workspace = true
@@ -15,6 +15,7 @@ workspace = true
 derive_more = { workspace = true }
 ndarray = { workspace = true }
 num-traits = { workspace = true }
+rand = { workspace = true }
 rp-image-analysis = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

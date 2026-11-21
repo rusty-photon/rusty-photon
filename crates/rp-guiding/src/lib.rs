@@ -40,20 +40,31 @@
 //! which are usable, and the frame's offset, the median of theirs.
 //! [`Calibrator`] turns the offsets of a calibration's frames into its
 //! pulses and its result, a [`Calibration`], which also says when it
-//! serves a later run. See `docs/services/guider.md` (Sensor handling,
-//! Star selection and measurement, Calibration).
+//! serves a later run. [`Controller`] turns each guiding frame's offset
+//! into its pulses, stops a run whose corrections run away, and moves the
+//! lock for a dither; [`Settle`] says when the stars have settled. See
+//! `docs/services/guider.md` (Sensor handling, Star selection and
+//! measurement, Calibration, Control, Dither, settle and abort).
 
 mod background;
 mod calibration;
+mod control;
 mod frame;
+mod settle;
 mod stars;
+#[cfg(test)]
+mod test_support;
 
 pub use background::{sampled_background, MIN_SAMPLE};
 pub use calibration::{
     Axis, Calibration, CalibrationError, CalibrationParams, Calibrator, CameraGeometry, Check,
     DecAxis, Direction, ExpectedRates, GuideRates, Leg, PierSide, Progress, Pulse, Setup, Warning,
 };
+pub use control::{
+    AxisOffset, ControlError, ControlParams, Controller, DecMode, GuideAxis, GuideStep,
+};
 pub use frame::{Frame, FrameError, SensorType};
+pub use settle::{Settle, SettleParams, Settling};
 pub use stars::{
     FrameMeasurement, GuideStars, Offset, Position, SelectError, StarParams, StarReading, Usable,
 };

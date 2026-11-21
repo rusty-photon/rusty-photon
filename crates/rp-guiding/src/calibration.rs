@@ -715,50 +715,10 @@ fn distance(a: Offset, b: Offset) -> f64 {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::frame::{Frame, SensorType};
-    use crate::stars::{GuideStars, StarParams};
-    use guide_simulator::{
-        CameraConfig, Cloud, DecBacklash, DecSense, GuideDirection, PulseDelivery, Seeing,
-        SimConfig, Simulator, SkyConfig, SkyOffset, Star, StarField, SIDEREAL_ARCSEC_PER_S,
+    use crate::test_support::{
+        calibrate_in, close, setup, simulator, EXPOSURE, HALF_SIDEREAL_PX_PER_S,
     };
-
-    /// What each step costs besides its pulse: the frame after it.
-    const EXPOSURE: Duration = Duration::from_secs(2);
-
-    /// The rate a guide rate of 0.5 × sidereal moves the stars at, at 2″ a
-    /// pixel, in pixels a second.
-    const HALF_SIDEREAL_PX_PER_S: f64 = 0.5 * SIDEREAL_ARCSEC_PER_S / 2.0;
-
-    fn close(actual: f64, expected: f64, tolerance: f64) {
-        assert!(
-            (actual - expected).abs() <= tolerance,
-            "{actual} is not within {tolerance} of {expected}"
-        );
-    }
-
-    fn half_sidereal() -> GuideRates {
-        let deg_per_s = 0.5 * SIDEREAL_ARCSEC_PER_S / ARCSEC_PER_DEG;
-        GuideRates {
-            ra_deg_per_s: deg_per_s,
-            dec_deg_per_s: deg_per_s,
-        }
-    }
-
-    /// A camera at 2″ a pixel on the East side, with guide rates of 0.5 ×
-    /// sidereal.
-    fn setup() -> Setup {
-        Setup {
-            pier_side: PierSide::East,
-            camera: CameraGeometry {
-                pixel_size_um: 2.0,
-                width: 320,
-                height: 240,
-                binning: 1,
-            },
-            focal_length_mm: 206.265,
-            guide_rates: Some(half_sidereal()),
-        }
-    }
+    use guide_simulator::{Cloud, DecBacklash, DecSense, PulseDelivery, SIDEREAL_ARCSEC_PER_S};
 
     /// A mount as the sensor sees it: each pulse moves the stars along its
     /// axis at its rate, once a Dec reversal has taken up the play.
@@ -1397,93 +1357,6 @@ mod tests {
 
     // Closed-loop runs through the simulator: its frames measured by the
     // guide stars, its mount pulsed as the calibration says.
-
-    fn star(east: f64, north: f64, e_per_s: f64) -> Star {
-        Star {
-            position: SkyOffset::new(east, north),
-            e_per_s,
-        }
-    }
-
-    /// A 320 × 240 frame at 2″ a pixel in 3″ seeing with a little image
-    /// motion, four bright stars well inside the edge margin.
-    fn simulator(adjust: impl FnOnce(&mut SimConfig)) -> Simulator {
-        let mut config = SimConfig {
-            seed: 11,
-            camera: CameraConfig {
-                width: 320,
-                height: 240,
-                ..CameraConfig::default()
-            },
-            sky: SkyConfig {
-                stars: StarField::Listed(vec![
-                    star(-100.0, -60.0, 20_000.0),
-                    star(100.0, 60.0, 80_000.0),
-                    star(0.0, 0.0, 40_000.0),
-                    star(-100.0, 60.0, 10_000.0),
-                ]),
-                seeing: Seeing {
-                    fwhm_arcsec: 3.0,
-                    common_motion_arcsec: 0.1,
-                    star_motion_arcsec: 0.1,
-                },
-                clouds: Vec::new(),
-            },
-            ..SimConfig::default()
-        };
-        adjust(&mut config);
-        Simulator::new(config).unwrap()
-    }
-
-    fn measure(sim: &mut Simulator) -> Frame {
-        let shot = sim.expose(EXPOSURE);
-        Frame::new(&shot.pixels.view(), SensorType::Monochrome, Some(65_535)).unwrap()
-    }
-
-    const fn guide_direction(direction: Direction) -> GuideDirection {
-        match direction {
-            Direction::North => GuideDirection::North,
-            Direction::South => GuideDirection::South,
-            Direction::East => GuideDirection::East,
-            Direction::West => GuideDirection::West,
-        }
-    }
-
-    /// Selects guide stars on a first frame and calibrates on the frames
-    /// after it, with the declination the simulated mount points at. Also
-    /// counts the frames that sent no pulse.
-    fn calibrate_in(
-        sim: &mut Simulator,
-        params: CalibrationParams,
-    ) -> (Result<Calibration, CalibrationError>, usize) {
-        let declination_deg = sim.mount().config().declination_deg;
-        let (mut stars, first) = GuideStars::select(&measure(sim), StarParams::default()).unwrap();
-        let mut calibrator =
-            Calibrator::new(setup(), declination_deg, params, sim.now().since_start());
-        let mut offset = first.offset;
-        let mut waits = 0;
-        loop {
-            match calibrator.frame(offset, sim.now().since_start()) {
-                Ok(Progress::Pulse(next, pulse)) => {
-                    sim.mount_mut()
-                        .pulse(guide_direction(pulse.direction), pulse.duration)
-                        .unwrap();
-                    sim.advance(pulse.duration);
-                    while sim.mount().is_pulse_guiding() {
-                        sim.advance(Duration::from_millis(10));
-                    }
-                    calibrator = next;
-                }
-                Ok(Progress::Wait(next)) => {
-                    waits += 1;
-                    calibrator = next;
-                }
-                Ok(Progress::Done(calibration)) => return (Ok(calibration), waits),
-                Err(error) => return (Err(error), waits),
-            }
-            offset = stars.measure(&measure(sim)).offset;
-        }
-    }
 
     #[test]
     fn a_calibration_through_the_simulator_finds_its_camera_s_angle_and_rates() {

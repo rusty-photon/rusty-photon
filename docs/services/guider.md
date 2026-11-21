@@ -10,8 +10,8 @@ an HTTP API.
 
 **The service is designed and not yet built.** This document is the
 design the implementation is written against. Of the guiding core,
-`crates/rp-guiding`, the star selection, the measurement and the
-calibration are built.
+`crates/rp-guiding`, the star selection, the measurement, the
+calibration, the control, dither and settling are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
 records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
@@ -645,10 +645,12 @@ answers with it, and the slot keeps what it held.
 In `guiding`, each frame's offset is turned into at most one pulse on
 each axis.
 
-**The error.** The guider projects the frame's offset onto the
-calibrated RA and Dec axes and subtracts the lock offset, which is zero
-until a dither moves it. The result is the error on each axis, in
-pixels.
+**The error.** The guider takes the frame's offset from home (see
+[Dither, settle and abort](#dither-settle-and-abort)), resolves it into
+the distances along the calibrated RA and Dec axes that sum to it, and
+subtracts the lock offset, which is zero until a dither moves it. The
+result is the error on each axis, in pixels. Without a Dec axis, the RA
+error is the offset's projection onto the RA axis.
 
 **RA.** The error is blended with the previous correction and scaled:
 
@@ -659,15 +661,18 @@ correction = aggression × ((1 − hysteresis) × error + hysteresis × previous
 with `control.ra.hysteresis` and `control.ra.aggression`. The previous
 correction is the one the last guide step worked out, in pixels and
 before the pulse bounds. It is zero at a run's first step, at the first
-step after a pause, a dither or a new selection, and after a step whose
-error was below the minimum move.
+step after a pause, a dither, a dither's abort or a new selection, and
+after a step whose error was below the minimum move.
 
 **Dec.** The correction is `control.dec.aggression` times the error,
 and Dec holds its direction: a correction against the direction of the
 last one is sent only after the error has been on the other side of the
 lock for `control.dec.reversal_frames` consecutive frames. Reversing
 Dec takes up the backlash each time, so the controller reverses only
-for an error that stays. `control.dec.mode` selects `"auto"` (both
+for an error that stays. The frames are counted from the last
+correction, by the side of the lock the error lies on, whatever its
+size, and a frame back on the side of the last correction starts the
+count again. The first Dec correction of a run goes either way. `control.dec.mode` selects `"auto"` (both
 directions), `"north"` or `"south"` (corrections in that direction
 only) or `"off"` (no Dec corrections).
 
@@ -689,6 +694,9 @@ frames each sent a correction in the same direction, and the error at
 the last of them is at least `control.runaway.min_error_px` and no
 smaller than at the first, the run stops with the reason `runaway`. The
 mount is not following the pulses, and more of them would not help.
+The step whose correction would be the last of them sends nothing. The
+count starts again after a pause, a dither, a dither's abort or a new
+selection.
 
 ### Dither, settle and abort
 
@@ -705,13 +713,18 @@ dithers takes them further than `amount` from home on either axis.
 With `ra_only`, only the RA component is drawn and the Dec component
 keeps its value. The same holds whenever `control.dec.mode` is not
 `"auto"`: the controller cannot steer to a Dec point it may correct
-towards in one direction only, or not at all. `dither` is valid only in
+towards in one direction only, or not at all. Should a hundred draws
+all fall closer than half the amount, the dither takes the corner of
+the square furthest from the current offset. `dither` is valid only in
 `guiding`.
 
 **Settling.** `guiding/start` and `dither` answer when the guiding has
-settled: the distance of the frame's offset from the lock has stayed
-below the settle tolerance for the settle `time` without a break. A
-frame above the tolerance or a star-lost frame starts the time again.
+settled: the distance of the frame's offset from the lock, on the
+sensor, has stayed below the settle tolerance for the settle `time`
+without a break. The time runs from the first frame of an unbroken run
+below the tolerance. A frame at or above the tolerance or a star-lost
+frame starts the time again, and a frame that settles settles even at
+the timeout.
 With `control.dec.mode` `"off"` the distance is the RA error alone: the
 guider does not hold Dec.
 
