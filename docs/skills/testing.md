@@ -804,8 +804,9 @@ step built for the old port does not move: take a new one from the new port.
 pattern above: let the child `bind(0)` and print what the kernel gave it. A
 service that rebuilds its own server is no exception: the rebuild announces
 its new port, and the harness follows it. When a test genuinely has to know the
-port *first* — because the port is an input to the API under test, or because
-the test needs a port with **nothing** listening — take it from a reserved
+port *first* — because the port is an input to the API under test, because
+the test needs a port with **nothing** listening, or because the child cannot
+bind port 0 and report the port it got — take it from a reserved
 band **below the platform's ephemeral floor** (32768 on Linux, 49152 on
 Windows and macOS), entered at a per-process start so concurrent test binaries
 do not march in step. That makes a collision rare, not impossible: two
@@ -821,9 +822,11 @@ the crate, because a probe is a wait
 
 Do **not** probe by binding `:0` and releasing it. Two things go wrong:
 
-- The port comes from the range the OS hands to every other `bind(0)` in the
-  process, so a server started concurrently can be given that port between the
-  probe and its use.
+- The port comes from the range the OS hands to every other `bind(0)` and
+  every outgoing connection on the host, in this process and in every other,
+  so a server or a client started concurrently can be given that port between
+  the probe and its use. The window lasts until the child binds, and a child
+  can take seconds to get there: Pebble generates its CA first.
 - The probe's own listener is duplicated into any child a sibling thread forks in
   that instant, and survives the probe's close until that child execs. So the
   probe can hand back a port that still answers — measured at ~6% of probes in
@@ -831,11 +834,11 @@ Do **not** probe by binding `:0` and releasing it. Two things go wrong:
   connecting instead**: a refused connect is the same "nobody is there" answer
   and leaves nothing behind.
 
-Where a bind-and-release probe does survive, it is
-`bdd_infra::ephemeral_ports::<N>()`, for a child that cannot bind port 0 and
-report the port it got, and so must be told its port after the probe. Pebble's
-harness is the one caller: Pebble and `pebble-challtestsrv` both log the address
-they were configured with, `127.0.0.1:0` included, never the port they bound.
+A child that cannot bind port 0 and report the port it got is told a band
+port. Pebble's harness is the one such case: Pebble and `pebble-challtestsrv`
+both log the address they were configured with, `127.0.0.1:0` included, never
+the port they bound, so the harness takes their three ports from
+`reserved_test_port_async` ([§5.6](#56-pebble-end-to-end-acme-scenarios-in-doctors-suite)).
 Every other child binds port 0 and prints its port — our services, OmniSim,
 geckodriver (`--port 0`, from 0.34) — and that is the pattern to reach for
 ([§5.12](#512-a-stub-the-code-under-test-dials-by-name-must-own-the-port-in-both-address-families)).
@@ -1127,17 +1130,19 @@ Encrypt's official ACME test server) plus its `pebble-challtestsrv` DNS
 sidecar — the only coverage of the ACME network path that is not a mock
 (see `docs/services/doctor.md` §Renewal). The harness lives in
 `services/doctor/tests/bdd` (single consumer — not `bdd-infra`): each
-scenario spawns a private Pebble on dynamic ports with a
+scenario spawns a private Pebble on reserved test ports with a
 `rusty_photon_tls::test_cert`-minted certificate for its HTTPS endpoint,
 points Pebble's validating resolver at the sidecar, and drives the
 doctor binary with `--directory-url`/`--acme-root`.
 
 Neither binary can bind port 0 and report the port it got, so those ports
-are picked bind-and-drop (§5.1), and a start is provisional until proven.
-Any of them can be held by another process — another `@pebble` scenario's
-pair among them, since those scenarios are not `@serial` — so each of the
-three endpoints a scenario uses has to show something only this start's
-children have:
+come from the reserved band (§5.1), probed at once since each refused
+connect takes about 2 s on the Windows CI runner. A start is provisional
+until proven. The band keeps the ports out of the range every `bind(0)` and
+every outgoing connection on the host draws from, and the per-process
+cursor keeps two of the suite's starts apart, but another process using the
+band can still hold one, so each of the three endpoints a scenario uses has
+to show something only this start's children have:
 
 - the ACME directory answers through a client that trusts only the CA
   minted for this start;
@@ -1172,7 +1177,9 @@ mid-scenario — `Error retrieving TXT records for DNS challenge ("dial tcp
 number means nothing to a reader looking at the ACME code. The DNS check is
 a real query on **both** transports, because TCP and UDP are separate port
 spaces and the sidecar binds one listener on each: a TCP squatter leaves
-the UDP half answering perfectly.
+the UDP half answering perfectly. The band's probe connects over TCP only,
+so this check is also the only one that catches a UDP holder of the DNS
+port.
 
 Two environment variables locate the binaries, mirroring
 `OMNISIM_PATH`: **`PEBBLE_PATH`** and **`PEBBLE_CHALLTESTSRV_PATH`**
@@ -1262,15 +1269,13 @@ On targets without `pipe2` and `SOCK_CLOEXEC` (macOS among them) std makes
 a descriptor in two steps, creating it and only then marking it
 close-on-exec, for a child's stdio pipes and for every socket alike. A
 fork that lands in between inherits it: a stray pipe write end keeps a
-child's stdout from ever reaching EOF, and a stray copy of a probe's
-listener keeps its port bound after the probe let it go. So the lock
-orders process creation against other process creation and against
-`ephemeral_ports`, which takes it itself. The lock covers the spawn or the
-probe alone, never the child's life, a wait or a binary lookup.
+child's stdout from ever reaching EOF. So the lock orders process creation
+against other process creation. It covers the spawn alone, never the
+child's life, a wait or a binary lookup.
 `ServiceHandle`, `run_once`, doctor's Pebble pair, OmniSim, ConformU,
 geckodriver and bdd-infra's own unit tests all take it.
 
-That is all it orders. A socket made anywhere else at the instant of a fork
+That is all it orders. A socket made at the instant of a fork
 (a step's stub listener, a reqwest connection, on the poll loop or a runtime
 worker) can still be inherited on macOS: std's `Command` does not expose
 `posix_spawn`'s close-every-other-descriptor default, so no lock in
