@@ -37,15 +37,22 @@
 //! [`Frame`] reads a camera's frame for its sensor type and estimates its
 //! background from a sample of its pixels. [`GuideStars`] selects the
 //! guide stars of one frame and measures them in each frame after it:
-//! which are usable, and the frame's offset, the median of theirs. See
-//! `docs/services/guider.md` (Sensor handling, Star selection and
-//! measurement).
+//! which are usable, and the frame's offset, the median of theirs.
+//! [`Calibrator`] turns the offsets of a calibration's frames into its
+//! pulses and its result, a [`Calibration`], which also says when it
+//! serves a later run. See `docs/services/guider.md` (Sensor handling,
+//! Star selection and measurement, Calibration).
 
 mod background;
+mod calibration;
 mod frame;
 mod stars;
 
 pub use background::{sampled_background, MIN_SAMPLE};
+pub use calibration::{
+    Axis, Calibration, CalibrationError, CalibrationParams, Calibrator, CameraGeometry, Check,
+    DecAxis, Direction, ExpectedRates, GuideRates, Leg, PierSide, Progress, Pulse, Setup, Warning,
+};
 pub use frame::{Frame, FrameError, SensorType};
 pub use stars::{
     FrameMeasurement, GuideStars, Offset, Position, SelectError, StarParams, StarReading, Usable,
