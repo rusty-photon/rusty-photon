@@ -53,15 +53,15 @@ at the job level.
 The "I'd like ARM coverage on PRs too" temptation must be resisted on a
 public repo until either (a) the runner is moved to a private mirror, or
 (b) a Just-In-Time (JIT) ephemeral runner pool with PR-approval gating is
-set up. Option (b) now exists for x86_64 Linux — see
-docs/skills/proxmox-runner-pool.md — and it DOES serve same-repo PR jobs,
-but only under the six-layer contract of
-[ADR-020](../decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md)
-(fork-excluding routing, JIT single-use VMs, no credentials on the runner,
-VLAN fencing, kill switch). Of those layers only the VLAN fence applies to
-THIS Pi runner (it lives on the same runner VLAN as the pool — see
-§"Network position"); it remains persistent and credentialed. For this file
-the rule stays binary: `schedule:` and `workflow_dispatch:` only.
+set up. Option (b) exists for x86_64 Linux, and it DOES serve same-repo
+PR jobs, but only under the six-layer contract of
+[proxmox-runner-pool.md § Security Model](proxmox-runner-pool.md#security-model--do-not-weaken)
+(fork-excluding routing, the fork-PR approval checkpoint, JIT single-use
+VMs, no credentials on the runner, VLAN fencing, kill switch). Of those
+layers only the VLAN fence applies to THIS Pi runner (it lives on the same
+runner VLAN as the pool — see §"Network position"); it remains persistent
+and credentialed. For this file the rule stays binary: `schedule:` and
+`workflow_dispatch:` only.
 
 If you ever need ARM-on-PR coverage, prefer GitHub's free `ubuntu-24.04-arm`
 runner (free for public repos) — see
@@ -89,15 +89,16 @@ sudo apt-get install -y \
   libssl-dev \
   libcfitsio-dev \
   libusb-1.0-0 \
+  clang \
+  libclang-dev \
   unzip \
   ca-certificates
 ```
 
 `libcfitsio-dev` is required by the `fitsio-sys` build script. Without it
 the `rp-fits`, `filemonitor`, and `sky-survey-camera` packages fail to
-compile (this is the "use `-p <package>`" caveat that the user-level
-`MEMORY.md` references). `libssl-dev` is required by transitive C-FFI
-crates in the workspace. The **libusb-1.0 runtime** (`libusb-1.0-0`) is the
+compile. `libssl-dev` is required by transitive C-FFI crates in the
+workspace. The **libusb-1.0 runtime** (`libusb-1.0-0`) is the
 shared symlink target for the QHYCCD, ZWO, **and SVBony** sudo-free link
 paths (next three subsections); the `-dev` package is deliberately **not**
 installed — the unversioned `libusb-1.0.so` linker name is provided per-run
@@ -108,7 +109,7 @@ instead.
 `qhy-camera` links the proprietary QHYCCD SDK (`libqhyccd-sys` →
 `static=qhyccd` + `libusb-1.0` + `stdc++`). The Pi5 arm64 nightly builds the
 full workspace, so the SDK (pinned **26.06.04**, aarch64) must be available at
-link time. The runner does **not** pre-provision it any more — `pi-nightly.yml`
+link time. The runner does **not** pre-provision it — `pi-nightly.yml`
 provisions it **per run** with the `ivonnyssen/qhyccd-sdk-install@v4` action in
 its sudo-free **`install: env`** mode: the action downloads the SDK from
 **qhyccd.com** (publicly, no auth), extracts it under the workspace, and exports
@@ -123,18 +124,16 @@ sudo-less runner there is no `libusb-1.0-0-dev`, hence no unversioned
 `libusb-1.0.so` for the linker — so the **Symlink libusb for the QHYCCD static
 link** step in `pi-nightly.yml` (the `qhyccd-libusb` action) drops that
 linker-name symlink into `QHYCCD_SDK_DIR` (the one dir `build.rs` searches),
-pointing at the libusb-1.0 *runtime* `.so.0`. Without it the build fails with `cannot find -lusb-1.0`
-(this was [issue #402](https://github.com/rusty-photon/rusty-photon/issues/402)).
-This mirrors the ZWO sudo-free symlink (next subsection); both share the one
-`libusb-1.0` runtime package installed in §1.
+pointing at the libusb-1.0 *runtime* `.so.0`. Without it the build fails
+with `cannot find -lusb-1.0`. This mirrors the ZWO and SVBony sudo-free
+symlinks (next subsections); all three share the one `libusb-1.0` runtime
+package installed in §1.
 
 This is what keeps the runner **sudo-less** (public-repo safety — the job user
 has no root, so a dependency `build.rs` cannot escalate) *and* self-healing: a
-new native-SDK service or an SDK version bump no longer requires re-running
-`setup-pi-runner.sh` by hand — the workflow re-fetches the SDK every night.
-Accordingly, `setup-pi-runner.sh`'s `=== 1b. QHYCCD SDK ===` section no longer
-installs anything; it is just a pointer to this per-run flow. The ZWO SDK now
-follows the same sudo-free per-run model (next subsection).
+new native-SDK service or an SDK version bump needs no re-run of
+`setup-pi-runner.sh` — the workflow re-fetches the SDK every night. The ZWO
+and SVBony SDKs follow the same sudo-free per-run model (next subsections).
 
 The GitHub-hosted **ubuntu, macOS, and Windows** jobs install the SDK via the
 same action in its default (system) mode; only the sanitizer job (`safety.yml`)
@@ -148,7 +147,7 @@ covers linux-arm64.
 -lstdc++ -lusb-1.0 -ludev` on Linux **even under `--features simulation`** (the
 link is env-gated by `ZWO_SKIP_NATIVE_LINK`, not feature-gated). The full
 workspace build therefore needs the SDK at link time. Like QHYCCD, the runner
-no longer pre-provisions it — `pi-nightly.yml` runs the local
+does not pre-provision it — `pi-nightly.yml` runs the local
 `./.github/actions/install-zwo-sdk` action in its **sudo-free** mode
 (`sudo: "false"`), which:
 
@@ -301,14 +300,14 @@ sudo bash -c 'cd /home/gh-runner/actions-runner && ./svc.sh install gh-runner &&
 
 `svc.sh` derives the unit name from the URL `config.sh` was given plus the
 runner name — `actions.runner.<owner>-<repo>.<runner>.service` — and
-freezes it at `svc.sh install` time. A fresh install against the org URL
-yields `actions.runner.rusty-photon-rusty-photon.pi5-nightly.service`; an
-installation configured before the org transfer keeps
-`actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service` (the
-currently deployed Pi is one) until `svc.sh uninstall` + `install` is
-re-run. List what is actually installed with
-`systemctl list-units 'actions.runner.*'`. Verify (substituting your
-installed unit name):
+freezes it at `svc.sh install` time. An install against the repository's
+URL yields `actions.runner.rusty-photon-rusty-photon.pi5-nightly.service`;
+one configured against its former URL,
+`https://github.com/ivonnyssen/rusty-photon`, keeps
+`actions.runner.ivonnyssen-rusty-photon.pi5-nightly.service` (the deployed
+Pi's unit is this one) until `svc.sh uninstall` + `install` is re-run. List
+what is actually installed with `systemctl list-units 'actions.runner.*'`.
+Verify (substituting your installed unit name):
 
 ```bash
 systemctl status actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
@@ -391,21 +390,22 @@ user's home dir.
 
 ### Memory headroom
 
-The Pi 5 has 8 GB and Ubuntu ships it with **no swap** and, on current
-releases, **`/tmp` as a RAM-backed tmpfs**. A nightly's peak is the BDD step:
+The Pi 5 has 8 GB, and Ubuntu ships it with **no swap** and may mount
+**`/tmp` as a RAM-backed tmpfs** (`findmnt -n -o FSTYPE /tmp` prints `tmpfs`
+where it does). A nightly's peak is the BDD step:
 cucumber runs up to 64 scenarios concurrently by default, several suites
 start one service process per scenario (~60 MB each — close to 4 GB at
 64-wide), and every harness's `tempfile` dirs, configs and data land in
-`/tmp`, i.e. in the same RAM. When that sum crossed 8 GB the kernel
-OOM-killed a job child and systemd's default `OOMPolicy=stop` then took the
-whole runner offline until someone rebooted it. Four measures, all in
-place and reproducible via `setup-pi-runner.sh` unless noted:
+`/tmp`, i.e. in the same RAM. When that sum crosses 8 GB the kernel
+OOM-kills a job child, and under systemd's default `OOMPolicy=stop` that
+takes the whole runner offline until someone reboots it. Four measures
+guard against it, each applied by `setup-pi-runner.sh` unless noted:
 
 - **`TMPDIR` on the SSD** — the unit drop-in sets `TMPDIR=<runner home>/tmp`
   (a 0700 dir owned by the runner user); jobs inherit it, so `tempfile`,
-  cargo and everything else stop competing for RAM. A tmpfiles rule ages
+  cargo and everything else write to the SSD, not to RAM. A tmpfiles rule ages
   out leftovers of interrupted jobs after 7 days.
-- **`OOMPolicy=continue`** on the unit — an OOM now fails the step (exit
+- **`OOMPolicy=continue`** on the unit — an OOM fails the step (exit
   137 in the log, and the tracking issue points at the right run) instead
   of stopping the runner.
 - **8 GB swapfile** on the SSD (`/swapfile`, in `/etc/fstab`) — turns a
@@ -451,10 +451,10 @@ the Pi):
    same `0750` home-directory reason as §5 — `config.sh` expects to run
    from inside its own directory). Use your installed unit name in the
    stop/start lines (`systemctl list-units 'actions.runner.*'`; the
-   deployed Pi predates the org transfer, so today that is the
-   `ivonnyssen-` form). Re-registering via `config.sh` does **not**
-   rename the unit — the install-time name persists and keeps working;
-   only `svc.sh uninstall` + `install` re-derives it:
+   deployed Pi's is the `ivonnyssen-` form, §5). Re-registering via
+   `config.sh` does **not** rename the unit — the install-time name
+   persists and keeps working; only `svc.sh uninstall` + `install`
+   re-derives it:
    ```bash
    sudo systemctl stop actions.runner.rusty-photon-rusty-photon.pi5-nightly.service
    sudo -u gh-runner bash -c 'cd /home/gh-runner/actions-runner && ./config.sh remove --token <REMOVAL_TOKEN>'
@@ -485,8 +485,13 @@ If the Pi is going away or the workflow is being retired:
 2. On GitHub: confirm the runner is gone from
    Settings → Actions → Runners.
 3. Delete `.github/workflows/pi-nightly.yml`, this runbook, and
-   `scripts/setup-pi-runner.sh`. Update `README.md` and `.github/DOCS.md`
-   to drop the references.
+   `scripts/setup-pi-runner.sh`, and with them the `pi-nightly.yml` entry
+   of `RUNNERS` in `tools/rusty-photon-ci/src/pool_routing.rs` (its test
+   fails `bazel test //...` on a listed job no workflow has) and the
+   `raspberry-pi` label in `.github/actionlint.yaml`. Drop the references
+   from `README.md`, `docs/workspace.md` and the other documents that name
+   the workflow or this runbook
+   (`git grep -n 'pi-nightly\|raspberry-pi-runner'`).
 
 ## Troubleshooting
 
@@ -546,15 +551,14 @@ exports `QHYCCD_SDK_DIR`. Check, in order:
 - `QHYCCD_SKIP_NATIVE_LINK` is **not** set on this job (it must exercise the real
   ARM64 static link; the skip flag is only for the sim-only x86 legs).
 
-A manual `/usr/local/lib` install (the old `setup-pi-runner.sh §1b` behaviour)
-still satisfies the link via `build.rs`'s fallback, but is no longer required or
-performed by setup.
+A manual `/usr/local/lib` install also satisfies the link when
+`QHYCCD_SDK_DIR` is unset, through `build.rs`'s fallback; setup does not
+perform one.
 
 ### `cargo build` fails with `cannot find -lusb-1.0` (compiling `libqhyccd-sys`)
 
 The static `libqhyccd.a` pulls in a dynamic `-lusb-1.0`, but the sudo-less
 runner has no `libusb-1.0-0-dev` (no unversioned `libusb-1.0.so` linker name).
-This was [issue #402](https://github.com/rusty-photon/rusty-photon/issues/402).
 The **Symlink libusb for the QHYCCD static link (sudo-free)** step in
 `pi-nightly.yml` fixes it by linking `libusb-1.0.so` → the runtime `.so.0`
 inside `QHYCCD_SDK_DIR`. Check, in order:
@@ -612,11 +616,9 @@ are provided per-run by the **Install SVBony SDK (sudo-free)** step
   the real ARM64 link; the skip flag is only for the sim-only x86 legs and
   Bazel — see docs/services/svbony-camera.md "Native dependency & build
   gating").
-- If this step is simply **missing** from the job (the original cause of
-  [issue #669](https://github.com/rusty-photon/rusty-photon/issues/669)): the
-  full-workspace build links `svbony-camera` unconditionally, so this step
-  must run before `cargo build --workspace`, in the same place the ZWO SDK
-  step does.
+- If this step is simply **missing** from the job: the full-workspace
+  build links `svbony-camera` unconditionally, so this step must run before
+  `cargo build --workspace`, in the same place the ZWO SDK step does.
 
 ### The job died mid-BDD, or the runner went Offline during a run
 

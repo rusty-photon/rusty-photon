@@ -1,20 +1,10 @@
 # `rp-vocabulary` Crate Design
 
-**Status:** proposed — designed on `feature/rp-targets-p1`, built in the
-same PR; the decision record is
-[ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md) and the
-plan entry is
-[Decision 12](../plans/archive/planetarium-target-import.md). This document is the
-design detail behind that decision; the Rule-2 updates it triggers in
-[`rp-targets.md`](rp-targets.md), [`rp-ephemeris.md`](rp-ephemeris.md),
-`rp-catalog` (no dedicated doc), and
-[`docs/services/rp.md`](../services/rp.md) land with the code.
-
 A tiny, dependency-light leaf crate holding the **shared, validated
 vocabulary** of `rp`'s imaging plan: the small domain value types —
 `IcrsCoord`, `Binning`, `FrameType` — that `rp`, the crates
-it is built from (`rp-targets`, `rp-ephemeris`), and every surface that
-talks to `rp` about plans must agree on. Each type is
+it is built from (`rp-targets`, `rp-catalog`, `rp-ephemeris`), and every
+surface that talks to `rp` about plans must agree on. Each type is
 *parse-don't-validate*: a value that exists is valid by construction, and
 that one constructor is the single validator every surface shares.
 
@@ -27,43 +17,30 @@ config — a shared contract crate, not a grab-bag of utilities.
 
 ## Why this crate exists
 
-Two forces produced it, both surfaced while reviewing the P1 target
-store.
+Two forces shape it.
 
-**1. Validation was drifting across surfaces.** The same rule was written
-more than once and — worse — skipped in places:
-
-- ICRS coordinate bounds (`ra_hours ∈ [0,24)`, `dec_degrees ∈ [-90,90]`)
-  existed twice in agreement (`rp::planner::primitives::validate_icrs`,
-  and inline in `rp::planner::decision::parse_targets_from_value`) and
-  were **missing entirely** on the store-write path (`add_target` /
-  `update_target` accepted raw `f64`), so a store-backed target could
-  hold coordinates the legacy config-array path rejects.
-- `Binning`'s round-trip was split across three modules in two crates:
-  `Display` in `rp-targets`, the `"AxB"` parse (`parse_binning`) in
-  `rp::planner::goal_wire`, and a config→planner import reaching *up* into
-  the planner from `rp::config::naming_template` to borrow it.
-- Exposure `Duration` had two divergent string encodings — a hand-rolled
-  `"300s"` formatter (`goal_wire::format_exposure_duration`) versus the store's
-  humantime-canonical `"5m"` (`AcquisitionGoal`'s `humantime_serde`) — the
-  same value serialized two ways. (Since resolved: the hand-rolled formatter
-  was removed and every surface now uses humantime, so `"5m"` is the one
-  encoding; exposure stays a plain `Duration` in `rp`, not a vocabulary type.)
+**1. A rule written beside its data drifts.** When a plan value is a
+bare primitive and its rule lives in a validator next to it, the rule
+gets written more than once and skipped somewhere: the ICRS bounds
+checked on one write path and missed on another, `Binning`'s `Display`
+in one crate and its `"AxB"` parse in another, one exposure serialized
+as `"300s"` by one surface and as `"5m"` by the next.
 
 The fix is not "call the validator from more places" (that only defers
 the next omission); it is to **make the invalid state unrepresentable**,
-so a validator can no longer be forgotten. For the two values with a real
+so a validator cannot be forgotten. For the two values with a real
 invariant or structure — coordinates and binning — that means a *type*
 with a home every layer can depend on. (Exposure is the exception: it has
 no invariant a `Duration` doesn't already carry, so it stays a `Duration`
 standardized on one `humantime` encoding — see
 [Not a type: exposure](#not-a-type-exposure-duration).)
 
-**2. The plan API is becoming a published, multi-surface contract.**
-`rp` is ~20 % of the eventual system. Grading, mosaic, and other tools —
-plus more than one UI — will all read and write plans. The way
-rusty-photon already solves "one validation, many surfaces" is the setup
-pages' `ConfigurableDriver` in `rusty-photon-config`: one type, a schema
+**2. The plan API is a published, multi-surface contract.**
+`planetarium-bridge` writes plans over MCP, and grading, mosaic, and
+other tools — plus more than one UI — are designed to read and write
+them too. The way rusty-photon already solves "one validation, many
+surfaces" is the setup pages' `ConfigurableDriver` in
+`rusty-photon-config`: one type, a schema
 *generated from* that type (`schema_for`), a `validate()` returning
 dotted-path field errors the page renders inline, and one authoritative
 server-side gate. Extending that
@@ -93,8 +70,8 @@ the validator.
 Out of scope — owned elsewhere, listed so the boundary is explicit:
 
 - **The target store** ([`rp-targets`](rp-targets.md)) — redb, CRUD,
-  migration. It *depends on* this crate for `Binning`/`FrameType`/
-  `IcrsCoord`; it is not folded in here.
+  migration. It *depends on* this crate for `Binning` and `IcrsCoord`;
+  it is not folded in here.
 - **Exposure** — a plain `Duration`, not a value type here (its only wire
   form is `humantime`, and its filename codec lives with the naming
   engine). See [Not a type: exposure](#not-a-type-exposure-duration).
@@ -103,8 +80,8 @@ Out of scope — owned elsewhere, listed so the boundary is explicit:
   `NaN`-capable false cognate — see below) and depends on this crate only
   for the `From`/`TryFrom` boundary conversions to the plan value.
 - **The file-naming template engine** (`rp::config::naming_template`:
-  `CompiledTemplate`, `TOKENS`, `parse_segments`, `check_unambiguous`) —
-  stays in `rp`. Only the grammar's *value types* live here. See
+  `CompiledTemplate`, `Token`, `parse_segments`, `check_unambiguous`) —
+  lives in `rp`. Only the grammar's *value types* live here. See
   [Naming: the deferred slice](#naming-the-deferred-slice).
 - **The schema + validate protocol MCP tools** and the dotted
   `FieldError` mapping — live in `rp` (parameterized by these types).
@@ -112,10 +89,10 @@ Out of scope — owned elsewhere, listed so the boundary is explicit:
   `RightAscension`/`Declination`, the shutter `light: bool`. These are a
   *false cognate*, not this vocabulary. See
   [Not this crate](#not-this-crate-false-cognates).
-- **ADR-006 mount-local typed quantities** (`MechHa`/`Ra`/`Dec`, encoder
-  ticks) — frame-safe *pointing math* inside the mount driver, a
-  different concern from plan-data values. See
-  [Relationship to ADR-006](#relationship-to-adr-006-and-the-bare-decimals-decision).
+- **The Star Adventurer GTi driver's typed quantities** (`MechHa`/`Ra`/
+  `Dec`, encoder ticks) — frame-safe *pointing math* inside the mount
+  driver, a different concern from plan-data values. See
+  [Not this crate](#not-this-crate-false-cognates).
 - **`rp-ephemeris`'s computed `IcrsCoord`** — a computed, `NaN`-capable
   astronomy value on a circular domain, not a validated plan value; kept
   separate and bridged by `From`/`TryFrom`. See
@@ -124,9 +101,8 @@ Out of scope — owned elsewhere, listed so the boundary is explicit:
 ## Crate boundary and dependency graph
 
 `rp-vocabulary` is a leaf with **zero first-party dependencies**, so no
-dependency cycle is structurally possible. Both `rp-targets` and
-`rp-ephemeris` — today independent sibling leaves — gain an edge *to* it,
-never to each other.
+dependency cycle is structurally possible. `rp-targets`, `rp-ephemeris`
+and `rp-catalog` each have an edge *to* it and none to each other.
 
 ```
                     rp-vocabulary  (leaf: serde, thiserror, [schema] schemars)
@@ -145,13 +121,21 @@ never to each other.
         schema/validate protocol MCP tools.
 ```
 
-The reason the value must live *below* both consumers is
-[decision 3](#the-newtype-field-migration-decision-3): for `Target`
+The value lives *below* its consumers because of
+[the coordinate fields](#the-coordinate-fields): for `Target`
 (in `rp-targets`) **and** `PlannerTarget` (in `rp`) to hold a validated
 `IcrsCoord` field, the type has to sit under both — and putting it in
 `rp-ephemeris` instead would force `rp-targets → rp-ephemeris`, dragging
 the `erfars` C library and the `tzf-rs` timezone database into a plain
 data store. A dependency-light vocabulary leaf avoids that entirely.
+
+`rp_catalog::ResolvedTarget` holds the same validated `IcrsCoord`, so
+one coordinate type runs catalog → store → planner; bridging the catalog
+with a `From`/`try_new` at the `rp` boundary instead would leave a
+second, bare-`f64` representation in the workspace. `rp-catalog`'s one
+first-party edge is to `rp-vocabulary`. `rp-ephemeris` is not on that
+path: its computed coordinate is a false cognate, bridged at the
+boundary (see [Not this crate](#not-this-crate-false-cognates)).
 
 ## The types
 
@@ -185,13 +169,14 @@ The serialized form is a nested `coord` object:
 `IcrsCoordWire { ra_hours, dec_degrees }` is the two-key inner shape, and
 the `TryFrom` runs `try_new` — so deserializing a bad row or bad JSON
 *fails* rather than smuggling an out-of-range value past the constructor.
-The containing `Target`/`ResolvedTarget` no longer `#[serde(flatten)]` the
-coordinate, so it serializes as
+The containing `Target`, `ResolvedTarget` and `PlannerTarget` do not
+`#[serde(flatten)]` the coordinate, so it serializes as
 `"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }` — one canonical
-shape on disk and on the MCP wire alike. Read sites migrate from
-`.ra_hours` to `.ra_hours()`.
+shape on disk and on the MCP wire alike. The values inside are plain
+decimal hours and degrees: the type adds validation, not units. Read
+sites call `.ra_hours()` / `.dec_degrees()`.
 
-### `Binning` — completed round-trip
+### `Binning` — the `"AxB"` round-trip
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, /* serde, [schema] */)]
@@ -203,18 +188,18 @@ impl FromStr for Binning { /* "AxB" → Binning; errors on non-"AxB" or non-u8 *
 ```
 
 `Binning`'s fields stay public: any `u8 × u8` is shape-valid, so there is
-no bound to protect and no bypass to close — the fix is simply to put the
-`FromStr` **next to** the `Display` it inverts, retiring
-`goal_wire::parse_binning` and the config→planner import that borrowed it.
-Serde goes through the same string
+no bound to protect and no bypass to close — the `FromStr` sits **next
+to** the `Display` it inverts, so no other module keeps a parse of its
+own. Serde goes through the same string
 (`#[serde(into = "String", try_from = "String")]` delegating to
 `Display`/`FromStr`), so the redb store, the MCP wire, config, and the
 filename token all share the one canonical `"AxB"` encoding — the same
 one-shape doctrine `IcrsCoord` applies to coordinates. (The `schema`
 feature's `JsonSchema` impl is manual — the derive can't follow
 `into`/`try_from` to the string shape.)
-(The naming-token grammar `\d+x\d+` in `rp` is laxer than `u8`; that
-mismatch is pre-existing and tracked as a follow-up, not fixed here.)
+(The naming-token shape `\d+x\d+` in `rp` is laxer than `u8`: a
+filename whose binning factor exceeds 255 matches the shape, parses back
+with no binning, and counts toward no goal.)
 
 ### `FrameType` — capture intent
 
@@ -231,15 +216,12 @@ impl Display for FrameType   { /* "Light" | "Dark" | "Flat" | "Bias" */ }
 impl FromStr  for FrameType  { /* exact, case-sensitive inverse of Display */ }
 ```
 
-This is where `FrameType` finally belongs. It was buried in
-`rp::config::naming_template` yet consumed as a cross-cutting domain type
-(the `{frame_type}` token, the `capture` MCP param, the exposure sidecar
-document). Earlier analysis weighed "leave it in a top-level `rp` module"
-against "push it into `rp-targets`," and rejected the latter only to keep
-`schemars` out of the store leaf. The vocabulary crate dissolves that
-trade-off: `FrameType` lives here with a **feature-gated** `JsonSchema`,
-`rp-targets` depends on this crate *without* the `schema` feature (so it
-stays schemars-free), and `rp` turns the feature on.
+`FrameType` is a cross-cutting domain type — the `{frame_type}` token,
+the `capture` MCP parameter, the exposure sidecar document — so it lives
+with the other plan nouns rather than inside `rp`'s naming engine. Its
+`JsonSchema` is **feature-gated** like every type's here, so a consumer
+that needs no schema (`rp-targets`) stays schemars-free while `rp` turns
+the feature on.
 
 ### Not a type: exposure (`Duration`)
 
@@ -251,9 +233,8 @@ constraint already enforced by `rp_targets::validate_goals`, not a
 property of the value. A newtype would wrap a single std type for no gain
 and tax every arithmetic site with an `.as_duration()`.
 
-The drift it caused is fixed by **one encoding, not a type**: standardize
-on `humantime` everywhere (`#[serde(with = "humantime_serde")]` on the
-field), deleting the hand-rolled `goal_wire::format_exposure_duration`. The
+What keeps it from drifting is **one encoding, not a type**: `humantime`
+everywhere (`#[serde(with = "humantime_serde")]` on the field). The
 filename-token form (`humantime` with spaces stripped, so the path
 component stays space-free and regex-clean) lives with the naming engine
 in `rp` — its only consumer. So exposure touches this crate **nowhere**.
@@ -264,101 +245,23 @@ The value is named **`exposure_duration`** everywhere: the token
 ambiguous (in astrophotography "an exposure" is a *sub-frame* — a count),
 and "exposure_time" is ambiguous the other way (the *time of
 acquisition*); "exposure_duration" is the one reading that can't be
-misread. (The rename across the naming engine, `AcquisitionGoal`, and the
-docs is part of the consumer migration.)
+misread.
 
-## Relationship to the `rp-targets.md` "bare decimals" decision
+## The coordinate fields
 
-[`rp-targets.md`](rp-targets.md#coordinates-validated-icrscoord-nested-coord-object)
-documents a deliberate decision to store `ra_hours`/`dec_degrees` as bare
-`f64`. That is the decision this design touches; it is **consistent with
-it**, and the reconciliation is worth recording so it travels with the
-code.
+The coordinate drift is prevented structurally by the *field type*, not
+by more calls to a validator: `rp_targets::Target`,
+`rp::planner::decision::PlannerTarget` and `rp_catalog::ResolvedTarget`
+each hold `coord: IcrsCoord`.
 
-That section leans on
-[ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md)
-for support, so it is worth being precise about what ADR-006 does and does
-not say here — it is *not* a constraint this crate has to work around:
-
-- **ADR-006 has no jurisdiction over plan coordinates, and doesn't claim
-  any.** It is explicitly scoped to the Star Adventurer mount's pointing
-  math (Non-goals: *"Rewriting other services … workspace-wide adoption is
-  a later, separate question"*; Resolved Q3: *"Workspace-wide adoption —
-  out of scope here"*). Its `MechHa`/`Ra`/`Dec` types exist to make
-  mechanical-vs-celestial *frame* mix-ups compile errors inside that
-  driver. `IcrsCoord` carries no frame distinction; it is a *plan-data
-  value* with a range check — a different type for a different layer.
-- **If anything, ADR-006 is the precedent *for* this pattern.** Its Goal 2
-  is *"construct-time / deserialize-time invariants (parse-don't-validate)"*,
-  and its `TrackingGuardMarginHours` config newtype is a private-field `f64`
-  with `#[serde(try_from = "f64", into = "f64")]` and a range-checking
-  `TryFrom` — exactly `IcrsCoord`'s shape. (ADR-006 names `FlipRangeHours`
-  for the same point; that field was removed in 2026-09, but the pattern it
-  illustrated is unchanged and several sibling newtypes still carry it.) The `rp-targets.md` "bare decimals" choice
-  was an *alignment* argument (match `ResolvedTarget`/`IcrsCoord`, which
-  were bare `f64`), not a prohibition on validating newtypes.
-- **The "bare decimals" goals are preserved, and alignment *improves*.**
-  That decision had two aims: don't adopt the ADR-006 mount types for
-  plan data (honored — `IcrsCoord` is not one), and stay aligned with
-  `rp_catalog::ResolvedTarget` and `rp_ephemeris::IcrsCoord`. The catalog
-  and plan coordinates were parallel bare-`f64` reps that merely happened
-  to match; making `IcrsCoord` the one shared *plan* value type unifies
-  them (catalog → store → planner). `rp_ephemeris::IcrsCoord` stays a
-  separate type by design — a computed, `NaN`-capable false cognate
-  bridged by `From`/`TryFrom` (see
-  [Not this crate](#not-this-crate-false-cognates)) — so the coupling that
-  remains is an explicit typed boundary, not an accidental look-alike.
-  Alignment goes *up*, not down.
-- **The serialized coordinate is a nested `coord` object.** `IcrsCoord`
-  serializes as `"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }`
-  rather than flat top-level keys — the store `Target` and catalog
-  `ResolvedTarget` no longer `#[serde(flatten)]` it, giving one canonical
-  coordinate shape across the on-disk redb store and the MCP wire. The
-  values inside that object are still bare decimals (the part of the
-  decision about *not* adopting typed quantities is untouched); the
-  *in-memory* representation gains validation and the serialized form
-  gains the `coord` nesting.
-
-### `rp-catalog` adopts `IcrsCoord` (settled — ADR-019)
-
-`rp_catalog::ResolvedTarget` also adopts `IcrsCoord`
-(`ResolvedTarget.coord: IcrsCoord`) and `rp-catalog` gains a dependency on
-`rp-vocabulary`. This is the de-drift across the *plan* pipeline: **one**
-validated coordinate type catalog → store → planner, replacing the
-parallel bare-`f64` representations that previously only *happened* to
-agree. The alternative considered and rejected was bridging catalog with a
-`From`/`try_new` at the `rp` boundary (a smaller diff, but it would leave a
-bare-`f64` rep in the workspace). `rp-catalog` stays a light leaf — it
-gains only the `rp-vocabulary` edge, no other new dependency.
-
-`rp-ephemeris` is deliberately *not* on that unified path — its
-`IcrsCoord` is a computed, `NaN`-capable false cognate (see
-[Not this crate](#not-this-crate-false-cognates)) that a validated newtype
-cannot represent, so it is bridged by `From`/`TryFrom` at the boundary
-rather than replaced. Validated plan input and computed astronomy output
-are genuinely different concerns; the typed bridge makes the seam explicit
-instead of pretending one type serves both.
-
-## The newtype-field migration (decision 3)
-
-The coordinate drift is prevented structurally by changing the *field
-type*, not by adding more calls to a validator:
-
-- `rp_targets::Target` — `ra_hours: f64, dec_degrees: f64` → `coord: IcrsCoord`.
-- `rp::planner::decision::PlannerTarget` — same.
-
-With no raw-`f64` coordinate field left, every construction — today's
-`add_target`/`update_target`, `parse_targets_from_value`, and any future
-write path — is *forced* through `IcrsCoord::try_new` by the compiler. The
-`update_target` line that did `target.ra_hours = v` no longer type-checks;
-it becomes `target.coord = IcrsCoord::try_new(...)?`. Serde now nests the
+With no raw-`f64` coordinate field, every construction — `add_target`,
+`update_target`, an import, and any later write path — is *forced*
+through `IcrsCoord::try_new` by the compiler: `update_target` builds a
+changed coordinate through `try_new` and returns its error to the
+caller, and assigning a bare `f64` does not type-check. Serde nests the
 coordinate as `"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }`
-(above) instead of `#[serde(flatten)]`-ing it to the top level, so the
-redb rows and the MCP JSON both carry one canonical `coord` object. This
-is not a backwards-compatibility exercise — the
-store and tools are new in this PR with no shipped caller — it is doing
-the change *while it is still free*, before the wire ossifies into a
-contract.
+(above), so the redb rows and the MCP JSON both carry one canonical
+`coord` object.
 
 ## Schema + validate protocol (the decision-1 role)
 
@@ -370,36 +273,36 @@ pages' schema and validation; it does not own the protocol. The division:
   `schema` feature — the `JsonSchema` derives with constraints encoded
   (`ra_hours` min/max, `Binning`/`FrameType` shapes), so the
   published schema cannot drift from the validator.
-- **`rp` provides**: the `schema`/`validate` MCP tools for targets, goals,
-  and naming patterns, and the mapping from a constructor `Err` to a
+- **`rp` provides**: the `get_plan_schema` / `validate_plan` MCP tools for
+  targets, goals, and naming patterns, and the mapping from a constructor `Err` to a
   dotted-path `FieldError { path, msg }` (e.g.
   `{ path: "ra_hours", msg: "ra_hours 25 is outside [0, 24)" }`) — the same shape
   a service's config validation returns, so a UI renders the error next to
   the field.
-- **Surfaces consume**: Rust linkers (`rp`, future tools) get identical
-  validation by construction; non-linking surfaces (the ui-htmx BFF, a
-  browser form, a future bridge) render forms from the published schema
-  and defer to `rp`'s constructor as the authoritative gate. This keeps
-  ui-htmx a thin renderer (the "UI contains zero application logic" tenet),
-  as the setup pages render a service's config from its schema.
+- **Surfaces consume**: Rust linkers (`rp`, and any tool that links the
+  crate) get identical validation by construction; non-linking surfaces
+  (the ui-htmx BFF, a browser form) render forms from the published
+  schema and defer to `rp`'s constructor as the authoritative gate. This
+  keeps ui-htmx a thin renderer (the "UI contains zero application
+  logic" tenet), as the setup pages render a service's config from its
+  schema.
 
-This cross-crate decision is recorded in
-[ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md); this
-crate doc is the design detail behind it.
+There is no `apply` tool: the write tools (`add_target`,
+`update_target`, `set_goals`) are the apply step, and they share their
+rules with `validate_plan` rather than restating them
+([rp.md § Plan schema and validation](../services/rp.md#plan-schema-and-validation)).
 
 ## Naming: the deferred slice
 
-The file-naming template *engine* stays in `rp` — it is session-layer glue
-(regex + chrono + `SessionConfig`) with exactly one linker and none on the
-horizon (ui-htmx passes patterns through as opaque strings; a future
-planetarium-bridge creates targets over MCP and never renders filenames).
-What *could* migrate here later is the thin reusable slice a
-pattern-editor surface would want — a `NamingPattern` newtype wrapping the
-token grammar and `validate_pattern` — leaving `CompiledTemplate` (render)
-in `rp`. That is **not** in this PR; the boundary is staked so it can move
-cleanly when a real second consumer (a pattern editor) exists. Until then,
-`Binning`/`FrameType` moving here already lets the engine drop its
-config→planner import.
+The file-naming template *engine* lives in `rp` — it is session-layer
+glue (regex + chrono + `SessionConfig`) with exactly one linker: no other
+service renders or parses filenames (planetarium-bridge creates targets
+over MCP and never sees one). What *could* move here is the thin
+reusable slice a pattern-editor surface would want — a `NamingPattern`
+newtype wrapping the token grammar and `validate_pattern` — leaving
+`CompiledTemplate` (render and parse) in `rp`. It moves when a real
+second consumer (a pattern editor) exists; the boundary is drawn so the
+move is clean.
 
 ## Not this crate: false cognates
 
@@ -419,12 +322,14 @@ vocabulary:
   driver layer.
 - Mount **pointing** (`RightAscension`/`Declination`) is received by a
   telescope driver as f64 over the ASCOM trait and immediately wrapped in
-  that driver's *own* frame-safe types (ADR-006's `Ra`/`Dec`/`MechHa`/…),
+  that driver's *own* frame-safe types (the Star Adventurer GTi's
+  `Ra`/`Dec`/`MechHa`/… in `services/star-adventurer-gti/src/units.rs`),
   which model mechanical-safety frame distinctions `IcrsCoord` does not —
   and the driver re-validates against its mechanical envelope regardless,
   because a safety-critical device cannot trust upstream validation. The
-  established mount/rotator drivers link **no** plan-domain crate (they
-  even wrap `erfars` directly rather than share `rp-ephemeris`); a driver
+  mount and rotator drivers link **no** plan-domain crate (the Star
+  Adventurer GTi even wraps `erfars` directly rather than share
+  `rp-ephemeris`); a driver
   linking `rp-vocabulary` would invert that (driver → rp-domain) for a
   transient boundary wrapper.
 - **`rp-ephemeris`'s computed `IcrsCoord`** (in-workspace, not a driver) is
@@ -449,8 +354,8 @@ No camera/mount service links `rp-vocabulary`; the translation from plan
 `rp-*` (astro-**domain** vocabulary) and not `rusty-photon-*` (which is
 reserved for domain-**neutral** plumbing every service including the
 drivers links — transport, TLS, config, lifecycle, i18n). If a *third*
-pointing device ever earns it (ADR-006's own trigger — the rotator and
-Star Adventurer are two), the coordinate/angle sharing that belongs
+pointing device ever earns it (the rotator and the Star Adventurer are
+two), the coordinate/angle sharing that belongs
 *across drivers* is a neutral `rusty-photon-units` foundation their
 frame-safe types build on — never `IcrsCoord` reaching down into a driver.
 
@@ -463,24 +368,22 @@ schema  = ["dep:schemars"]   # JsonSchema derives on every type
 ```
 
 `schema` is off by default so a consumer that only needs the DTOs +
-validation (e.g. `rp-targets`, or a future thin client) does not inherit
+validation (`rp-targets`, `rp-catalog`, `rp-ephemeris`) does not inherit
 `schemars`. `rp` enables it for the schema/validate protocol. This is the
-one lever that keeps the store leaf as light as it is today while still
-letting `rp` project the vocabulary onto the wire.
+one lever that keeps the store leaf schemars-free while letting `rp`
+project the vocabulary onto the wire.
 
 ## Dependencies
 
 | Crate | Purpose |
 |---|---|
-| `serde` / `serde_json` | value (de)serialization, validating on input |
+| `serde` | value (de)serialization, validating on input |
 | `thiserror` | the constructor error enums (`CoordError`, `BinningParseError`, `FrameTypeParseError`) |
 | `derive_more` | `Display` derives (`Binning`, `FrameType`) |
 | `schemars` *(optional, `schema`)* | `JsonSchema` for the wire projection |
 
-No new crates.io dependency is introduced — every one is already in the
-workspace. Adding the crate as a workspace member still changes the root
-`Cargo.toml` and `Cargo.lock`, so it needs `cargo ci repin-bazel-lock` per
-[Rule 10](../skills/pre-push.md#refreshing-modulebazellock).
+Each is a workspace dependency; `serde_json` is a dev-dependency, for
+the round-trip tests.
 
 ## Module layout
 
@@ -498,44 +401,23 @@ Crate-root attributes match the sibling crates
 
 ## Testing
 
-Each type's round-trip is pinned in-crate, and — critically — the
-existing round-trip tests **move here with the code they cover**, so the
-relocation cannot silently regress the render/parse contract:
+Each type's round-trip is pinned in-crate, beside the code it covers,
+so a change to one side of a render/parse pair fails a test:
 
-- `IcrsCoord` — `try_new` accepts in-range / rejects each out-of-range
-  bound; `serde` round-trips through the two-key `coord` wire and
-  *rejects* an out-of-range wire value on deserialize.
+- `IcrsCoord` — `try_new` accepts in-range values, boundaries included,
+  and rejects each out-of-range bound; `serde` round-trips through the
+  two-key `{ra_hours, dec_degrees}` wire and *rejects* an out-of-range
+  wire value on deserialize.
 - `Binning` — `Display`/`FromStr` round-trip; `FromStr` rejects non-`AxB`
-  and non-`u8`.
-- `FrameType` — `Display`/`FromStr` round-trip every variant (the moved
-  `frame_type_round_trips_every_variant` test); `calibration_slug`.
+  and non-`u8`; `serde` round-trips as the `"AxB"` string and rejects the
+  struct shape.
+- `FrameType` — `Display`/`FromStr` round-trip every variant, and
+  `FromStr` is case-sensitive; `calibration_slug`; `serde` round-trips
+  through the display string.
 
 Tests use `.unwrap()`/`.unwrap_err()` per
-[testing.md](../skills/testing.md), scoped by the usual `#[allow(...)]` on
-the test module.
-
-## In this PR vs deferred
-
-**In this PR:** the crate and its three types with validation +
-feature-gated schema; `Binning`/`FrameType` moved off `rp-targets`/`rp`;
-the new validated `IcrsCoord` living here, with `rp-ephemeris` keeping its
-own computed `IcrsCoord` and gaining the `From`/`TryFrom` bridges to it
-(not re-homing — the computed type is a false cognate); `rp-catalog`'s
-`ResolvedTarget` adopting the validated `IcrsCoord`; the newtype-field
-migration of `Target` and `PlannerTarget`; the coordinate-validation gap
-on the store-write path closed by construction; the round-trip tests moved
-with their types.
-
-**Deferred:** the `NamingPattern` grammar slice (stays in `rp` until a
-pattern editor exists).
-
-**Landed since:** `rp`'s `get_plan_schema` / `validate_plan` MCP tools
-and the `FieldError` mapping, built on this crate's validating
-constructors and `schema`-gated derives (rp.md § Plan schema and
-validation). There is no `apply` counterpart — the existing write tools
-(`add_target`, `update_target`, `set_goals`) are the apply step, and
-they now share their rules with `validate_plan` rather than restating
-them.
+[testing.md](../skills/testing.md), which the workspace `clippy.toml`
+allows in test scope.
 
 ## Decision rationale (alternatives considered)
 
@@ -556,18 +438,18 @@ them.
   is `rp-*`, so a shared plan-vocabulary linked by `rp` and future clients
   is the same category.
 - **One vocabulary crate over several (`rp-primitives` + `rp-naming`).**
-  Every value type has exactly one linking consumer today (`rp`); the
-  naming *engine* has no second consumer on the roadmap. Minting multiple
-  crate nodes now to encode a future the roadmap doesn't contain adds
-  BUILD files and lockfile churn for no consumer they uniquely serve. One
-  leaf, with the naming slice's boundary staked for later.
+  `rp` is the one service that uses these types directly, and the
+  naming *engine* has no second consumer on the roadmap. Several crate
+  nodes encoding a future the roadmap doesn't contain would add BUILD
+  files and lockfile churn for no consumer they uniquely serve. One leaf,
+  with the naming slice's boundary drawn for a later split.
 - **Consolidate into existing leaves vs a new crate at all.** A pure
   "no new crate" consolidation (put `Binning` in `rp-targets`,
-  `IcrsCoord` in `rp-ephemeris`) fixes today's drift but cannot give
+  `IcrsCoord` in `rp-ephemeris`) fixes one drift but cannot give
   `Target` *and* `PlannerTarget` a shared validated coordinate field
   without an inverted `rp-targets → rp-ephemeris` (ERFA) edge — and it
   scatters the plan vocabulary that the multi-surface schema/validate
   protocol wants in one place. The leaf crate is what makes the
-  newtype-field guarantee (decision 3) and the protocol (decision 1) both
-  buildable.
-```
+  [coordinate-field guarantee](#the-coordinate-fields) and the
+  [schema + validate protocol](#schema--validate-protocol-the-decision-1-role)
+  both buildable.

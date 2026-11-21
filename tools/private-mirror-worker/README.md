@@ -2,11 +2,9 @@
 
 A private, token-gated file host for **vendor blobs CI needs but cannot
 fetch from the vendor directly** — downloads sitting behind a
-captcha/consent gate with no scriptable URL. First occupant: SVBony's
-Windows camera SDK (see
-[ADR-018](../../docs/decisions/018-svbony-sdk-no-license-payload-policy.md)),
-whose Linux/macOS blobs CI fetches from indi-3rdparty's public mirror but
-whose Windows zip is captcha-gated on svbony.com.
+captcha/consent gate with no scriptable URL. It holds SVBony's Windows
+camera SDK, whose Linux/macOS blobs CI fetches from indi-3rdparty's public
+mirror but whose Windows zip is captcha-gated on svbony.com.
 
 Served at `https://private.rustyphoton.space/<key>`.
 
@@ -15,7 +13,9 @@ Served at `https://private.rustyphoton.space/<key>`.
 - **Not publication.** Nothing here is redistributed: every request —
   reads included — requires the bearer token, so the contents are reachable
   only by our own CI and operators. Published artifacts (packages, MSI,
-  releases) still never contain these files (ADR-018).
+  releases) never contain these files
+  ([ADR-018](../../docs/decisions/018-svbony-sdk-no-license-payload-policy.md),
+  point 7).
 - **Not writable from the network.** The Worker has no PUT path at all;
   uploads happen out-of-band via an operator's authenticated `wrangler`
   session. A leaked read token cannot mutate or poison the mirror.

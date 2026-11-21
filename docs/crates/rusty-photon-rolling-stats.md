@@ -1,6 +1,6 @@
 # `rusty-photon-rolling-stats` Crate Design
 
-Rolling statistics. Today that is two types and one module of policy:
+Rolling statistics, in two types and one module of policy:
 [`SensorMean`], a rolling mean of `f64` readings over a configurable time
 window; [`SquareSums`], a count and sum of squares that is never reset, for the
 RMS over an interval the caller picks; and `observing_conditions`, the policy
@@ -151,9 +151,9 @@ negative or not finite, which no accumulator reports.
 ## The `observing_conditions` policy module
 
 `SensorMean` knows nothing about ASCOM, and the crate still depends on
-nothing. What `observing_conditions` adds is the policy the three drivers
-that hold three means each had written out three times, and which a fix had
-already reached in one copy only:
+nothing. What `observing_conditions` adds is the policy shared by the three
+drivers that hold three means each, written once so that a change reaches all
+three:
 
 - **`AveragePeriod` onto a window.** `MAX_AVERAGING_PERIOD` (24 h, ASCOM's
   ceiling) and `average_period_hours()` (the `[0, 24]` range every check

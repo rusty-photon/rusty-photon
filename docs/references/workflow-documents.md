@@ -72,9 +72,8 @@ different session types are different requests, not different services.
 - `version` is the format version; the engine rejects versions it does not
   implement.
 - `estimated_duration` / `max_duration` are advisory: parsed and
-  validated as durations, enforced by nothing (the `/invoke`
-  acknowledgment that used to return them to `rp` went with
-  mcp-sessionless slice 7). Keep them honest for the next reader.
+  validated as durations, enforced and reported by nothing. Keep them
+  honest for the next reader.
 - Durations everywhere in a document are humantime strings (`"300s"`,
   `"1h30m"`) matching the schema's surface pattern.
 
@@ -522,7 +521,7 @@ The same endpoint is the hook for CI on a shared workflow repository and
 for LLM-assisted authoring: the JSON Schema is a validatable generation
 target, and `/validate` closes the loop — generate, validate, repair,
 repeat. Nothing an LLM (or anyone) writes runs until it passes all three
-layers and a human wires it into a registration.
+layers and someone starts a run naming it (`POST /runs`).
 
 Practical loop while writing by hand:
 
@@ -554,11 +553,13 @@ change: slew, center, focus → one capture per pass → `record_exposure`)
   target switching, plan rotation, and `end_of_session` all come from
   `rp`, not document logic;
 - phase-scoping triggers with a `while session.imaging == true` gate;
-- all three trigger shapes that ship: event-sourced refocus rules (count-
-  and HFR-based, with `cooldown`), and a `poll` meridian-flip rule;
+- the trigger shapes that ship: event-sourced refocus rules (by frame
+  count, by HFR with a `cooldown`, by focuser temperature), event-sourced
+  guiding rules, and a `poll` meridian-flip rule;
 - resilient triggers (`try` + logging `catch` around `focus_train`);
 - recovery branching (`params._recovery.reason` → re-acquire);
-- zero `once` markers — dispatch state lives in `rp`'s counters.
+- zero `once` markers — dispatch state is the frames on disk, from
+  which `rp`'s planner derives each target's progress.
 
 ### `sky_flat.json` — adaptive convergence against a moving target
 

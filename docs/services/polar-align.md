@@ -18,9 +18,7 @@ draw them over.
 
 The method is N.I.N.A. Three Point Polar Alignment's: rotating only
 the RA axis sweeps the camera pointing along a circle whose center is
-the axis; plate solves measure that circle absolutely. See
-`docs/plans/polar-align.md` for the decision record (measurement
-geometry, refraction, adjustment math).
+the axis; plate solves measure that circle absolutely.
 
 ### Tenets
 
@@ -46,14 +44,12 @@ geometry, refraction, adjustment math).
 ## Architecture
 
 `polar-align` is a standalone HTTP service and a session-less MCP
-client of `rp` (ADR-021). The operator starts a run with `POST /runs`;
+client of `rp`. The operator starts a run with `POST /runs`;
 the service connects to rp's MCP server at its configured
 `mcp_server_url` and calls primitive tools. The browser/UI never talks
-to the workflow directly — it polls `GET /status` (via ui-htmx in a
-later phase), where the outcome also lands: nothing is posted back to
-`rp`, which has no notion of a session (mcp-sessionless D6). (The
-pre-D6 `POST /invoke` route, through which `rp` used to start runs,
-went with plan slice 7.)
+to the workflow directly — it polls `GET /status`, where the outcome
+also lands: nothing is posted back to `rp`, which has no notion of a
+session.
 
 ```
   operator / ui-htmx              polar-align (orchestrator)                rp (equipment gateway)
@@ -191,9 +187,9 @@ outcome is `/status` — there is no completion callback.
    rotated" in manual mode). Whichever method is not primary runs as
    a best-effort cross-check: the angular separation between the two
    axes is published as `measurement.cross_check_arcsec` and warned
-   about above 2′ (see the plan's D2/D9 and the Geometry Reference).
+   about above 2′ (see the Geometry Reference).
    The axis is converted to observed azimuth/altitude; error against
-   the refracted pole (D3).
+   the refracted pole.
 6. Phase transitions to `adjusting`; the measurement result is
    published on `/status`.
 
@@ -236,7 +232,7 @@ into a normal imaging session.
 
 ### `GET /status`
 
-The live contract for UIs. Always available; before any invocation it
+The live contract for UIs. Always available; before the first run it
 reports `"phase": "idle"`.
 
 ```json
@@ -340,7 +336,7 @@ Returns `409 Conflict` when no workflow is in the `adjusting` phase.
 
 `200 OK` with a static body once the server is up (config validation
 happens at load; there are no external resources to probe — the mount
-and solver are reached through rp per-invocation).
+and solver are reached through rp per run).
 
 ## Configuration
 
@@ -389,9 +385,9 @@ alone (`ServiceRunner::condition_path_exists`;
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `server` | object | `{ "port": 11172 }` | Shared `ServerConfig` (ADR-016) for `/runs`, `/status`, `/health` and the operator routes |
+| `server` | object | `{ "port": 11172 }` | Shared `ServerConfig` (`rusty-photon-server-config`) for `/runs`, `/status`, `/health` and the operator routes |
 | `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400` |
-| `service_auth` / `ca_cert` | — | null | Credentials/CA toward rp, exactly as calibrator-flats (ADR-017) |
+| `service_auth` / `ca_cert` | — | null | Credentials/CA toward rp, exactly as calibrator-flats |
 | `camera_id` | string | required | Camera on the imaging train used for alignment exposures |
 | `mount_id` | string | required | The mount (informational; rp's mount tools address the singular configured mount) |
 | `site` | object | optional | Observer site. When absent, resolved per workflow from rp's `get_site` tool (rp's configured, mount-validated site); an explicit block wins |
@@ -424,10 +420,10 @@ geometry error must fail at load, not on the night the operator
 switches back to `near_pole`.
 
 There is no rp-side registration: `rp` serves this service like any
-other MCP client and rejects a `type: "orchestrator"` entry since
-mcp-sessionless D11. The `rp` tools it calls are `capture`,
-`get_camera_info`, `plate_solve`, `detect_stars`, `slew`, `abort_slew`,
-`set_tracking`, `get_tracking`, `unpark`, `get_park_state`,
+other MCP client and refuses a `type: "orchestrator"` plugin entry
+([rp.md § Plugin Types](rp.md#plugin-types)). The `rp` tools it calls
+are `capture`, `get_camera_info`, `plate_solve`, `detect_stars`, `slew`,
+`abort_slew`, `set_tracking`, `get_tracking`, `unpark`, `get_park_state`,
 `get_mount_position` and `get_site`.
 
 A `manual_rotation`-only rig (no GoTo, no rp mount) trims the list to
@@ -488,7 +484,8 @@ tests are the executable spec):
   **no refraction term**: the solves already pulled the fitted axis
   down by refraction (apparent → catalog), so the refraction-on axis
   conversion re-adds it and a perfect axis lands on the geometric
-  pole (the plan's D3 has the full derivation).
+  pole ([the polar-align plan's D3](../plans/polar-align.md#d3--error-expressed-in-observed-altaz-refraction-rides-the-axis-conversion)
+  has the full derivation).
 - **Targets.** Correction rotation `R_corr` = the rotation in the
   horizontal frame taking the axis onto the pole (azimuth rotation
   about the zenith, altitude rotation about the horizontal east–west
@@ -507,7 +504,7 @@ services/polar-align/src/
   error.rs           Error types (thiserror)
   routes.rs          Axum router: /runs, /status, /health,
                      /measure/continue, /adjust/finish, /preview.png
-  mcp_client.rs      rp-mcp-client wrapper (ADR-017)
+  mcp_client.rs      rp-mcp-client wrapper
   workflow.rs        Measurement + adjustment orchestration, cleanup guard
   math.rs            Axis, attitude, error decomposition, target projection
   ephemeris.rs       ICRS→observed, LST, refracted pole (rp-ephemeris)
@@ -540,8 +537,8 @@ Per `docs/skills/testing.md`.
   stub whose canned solves are choreographed from a known injected
   axis error — the `/status` measurement must recover it. Runs start
   with `POST /runs` and end on `/status`; nothing registers with rp.
-  Scenarios per the plan's Phase 3 list; `doctor.feature` and `auth.feature` ride
-  the shared smoke fixtures. Manual-rotation scenarios drive the
+  `doctor.feature` and `auth.feature` ride the shared smoke fixtures.
+  Manual-rotation scenarios drive the
   wait/continue protocol over choreographed solves; the site-from-rp
   scenario runs a site-less plugin config against an rp whose `site`
   block matches OmniSim's default mount site (rp validates the two
@@ -551,20 +548,17 @@ Per `docs/skills/testing.md`.
   `rp-fits` and decode the PNG back: dimensions follow the width
   clamp, the stretch spans the output range, a constant frame is
   mid-gray, and a missing file is a clean error.
-- **No OmniSim image↔pointing coupling exists**, so end-to-end
-  optical truth arrives only in Phase 7 rig validation.
+- **No OmniSim image↔pointing coupling exists**, so no test here
+  checks optical truth end to end; only a run on a real mount under the
+  sky does.
 
 ## MVP Scope
 
-In scope: everything above, including the P6 attitude-based axis and
-`current_position` mode, and the Phase 8 additions — site-from-rp
-sourcing (D10), `manual_rotation` mode (D11), and the PNG preview
-endpoint (D12). Out of scope (see the plan): the ui-htmx page (P5).
+In scope: everything above. Out of scope: a polar-alignment page in
+ui-htmx.
 
 ## References
 
-- Plan + decision record — `docs/plans/polar-align.md`
 - Template plugin — `docs/services/calibrator-flats.md`
 - Solver contract — `docs/services/plate-solver.md`
 - rp's orchestration model — `docs/services/rp.md` §Orchestration
-- ADR-016 server config, ADR-017 MCP client policy

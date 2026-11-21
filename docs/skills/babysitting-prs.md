@@ -153,8 +153,8 @@ finding you declined can come back. The rating step reads the earlier
 round comments and rates it as a repeat, and its outcome links the
 earlier round. Expect the review after a fix to find fallout from that
 fix; it is rated like any other finding. Fixing only what rates **fix**
-keeps that fallout small: on the record, fixing noise was what kept the
-rounds coming (code-review.md §The record).
+keeps that fallout small: fixes of decline-rated findings breed the next
+round's findings (code-review.md §The record).
 
 Four reviews is the budget, not counting the re-run of a review that
 errored. Nothing the fourth review raises is fixed without the owner's
@@ -283,14 +283,14 @@ means no run was created. Check the cheap cause first: **a PR that is
 build the merge commit those runs check out — so the PR can look
 reviewed but is untested. `gh pr view <n> --json mergeable` answers it;
 merging `origin/main` into the branch (step 6 of the loop) makes the
-next push run normally. On PR #1335 two pushes in a row went un-run this
-way after `main` moved under the branch, with other PRs' runs landing
-throughout. Only then look for an Actions-side cause: whether runs are
-being created **repo-wide** (`gh run list --limit 20`) and whether
+next push run normally. While the PR conflicts, every push goes un-run
+and other PRs' runs land as usual. Only then look for an Actions-side
+cause: whether runs are being created **repo-wide**
+(`gh run list --limit 20`) and whether
 [githubstatus.com](https://www.githubstatus.com/api/v2/summary.json)
-shows an Actions incident. During the 2026-08-06 Actions outage, pushes
-produced no `bazel`/`check` runs at all, while other branches' jobs sat
-`queued` for hours — nothing about any PR was wrong.
+shows an Actions incident. In an Actions outage a push can get no
+`bazel` or `check` run at all while other branches' jobs sit `queued`
+for hours, with nothing wrong with any PR.
 
 **GitHub does not replay missed `pull_request` triggers.** Once Actions
 recovers, the runs will not appear on their own. If every affected
