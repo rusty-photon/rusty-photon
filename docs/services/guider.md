@@ -671,15 +671,17 @@ lock for `control.dec.reversal_frames` consecutive frames. Reversing
 Dec takes up the backlash each time, so the controller reverses only
 for an error that stays. The frames are counted from the last
 correction, by the side of the lock the error lies on, whatever its
-size, and a frame back on the side of the last correction starts the
-count again. The first Dec correction of a run goes either way. `control.dec.mode` selects `"auto"` (both
+size, and a frame back on the side of the last correction or a
+star-lost frame starts the count again. The first Dec correction of a
+run goes either way. `control.dec.mode` selects `"auto"` (both
 directions), `"north"` or `"south"` (corrections in that direction
 only) or `"off"` (no Dec corrections).
 
 **The minimum move.** An axis whose error is smaller than
 `control.min_move_px` gets no correction in that frame. With `null` the
 guider uses `max(0.1515 + 0.1548 ÷ scale, 0.15)` pixels, where `scale`
-is the pixel scale in arcseconds per pixel.
+is the pixel scale in arcseconds per pixel, and 0.15 pixels when the
+pixel scale is not a positive number.
 
 **From pixels to a pulse.** The duration is the correction divided by
 the axis rate: the calibrated Dec rate, or the calibrated RA rate times
@@ -694,9 +696,10 @@ frames each sent a correction in the same direction, and the error at
 the last of them is at least `control.runaway.min_error_px` and no
 smaller than at the first, the run stops with the reason `runaway`. The
 mount is not following the pulses, and more of them would not help.
-The step whose correction would be the last of them sends nothing. The
-count starts again after a pause, a dither, a dither's abort or a new
-selection.
+The step whose correction would be the last of them sends nothing. A
+star-lost frame sends no correction, so it ends the frames in a row,
+and the count starts again after a pause, a dither, a dither's abort or
+a new selection.
 
 ### Dither, settle and abort
 

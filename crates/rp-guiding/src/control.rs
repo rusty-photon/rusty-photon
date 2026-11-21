@@ -171,9 +171,13 @@ impl Controller {
             (cos, sin)
         };
         let dec = calibration.dec.filter(|_| params.dec_mode != DecMode::Off);
+        let scale = calibration.setup.pixel_scale_arcsec();
         let min_move_px = params.min_move_px.unwrap_or_else(|| {
-            (MIN_MOVE_A_PX + MIN_MOVE_B_ARCSEC / calibration.setup.pixel_scale_arcsec())
-                .max(MIN_MOVE_FLOOR_PX)
+            if scale.is_finite() && scale > 0.0 {
+                (MIN_MOVE_A_PX + MIN_MOVE_B_ARCSEC / scale).max(MIN_MOVE_FLOOR_PX)
+            } else {
+                MIN_MOVE_FLOOR_PX
+            }
         });
         let controller = Self {
             params,
@@ -329,6 +333,14 @@ impl Controller {
         self.forget();
     }
 
+    /// Notes a star-lost frame. It sends no correction, so it ends the
+    /// frames in a row that the runaway stop and the Dec reversal count.
+    pub fn star_lost(&mut self) {
+        self.dec_other_side = 0;
+        self.ra_watch.clear();
+        self.dec_watch.clear();
+    }
+
     /// Takes up the corrections after a pause.
     pub fn resume(&mut self) {
         self.forget();
@@ -348,9 +360,7 @@ impl Controller {
     /// that way.
     fn forget(&mut self) {
         self.previous_ra = 0.0;
-        self.dec_other_side = 0;
-        self.ra_watch.clear();
-        self.dec_watch.clear();
+        self.star_lost();
     }
 
     /// `offset` less home, along the axes.
@@ -733,6 +743,16 @@ mod tests {
     }
 
     #[test]
+    fn without_a_pixel_scale_the_minimum_move_is_its_floor() {
+        let mut no_scale = record(0.0, Some(270.0));
+        no_scale.setup.camera.pixel_size_um = 0.0;
+        let mut controller =
+            Controller::new(&no_scale, 0.0, ControlParams::default(), Offset::default());
+        assert_eq!(controller.min_move_px(), 0.15);
+        assert!(controller.step(along(2.0, 2.0)).unwrap().ra.is_some());
+    }
+
+    #[test]
     fn the_dec_correction_is_scaled_by_its_aggression() {
         let mut controller = controller(ControlParams {
             dec_aggression: 0.5,
@@ -921,6 +941,42 @@ mod tests {
             run_away(&mut controller(runaway_params()), &turned),
             Some((4, GuideAxis::Ra))
         );
+    }
+
+    #[test]
+    fn a_star_lost_frame_starts_the_runaway_count_again() {
+        let ra = |error: f64| along(error, 0.0);
+        let dec = |error: f64| along(0.0, error);
+        for (on, axis) in [
+            (&ra as &dyn Fn(f64) -> Offset, GuideAxis::Ra),
+            (&dec, GuideAxis::Dec),
+        ] {
+            let mut controller = controller(runaway_params());
+            assert_eq!(run_away(&mut controller, &[on(4.0), on(4.5)]), None);
+            controller.star_lost();
+            assert_eq!(run_away(&mut controller, &[on(5.0), on(5.5)]), None);
+            assert_eq!(run_away(&mut controller, &[on(6.0)]), Some((0, axis)));
+        }
+    }
+
+    #[test]
+    fn a_star_lost_frame_starts_the_dec_reversal_count_again() {
+        let mut controller = controller(ControlParams::default());
+        for dec in [2.0, -2.0, -2.0] {
+            controller.step(along(0.0, dec)).unwrap();
+        }
+        controller.star_lost();
+        let decs: Vec<Option<Direction>> = [-2.0, -2.0, -2.0]
+            .into_iter()
+            .map(|dec| {
+                controller
+                    .step(along(0.0, dec))
+                    .unwrap()
+                    .dec
+                    .map(|pulse| pulse.direction)
+            })
+            .collect();
+        assert_eq!(decs, [None, None, Some(Direction::North)]);
     }
 
     #[test]
@@ -1115,6 +1171,9 @@ mod tests {
             let step = offset
                 .map(|offset| self.controller.step(offset))
                 .transpose()?;
+            if step.is_none() {
+                self.controller.star_lost();
+            }
             for pulse in step.iter().flat_map(|step| [step.ra, step.dec]).flatten() {
                 send(&mut self.sim, pulse);
             }
@@ -1210,6 +1269,48 @@ mod tests {
         let rms = rms(after);
         assert!(
             rms < 0.35,
+            "{rms} px over {} frames after the cloud",
+            after.len()
+        );
+    }
+
+    #[test]
+    fn a_fast_drift_through_a_cloud_does_not_run_away() {
+        let fast = |config: &mut SimConfig| {
+            config.mount.drift = Drift {
+                east_arcsec_per_min: 20.0,
+                north_arcsec_per_min: 0.0,
+            };
+        };
+        let start = Run::start(fast, ControlParams::default()).now();
+        let cloud = Cloud {
+            start: start + Duration::from_secs(60),
+            duration: Duration::from_secs(30),
+            ramp: Duration::from_secs(1),
+            transmission: 0.0,
+        };
+        let mut run = Run::start(
+            |config| {
+                fast(config);
+                config.sky.clouds = vec![cloud];
+            },
+            ControlParams::default(),
+        );
+        // The cloud leaves fifteen corrections East in the runaway count,
+        // and the stars come back far from the lock.
+        let guided = run.frames(100).unwrap();
+        let last_lost = guided
+            .iter()
+            .rposition(|frame| frame.step.is_none())
+            .unwrap();
+        let back = guided[last_lost + 1].off_px;
+        assert!(back > 3.0, "the stars came back {back} px from the lock");
+        // At 20″ a minute the field drifts 0.4 px a frame, and the guiding
+        // lags it.
+        let after = &guided[last_lost + 10..];
+        let rms = rms(after);
+        assert!(
+            rms < 1.0,
             "{rms} px over {} frames after the cloud",
             after.len()
         );
