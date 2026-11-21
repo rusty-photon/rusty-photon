@@ -560,8 +560,10 @@ axis has a step of its own: the pulse that moves the stars
 `calibration.distance_px` ÷ `calibration.steps` at the rate the axis's
 guide rate gives at the pixel scale, the RA rate taken at the
 declination, held to 89° from the equator as [the store](#calibration)
-holds it. The step is held within `mount.min_pulse` and
-`mount.max_pulse`. A leg that has not covered its distance after
+holds it. A guide rate or a pixel size that is not a positive number
+gives no rate a mount could move the stars at, and the guider
+calibrates as for a mount that reports no guide rate. The step is held
+within `mount.min_pulse` and `mount.max_pulse`. A leg that has not covered its distance after
 `calibration.max_steps` steps fails the calibration, and so does a
 calibration longer than `calibration.timeout`.
 
@@ -831,7 +833,7 @@ was made within 60° of the celestial equator
     "camera": { "pixel_size_um": 1.45, "width": 3840, "height": 2192, "binning": 2 },
     "guide_rates": { "ra_deg_per_s": 0.002089, "dec_deg_per_s": 0.002089 },
     "ra": { "angle_deg": 87.3, "rate_px_per_s": 2.52, "steps": 12, "step": "850ms" },
-    "dec": { "angle_deg": 177.1, "rate_px_per_s": 2.49, "steps": 12, "step": "850ms", "backlash": "310ms" },
+    "dec": { "angle_deg": 177.1, "rate_px_per_s": 2.49, "steps": 12, "step": "830ms", "backlash": "310ms" },
     "orthogonality_error_deg": 0.2,
     "expected": { "ra_rate_px_per_s": 2.51, "dec_rate_px_per_s": 2.51 },
     "warnings": []
@@ -855,9 +857,10 @@ was made within 60° of the celestial equator
   stars. `ra.rate_px_per_s` is the rate at the equator.
   `declination_deg` is the declination the mount reported; beyond ±60
   the record is [not stored](#calibration).
-  `guide_rates` and `expected` are `null` for a mount that reports no
-  guide rate, and `dec` and `orthogonality_error_deg` are `null` in a
-  record made with `control.dec.mode` `"off"`.
+  `guide_rates` is `null` for a mount that reports no guide rate, and
+  `expected` is `null` whenever the guider calibrates as for such a
+  mount ([The step](#calibration)). `dec` and `orthogonality_error_deg`
+  are `null` in a record made with `control.dec.mode` `"off"`.
 - `warnings` lists the cross-checks that passed their warning
   threshold, each as `{ "check", "value", "threshold" }`.
 - A calibration that fails answers `calibration_failed`; `details`

@@ -126,14 +126,18 @@ impl Setup {
     }
 
     /// The rates the mount's guide rates should move the stars at; `None`
-    /// for a mount that reports no guide rate.
+    /// for a mount that reports no guide rate, and when a guide rate or
+    /// the pixel scale is not a positive number, as no mount moves the
+    /// stars at such a rate.
     #[must_use]
     pub fn expected_rates(&self) -> Option<ExpectedRates> {
         let scale = self.pixel_scale_arcsec();
-        self.guide_rates.map(|rates| ExpectedRates {
+        let rates = self.guide_rates?;
+        let expected = ExpectedRates {
             ra_px_per_s: rates.ra_deg_per_s * ARCSEC_PER_DEG / scale,
             dec_px_per_s: rates.dec_deg_per_s * ARCSEC_PER_DEG / scale,
-        })
+        };
+        (positive(expected.ra_px_per_s) && positive(expected.dec_px_per_s)).then_some(expected)
     }
 
     /// Whether `other` has the same pier side, camera, focal length and
@@ -693,6 +697,11 @@ fn relative(actual: f64, expected: f64) -> f64 {
     (actual - expected).abs() / expected
 }
 
+/// Whether `value` is a positive number.
+fn positive(value: f64) -> bool {
+    value.is_finite() && value > 0.0
+}
+
 /// Whether two values of a record are the same one.
 fn same(a: f64, b: f64) -> bool {
     (a - b).abs() <= SAME_WITHIN * a.abs().max(b.abs())
@@ -1181,22 +1190,42 @@ mod tests {
     }
 
     #[test]
-    fn a_camera_that_reports_no_pixel_size_fails_the_rate_check() {
-        let setup = Setup {
-            camera: CameraGeometry {
-                pixel_size_um: 0.0,
-                ..setup().camera
-            },
-            ..setup()
+    fn a_guide_rate_or_pixel_size_that_is_not_positive_is_no_guide_rate() {
+        let changes: [fn(&mut Setup); 4] = [
+            |s| s.guide_rates.as_mut().unwrap().ra_deg_per_s = 0.0,
+            |s| s.guide_rates.as_mut().unwrap().dec_deg_per_s = -0.002,
+            |s| s.guide_rates.as_mut().unwrap().ra_deg_per_s = f64::NAN,
+            |s| s.camera.pixel_size_um = 0.0,
+        ];
+        for change in changes {
+            let mut odd = setup();
+            change(&mut odd);
+            assert_eq!(odd.expected_rates(), None, "{odd:?}");
+            let mut mount = Scripted::new();
+            mount.ra.1 *= 1.3;
+            let (result, pulses) = run(&mut mount, odd, 0.0, CalibrationParams::default());
+            let calibration = result.unwrap();
+            assert!(pulses
+                .iter()
+                .all(|pulse| pulse.duration == Duration::from_millis(750)));
+            let [warning] = calibration.warnings[..] else {
+                panic!("{:?}", calibration.warnings);
+            };
+            assert_eq!(warning.check, Check::RateRatio);
+        }
+    }
+
+    #[test]
+    fn a_check_value_that_is_not_a_number_fails() {
+        let calibrator =
+            Calibrator::new(setup(), 0.0, CalibrationParams::default(), Duration::ZERO);
+        let ra = Axis {
+            angle_deg: 0.0,
+            rate_px_per_s: f64::NAN,
+            steps: 12,
+            step: Duration::from_millis(500),
         };
-        // No expected rate sizes the step, so it is the shortest pulse.
-        let params = CalibrationParams {
-            max_steps: 1_000,
-            timeout: Duration::from_secs(36_000),
-            ..CalibrationParams::default()
-        };
-        let (result, _) = run(&mut Scripted::new(), setup, 0.0, params);
-        let error = result.unwrap_err();
+        let error = calibrator.finish(ra, None).unwrap_err();
         let CalibrationError::CheckFailed { check, value, .. } = error else {
             panic!("{error:?}");
         };
@@ -1238,15 +1267,16 @@ mod tests {
             step_of(no_rates, long_fallback),
             Duration::from_millis(2_500)
         );
-        let still = Setup {
+        // A step too long for a `Duration` is the longest pulse.
+        let crawling = Setup {
             guide_rates: Some(GuideRates {
-                ra_deg_per_s: 0.0,
-                dec_deg_per_s: 0.0,
+                ra_deg_per_s: 1e-300,
+                dec_deg_per_s: 1e-300,
             }),
             ..setup()
         };
         assert_eq!(
-            step_of(still, CalibrationParams::default()),
+            step_of(crawling, CalibrationParams::default()),
             Duration::from_millis(2_500)
         );
     }
