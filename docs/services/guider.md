@@ -10,7 +10,8 @@ an HTTP API.
 
 **The service is designed and not yet built.** This document is the
 design the implementation is written against. Of the guiding core,
-`crates/rp-guiding`, the star selection and measurement are built.
+`crates/rp-guiding`, the star selection, the measurement and the
+calibration are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
 records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
@@ -536,6 +537,15 @@ mount.
 With `control.dec.mode` set to `"off"`, legs 3 to 5 are skipped and the
 calibration has no Dec axis.
 
+**What a leg measures.** Each leg begins where the leg before it ended,
+at the frame after its last step. The distance a leg has moved the stars
+is the distance from where they stood when it began. An axis's angle is
+the direction from there to where the stars stand at the end of its leg,
+and its rate is that distance over the leg's pulse time. The Dec backlash
+is the South leg's pulse time less the time its travel back along the
+Dec axis takes at the Dec rate, and the whole of that pulse time when
+the stars did not come back.
+
 **A frame with no offset.** After a star-lost or a failed frame the leg
 sends no pulse and takes frames until one measures the stars. A leg's
 steps are its pulses, so such a frame is no step and does not count
@@ -545,11 +555,15 @@ towards `calibration.max_steps`. The state stays `calibrating`, and
 **The step.** The guider sizes the step so that a leg takes about
 `calibration.steps` steps. It works the step out from the guide rate
 the mount reports, the declination and the pixel scale, and uses
-`calibration.fallback_step` for a mount that reports no guide rate. The
-step is held within `mount.min_pulse` and `mount.max_pulse`. A leg that
-has not covered its distance after `calibration.max_steps` steps fails
-the calibration, and so does a calibration longer than
-`calibration.timeout`.
+`calibration.fallback_step` for a mount that reports no guide rate. Each
+axis has a step of its own: the pulse that moves the stars
+`calibration.distance_px` ÷ `calibration.steps` at the rate the axis's
+guide rate gives at the pixel scale, the RA rate taken at the
+declination, held to 89° from the equator as [the store](#calibration)
+holds it. The step is held within `mount.min_pulse` and
+`mount.max_pulse`. A leg that has not covered its distance after
+`calibration.max_steps` steps fails the calibration, and so does a
+calibration longer than `calibration.timeout`.
 
 **Cross-checks.** Two checks run on the result. Each has a threshold
 that adds a warning to the record and a wider one that fails the
@@ -559,8 +573,8 @@ rates for a mount that reports no guide rate.
 
 | Check | Warns above | Fails above |
 |---|---|---|
-| The angle between the two axes, as its distance from 90° | 12.5° | 30° |
-| A measured rate against the rate expected from the mount's guide rate and the pixel scale, as a fraction of the expected rate. For a mount that reports no guide rate: the ratio of the two measured rates against the cosine of the declination | 0.20 | 0.50 |
+| The angle between the two axes, as its distance from 90°, whichever way the image is mirrored | 12.5° | 30° |
+| Each measured rate against the rate expected from its axis's guide rate and the pixel scale, as a fraction of the expected rate. For a mount that reports no guide rate: the ratio of the RA rate at the declination to the Dec rate against the cosine of the declination, as a fraction of the cosine | 0.20 | 0.50 |
 
 **Declination.** The guider calibrates wherever the mount points and
 records the declination. Close to the pole a West pulse barely moves
@@ -607,7 +621,10 @@ answers with it, and the slot keeps what it held.
   focal length and the mount's two guide rates are the ones it was made
   with, and it has a Dec axis unless `control.dec.mode` is `"off"`.
   Anything else starts a calibration. A mount that reports no guide
-  rate is compared on the other values.
+  rate is compared on the other values, and is served only by a record
+  made without guide rates. Two values are the same when they agree to
+  a part in a billion, so that a value read back from
+  `calibration.json` is the one it was written from.
 - **What the guider cannot see**, it does not invalidate. A camera
   turned in its holder, a rotator that moved, or a meridian flip of a
   mount that reports no pier side changes the angles without changing
@@ -833,10 +850,11 @@ was made within 60° of the celestial equator
   the pixel size, the sensor's size and the effective binning, and the
   mount's `GuideRateRightAscension` and `GuideRateDeclination` in
   degrees per second. `angle_deg` is the direction on the sensor,
-  counter-clockwise from the +x axis, in which a West pulse (`ra`) or a
-  North pulse (`dec`) moves the stars. `ra.rate_px_per_s` is the rate
-  at the equator. `declination_deg` is the declination the mount
-  reported; beyond ±60 the record is [not stored](#calibration).
+  counter-clockwise from the +x axis toward +y and from 0° up to 360°,
+  in which a West pulse (`ra`) or a North pulse (`dec`) moves the
+  stars. `ra.rate_px_per_s` is the rate at the equator.
+  `declination_deg` is the declination the mount reported; beyond ±60
+  the record is [not stored](#calibration).
   `guide_rates` and `expected` are `null` for a mount that reports no
   guide rate, and `dec` and `orthogonality_error_deg` are `null` in a
   record made with `control.dec.mode` `"off"`.
