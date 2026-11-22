@@ -554,6 +554,12 @@ probe settles it. A save that changes nothing says so and fires no reload.
   `rp.service_auth` + `rp.ca_cert` (absent-only), exactly as for
   sentinel and session-runner — via nested pointers, since
   the bridge's client block lives under its `rp` key.
+- **The client-target join** (`joins.client-transport`, doctor.md
+  § Client-target joins): `rp.mcp_server_url` joins rp's own
+  `server.tls`. An `http://` URL of a TLS-on rp fails the check, and
+  `--fix` moves it to `https://` — `rp-mcp-client` sends
+  `rp.service_auth` only over https, so without the rewrite every Align
+  import spools.
 - **The fake-mount hazard** (`joins.fake-mount`, doctor.md § The
   fake-mount hazard): doctor **fails when rp's `equipment.mount`
   points at the bridge** — statically when the URL loopback-joins to

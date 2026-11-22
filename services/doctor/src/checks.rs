@@ -1667,11 +1667,12 @@ struct ClientTarget {
     locator: TargetLocator,
     /// CA-trust field as `(pointer, already_present)` — ui-htmx's
     /// per-target `ca_cert_path`, rp's and sentinel's single top-level
-    /// `ca_cert`.
+    /// `ca_cert`, an MCP client's `ca_cert` beside its pair.
     ca_cert: (String, bool),
-    /// `None` for the one target with no per-target credential field:
-    /// the watchdog's `rp_url`, whose credential is the shared
-    /// `service_auth` pair — `auth.mismatch`'s territory already.
+    /// `None` for the targets with no per-target credential field, whose
+    /// credential is the client's shared `service_auth` pair: the
+    /// watchdog's `rp_url` (`auth.mismatch`'s territory already) and the
+    /// MCP clients' URLs of rp (the provisioning pass's to write).
     auth: Option<AuthTarget>,
 }
 
@@ -1971,13 +1972,15 @@ fn client_target_joins(ctx: &Context) -> Vec<Check> {
 /// The client-target registry: every URL/CA/auth pointer site the join
 /// family judges, in one table — ui-htmx's `rp` target, rp's
 /// plate-solver/guider clients plus the generic equipment roster and
-/// dialed plugin registrations, and sentinel's watchdog `rp_url` and
-/// Alpaca monitors (docs/services/doctor.md §Client-target joins).
+/// dialed plugin registrations, sentinel's watchdog `rp_url` and Alpaca
+/// monitors, and the MCP clients' URLs of rp (docs/services/doctor.md
+/// §Client-target joins).
 fn client_targets(ctx: &Context) -> Vec<ClientTarget> {
     let mut targets = Vec::new();
     targets.extend(ui_htmx_targets(ctx));
     targets.extend(rp_targets(ctx));
     targets.extend(sentinel_targets(ctx));
+    targets.extend(mcp_client_targets(ctx));
     targets
 }
 
@@ -2241,6 +2244,38 @@ fn sentinel_targets(ctx: &Context) -> Vec<ClientTarget> {
         });
     }
     targets
+}
+
+/// The MCP clients' URLs of rp — planetarium-bridge's `rp.mcp_server_url`,
+/// the `mcp_server_url` of session-runner, calibrator-flats, focus-model
+/// and polar-align, and session-runner's `events_url` when set — read at
+/// the pointers [`crate::provision::rp_url_fields`] derives from
+/// `CLIENT_WIRING`, so the `ca_cert` this join fixes is the one the
+/// provisioning pass writes. Each carries no per-target credential: the
+/// shared `service_auth` pair beside it is the provisioning pass's to
+/// write, and `rp-mcp-client` presents it only once the URL is https.
+fn mcp_client_targets(ctx: &Context) -> Vec<ClientTarget> {
+    crate::provision::rp_url_fields()
+        .into_iter()
+        .filter_map(|f| {
+            let value = ctx.scan(f.service)?.value()?;
+            let url = value.pointer(&f.url_pointer)?.as_str()?.to_string();
+            let ca_cert_present = value
+                .pointer(&f.ca_cert_pointer)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|p| !p.is_empty());
+            Some(ClientTarget {
+                client: f.service,
+                transport_field: f.field,
+                locator: TargetLocator::Url {
+                    url,
+                    pointer: f.url_pointer,
+                },
+                ca_cert: (f.ca_cert_pointer, ca_cert_present),
+                auth: None,
+            })
+        })
+        .collect()
 }
 
 // ---- The fake-mount hazard (planetarium-bridge.md § Doctor integration) ----
@@ -5486,6 +5521,214 @@ mod tests {
         match &transport.fixes[..] {
             [crate::report::FixOp::SetString { pointer, .. }] => {
                 assert_eq!(pointer, "/ca_cert");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    /// A self-signed, auth-on rp at its default port — the state the
+    /// provisioning pass leaves rp in.
+    fn write_provisioned_rp(dir: &Path) {
+        let hash = rp_auth::credentials::hash_password("x").unwrap();
+        write_json(
+            dir,
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/rp.pem", "key": "/pki/rp-key.pem" },
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+    }
+
+    #[test]
+    fn test_each_mcp_clients_url_of_rp_has_its_scheme_fixed_without_a_client_auth_check() {
+        for (client, config, url_pointer) in [
+            (
+                "session-runner",
+                serde_json::json!({ "mcp_server_url": "http://127.0.0.1:11115/mcp",
+                                    "ca_cert": "/pki/ca.pem" }),
+                "/mcp_server_url",
+            ),
+            (
+                "calibrator-flats",
+                serde_json::json!({ "mcp_server_url": "http://127.0.0.1:11115/mcp",
+                                    "ca_cert": "/pki/ca.pem" }),
+                "/mcp_server_url",
+            ),
+            (
+                "focus-model",
+                serde_json::json!({ "mcp_server_url": "http://127.0.0.1:11115/mcp",
+                                    "ca_cert": "/pki/ca.pem" }),
+                "/mcp_server_url",
+            ),
+            (
+                "polar-align",
+                serde_json::json!({ "mcp_server_url": "http://127.0.0.1:11115/mcp",
+                                    "ca_cert": "/pki/ca.pem" }),
+                "/mcp_server_url",
+            ),
+            (
+                "planetarium-bridge",
+                serde_json::json!({ "rp": { "mcp_server_url": "http://127.0.0.1:11115/mcp",
+                                            "ca_cert": "/pki/ca.pem" } }),
+                "/rp/mcp_server_url",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            write_provisioned_rp(dir.path());
+            write_json(dir.path(), &format!("{client}.json"), config);
+            let ctx = config_only_ctx(dir.path());
+            let checks = client_target_joins(&ctx);
+            let transport = checks
+                .iter()
+                .find(|c| c.name == "joins.client-transport")
+                .unwrap_or_else(|| panic!("{client}'s http URL of rp must be reported"));
+            assert_eq!(transport.service.as_deref(), Some(client));
+            match &transport.fixes[..] {
+                [crate::report::FixOp::SetString {
+                    service,
+                    pointer,
+                    value,
+                }] => {
+                    assert_eq!(service, client);
+                    assert_eq!(pointer, url_pointer);
+                    assert_eq!(value, "https://127.0.0.1:11115/mcp");
+                }
+                other => unreachable!("{client}: {other:?}"),
+            }
+            // The shared `service_auth` pair is the provisioning pass's
+            // to write, not a per-target credential.
+            assert!(
+                checks.iter().all(|c| c.name != "joins.client-auth"),
+                "{client}: {checks:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_session_runner_events_url_is_joined_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        write_provisioned_rp(dir.path());
+        write_json(
+            dir.path(),
+            "session-runner.json",
+            serde_json::json!({ "mcp_server_url": "https://127.0.0.1:11115/mcp",
+                                "events_url": "http://127.0.0.1:11115/api/events/subscribe",
+                                "ca_cert": "/pki/ca.pem" }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = client_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("an http events_url of a TLS-on rp must be reported");
+        assert!(
+            transport.detail.contains("events_url uses http"),
+            "{}",
+            transport.detail
+        );
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString { pointer, value, .. }] => {
+                assert_eq!(pointer, "/events_url");
+                assert_eq!(value, "https://127.0.0.1:11115/api/events/subscribe");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_an_mcp_client_with_no_url_of_rp_files_no_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        write_provisioned_rp(dir.path());
+        // session-runner's URLs are optional; a null `events_url` derives
+        // from `mcp_server_url`, so there is nothing of its own to judge.
+        write_json(
+            dir.path(),
+            "session-runner.json",
+            serde_json::json!({ "mcp_server_url": null, "events_url": null }),
+        );
+        write_json(dir.path(), "polar-align.json", serde_json::json!({}));
+        let ctx = config_only_ctx(dir.path());
+        assert!(
+            client_target_joins(&ctx).is_empty(),
+            "{:?}",
+            client_target_joins(&ctx)
+        );
+    }
+
+    #[test]
+    fn test_the_bridge_flags_missing_ca_trust_for_a_self_signed_rp() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_provisioned_rp(dir.path());
+        write_json(
+            dir.path(),
+            "planetarium-bridge.json",
+            serde_json::json!({ "rp": { "mcp_server_url": "https://127.0.0.1:11115/mcp" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = client_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("a read-only run must report the bridge's missing CA trust");
+        assert_eq!(transport.status, Status::Fail);
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "planetarium-bridge");
+                assert_eq!(pointer, "/rp/ca_cert");
+                assert!(
+                    std::path::Path::new(value).ends_with("pki/ca.pem"),
+                    "{value}"
+                );
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_the_bridge_rp_ca_cert_already_present_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        write_provisioned_rp(dir.path());
+        write_json(
+            dir.path(),
+            "planetarium-bridge.json",
+            serde_json::json!({ "rp": { "mcp_server_url": "https://127.0.0.1:11115/mcp",
+                                        "ca_cert": "/pki/ca.pem" } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(client_target_joins(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_acme_loopback_mcp_server_url_moves_onto_rps_public_name() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_acme(dir.path(), "pier1.example.com", false);
+        write_json(
+            dir.path(),
+            "rp.json",
+            serde_json::json!({ "server": { "port": 11115,
+                "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "focus-model.json",
+            serde_json::json!({ "mcp_server_url": "http://127.0.0.1:11115/mcp" }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = client_target_joins(&ctx);
+        let transport = checks
+            .iter()
+            .find(|c| c.name == "joins.client-transport")
+            .expect("scheme and hostname breaks must be reported");
+        match &transport.fixes[..] {
+            [crate::report::FixOp::SetString { pointer, value, .. }] => {
+                assert_eq!(pointer, "/mcp_server_url");
+                assert_eq!(value, "https://rp.pier1.example.com:11115/mcp");
             }
             other => unreachable!("{other:?}"),
         }

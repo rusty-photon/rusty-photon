@@ -386,7 +386,7 @@ alone (`ServiceRunner::condition_path_exists`;
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `server` | object | `{ "port": 11172 }` | Shared `ServerConfig` (`rusty-photon-server-config`) for `/runs`, `/status`, `/health` and the operator routes |
-| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400` |
+| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint, used by every `POST /runs` run; without it `/runs` answers `400`. Doctor `--fix` moves it to `https://` once `rp` serves TLS, exactly as calibrator-flats' |
 | `service_auth` / `ca_cert` | — | null | Credentials/CA toward rp, exactly as calibrator-flats |
 | `camera_id` | string | required | Camera on the imaging train used for alignment exposures |
 | `mount_id` | string | required | The mount (informational; rp's mount tools address the singular configured mount) |

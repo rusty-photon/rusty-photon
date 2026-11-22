@@ -499,6 +499,12 @@ struct ClientWiring {
     /// (`auth` beside each address), which `joins.client-auth` wires.
     wire_auth: bool,
     prefix: &'static str,
+    /// The keys beside the pair, under `prefix`, that hold the client's
+    /// URLs of rp — the addresses the pair authenticates, which
+    /// `joins.client-transport` judges ([`rp_url_fields`]). Empty for
+    /// sentinel, whose watchdog `rp_url` nests deeper and is judged with
+    /// its monitors, and for rp, the target itself.
+    rp_urls: &'static [&'static str],
 }
 
 const CLIENT_WIRING: &[ClientWiring] = &[
@@ -506,36 +512,43 @@ const CLIENT_WIRING: &[ClientWiring] = &[
         service: "sentinel",
         wire_auth: true,
         prefix: "",
+        rp_urls: &[],
     },
     ClientWiring {
         service: "session-runner",
         wire_auth: true,
         prefix: "",
+        rp_urls: &["mcp_server_url", "events_url"],
     },
     ClientWiring {
         service: "calibrator-flats",
         wire_auth: true,
         prefix: "",
+        rp_urls: &["mcp_server_url"],
     },
     ClientWiring {
         service: "focus-model",
         wire_auth: true,
         prefix: "",
+        rp_urls: &["mcp_server_url"],
     },
     ClientWiring {
         service: "polar-align",
         wire_auth: true,
         prefix: "",
+        rp_urls: &["mcp_server_url"],
     },
     ClientWiring {
         service: "planetarium-bridge",
         wire_auth: true,
         prefix: "/rp",
+        rp_urls: &["mcp_server_url"],
     },
     ClientWiring {
         service: "rp",
         wire_auth: false,
         prefix: "",
+        rp_urls: &[],
     },
 ];
 
@@ -550,6 +563,40 @@ pub fn ca_cert_pointers() -> Vec<(&'static str, String)> {
     CLIENT_WIRING
         .iter()
         .map(|wiring| (wiring.service, format!("{}/ca_cert", wiring.prefix)))
+        .collect()
+}
+
+/// A [`CLIENT_WIRING`] client's URL of rp, the address its shared pair
+/// authenticates.
+pub struct RpUrlField {
+    pub service: &'static str,
+    /// Dotted display name (`mcp_server_url`, `rp.mcp_server_url`).
+    pub field: String,
+    pub url_pointer: String,
+    /// The client's `ca_cert`, the pointer [`plan_client_wiring`] writes.
+    pub ca_cert_pointer: String,
+}
+
+/// Every [`CLIENT_WIRING`] client's URL of rp — the MCP clients' client
+/// targets (docs/services/doctor.md §Client-target joins).
+///
+/// Derived from the table the writer uses, so the `ca_cert` the join
+/// fixes is the one the provisioning pass writes.
+#[must_use]
+pub fn rp_url_fields() -> Vec<RpUrlField> {
+    CLIENT_WIRING
+        .iter()
+        .flat_map(|wiring| {
+            wiring.rp_urls.iter().map(move |key| RpUrlField {
+                service: wiring.service,
+                field: wiring
+                    .prefix
+                    .strip_prefix('/')
+                    .map_or_else(|| (*key).to_string(), |block| format!("{block}.{key}")),
+                url_pointer: format!("{}/{key}", wiring.prefix),
+                ca_cert_pointer: format!("{}/ca_cert", wiring.prefix),
+            })
+        })
         .collect()
 }
 
@@ -826,6 +873,38 @@ mod tests {
         assert_eq!(pointers.len(), CLIENT_WIRING.len());
         assert!(pointers.contains(&("rp", "/ca_cert".to_string())));
         assert!(pointers.contains(&("planetarium-bridge", "/rp/ca_cert".to_string())));
+    }
+
+    #[test]
+    fn test_rp_url_fields_name_each_mcp_clients_url_beside_its_pair() {
+        let fields: Vec<_> = rp_url_fields()
+            .into_iter()
+            .map(|f| (f.service, f.field, f.url_pointer, f.ca_cert_pointer))
+            .collect();
+        let top_level = |service: &'static str, key: &str| {
+            (
+                service,
+                key.to_string(),
+                format!("/{key}"),
+                "/ca_cert".to_string(),
+            )
+        };
+        assert_eq!(
+            fields,
+            vec![
+                top_level("session-runner", "mcp_server_url"),
+                top_level("session-runner", "events_url"),
+                top_level("calibrator-flats", "mcp_server_url"),
+                top_level("focus-model", "mcp_server_url"),
+                top_level("polar-align", "mcp_server_url"),
+                (
+                    "planetarium-bridge",
+                    "rp.mcp_server_url".to_string(),
+                    "/rp/mcp_server_url".to_string(),
+                    "/rp/ca_cert".to_string(),
+                ),
+            ]
+        );
     }
 
     #[cfg(unix)]
