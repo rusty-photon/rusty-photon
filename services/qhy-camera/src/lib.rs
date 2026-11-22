@@ -121,6 +121,9 @@ pub struct ServerBuilder {
     /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
     /// this driver's default ([`claims::default_usb_source`]).
     usb_source: Option<UsbSource>,
+    /// Which a build takes first, its USB scan or its SDK: this platform's
+    /// unless a test sets it.
+    order: Order,
     /// The SDK's library, which a build loads before it opens the SDK (PF4).
     sdk_library: SdkLibrary,
     /// The setup pages, set by [`Self::build`] when there is a config
@@ -314,14 +317,14 @@ impl ServerBuilder {
         })
     }
 
-    /// The no-list default (U11): take the USB scan, open the SDK and
-    /// enumerate it — each camera's id and model, before any open — place each
-    /// SDK camera on a port, probe the placed cameras, and only those, for a
-    /// CFW, and register them in port order, each with the wheel the probe
-    /// found on it. A camera the join cannot place is never opened, and one
-    /// the probe cannot open or close is not registered; both are logged. A
-    /// failed scan opens no SDK and registers nothing; it returns the re-scan
-    /// to run instead (U6).
+    /// The no-list default (U11): take the USB scan and the SDK, in this
+    /// build's [`Order`], enumerate the SDK — each camera's id and model,
+    /// before any open — place each SDK camera on a port, probe the placed
+    /// cameras, and only those, for a CFW, and register them in port order,
+    /// each with the wheel the probe found on it. A camera the join cannot
+    /// place is never opened, and one the probe cannot open or close is not
+    /// registered; both are logged. A failed scan keeps no SDK and registers
+    /// nothing; it returns the re-scan to run instead (U6).
     async fn register_enumerated(
         &self,
         server: &mut Server,
@@ -420,15 +423,16 @@ impl ServerBuilder {
         Ok((registered, Some(sdk)))
     }
 
-    /// A `usb_devices` list: take the USB scan, enumerate the SDK — each
-    /// camera's id and model, before any open — place each SDK camera on a
-    /// port, and register the list: each entry in number order as the camera
-    /// placed on its port (U5) or a placeholder that says why there is none
-    /// (U4), then each declared wheel in wheel-number order, on its camera's
-    /// connection or as a placeholder with its camera's reason (U10). Nothing
-    /// is opened, and a camera on an unlisted port is never registered (U1).
-    /// Returns what was registered, the re-scan to run when the scan failed
-    /// (U6), and the SDK, which a failed scan never opens.
+    /// A `usb_devices` list: take the USB scan and the SDK, in this build's
+    /// [`Order`], enumerate the SDK — each camera's id and model, before any
+    /// open — place each SDK camera on a port, and register the list: each
+    /// entry in number order as the camera placed on its port (U5) or a
+    /// placeholder that says why there is none (U4), then each declared wheel
+    /// in wheel-number order, on its camera's connection or as a placeholder
+    /// with its camera's reason (U10). Nothing is opened, and a camera on an
+    /// unlisted port is never registered (U1). Returns what was registered,
+    /// the re-scan to run when the scan failed (U6), and the SDK, which a
+    /// failed scan never keeps.
     async fn register_list(
         &self,
         server: &mut Server,
@@ -606,8 +610,9 @@ impl ServerBuilder {
         }
     }
 
-    /// This build's USB scan, and — only once the scan runs (U6) — the SDK,
-    /// opened, and its cameras' ids and models, read before any open (U1).
+    /// This build's USB scan and the SDK, opened, taken in this build's
+    /// [`Order`] (C0), and the SDK's cameras' ids and models, read before any
+    /// open (U1). A failed scan keeps no SDK (U6).
     async fn scan_and_enumerate(
         &self,
         injected: Option<qhyccd_rs::Sdk>,
@@ -615,19 +620,26 @@ impl ServerBuilder {
         let source = self.usb_source();
         // A collector that panics has failed to scan, like one that errors:
         // a re-scan, never a failed start (U6).
-        let scan = tokio::task::spawn_blocking(move || source.scan())
-            .await
-            .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")));
-        let scan = match scan {
-            Ok(scan) => scan,
+        let scan = async move {
+            tokio::task::spawn_blocking(move || source.scan())
+                .await
+                .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")))
+        };
+        let open = async move {
+            Ok::<_, BoxError>(tokio::task::spawn_blocking(move || take_sdk(injected)).await??)
+        };
+        let rescan = |sdk: qhyccd_rs::Sdk| async move {
+            Ok::<_, BoxError>(tokio::task::spawn_blocking(move || rescan_sdk(sdk)).await?)
+        };
+        let (scan, sdk) = match take_in_order(self.order, open, scan, rescan).await? {
+            Ok(taken) => taken,
             Err(error) => return Ok(Err(error)),
         };
         let (sdk, cameras) = tokio::task::spawn_blocking(move || {
-            let sdk = take_sdk(injected)?;
             let cameras = claims::enumerate(&sdk);
-            Ok::<_, QhyCameraError>((sdk, cameras))
+            (sdk, cameras)
         })
-        .await??;
+        .await?;
         Ok(Ok((scan, sdk, cameras)))
     }
 
@@ -897,6 +909,80 @@ struct Registered {
     filter_wheels: usize,
     placeholders: usize,
     rescan: Option<Rescan>,
+}
+
+/// Which a build takes first, its USB scan or its SDK (C0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Order {
+    /// The scan, then the SDK. A cold camera's firmware is loaded outside
+    /// this process — by udev and `fxload` on Linux, by QHY's driver on
+    /// Windows — so what the scan sees does not wait on the SDK.
+    ScanFirst,
+    /// The SDK, then the scan, then the SDK's scan again. On macOS the SDK's
+    /// first initialisation in a process is what loads a cold camera's
+    /// firmware; until then the camera is on the bus as its loader, which the
+    /// join places no camera on (U2). The second SDK scan lists a camera that
+    /// came back from its loader after the first, so a camera the USB scan
+    /// saw is one the SDK lists.
+    SdkFirst,
+}
+
+impl Default for Order {
+    /// This platform's: [`Order::SdkFirst`] on macOS, [`Order::ScanFirst`]
+    /// elsewhere.
+    fn default() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::SdkFirst
+        } else {
+            Self::ScanFirst
+        }
+    }
+}
+
+/// The `scan`, and the SDK `open` yields, taken in `order`: under
+/// [`Order::SdkFirst`] the SDK is opened before the scan, and `rescan` runs on
+/// it after. A failed scan answers its reason and keeps no SDK — under
+/// [`Order::ScanFirst`] none is opened, under [`Order::SdkFirst`] the one
+/// opened is dropped — so a failed scan's server holds none (U6).
+async fn take_in_order<S, E, R>(
+    order: Order,
+    open: impl Future<Output = std::result::Result<S, E>>,
+    scan: impl Future<Output = std::result::Result<UsbScan, String>>,
+    rescan: impl FnOnce(S) -> R,
+) -> std::result::Result<std::result::Result<(UsbScan, S), String>, E>
+where
+    R: Future<Output = std::result::Result<S, E>>,
+{
+    match order {
+        Order::ScanFirst => match scan.await {
+            Ok(scan) => Ok(Ok((scan, open.await?))),
+            Err(error) => Ok(Err(error)),
+        },
+        Order::SdkFirst => {
+            let sdk = open.await?;
+            match scan.await {
+                Ok(scan) => Ok(Ok((scan, rescan(sdk).await?))),
+                Err(error) => {
+                    drop(sdk);
+                    Ok(Err(error))
+                }
+            }
+        }
+    }
+}
+
+/// `sdk` after its scan again ([`Order::SdkFirst`]). A scan that fails
+/// leaves the cameras the SDK listed when it opened — those a build without
+/// it would have had — and is logged at `warn!`. Blocking.
+fn rescan_sdk(mut sdk: qhyccd_rs::Sdk) -> qhyccd_rs::Sdk {
+    if let Err(error) = sdk.rescan() {
+        warn!(
+            %error,
+            "the QHY SDK could not scan again after the USB scan; \
+             serving the cameras it listed when it opened"
+        );
+    }
+    sdk
 }
 
 /// The SDK a server's devices run on: `injected`, or the SDK opened —
@@ -1232,6 +1318,116 @@ mod take_sdk_tests {
     }
 }
 
+/// The order a build takes its USB scan and its SDK in (C0), on an SDK
+/// stand-in that logs what is done to it.
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod order_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// What a take did, in the order it did it.
+    type Log = Arc<Mutex<Vec<&'static str>>>;
+
+    /// An SDK that logs its drop.
+    #[derive(Debug)]
+    struct LoggedSdk(Log);
+
+    impl Drop for LoggedSdk {
+        fn drop(&mut self) {
+            self.0.lock().unwrap().push("drop");
+        }
+    }
+
+    type Taken = std::result::Result<std::result::Result<(UsbScan, LoggedSdk), String>, String>;
+
+    /// Take in `order` a scan that answers `scan` and an SDK that opens
+    /// when `opens`, logging each step.
+    async fn take(
+        order: Order,
+        scan: std::result::Result<UsbScan, String>,
+        opens: bool,
+    ) -> (Log, Taken) {
+        let log = Log::default();
+        let open = {
+            let log = Arc::clone(&log);
+            async move {
+                log.lock().unwrap().push("open");
+                if opens {
+                    Ok(LoggedSdk(log))
+                } else {
+                    Err("the SDK did not open".to_string())
+                }
+            }
+        };
+        let scanned = {
+            let log = Arc::clone(&log);
+            async move {
+                log.lock().unwrap().push("scan");
+                scan
+            }
+        };
+        let rescan = {
+            let log = Arc::clone(&log);
+            move |sdk| async move {
+                log.lock().unwrap().push("rescan");
+                Ok(sdk)
+            }
+        };
+        let taken = take_in_order(order, open, scanned, rescan).await;
+        (log, taken)
+    }
+
+    fn logged(log: &Log) -> Vec<&'static str> {
+        log.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn sdk_first_opens_the_sdk_before_the_scan_and_scans_it_again_after() {
+        let (log, taken) = take(Order::SdkFirst, Ok(UsbScan::default()), true).await;
+        let _kept = taken.unwrap().unwrap();
+        assert_eq!(logged(&log), ["open", "scan", "rescan"]);
+    }
+
+    #[tokio::test]
+    async fn sdk_first_drops_the_sdk_when_the_scan_fails() {
+        let (log, taken) = take(Order::SdkFirst, Err("no scan".to_string()), true).await;
+        assert_eq!(taken.unwrap().unwrap_err(), "no scan");
+        assert_eq!(logged(&log), ["open", "scan", "drop"]);
+    }
+
+    #[tokio::test]
+    async fn sdk_first_takes_no_scan_when_the_sdk_does_not_open() {
+        let (log, taken) = take(Order::SdkFirst, Ok(UsbScan::default()), false).await;
+        assert_eq!(taken.unwrap_err(), "the SDK did not open");
+        assert_eq!(logged(&log), ["open"]);
+    }
+
+    #[tokio::test]
+    async fn scan_first_opens_the_sdk_after_the_scan_and_scans_it_once() {
+        let (log, taken) = take(Order::ScanFirst, Ok(UsbScan::default()), true).await;
+        let _kept = taken.unwrap().unwrap();
+        assert_eq!(logged(&log), ["scan", "open"]);
+    }
+
+    #[tokio::test]
+    async fn scan_first_opens_no_sdk_when_the_scan_fails() {
+        let (log, taken) = take(Order::ScanFirst, Err("no scan".to_string()), true).await;
+        assert_eq!(taken.unwrap().unwrap_err(), "no scan");
+        assert_eq!(logged(&log), ["scan"]);
+    }
+
+    #[test]
+    fn the_sdk_comes_first_on_macos_only() {
+        let expected = if cfg!(target_os = "macos") {
+            Order::SdkFirst
+        } else {
+            Order::ScanFirst
+        };
+        assert_eq!(Order::default(), expected);
+    }
+}
+
 #[cfg(all(test, feature = "simulation"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod no_list_tests {
@@ -1290,7 +1486,36 @@ mod no_list_tests {
         );
     }
 
-    /// Without a list, a failed scan opens no SDK and registers nothing; it
+    /// With the SDK first (C0), a camera that comes back from its loader
+    /// after the SDK's first scan, and whose record the USB scan shows, is
+    /// served by the first build: the SDK's scan after the USB scan lists it.
+    #[tokio::test]
+    async fn with_the_sdk_first_a_camera_back_from_its_loader_is_served() {
+        let mut sdk = qhyccd_rs::Sdk::new_simulated();
+        sdk.add_simulated_camera_on_rescan(
+            SimulatedCameraConfig::default()
+                .with_id("WARM")
+                .with_model("QHY178M-Simulated"),
+        );
+        let mut builder = ServerBuilder::new().with_usb_source(UsbSource::Simulated(UsbScan {
+            devices: vec![record()],
+            faults: Vec::new(),
+        }));
+        builder.order = Order::SdkFirst;
+        let mut server = Server::new(CargoServerInfo!());
+
+        let (registered, _sdk) = builder
+            .register_enumerated(&mut server, Some(sdk))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            registered.cameras, 1,
+            "the camera back from its loader is served"
+        );
+    }
+
+    /// Without a list, a failed scan keeps no SDK and registers nothing; it
     /// schedules the re-scan (U6).
     #[tokio::test]
     async fn a_failed_scan_opens_nothing_and_is_retried() {
@@ -1306,7 +1531,7 @@ mod no_list_tests {
             .unwrap();
 
         assert_eq!(registered.cameras, 0);
-        assert!(sdk.is_none(), "a failed scan opens no SDK");
+        assert!(sdk.is_none(), "a failed scan keeps no SDK");
         registered
             .rescan
             .expect("a failed scan schedules a re-scan");

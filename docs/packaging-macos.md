@@ -248,13 +248,18 @@ validation pass.
 **qhy-camera** — QHYCCD's proprietary SDK is linked statically (never
 redistributed as files; the mac SDK embeds the camera firmware images
 *inside* the library, so there is no firmware file to install either). The formula
-depends on Homebrew's `libusb`. **Caveat:** a factory-fresh ("cold") QHY
-camera needs a one-time firmware upload. On Linux that is udev + fxload
-(the firmware-install helper); on macOS the SDK instead exposes in-process
-entry points (`OSXInitQHYCCDFirmware*`), which qhy-camera does not
-call, so a cold camera will not enumerate on a Mac. A camera that has been
-flashed since its last power-cycle (e.g. first plugged into a Linux host,
-or previously used by another macOS app) works normally.
+depends on Homebrew's `libusb`. A "cold" QHY camera — any camera since its
+last power-up — needs its firmware loaded before it shows up as a camera.
+On Linux that is udev + fxload (the firmware-install helper); on macOS the
+SDK does it inside the service: its first initialisation loads every cold
+camera on the bus, and its hot-plug thread loads one plugged in later.
+qhy-camera opens the SDK before it takes its USB scan, so a camera cold at
+start is served by that start, unless it is still coming back from its
+loader when the scan runs; that camera, and one plugged in cold later, is
+served from the next reload, as on Linux
+([qhy-camera.md](services/qhy-camera.md) C0). This is the SDK's code as
+read: no cold camera has yet been plugged into a Mac, and the physical-Mac
+validation pass includes one.
 
 **svbony-camera — not available on macOS today.** indi-3rdparty's
 `libsvbony` packaging ships no `mac_arm64` blob (Intel/`mac64` only), and

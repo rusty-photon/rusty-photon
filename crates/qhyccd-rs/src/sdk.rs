@@ -64,6 +64,10 @@ use crate::sys::{
 pub struct Sdk {
     cameras: Vec<Camera>,
     filter_wheels: Vec<FilterWheel>,
+    /// Simulated cameras that come onto the bus after this `Sdk`'s scan, for
+    /// [`Sdk::rescan`] to list.
+    #[cfg(feature = "simulation")]
+    arriving: Vec<Camera>,
     /// This process's claim on the SDK, released after [`Drop`] has run
     /// `ReleaseQHYCCDResource`: fields drop after `drop` returns. `None` for
     /// [`Sdk::new_simulated`].
@@ -201,6 +205,16 @@ fn init_and_scan() -> Result<Vec<Camera>> {
     })
 }
 
+/// Add each of `found` that `cameras` does not list, by id, after the ones it
+/// does.
+fn add_unlisted(cameras: &mut Vec<Camera>, found: Vec<Camera>) {
+    for camera in found {
+        if !cameras.iter().any(|listed| listed.id() == camera.id()) {
+            cameras.push(camera);
+        }
+    }
+}
+
 /// The one camera [`Sdk::new`] finds in the simulated build.
 #[cfg(feature = "simulation")]
 fn default_simulated_cameras() -> Vec<Camera> {
@@ -276,6 +290,8 @@ impl Sdk {
         Self {
             cameras,
             filter_wheels: Vec::new(),
+            #[cfg(feature = "simulation")]
+            arriving: Vec::new(),
             _claim: Some(claim),
         }
     }
@@ -304,6 +320,7 @@ impl Sdk {
         Self {
             cameras: Vec::new(),
             filter_wheels: Vec::new(),
+            arriving: Vec::new(),
             _claim: None,
         }
     }
@@ -331,6 +348,63 @@ impl Sdk {
     #[cfg(feature = "simulation")]
     pub fn add_simulated_camera(&mut self, config: simulation::SimulatedCameraConfig) {
         self.cameras.push(Camera::new_simulated(config));
+    }
+
+    /// Queues a simulated camera that comes onto the bus after this `Sdk`'s
+    /// scan, as a real camera does once its firmware has loaded:
+    /// [`Sdk::cameras`] lists it from the next [`Sdk::rescan`], not before.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use qhyccd_rs::Sdk;
+    /// use qhyccd_rs::simulation::SimulatedCameraConfig;
+    ///
+    /// let mut sdk = Sdk::new_simulated();
+    /// sdk.add_simulated_camera_on_rescan(SimulatedCameraConfig::default().with_id("LATE"));
+    /// assert_eq!(sdk.cameras().count(), 0);
+    ///
+    /// sdk.rescan().unwrap();
+    /// assert_eq!(sdk.cameras().next().unwrap().id(), "LATE");
+    /// ```
+    #[cfg(feature = "simulation")]
+    pub fn add_simulated_camera_on_rescan(&mut self, config: simulation::SimulatedCameraConfig) {
+        self.arriving.push(Camera::new_simulated(config));
+    }
+
+    /// Scans the bus again — `ScanQHYCCD`, then `GetQHYCCDId` for each camera
+    /// it found — and adds each camera [`Sdk::cameras`] does not list yet,
+    /// after the ones it does. **No camera is opened.** A camera already
+    /// listed stays listed as it is, its handle open or not, whether or not
+    /// the scan finds it again: a camera that has left the bus is for its
+    /// holder to notice, not for the list. [`Sdk::filter_wheels`] is
+    /// unchanged; [`Sdk::probe_filter_wheels`] finds an added camera's wheel,
+    /// as any other's.
+    ///
+    /// A camera can come onto the bus after [`Sdk::new`]'s scan. On macOS the
+    /// SDK's first initialisation in a process loads each cold camera's
+    /// firmware, and the camera comes back under its own product id, which it
+    /// need not have done by the time that initialisation scans.
+    ///
+    /// Under the `simulation` feature no SDK is called: the cameras
+    /// `Sdk::add_simulated_camera_on_rescan` queued are listed.
+    /// # Errors
+    /// Returns [`QHYError::Sdk`] if the scan or reading a scanned camera's id
+    /// fails, or [`QHYError::InvalidUtf8`] if an id is not UTF-8; the list is
+    /// then as it was. Infallible in the simulated build.
+    /// # Example
+    /// ```no_run
+    /// use qhyccd_rs::Sdk;
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// sdk.rescan().expect("rescan failed");
+    /// println!("Found {} camera(s)", sdk.cameras().count());
+    /// ```
+    pub fn rescan(&mut self) -> Result<()> {
+        #[cfg(not(feature = "simulation"))]
+        let found = scan_cameras()?;
+        #[cfg(feature = "simulation")]
+        let found = std::mem::take(&mut self.arriving);
+        add_unlisted(&mut self.cameras, found);
+        Ok(())
     }
 
     /// Finds the filter wheel, if any, on each camera named in `ids` — the

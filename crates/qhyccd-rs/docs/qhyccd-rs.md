@@ -101,6 +101,8 @@ classDiagram
         +try_new() Result~Sdk~
         +new_simulated() Sdk
         +add_simulated_camera(config)
+        +add_simulated_camera_on_rescan(config)
+        +rescan() Result
         +probe_filter_wheels(ids) Vec
         +cameras() Iterator~Camera~
         +filter_wheels() Iterator~FilterWheel~
@@ -173,6 +175,8 @@ The `Sdk::new()` behavior changes based on the `simulation` feature flag:
 
 - **Without simulation feature**: Calls `InitQHYCCDResource()`, scans for real hardware via `ScanQHYCCD()`, and enumerates connected devices, opening none.
 - **With simulation feature**: Automatically creates a default simulated QHY178M camera with a 7-position filter wheel, which `probe_filter_wheels()` finds as on real hardware, and cooler support.
+
+`Sdk::rescan()` runs `ScanQHYCCD()` and `GetQHYCCDId()` again and appends each camera the `Sdk` does not list yet; a listed camera keeps its place and its handle, open or not, whether or not the scan finds it again. It is for a camera that comes onto the bus after `new()`'s scan. On macOS the SDK's first `InitQHYCCDResource()` in a process loads the firmware of each cold camera on the bus (the mac SDK carries the images in its library), waits about a second, and scans, and a camera that has not come back under its own product id by then is listed only by a later scan. Under `simulation` a rescan lists the cameras `add_simulated_camera_on_rescan()` queued.
 
 The `Drop` implementation ensures `ReleaseQHYCCDResource()` is called when the SDK is destroyed, preventing resource leaks.
 
