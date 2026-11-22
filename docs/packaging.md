@@ -65,8 +65,9 @@ delivery vehicle.
 
 ## Building packages
 
-Packages are built natively on the target architecture — nightly in CI on
-hosted x86_64 + arm64 runners (see [Nightly channel](#nightly-channel)),
+Packages are built natively on the target architecture — in CI on hosted
+x86_64 + arm64 runners, nightly (see [Nightly channel](#nightly-channel))
+and for the release of each `v*` tag (`.github/workflows/release.yml`),
 or on demand directly on the rig / a dev box. From a repo checkout on a
 Debian-family machine with Rust installed:
 
@@ -549,6 +550,11 @@ sandboxing, so the tool resets the hardening inside the container — hardening 
 verified on real hosts with `systemd-analyze security
 rusty-photon-<svc>.service`. An interrupted run leaves its container,
 `rusty-photon-verify-<pid>`, running; `podman rm -f` it.
+
+CI runs both flavors on both architectures before anything publishes:
+the nightly's `linux` legs and `release.yml`'s `build-linux` legs build
+with `cargo ci build-packages --rpm` and gate the upload on
+`cargo ci verify-packages` and `cargo ci verify-packages --rpm`.
 
 Expected `lintian` findings (accepted, not bugs):
 `custom-library-search-path` on every package (the RUNPATH is injected

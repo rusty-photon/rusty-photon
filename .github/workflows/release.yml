@@ -1,7 +1,7 @@
 # This workflow runs when a version tag is pushed (e.g., v0.1.0).
 # It builds platform-specific packages and creates a GitHub Release:
-# - Linux: filemonitor alone, as a .tar.gz for x86_64 and aarch64 and a .deb
-#   and .rpm for x86_64
+# - Linux: every packaged service as a .deb and an .rpm for amd64 and arm64,
+#   each built natively and lifecycle-verified
 # - macOS: per-service arm64 tarballs for the whole family, brew-verified
 #   (Intel macOS is not a target: docs/packaging-macos.md)
 # - Windows: one suite .msi for the whole family (x86_64)
@@ -9,8 +9,11 @@
 #   × every packaged service + the rusty-photon meta-formula) via
 #   `cargo ci brew-formulas` — the same renderer the nightly channel uses
 #   for the -nightly siblings
+# Only the release job writes to this repository. The build legs run every
+# service's build and download the vendor SDKs, so none of them holds a
+# token that can push or edit a release.
 permissions:
-  contents: write
+  contents: read
 on:
   push:
     tags:
@@ -19,64 +22,53 @@ name: release
 env:
   CARGO_TERM_COLOR: always
 jobs:
+  # Every packaged service's .deb and .rpm, built natively on each
+  # architecture and verified by the same tools the nightly's linux legs
+  # run. The tag is checked against the workspace version by the guard
+  # build-windows uses, not by `cargo ci build-packages --version`, which
+  # would stamp the debs without the `-1` revision an on-demand build of
+  # the same version carries.
   build-linux:
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          # strip: the strip that reads the target's binaries.
-          - target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-latest
             arch: amd64
-            strip: strip
-          - target: aarch64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
             arch: arm64
-            strip: aarch64-linux-gnu-strip
     name: linux / ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Check tag matches the workspace version
+        id: v
+        uses: ./.github/actions/packages/release-version
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
-          targets: ${{ matrix.target }}
-      - name: Install cross-compilation tools (aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p filemonitor
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      - name: Strip binary
-        run: ${{ matrix.strip }} target/${{ matrix.target }}/release/filemonitor
-      - name: Create tarball
-        run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          mkdir -p staging
-          cp target/${{ matrix.target }}/release/filemonitor staging/
-          cd staging
-          tar czf "../filemonitor-${VERSION}-${{ matrix.target }}.tar.gz" filemonitor
-      - name: Install cargo-deb
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo install cargo-deb
-      - name: Build .deb package
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo deb -p filemonitor --no-build --no-strip --target ${{ matrix.target }}
-      - name: Install cargo-generate-rpm
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo install cargo-generate-rpm
-      - name: Build .rpm package
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo generate-rpm -p services/filemonitor --target ${{ matrix.target }}
+          shared-key: nightly-packages-${{ matrix.arch }}
+      - name: Cache staged SDKs
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/rusty-photon-pkg
+          key: rusty-photon-pkg-${{ matrix.arch }}-${{ hashFiles('tools/rusty-photon-ci/src/packaging/qhy.rs', '.github/actions/install-zwo-sdk/zwo-sdk.mjs', '.github/actions/install-svbony-sdk/svbony-sdk.mjs') }}
+      - name: Build packages
+        run: cargo ci build-packages --rpm
+      - name: Verify deb packages (release gate)
+        run: cargo ci verify-packages --dist 'dist/${{ steps.v.outputs.version }}'
+      - name: Verify rpm packages (release gate, Fedora)
+        run: cargo ci verify-packages --rpm --dist 'dist/${{ steps.v.outputs.version }}'
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
           path: |
-            target/${{ matrix.target }}/debian/*.deb
-            target/${{ matrix.target }}/generate-rpm/*.rpm
-            filemonitor-*.tar.gz
+            dist/${{ steps.v.outputs.version }}/*.deb
+            dist/${{ steps.v.outputs.version }}/*.rpm
+          if-no-files-found: error
 
   # Per-service arm64 tarballs — the Homebrew formula payloads — built and
   # verified by the same tools the nightly macos leg runs. Passing the tag
@@ -147,6 +139,8 @@ jobs:
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     name: create release
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - name: Download all artifacts
