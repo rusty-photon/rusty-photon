@@ -4487,6 +4487,7 @@ dependencies = [
  "guide-simulator",
  "ndarray",
  "num-traits",
+ "rand 0.10.4",
  "rp-image-analysis",
  "thiserror 2.0.21",
  "tracing",

@@ -26,9 +26,10 @@ rust_library(
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
+# The closed-loop runs guide simulated minutes through guide-simulator.
 rust_test(
     name = "rp-guiding_unit_test",
-    size = "small",
+    size = "medium",
     aliases = aliases(
         normal_dev = True,
         proc_macro_dev = True,
