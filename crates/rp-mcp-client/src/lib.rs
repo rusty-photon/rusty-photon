@@ -553,8 +553,8 @@ pub fn basic_authorization(
     if ca_cert.is_none() {
         debug!(
             url = %url,
-            "service_auth is set with no ca_cert pin; authenticating, verifying rp \
-             against the platform trust roots"
+            "service_auth is set with no ca_cert pin; authenticating, verifying the \
+             server against the platform trust roots"
         );
     }
     let encoded = base64::engine::general_purpose::STANDARD

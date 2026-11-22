@@ -1083,9 +1083,15 @@ plain, unauthenticated HTTP.
 derived events subscription. The MCP client is
 built through the shared `rp-mcp-client` crate, which
 enforces the credentials-only-over-verified-HTTPS policy: `service_auth`
-without `ca_cert` (or on a non-HTTPS URL) is **not sent** — the client
-connects unauthenticated and logs a loud warning, so plaintext
-credentials never travel over cleartext.
+rides an `https://` URL verified against `ca_cert` when it is set and
+against the platform roots when it is not — an ACME install's trust,
+where no `ca_cert` is written
+([ADR-027](../decisions/027-mcp-credentials-ride-https-verified-by-pin-or-platform-roots.md)).
+On a non-HTTPS URL it is **not sent** — the client connects
+unauthenticated and logs a loud warning, so plaintext credentials never
+travel over cleartext. A `ca_cert` that cannot be loaded withholds the
+credential from the events subscription, which falls back to default
+trust.
 
 Unknown configuration keys are rejected at load — a misspelled field must
 not silently fall back to a default. CLI: `--config <path>` (default: the
