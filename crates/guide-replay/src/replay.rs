@@ -448,6 +448,25 @@ mod tests {
         .unwrap()
     }
 
+    /// The sky's two brightest stars alone: too few for the measurement to
+    /// place a star by the others, so its flux test judges them, as it does
+    /// a field with fewer than three stars found.
+    fn pair(config: &mut guide_simulator::SimConfig) {
+        if let StarField::Listed(stars) = &mut config.sky.stars {
+            stars.truncate(2);
+        }
+    }
+
+    /// Replays `dir`, selected on two guide stars.
+    fn replay_of_pair(dir: &std::path::Path, min_clear_frames: usize) -> Replay {
+        let recording = Recording::open(dir).unwrap();
+        let tolerance = Tolerance {
+            min_guide_stars: 2,
+            ..tolerance(min_clear_frames)
+        };
+        replay(&recording, StarParams::default(), tolerance).unwrap()
+    }
+
     #[test]
     fn a_tracked_field_in_seeing_keeps_its_stars_and_they_agree() {
         let dir = tempfile::tempdir().unwrap();
@@ -714,7 +733,7 @@ mod tests {
     #[test]
     fn a_frame_whose_stars_all_brighten_past_the_flux_test_is_clouded() {
         let dir = tempfile::tempdir().unwrap();
-        record(dir.path(), &mut sky(|_| {}), 20, |n, pixels, _| {
+        record(dir.path(), &mut sky(pair), 20, |n, pixels, _| {
             if n == 15 {
                 pixels.mapv_inplace(|value| {
                     let above = f64::from(value) - 520.0;
@@ -722,9 +741,9 @@ mod tests {
                 });
             }
         });
-        let replay = replay_of(dir.path(), 19);
+        let replay = replay_of_pair(dir.path(), 19);
         let lost: Vec<&StarRow> = replay.rows.iter().filter(|row| row.star_lost).collect();
-        assert_eq!(lost.len(), 8);
+        assert_eq!(lost.len(), 2);
         assert!(lost
             .iter()
             .all(|row| row.reading == Reading::FluxChanged && row.clouded == Some(true)));
@@ -734,10 +753,13 @@ mod tests {
     #[test]
     fn a_thin_cloud_that_dims_the_bright_stars_and_hides_the_faint_is_clouded() {
         let dir = tempfile::tempdir().unwrap();
+        // Two bright stars and two faint: under the cloud only the bright
+        // two are found, too few to place each other.
         let mut sim = sky(|config| {
             if let StarField::Listed(stars) = &mut config.sky.stars {
-                for star in stars.iter_mut().skip(4) {
-                    star.e_per_s *= 0.03;
+                stars.truncate(4);
+                for star in stars.iter_mut().skip(2) {
+                    star.e_per_s *= 0.015;
                 }
             }
             config.sky.clouds = vec![Cloud {
@@ -766,6 +788,7 @@ mod tests {
     fn a_cloud_that_clears_after_the_flux_reference_followed_it_down_is_clouded() {
         let dir = tempfile::tempdir().unwrap();
         let mut sim = sky(|config| {
+            pair(config);
             config.sky.clouds = vec![Cloud {
                 start: Duration::from_secs(20),
                 duration: Duration::from_secs(60),
@@ -774,7 +797,7 @@ mod tests {
             }];
         });
         record(dir.path(), &mut sim, 45, |_, _, _| {});
-        let replay = replay_of(dir.path(), 20);
+        let replay = replay_of_pair(dir.path(), 20);
         let brightened = replay
             .rows
             .iter()
@@ -797,6 +820,23 @@ mod tests {
         pixels
             .slice_mut(s![y - 8..y + 8, x - 8..x + 8])
             .assign(&window);
+    }
+
+    #[test]
+    fn a_cloud_over_a_field_of_stars_that_place_each_other_costs_no_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sim = sky(|config| {
+            config.sky.clouds = vec![Cloud {
+                start: Duration::from_secs(20),
+                duration: Duration::from_secs(60),
+                ramp: Duration::from_secs(2),
+                transmission: 0.3,
+            }];
+        });
+        record(dir.path(), &mut sim, 45, |_, _, _| {});
+        let report = replay_of(dir.path(), 45).report;
+        assert_eq!((report.clear, report.clouded, report.lost), (45, 0, 0));
+        assert_eq!(report.failures, []);
     }
 
     #[test]

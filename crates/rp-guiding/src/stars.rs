@@ -409,6 +409,10 @@ impl GuideStar {
             };
         }
         if placed {
+            debug!(
+                flux = star.flux,
+                reference, "a star outside the flux band is usable where the other stars place it"
+            );
             self.join_reference(star.flux);
             return self.usable(&star, snr);
         }

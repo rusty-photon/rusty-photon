@@ -129,6 +129,11 @@ three dimensions.
     That covers a thin cloud that hides the faint stars and dims the
     bright ones, and a cloud that clears after the flux reference
     followed the stars down.
+  - The measurement keeps a star usable through a change of brightness
+    while the other stars place it, which takes at least three found
+    ([guider.md § Star selection and measurement](../services/guider.md#star-selection-and-measurement)).
+    So a frame star-lost for its stars' brightness alone comes from a
+    field with fewer than three found.
 - **A dropped star** is a guide star that is there and not used, in a
   frame that is not star-lost.
 - **A star's deviation** in a frame that is not star-lost is its offset
@@ -231,9 +236,12 @@ They replay them and hold the replay to what each case shows:
 - frames before any star or before enough stars, failed frames, and a
   recording with too few stars to select;
 - clouds whose star-lost frames are clouded: a cloud that hides every
-  star, a thin cloud that hides the faint stars and dims the bright
-  ones, a cloud that clears after the flux reference followed it down,
-  and stars that all brighten past the flux test;
+  star, a thin cloud that hides the faint stars and dims the two bright
+  ones, and, in a field of two stars, a cloud that clears after the flux
+  reference followed it down and stars that all brighten past the flux
+  test;
+- a thin cloud over a field whose stars place each other, which costs
+  no frame;
 - stars the measurement loses to a jump of the field, which are lost;
 - a star whose light is moved off its place, for half the recording or
   for two frames, which scatters or makes outliers.

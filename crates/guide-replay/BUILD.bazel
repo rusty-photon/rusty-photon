@@ -42,7 +42,7 @@ rust_binary(
     deps = [":guide-replay"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
-# The replays render simulated hours through guide-simulator.
+# The replays render a few hundred simulated frames through guide-simulator.
 rust_test(
     name = "guide-replay_unit_test",
     size = "medium",
