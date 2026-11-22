@@ -917,7 +917,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   one the SDK lists too. A second scan that fails leaves the cameras the SDK
   listed when it opened, logged at `warn!`. A camera still on its loader when
   the USB scan runs is served from the next reload, which finds it under its
-  own product id; one plugged in cold later is too, as on every platform. On
+  own product id; one plugged in cold later is too, as on Linux (on Windows
+  a reload finds no camera that arrived after the process started, C9). On
   Linux and Windows a build takes the scan first, and opens the SDK only once
   the scan has run (U6).
 
