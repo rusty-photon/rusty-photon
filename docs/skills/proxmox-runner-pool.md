@@ -102,9 +102,8 @@ traffic after the first population — and in about 6.5 minutes from a fully
 cold cache. Both were measured on **16-vCPU** clones, and the slots run 6
 vCPUs: a warm run is bound by cache lookups rather than compute, so its
 figure holds at 6, but a cold build is compute-bound, so expect it to be
-materially slower there. Six keeps the slots' summed vCPUs near 1.5× the
-host's threads; a slot's vCPU count is template state, and `qm config` on
-the template is its source of truth.
+materially slower there. A slot's vCPU count is template state, and
+`qm config` on the template is its source of truth.
 
 Components:
 

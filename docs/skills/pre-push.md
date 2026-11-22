@@ -539,7 +539,7 @@ ConformU runs on a nightly cron (05:30 UTC) and `workflow_dispatch`, and
 on a PR or push to `main` only when it changes `conformu.yml` itself --
 **not on other PRs or pushes**. Conformance regressions are real but rare, and
 the matrix is the most expensive workflow we have, so paying for it on
-every PR is overkill. The faster `check`/`test` workflows already gate
+every PR is overkill. The faster `check`/`bazel` workflows already gate
 the unit-level changes that would most often break conformance; the
 nightly catches drift, and `workflow_dispatch` covers the "I just
 touched the Alpaca interface, run it now" case. A `notify-on-failure`
