@@ -1,10 +1,11 @@
 //! The service config (docs/services/calibrator-flats.md § Configuration).
 //!
 //! The HTTP `server` block, the `rp` client fields, the exposure-search
-//! tunables and the store path. There is no flat plan in here any more —
-//! the train is a tool argument, the filters come from the wheel and the
-//! target fraction is fixed — and the keys that used to carry one are
-//! refused by name at load rather than silently ignored.
+//! tunables and the store path. There is no flat plan in here — the
+//! train is a tool argument, the filters come from the wheel and the
+//! target fraction is fixed — and the retired keys of one
+//! ([`RETIRED_KEYS`]) are refused by name at load rather than with the
+//! generic unknown-field error.
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -19,9 +20,9 @@ use crate::error::{CalibratorFlatsError, Result};
 /// The file name of the redb store under the state directory.
 pub const STORE_FILE_NAME: &str = "calibrator-flats.redb";
 
-/// The orchestrator-era flat-plan keys (calibrator-flats-provider plan,
-/// D2). Present in a config file, each fails the load naming itself and
-/// where the plan went.
+/// The retired keys of a flat plan. Present in a config file, each
+/// fails the load naming itself and where the train, the filters and
+/// the target fraction come from instead.
 pub const RETIRED_KEYS: &[&str] = &[
     "camera_id",
     "filter_wheel_id",
@@ -42,13 +43,12 @@ pub struct Config {
     /// `rp`'s MCP endpoint, dialed per tool call. Required: it has no
     /// sensible default.
     pub mcp_server_url: String,
-    /// HTTP Basic credentials presented to `rp` on MCP calls. The D6
-    /// observatory credential; doctor `--fix` wires it (ADR-017).
+    /// HTTP Basic credentials presented to `rp` on MCP calls: the
+    /// observatory credential, which doctor `--fix` wires.
     #[serde(default)]
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
-    /// PEM CA path used to trust a TLS-enabled `rp`. Per the ADR-017
-    /// policy, `service_auth` is only sent when this is set and the URL
-    /// is https.
+    /// PEM CA path used to trust a TLS-enabled `rp`. `rp-mcp-client`
+    /// sends `service_auth` only when this is set and the URL is https.
     #[serde(default)]
     pub ca_cert: Option<String>,
     /// Convergence: acceptable deviation of the measured median from
@@ -61,13 +61,13 @@ pub struct Config {
     /// Where a filter's search starts (humantime, e.g. `"1s"`).
     #[serde(default = "default_initial_duration", with = "humantime_serde")]
     pub initial_duration: Duration,
-    /// The search floor (plan D8): the effective floor is the larger of
-    /// this and the camera's `exposure_min`. A step that wants less
-    /// counts as over-bright and dims the panel instead.
+    /// The search floor: the effective floor is the larger of this and
+    /// the camera's `exposure_min`. A step that wants less counts as
+    /// over-bright and dims the panel instead.
     #[serde(default = "default_min_exposure", with = "humantime_serde")]
     pub min_exposure: Duration,
-    /// `take_flats`' verification band around the 50 % target (plan D7,
-    /// default 0.10 = 10 %).
+    /// `take_flats`' verification band around the 50 % target (default
+    /// 0.10 = 10 %).
     #[serde(default = "default_flat_warn_tolerance")]
     pub flat_warn_tolerance: f64,
     /// Override for the redb store file; `None` resolves to the platform
@@ -177,9 +177,11 @@ const fn default_flat_warn_tolerance() -> f64 {
     0.10
 }
 
-/// Parse a config document. A retired flat-plan key is refused by name
-/// before the typed parse, so the operator reads where the plan went
-/// rather than a generic unknown-field error.
+/// Parse a config document.
+///
+/// A retired flat-plan key is refused by name before the typed parse, so
+/// the operator reads where the train, the filters and the target
+/// fraction come from instead of a generic unknown-field error.
 ///
 /// # Errors
 ///

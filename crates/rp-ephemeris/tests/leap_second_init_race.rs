@@ -3,10 +3,10 @@
 //! ERFA's `eraDatini` (`external/erfa/src/erfadatextra.c`) fills two
 //! file-static globals — the table pointer `changes` and its length
 //! `NDAT` — on the first `eraDat` call with no lock and no atomics.
-//! Concurrent first calls used to segfault the process (~20-40% of cold
-//! starts at high thread counts on a 16-core host): one thread could see
-//! `NDAT > 0` without a happens-before edge on `changes` and index a
-//! null/half-written pointer. `time_jds` now warms that table once under a
+//! Without a guard, concurrent first calls segfault the process (~20-40%
+//! of cold starts at high thread counts on a 16-core host): one thread can
+//! see `NDAT > 0` without a happens-before edge on `changes` and index a
+//! null/half-written pointer. `time_jds` warms that table once under a
 //! `std::sync::Once`, so driving many threads onto their first ephemeris
 //! call simultaneously must complete without crashing and return finite,
 //! in-range results.
@@ -46,8 +46,9 @@ use rp_ephemeris::{Ephemeris, ErfarsEphemeris, IcrsCoord, Site};
 
 #[test]
 fn concurrent_first_ephemeris_calls_do_not_race_the_leap_second_table() {
-    // Oversubscribe the cores to widen the window in which two threads are
-    // simultaneously inside the (formerly unsynchronized) lazy init.
+    // Oversubscribe the cores to widen the window in which two threads would
+    // be simultaneously inside ERFA's unsynchronized lazy init without the
+    // guard.
     const THREADS: usize = 64;
 
     let site = Site::new(47.6062, -122.3321).expect("valid site");

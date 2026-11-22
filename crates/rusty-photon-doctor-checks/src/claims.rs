@@ -426,10 +426,11 @@ impl Normalizer<'_> {
 
     /// Whether a fault could be this driver's camera: it carries no real
     /// vendor id — none could be read, or it is the `0000` Windows gives a
-    /// device whose enumeration failed (doctor.md, "USB inventory") — or it
-    /// carries this vendor's, with no product id or one that can be a
-    /// camera's. Another vendor's fault is that vendor's device, and this
-    /// vendor's non-camera (a ZWO focuser) is not the camera either.
+    /// device whose enumeration failed (doctor.md § The hardware gatherer,
+    /// "USB inventory") — or it carries this vendor's, with no product id or
+    /// one that can be a camera's. Another vendor's fault is that vendor's
+    /// device, and this vendor's non-camera (a ZWO focuser) is not the camera
+    /// either.
     fn could_be_camera(&self, fault: &crate::facts::UsbFault) -> bool {
         match fault.vendor.as_deref() {
             None | Some("0000") => true,
@@ -944,8 +945,8 @@ pub enum UsbSource {
     #[cfg(feature = "mock")]
     Simulated(UsbScan),
     /// The staged document in this file, read again at every scan, so a
-    /// scenario can stage a failed scan and then repair it (doctor.md, "USB
-    /// inventory").
+    /// scenario can stage a failed scan and then repair it (doctor.md § The
+    /// hardware gatherer, "USB inventory").
     #[cfg(feature = "mock")]
     Staged(std::path::PathBuf),
 }
@@ -2456,7 +2457,8 @@ mod tests {
 
     #[test]
     fn port_order_stays_consistent_when_decimal_and_mixed_runs_meet() {
-        // Once a cycle: 9 < 10 (numbers), 10 < 1a and 1a < 9 (text).
+        // Numbers for digit runs and text for mixed ones would cycle here:
+        // 9 < 10 (numbers), 10 < 1a and 1a < 9 (text).
         assert_eq!(compare_ports("p-9", "p-10"), Ordering::Less);
         assert_eq!(compare_ports("p-10", "p-1a"), Ordering::Less);
         assert_eq!(compare_ports("p-9", "p-1a"), Ordering::Less);

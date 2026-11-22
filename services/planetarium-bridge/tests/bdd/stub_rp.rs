@@ -105,7 +105,7 @@ impl StubRp {
             reject: Arc::clone(&reject),
         };
 
-        // Session-less, like the real rp (rp.md § MCP Server, ADR-021).
+        // Session-less, like the real rp (docs/services/rp.md § MCP Server).
         let mut config = StreamableHttpServerConfig::default();
         config.legacy_session_mode = false;
         config.json_response = true;

@@ -10,7 +10,7 @@ exports_files(
 # as an explicit Bazel label rather than resolved by `all_crate_deps`. The
 # edge exists only for the `IcrsCoord` boundary conversions in
 # `src/vocabulary.rs`; this crate keeps its own computed/NaN-capable
-# `IcrsCoord` (a false cognate of the validated plan type — ADR-019).
+# `IcrsCoord` (a false cognate of the validated plan type).
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-vocabulary:rp-vocabulary",
 ]
@@ -67,9 +67,10 @@ rust_test(
     ),
 )
 
-# Integration test: cross-check ErfarsEphemeris against committed
-# Astropy reference values. The CARGO_MANIFEST_DIR env var is set so
-# the test can locate `refvals/`; the directory is staged via `data`.
+# Integration test: cross-check ErfarsEphemeris against the Astropy
+# reference values in `refvals/`, when any is present (none is
+# committed). The CARGO_MANIFEST_DIR env var is set so the test can
+# locate `refvals/`; its JSON files are staged via `data`.
 rust_test(
     name = "reference_values",
     size = "small",

@@ -9,8 +9,8 @@
 //! exists. Tools are then called through rp's proxy with the harness
 //! MCP client, exactly as a session-runner document would. All three
 //! processes are coordinated via `bdd_infra::rp_harness` helpers; this
-//! file holds only the Gherkin step wiring and the provider-specific
-//! config builder.
+//! file holds only the Gherkin step wiring, the reference rig, and the
+//! provider's config overrides and rp registration.
 
 use std::time::Duration;
 

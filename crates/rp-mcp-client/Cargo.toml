@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "The standard authenticated MCP client for rp's /mcp endpoint (ADR-017)"
+description = "The standard authenticated MCP client for rp's /mcp endpoint"
 
 [lints]
 workspace = true

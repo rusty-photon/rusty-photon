@@ -6992,7 +6992,7 @@ rather than overriding it.
 
 The plan-data analogue of what a service's setup pages do for its
 configuration — describe its shape and check a candidate
-([rp-vocabulary.md § Schema + validate protocol](../crates/rp-vocabulary.md#schema--validate-protocol-the-decision-1-role)):
+([rp-vocabulary.md § Schema + validate protocol](../crates/rp-vocabulary.md#schema--validate-protocol)):
 two read-only MCP tools that let any surface discover the shape of plan
 data and check a candidate against **the same rules the write tools
 enforce**, without writing anything.

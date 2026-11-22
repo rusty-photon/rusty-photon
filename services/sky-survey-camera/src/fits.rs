@@ -1,9 +1,7 @@
 //! FITS primary-HDU reader for sky-survey-camera.
 //!
-//! Thin shim over [`rp_fits::reader::read_primary_as_i32`]. The
-//! workspace's FITS surface is consolidated in `crates/rp-fits` per
-//! ADR-001 Amendment A — this file used to host a hand-rolled ~200-line
-//! parser duplicating that logic.
+//! Thin shim over [`rp_fits::reader::read_primary_as_i32`]; the
+//! workspace's FITS surface lives in `crates/rp-fits`.
 //!
 //! Output is normalised to `i32` ADU values (BSCALE/BZERO applied,
 //! saturating into `i32::MIN..=i32::MAX`), matching what ASCOM

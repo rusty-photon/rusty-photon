@@ -42,8 +42,9 @@ struct Args {
 
     /// Path to the JSON config file. When omitted, resolves to the
     /// platform config path (`~/.config/rusty-photon/sky-survey-camera.json`
-    /// on Linux) via `rusty_photon_config::resolve_config_path`. Pass
-    /// `--config config.json` to keep the previous CWD-relative default.
+    /// on Linux) via `rusty_photon_config::resolve_config_path`. A
+    /// `config.json` in the working directory is read only when passed as
+    /// `--config config.json`.
     #[arg(short, long)]
     config: Option<PathBuf>,
 

@@ -122,8 +122,8 @@ impl Upbv2Manager {
         &self.transport
     }
 
-    /// Cheap, non-blocking snapshot — true between handshake completion
-    /// and the start of teardown.
+    /// Cheap, non-blocking snapshot — true from a successful open to the
+    /// start of a teardown or a reconnect.
     #[must_use]
     pub fn is_available(&self) -> bool {
         self.transport.is_available()

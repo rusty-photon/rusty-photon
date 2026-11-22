@@ -74,9 +74,9 @@ bdd_infra::bdd_main! {
                         // would race that connection.
                         let _ = handle.await;
                     }
-                    // rp holds the client session into the provider, so
-                    // it goes first; the provider then has no inbound
-                    // connection left to wait for.
+                    // rp is the provider's MCP client, so it goes first;
+                    // the provider then has no inbound connection left
+                    // to wait for.
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
                     }

@@ -38,8 +38,7 @@ pub struct MountPosition {
 ///
 /// Wrapping the giant `ascom_alpaca::api::Telescope` trait this way
 /// keeps unit tests trivial: a `mockall`-generated mock implements just
-/// two methods, not the entire ASCOM Telescope surface. Per ADR-004,
-/// traits ≤ 10 methods at a service boundary may be mocked.
+/// two methods, not the entire ASCOM Telescope surface.
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait MountReader: Send + Sync + std::fmt::Debug {
@@ -51,7 +50,7 @@ pub trait MountReader: Send + Sync + std::fmt::Debug {
 ///
 /// Mirrors [`MountReader`] — wrapping the full
 /// `ascom_alpaca::api::Rotator` trait keeps unit-test mocks down to one
-/// method (per ADR-004). The production impl
+/// method. The production impl
 /// ([`crate::rotator::AlpacaRotatorReader`]) reads the ASCOM `Position`
 /// property, which is the synced sky position angle of the field.
 #[cfg_attr(test, mockall::automock)]

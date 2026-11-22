@@ -749,7 +749,8 @@ pub(crate) mod mock {
         moving: AtomicBool,
         reverse: AtomicBool,
         temperature: Mutex<f32>,
-        /// E-style injection: make the next `temperature()` call fail at the SDK.
+        /// While set, every `temperature()` call fails at the SDK, with a
+        /// failure that does not mean the EAF has left.
         pub fail_temperature: AtomicBool,
     }
 

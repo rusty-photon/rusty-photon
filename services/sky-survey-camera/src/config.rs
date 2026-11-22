@@ -74,7 +74,7 @@ pub struct PointingConfig {
     /// `StartExposure` reads RA/Dec from the configured ASCOM Telescope
     /// instead of from the cached `PointingState`. See the
     /// "Telescope follow mode" section of the service design doc and
-    /// the F1–F6 contracts for behaviour.
+    /// the F1–F7 contracts for behaviour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telescope: Option<TelescopeFollowConfig>,
     /// When present, sources `rotation_deg` from a connected ASCOM
@@ -94,7 +94,6 @@ pub struct TelescopeFollowConfig {
     #[serde(default)]
     pub device_number: u32,
     /// Constant offset added to mount RA before the `SkyView` request.
-    /// Phase 2 keeps this at the default `0.0`; Phase 3 uses it.
     #[serde(default)]
     pub offset_ra_arcsec: f64,
     /// Constant offset added to mount Dec before the `SkyView` request.
@@ -121,7 +120,7 @@ const fn default_telescope_request_timeout() -> Duration {
 ///
 /// Parallel to [`TelescopeFollowConfig`] but with no offset fields —
 /// the rotator is read straight through to `rotation_deg`. Absent
-/// unless rotator support is wired up, and only valid alongside
+/// unless the rig has a rotator to follow, and only valid alongside
 /// `telescope`.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

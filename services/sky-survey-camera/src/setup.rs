@@ -49,8 +49,8 @@ impl ConfigurableDriver for SkySurveyCameraDriver {
     /// and never shows, and the follow-mode client passwords. The follow-mode
     /// blocks (`pointing.telescope`, `pointing.rotator`) are optional
     /// objects, which the pages name as edited in the file rather than
-    /// render, so those two passwords reach no page today; the pointers
-    /// stay so a page that one day renders the blocks hides them.
+    /// render, so those two passwords reach no page; listing them keeps
+    /// them hidden on any page that renders the blocks.
     fn secret_pointers() -> &'static [&'static str] {
         &[
             "/pointing/telescope/auth/password",

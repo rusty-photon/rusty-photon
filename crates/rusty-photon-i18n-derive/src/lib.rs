@@ -1,9 +1,9 @@
-//! Derive macro for [`rusty_photon_i18n::LocalizedParser`].
+//! Derive macro for `rusty_photon_i18n::LocalizedParser`.
 //!
 //! Apply alongside `clap::Parser` and use `#[localized(about = "key")]` /
 //! `#[localized(help = "key")]` to map struct/field help to Fluent keys.
-//! See the crate-level docs in `crates/rusty-photon-i18n/src/lib.rs` and the spike
-//! write-up at `docs/plans/archive/i18n-cli-spike.md` §10 for the user-facing flow.
+//! See the crate-level docs in `crates/rusty-photon-i18n/src/lib.rs` for the
+//! user-facing flow.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(

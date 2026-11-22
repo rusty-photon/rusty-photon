@@ -12,7 +12,7 @@ description = "ASCOM Alpaca Focuser driver for the ZWO EAF"
 default = []
 # Forwards to `zwo-rs/simulation`: a hardware-free, in-Rust simulated focuser
 # for development and tests. As in zwo-camera this removes the *focuser*, NOT
-# the SDK *link* — the native ZWO SDK is still linked. See the README and
+# the SDK *link* — the native ZWO SDK is still linked. See
 # docs/services/zwo-focuser.md "Native dependency & build gating".
 simulation = ["zwo-rs/simulation"]
 # Cross-driver alias for `simulation` (the workspace-wide test-backend name).
@@ -28,7 +28,7 @@ workspace = true
 # `client` is NOT enabled here — the production server never builds an Alpaca
 # client; only the BDD harness does, so it lives in [dev-dependencies] below.
 ascom-alpaca = { workspace = true, features = ["server", "focuser"] }
-# `focuser` only (ADR-014): this binary links libEAFFocuser and nothing else —
+# `focuser` only: this binary links libEAFFocuser and nothing else —
 # the ASI/EFW SDKs belong to their own services.
 zwo-rs = { workspace = true, features = ["focuser"] }
 rusty-photon-tls = { workspace = true }
@@ -69,7 +69,7 @@ priority = "optional"
 # Explicit list, NOT "$auto": the bundled SDK blob carries no SONAME, so
 # dpkg-shlibdeps cannot map the binary's bare libEAFFocuser.so NEEDED entry to
 # any package and would fail. The binary links only the focuser SDK (zwo-rs's
-# `focuser` feature, ADR-014), so libEAFFocuser.so is the only blob it needs —
+# `focuser` feature), so libEAFFocuser.so is the only blob it needs —
 # and ships (the ASI/EFW SDKs belong to their own services). Direct runtime
 # needs: glibc, libgcc + the C++ runtime for libEAFFocuser, plus libudev — the
 # EAF blob references udev_* symbols without declaring libudev in its
@@ -82,7 +82,7 @@ assets = [
     ["pkg/90-rusty-photon-zwo-focuser.rules", "usr/lib/udev/rules.d/90-rusty-photon-zwo-focuser.rules", "644"],
     # MIT SDK blob: staged into gitignored pkg/lib/ by `cargo ci build-packages`
     # from the pinned indi-3rdparty ref (same pin as .github/actions/install-zwo-sdk),
-    # never committed (ADR-013). Exactly the one SDK this binary links (ADR-014) —
+    # never committed. Exactly the one SDK this binary links —
     # co-installing zwo-camera is conflict-free because each package owns only
     # its own blob. No SONAME, so the binary finds it via the RUNPATH
     # `cargo ci build-packages` injects (-Wl,-rpath,/usr/lib/rusty-photon).

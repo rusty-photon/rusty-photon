@@ -239,8 +239,7 @@ impl ServerBuilder {
         let local_addr = listener.local_addr()?;
 
         // Opt-in Alpaca UDP discovery responder (config `discovery_port`,
-        // absent by default — plan Decision 1); bound here so a taken port
-        // fails startup.
+        // absent by default); bound here so a taken port fails startup.
         let discovery =
             rusty_photon_driver::discovery::bind(local_addr, config.server.discovery_port).await?;
 

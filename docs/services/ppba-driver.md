@@ -386,7 +386,8 @@ everything else with `INVALID_VALUE` — including `NaN`, which an Alpaca client
 can send because `f64::from_str` parses `"NaN"`. The check is one range test
 rather than a pair of ordered comparisons on purpose: every ordered comparison
 against `NaN` is false, so `NaN` would otherwise pass validation and reach the
-seconds-to-`Duration` conversion, which panics on a non-finite value.
+manager, which leaves its state untouched for a period outside the range: the
+client would be told its `NaN` was accepted while nothing changed.
 
 The manager holds the same line for callers that do not come through the
 device: `set_averaging_period` leaves every sensor window *and* the recorded

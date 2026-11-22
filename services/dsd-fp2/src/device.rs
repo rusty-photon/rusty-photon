@@ -708,7 +708,7 @@ mod mock_tests {
     }
 
     #[tokio::test]
-    async fn the_config_actions_are_gone() {
+    async fn no_action_is_offered_and_config_get_is_not_implemented() {
         let (device, _reload, _dir, _path) = device_with_setup_pages(test_config());
         assert_eq!(
             device.supported_actions().await.unwrap(),

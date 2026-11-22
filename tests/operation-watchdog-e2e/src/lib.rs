@@ -9,8 +9,8 @@
 //! cover each half against stubs; this suite is the only place the two real
 //! binaries run the full two-loop structure together.
 //!
-//! See `docs/services/sentinel.md` §Operation Watchdog and the archived plan
-//! `docs/plans/archive/predictive-deadlines-and-watchdog.md`.
+//! See `docs/services/sentinel.md` §Operation Watchdog and
+//! `docs/services/rp.md` §Sentinel Watchdog Integration.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(

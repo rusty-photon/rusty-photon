@@ -113,7 +113,7 @@ mod tests {
     /// (within 5′ of the J2000 value, at least 15′ from the input) stays
     /// valid for years of accumulating precession.
     #[test]
-    fn jnow_inverts_the_p3a_precession_fingerprint() {
+    fn jnow_inverts_the_precession_fingerprint() {
         let now = Utc.with_ymd_and_hms(2026, 7, 30, 6, 0, 0).unwrap();
         let icrs = to_icrs(AssumeEpoch::Jnow, 14.0, -40.0, now);
         let to_pin = separation_arcmin(icrs, (13.97306, -39.86972));

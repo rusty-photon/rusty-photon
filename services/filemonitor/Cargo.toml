@@ -34,7 +34,6 @@ axum = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
-# For the shared Alpaca discovery responder (discovery::bind / serve_with).
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-setup = { workspace = true }

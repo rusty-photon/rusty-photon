@@ -4,7 +4,7 @@
 //! Every accepted Align produces one [`ImportRequest`] — bare ICRS
 //! coordinates plus provenance, never a name — submitted to rp's
 //! `add_target` MCP tool through `rp-mcp-client`. Delivery failures append
-//! the request to the on-disk [`Spool`](crate::spool::Spool); tool failures
+//! the request to the on-disk [`Spool`]; tool failures
 //! (rp actively rejected the call) are logged and dropped, because they
 //! would fail identically on replay. A single worker task owns the client
 //! session and the spool, which serializes deliveries and keeps replay
@@ -207,10 +207,10 @@ impl ImportWorker {
                 // Idle: drop the client. Clients live only across a
                 // delivery burst — a standing idle client holds an open
                 // stream into rp that stalls rp's own graceful shutdown
-                // (MSI verify: rp failed to stop, Error 1921, while an
-                // idle bridge sat connected). The transport is
-                // session-less (ADR-021), so that is the only reason
-                // left; every burst reconnects explicitly.
+                // (with an idle bridge connected, rp fails to stop: Error
+                // 1921 under verify-msi). The transport is session-less
+                // (docs/services/rp.md § MCP Server), so dropping the client
+                // loses nothing else; every burst reconnects explicitly.
                 if client.take().is_some() {
                     debug!("import queue idle; dropping the rp client");
                 }

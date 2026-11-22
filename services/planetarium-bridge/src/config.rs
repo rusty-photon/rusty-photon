@@ -144,8 +144,8 @@ impl TryFrom<f64> for LongitudeDeg {
 
 /// Where and how the bridge reaches rp's MCP endpoint.
 ///
-/// The credential and CA fields follow the fleet client-wiring shape
-/// (ADR-017): doctor provisions them, `rp-mcp-client` enforces the
+/// The credential and CA fields follow the fleet client-wiring shape:
+/// doctor provisions them, `rp-mcp-client` enforces the
 /// credentials-only-over-verified-HTTPS policy.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -160,8 +160,11 @@ pub struct RpConfig {
 impl Default for RpConfig {
     fn default() -> Self {
         Self {
-            // rp's default port, same-host plain HTTP — the pre-doctor
-            // starting point; doctor's client wiring upgrades it.
+            // rp's default port on the same host, over plain HTTP, which a
+            // fresh rp serves until doctor provisions TLS. Doctor's client
+            // wiring writes `service_auth` and `ca_cert` beside this URL and
+            // leaves the URL as it is, and `rp-mcp-client` sends the
+            // credential only over https: the operator moves the URL to https.
             mcp_server_url: McpServerUrl("http://127.0.0.1:11115/mcp".to_owned()),
             service_auth: None,
             ca_cert: None,

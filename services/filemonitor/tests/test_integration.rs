@@ -69,11 +69,10 @@ async fn test_start_server_creation() {
     assert!(result.is_err());
 }
 
-// Stop-signal and reload-signal exercises share most of the run-loop scaffolding
-// (config, monitor file, shutdown future). Bundling them into one test keeps the
-// shared setup in one place rather than duplicating it across two tests.
-// Discovery is disabled in both halves (`discovery_port: null`), so this could be
-// split into two `#[tokio::test]` functions if a future change makes that useful.
+// The stop-signal and reload-signal halves each run the loop on their own
+// config and monitor file. Discovery is disabled in both (`discovery_port:
+// null`), so neither binds a port the other needs, and the halves could be two
+// `#[tokio::test]` functions.
 #[tokio::test(flavor = "multi_thread")]
 #[cfg(not(miri))]
 async fn test_server_loop_stop_and_reload() {
@@ -169,11 +168,11 @@ async fn test_server_loop_stop_and_reload() {
 
         // Strategy for observing a real reload: corrupt the config file
         // *before* firing the reload signal. If `run_server_loop` honours
-        // the reload, it drops the running server, re-enters the loop,
-        // calls `load_config(config_path)`, sees malformed JSON, and
-        // returns Err — which we assert below. If reload were silently
-        // ignored, the original server would keep running until the
-        // safety `shutdown.cancel()` fires and the test would get Ok.
+        // the reload, it calls `load_config(config_path)` again, sees
+        // malformed JSON, and returns Err — which we assert below. If reload
+        // were silently ignored, the original server would keep running
+        // until the safety `shutdown.cancel()` fires and the test would get
+        // Ok.
         let config_path_for_task = config_path.clone();
         let reload_trigger = reload.clone();
         let shutdown_trigger = shutdown.clone();
@@ -227,7 +226,7 @@ fn test_cli_help() {
 }
 
 /// Assert that a config-load failure reached main (rendered by the runner's
-/// error report, ADR-011) and that clap did *not* reject the arguments —
+/// error report) and that clap did *not* reject the arguments —
 /// i.e., `--log-level <variant>` parsed successfully and the binary then
 /// failed opening the missing config.
 #[cfg(not(miri))]

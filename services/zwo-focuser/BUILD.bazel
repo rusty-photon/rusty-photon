@@ -12,7 +12,7 @@ exports_files(
 
 # zwo-focuser links the native ZWO EAF SDK transitively via
 # zwo-rs → libzwo-sys (see docs/services/zwo-focuser.md "Native dependency & build
-# gating" and ADR-008). Unlike a pure-Rust crate it cannot link without the SDK
+# gating"). Unlike a pure-Rust crate it cannot link without the SDK
 # present, so every Bazel runner that builds `//...` must provision it first:
 # `.github/workflows/bazel.yml` and `bazel-coverage.yml` run the
 # `./.github/actions/install-zwo-sdk` composite action exactly like they do for

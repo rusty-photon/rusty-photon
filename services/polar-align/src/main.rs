@@ -45,7 +45,7 @@ struct Cli {
     /// Path to the configuration file. Defaults to the platform
     /// config directory (e.g. `~/.config/rusty-photon/polar-align.json`
     /// on Linux). There is no built-in default config: the file must
-    /// exist (site coordinates are operator-provided).
+    /// exist (the camera and mount ids are operator-provided).
     #[arg(long)]
     config: Option<PathBuf>,
 

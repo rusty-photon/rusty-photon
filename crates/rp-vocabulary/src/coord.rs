@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 /// (or deserialization, which routes through it), so an out-of-range
 /// coordinate is unrepresentable. Fields are private; read them via
 /// [`IcrsCoord::ra_hours`] / [`IcrsCoord::dec_degrees`]. The wire form is
-/// the flat `{ra_hours, dec_degrees}` pair, so on-disk and MCP shapes are
-/// unchanged by the newtype.
+/// the flat `{ra_hours, dec_degrees}` pair, one shape on disk and on the
+/// MCP wire.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "IcrsCoordWire", into = "IcrsCoordWire")]

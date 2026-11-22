@@ -1,7 +1,7 @@
 //! Renders the most recent captured FITS frame as an 8-bit grayscale
 //! PNG for `GET /preview.png`.
 //!
-//! Presentation only, so the P5 UI can draw the star/target overlay
+//! Presentation only, so a UI can draw the star/target overlay
 //! over the actual sky. Nothing here feeds the alignment math; star
 //! *analysis* stays in rp's `detect_stars`.
 //!

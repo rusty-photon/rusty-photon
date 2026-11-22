@@ -156,7 +156,7 @@ impl ParsingConfig {
 
 /// The packaged first-start default watch path, under the service's
 /// platform-dependent state directory: the packaged unit's `StateDirectory`
-/// on Unix, `%PROGRAMDATA%\rusty-photon\filemonitor\` on Windows (ADR-015).
+/// on Unix, `%PROGRAMDATA%\rusty-photon\filemonitor\` on Windows.
 /// A placeholder either way — the operator points it at the real roof-status
 /// file.
 #[cfg(not(windows))]
@@ -982,7 +982,7 @@ mod device_setup_page_tests {
     }
 
     #[tokio::test]
-    async fn the_config_actions_are_gone() {
+    async fn no_action_is_offered_and_config_get_is_not_implemented() {
         let (device, _reload, _dir, _path) = device_with_setup_pages(test_config());
         assert_eq!(
             device.supported_actions().await.unwrap(),

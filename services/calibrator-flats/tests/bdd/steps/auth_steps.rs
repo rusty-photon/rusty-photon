@@ -2,9 +2,9 @@
 //! the shared macro (the service-specific parts — config template, launch
 //! — live in the `TlsAuthSmokeWorld` impl in `world.rs`); the `/mcp` half
 //! below proves the same server block guards the MCP endpoint, and that
-//! `tools/list` answers with no rp running (plan D10). The smoke
-//! scenarios spawn ONLY calibrator-flats itself, with a temp config — no
-//! `OmniSim`, no rp.
+//! `tools/list` answers with no rp running. The smoke scenarios spawn
+//! ONLY calibrator-flats itself, with a temp config — no `OmniSim`, no
+//! rp.
 
 use bdd_infra::rp_harness::McpTestClient;
 use bdd_infra::tls_auth::TlsAuthSmokeWorld as _;

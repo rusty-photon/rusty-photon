@@ -58,8 +58,8 @@ impl SquareSums {
     }
 
     /// The root mean square of the folded values. `None` when nothing has
-    /// been folded, and past `u32::MAX` values, beyond which the count no
-    /// longer converts to `f64` without loss.
+    /// been folded, and past `u32::MAX` values: the count converts to `f64`
+    /// through `u32`, and no caller comes near the limit.
     #[must_use]
     pub fn rms(&self) -> Option<f64> {
         if self.count == 0 {

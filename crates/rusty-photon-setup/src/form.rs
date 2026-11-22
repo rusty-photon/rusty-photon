@@ -133,8 +133,8 @@ fn overlay_at(
                 // Optional: clear to null, the same gesture the number kinds
                 // honour below. `""` is not a spelling of "unset" — a service
                 // that distinguishes the two must receive the one the operator
-                // meant. Required: keep writing the empty string, so a service
-                // that validates its own required fields still gets to say so.
+                // meant. Required: write the empty string, so a service that
+                // validates its own required fields still gets to say so.
                 if *nullable && raw.trim().is_empty() {
                     set_pointer(config, pointer, Value::Null);
                 } else {
@@ -570,7 +570,7 @@ mod tests {
             &form_from(&[("serial.label", "  ")]),
         );
         assert!(config["serial"]["label"].is_null());
-        // A required string keeps sending "", for the service to reject.
+        // A cleared required string persists "", for the service to reject.
         overlay(
             &mut config,
             "serial.port",
@@ -581,8 +581,9 @@ mod tests {
 
     #[test]
     fn a_value_whose_parent_is_absent_or_null_is_dropped() {
-        // A caller that draws a missing section blank (ui-htmx's config
-        // cards) must not write those blanks over the section's defaults.
+        // A field written under a section the file leaves out would start
+        // that section with this field alone and none of its defaults; a
+        // save starts the section with `start_sections` first.
         let mut config = json!({ "serial": { "port": "/dev/a" } });
         set_pointer(&mut config, "/camera/server/port", json!(11128));
         assert_eq!(config, json!({ "serial": { "port": "/dev/a" } }));

@@ -3,9 +3,8 @@
 //! Three drivers keep three means each — temperature, humidity, dew point —
 //! and answer the same two questions from them: which window serves the
 //! `AveragePeriod` a client sets, and how long ago the freshest of the three
-//! took a sample. Both answers were policy each driver spelled out for
-//! itself, and a fix to one copy did not reach the others; they live here
-//! so a change lands in every driver at once.
+//! took a sample. Both answers are written once, here, so a change to
+//! either reaches all three drivers.
 //!
 //! The crate stays `std`-only: the policy speaks in hours and `Duration`s,
 //! and the ASCOM error codes stay with the driver.

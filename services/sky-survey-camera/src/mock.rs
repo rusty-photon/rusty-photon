@@ -63,9 +63,9 @@ pub fn synthetic_fits(width: u32, height: u32) -> Vec<u8> {
 /// WCS keyed on the supplied field center and pixel scale.
 ///
 /// The output is still a deterministic 16-bit ramp; only the header
-/// gains `CTYPE1/2`, `CRVAL1/2`, `CRPIX1/2`, `CDELT1/2`. Used by tests
-/// that need the FITS to advertise its own pointing so a downstream
-/// "plate-solver" can read it back via `CRVAL1/2`.
+/// gains `CTYPE1/2`, `CRVAL1/2`, `CRPIX1/2`, `CDELT1/2`. It is for a
+/// test that needs the FITS to advertise its own pointing, so a
+/// downstream "plate-solver" can read it back via `CRVAL1/2`.
 #[must_use]
 pub fn synthetic_fits_with_wcs(
     width: u32,
