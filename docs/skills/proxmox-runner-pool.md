@@ -102,7 +102,8 @@ traffic after the first population — and in about 6.5 minutes from a fully
 cold cache. Both were measured on **16-vCPU** clones, and the slots run 6
 vCPUs: a warm run is bound by cache lookups rather than compute, so its
 figure holds at 6, but a cold build is compute-bound, so expect it to be
-materially slower there.
+materially slower there. A slot's vCPU count is template state, and
+`qm config` on the template is its source of truth.
 
 Components:
 
@@ -812,7 +813,10 @@ dangerous combination. The rule bifurcates by runner kind
   ahead of `systemd-networkd`, and
   that ordering is the whole point: a unit running after it is too late,
   because the first DHCP request already carried the template's name and that
-  is the request which takes the lease.
+  is the request which takes the lease. The template's cloud-init user
+  snippet carries `preserve_hostname: true` and no hostname of its own: a
+  snippet that pins a name has cloud-init stamp it back over the one
+  `rp-set-hostname` set, and every clone then presents that name to DHCP.
 * **Slots run on pinned network identities when the hypervisor provides
   them.** The orchestrator reads an optional root-owned host file (default
   `/etc/rp-runner/static-net`; one `<slot> <address>/<prefix> <gateway> <dns>`

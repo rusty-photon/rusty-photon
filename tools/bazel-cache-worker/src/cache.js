@@ -32,10 +32,11 @@ const KEY_RE = /^(ac|cas)\/[0-9a-fA-F]+$/;
 // (--remote_download_outputs=toplevel) skips most intermediate/tool outputs
 // whenever a hit-heavy build never needs the bytes locally, so a steady-state
 // dependency's AC entry stays warm while its backing CAS content silently
-// ages out underneath it (confirmed 2026-07-14: aws-lc-sys/aws-lc-rs went
-// missing ahead of the rustls 0.23.42 bump despite daily green builds).
-// touchReferencedCas below closes that gap by touching an AC entry's
-// referenced outputs on every read of the entry itself, not just on download.
+// ages out underneath it, and the next build that does need those bytes fails
+// with "Lost inputs no longer available remotely" however green the daily
+// builds were. touchReferencedCas below closes that gap by touching an AC
+// entry's referenced outputs on every read of the entry itself, not just on
+// download.
 const TOUCH_AFTER_MS = 2 * 24 * 60 * 60 * 1000;
 
 // Regex for a SHA-256 hex digest (64 hex chars; case-insensitive, matching
@@ -113,8 +114,7 @@ async function edgePut(env, request, key) {
 // the actual bytes. A steady-state dependency nothing else forces a fresh
 // compile of (aws-lc-sys, cc, cmake, ...) can be "used" daily via its AC
 // entry while the CAS content backing it quietly ages past the 7-day
-// lifecycle window underneath it -- this is what happened ahead of the
-// rustls 0.23.42 bump (2026-07-14): the AC hit was there, the bytes weren't.
+// lifecycle window underneath it: the AC hit is there, the bytes are not.
 //
 // Close the gap without a full REAPI protobuf parser: an ActionResult's
 // output Digest.hash fields are length-delimited UTF-8 strings, so they
@@ -176,10 +176,9 @@ export default {
         // touch the entry itself (no second get(), unlike the /cas/ path
         // below whose obj.body is already spoken for by the response
         // stream) and to scan for referenced-output digests to touch
-        // (touchReferencedCas above). This is the fix for the
-        // build-without-the-bytes touch gap: reading the metadata now also
-        // keeps the bytes it describes alive, regardless of whether Bazel
-        // itself ever downloads them.
+        // (touchReferencedCas above). That closes the build-without-the-bytes
+        // touch gap: reading the metadata also keeps the bytes it describes
+        // alive, regardless of whether Bazel itself ever downloads them.
         if (key.startsWith("ac/")) {
           const bytes = await obj.arrayBuffer();
           if (stale) ctx.waitUntil(touchObj(env, key, bytes, obj.etag));
@@ -199,9 +198,7 @@ export default {
         // cache.put drains fast lands most of the blob in isolate memory
         // (128 MB limit), with touch() above reading it again on stale
         // keys. Two independent streams each go at their own pace; the cost
-        // is one extra Class B read per edge miss. A suspect in the macOS
-        // bazel-build wedge (#765): on push-to-main, with the pool switches
-        // on, macOS is the only leg that still reads this Worker.
+        // is one extra Class B read per edge miss.
         ctx.waitUntil(edgePut(env, request, key));
         return new Response(obj.body, { status: 200, headers });
       }

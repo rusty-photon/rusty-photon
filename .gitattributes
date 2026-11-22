@@ -4,10 +4,10 @@
 # `core.autocrlf=true`, which converts checked-out files to CRLF. The
 # `crate_universe` Bazel module extension records SHA-256 hashes of the
 # workspace and per-crate `Cargo.toml` files (plus `Cargo.lock`) in
-# `MODULE.bazel.lock`'s `recordedFileInputs`. CRLF bytes change the SHA, the
-# lockfile check fails, and Bazel re-runs `cargo-bazel.exe splice` (~50 s) on
-# every Windows test invocation. `git blame` on this file points at the
-# investigation that confirmed the cause.
+# `MODULE.bazel.lock`'s `recordedFileInputs`. CRLF bytes change the SHA, so the
+# lock reads as stale on Windows: CI's `--lockfile_mode=error` (`.bazelrc`)
+# fails the build, and anywhere else Bazel re-runs `cargo-bazel.exe splice`
+# (~50 s) to refresh it.
 * text=auto eol=lf
 
 # OpenNGC catalog data is imported verbatim from the upstream openNGC source
@@ -26,9 +26,9 @@ crates/rp-catalog/src/data/*.csv -text
 # Linux. A parser tested against them has to meet both.
 services/guider/tests/fixtures/guide-logs/*.txt -text
 
-# insta snapshot goldens (services/ui-htmx/tests/snapshots, the UI-testing plan
-# Layer B) are committed once and compared byte-for-byte across OSes. The
-# wildcard above already normalizes them, but be explicit: a CRLF golden checked
-# out on Windows would fail the cross-OS byte-equivalence assertion, and insta's
-# content filters do not touch line endings.
+# insta snapshot goldens (services/ui-htmx/tests/snapshots) are committed once
+# and compared byte-for-byte across OSes. The wildcard above already
+# normalizes them, but be explicit: a CRLF golden checked out on Windows would
+# fail the cross-OS byte-equivalence assertion, and insta's content filters do
+# not touch line endings.
 *.snap text eol=lf

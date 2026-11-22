@@ -8,11 +8,11 @@
 # why; a failing nightly macOS leg opens a tracking issue
 # (notify-macos-failure). Coverage is gated separately by bazel-coverage.yml.
 #
-# Venue routing (ADR-020, docs/plans/archive/proxmox-pr-routing.md): the Linux and
-# Windows legs run on the ephemeral self-hosted pool
-# (docs/skills/proxmox-runner-pool.md) for push-to-main and SAME-REPO pull
-# requests, each gated on its own repo variable — RP_POOL_LINUX and
-# RP_POOL_WINDOWS — being 'on' (the no-commit kill switches; unset one to
+# Venue routing (docs/skills/proxmox-runner-pool.md § Security Model): the
+# Linux and Windows legs run on the ephemeral self-hosted pool for
+# push-to-main and SAME-REPO pull requests, each gated on its own repo
+# variable — RP_POOL_LINUX and RP_POOL_WINDOWS — being 'on' (the no-commit
+# kill switches; unset one to
 # route that OS back to GitHub-hosted runners). The switches are separate
 # because the two venues fail independently: the Windows slot can be wedged
 # or its template stale while Linux is healthy, and evacuating one should
@@ -67,7 +67,8 @@ jobs:
     # land on the safe side. Same-repo detection compares the PR's head
     # repository to this repository; a fork can only reach the pool by
     # editing this file, which the fork-PR approval checkpoint reviews
-    # (ADR-020 layer 2). macOS has no pool venue and always falls through.
+    # (docs/skills/proxmox-runner-pool.md § Security Model). macOS has no
+    # pool venue and always falls through.
     #
     # The trusted-event test is spelled out once per OS rather than factored
     # out: `runs-on` is evaluated before the job exists, so neither the `env`
@@ -198,9 +199,12 @@ jobs:
       # MODULE.bazel).
 
       # Using --output_base=C:/b eliminates the workspace-hash
-      # subdirectory and saves ~50 characters vs the default
-      # (rules_rust #1120). .bazelrc already imports user.bazelrc via
-      # try-import, so this takes effect on the next bazel invocation.
+      # subdirectory and saves ~50 characters vs the default, against
+      # Windows' 260-character MAX_PATH, which rules_rust does not handle
+      # systematically (rules_rust issue 1120,
+      # https://github.com/bazelbuild/rules_rust/issues/1120). .bazelrc
+      # already imports user.bazelrc via try-import, so this takes effect on
+      # the next bazel invocation.
       # Also load-bearing on the pool, for a second reason: C:\b is the
       # output base the Windows template pre-warmed its external repos into,
       # so dropping this step would send every clone back to a cold fetch.
@@ -227,8 +231,9 @@ jobs:
       - name: Verify bazel version
         run: bazel --version
 
-      # rp's BDD scenarios spawn the ASCOM Alpaca simulator. The Cargo
-      # workflows install it via the same composite action.
+      # The BDD suites tagged resources:omnisim spawn the ASCOM Alpaca
+      # simulator. The Cargo workflows install it via the same composite
+      # action.
       - name: Install ASCOM OmniSim
         if: runner.environment == 'github-hosted'
         uses: ./.github/actions/install-omnisim
@@ -283,14 +288,11 @@ jobs:
         # .bazelrc.
         timeout-minutes: 30
         run: |
-          # --keep_going (surfaces every failing target instead of stopping at
-          # the first -- originally added here just for Windows, as an E0463
-          # diagnostic) now comes from `.bazelrc`'s `build:remote-cache-base`
-          # unconditionally, for every OS: it's also what lets a remote-cache
-          # eviction retry invalidate every currently-broken action per
-          # attempt instead of just the first one, which is what actually
-          # lets PR builds converge on a cache-eviction wave. No need to set
-          # it here too.
+          # --keep_going comes from `.bazelrc`'s `build:remote-cache-base`,
+          # for every OS: it surfaces every failing target instead of stopping
+          # at the first, and lets a remote-cache eviction retry invalidate
+          # every broken action per attempt, so a PR build converges on an
+          # eviction wave. No need to set it here too.
           # Windows: keep this step's trace for the profile artifact uploaded
           # below (what it records: build:profile in .bazelrc). Bazel resolves
           # a relative --profile against the workspace root.
@@ -319,15 +321,15 @@ jobs:
         # `--test_env=OMNISIM_PATH` — which lives in `.bazelrc` `build:ci` so it
         # applies to every step and the flag never changes mid-run (a changing
         # --test_env discards Bazel's analysis cache; see .bazelrc for the why).
-        # --spawn_strategy=local (bypasses the sandbox so the BDD-spawned OmniSim
-        # can bind ports; also the confirmed fix for the rp:bdd post-scenario
-        # park) and --remote_timeout=15 both live in `.bazelrc`. --test_output=all
-        # surfaces rp:bdd's BDD-TRACE per-scenario breadcrumbs even on a passing run
-        # (services/rp/tests/bdd.rs).
+        # --spawn_strategy=local (bypasses the sandbox, so the BDD-spawned
+        # OmniSim can bind ports and the sandbox teardown cannot park rp:bdd
+        # after a scenario) and --remote_timeout=15 both live in `.bazelrc`.
+        # --test_output=all surfaces rp:bdd's BDD-TRACE per-scenario breadcrumbs
+        # even on a passing run (services/rp/tests/bdd.rs).
         run: |
           # `bdd,-requires-cargo`: run every bdd-tagged suite, minus the
-          # cargo-shelling bdd-infra unit tests (the only `requires-cargo` users
-          # left). //services/qhy-camera:bdd IS included — it spawns the
+          # cargo-shelling bdd-infra unit tests (the only `requires-cargo`
+          # users). //services/qhy-camera:bdd IS included — it spawns the
           # simulation-backed driver (no real InitQHYCCDResource / USB
           # enumeration; see services/qhy-camera/BUILD.bazel + Cargo.toml).
           # //services/zwo-camera:bdd RUNS here too — `bdd`-tagged (not

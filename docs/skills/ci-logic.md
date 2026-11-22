@@ -56,7 +56,7 @@ tools/rusty-photon-ci/
   src/pkg_assets.rs        a guard over the packaging files, likewise
   src/bare_refs.rs         a guard over the comments in the code, likewise
   testdata/                files the tests include_str!: saved channel
-                           manifests, the formulas the shell rendered
+                           manifests, the formulas the renderer must reproduce
 ```
 
 - **One module per tool, one subcommand per module.** `main.rs` parses

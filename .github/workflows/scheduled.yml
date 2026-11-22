@@ -14,15 +14,12 @@ concurrency:
   cancel-in-progress: true
 name: rolling
 jobs:
-  # https://twitter.com/mycoliza/status/1571295690063753218
   nightly:
     runs-on: ubuntu-latest
-    # Explicit timeout — see test.yml's plan job. The `cargo test --test bdd`
-    # step intermittently hangs; without a cap GitHub's 360 min default let
-    # the `scheduled / ubuntu / beta*` jobs burn a full 6 h. The suite's
-    # healthy runtime has crept up (~28 min by 2026-07-19, routinely over
-    # 30 min by 2026-07-22 even without a hang), so 30 min started clipping
-    # healthy runs; 60 min restores headroom without reopening the 6 h risk.
+    # Explicit timeout — see test.yml's `required` job. The BDD step can
+    # hang, and without a cap a hung run holds the runner for GitHub's
+    # 360-minute default. A healthy run measured over 30 minutes in July 2026,
+    # so 60 leaves headroom while still cutting a hang short.
     timeout-minutes: 60
     name: scheduled / ubuntu / nightly
     steps:
@@ -117,7 +114,6 @@ jobs:
         run: ${{ matrix.service.command }}
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
-  # https://twitter.com/alcuadrado/status/1571291687837732873
   update:
     # This action checks that updating the dependencies of this crate to the latest available that
     # satisfy the versions in Cargo.toml does not break this crate. This is important as consumers
@@ -239,7 +235,9 @@ jobs:
       # they run separately — see the sharding note on the nightly job above.
       - name: cargo test --test bdd (sharded)
         uses: ./.github/actions/bdd-sharded
-      # https://github.com/rust-lang/cargo/issues/6669
+      # Doc tests need a step of their own: nextest does not run them, and
+      # neither does `cargo test --all-targets`
+      # (https://github.com/rust-lang/cargo/issues/6669).
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
 

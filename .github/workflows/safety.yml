@@ -1,7 +1,7 @@
 # This workflow runs checks for unsafe code. Runs:
 # - address sanitizer - detects memory errors
 # - leak sanitizer - detects memory leaks
-# Note: miri has been moved to the scheduled (rolling) workflow to avoid slow CI on every push
+# Miri runs in the scheduled (rolling) workflow, not on every push.
 #
 # Sanitizers run nightly + on push to main (not on PRs). The project uses
 # minimal unsafe code, so nightly coverage is sufficient to catch regressions
@@ -21,19 +21,20 @@ name: safety
 jobs:
   sanitizers:
     runs-on: ubuntu-latest
-    # Explicit timeout — see test.yml's plan job. The sanitizer `cargo test`
-    # step runs the same BDD scenarios that intermittently hang; without a
-    # cap GitHub's 360 min default let `ubuntu / nightly / address` burn a
-    # full 6 h. The suite's healthy runtime has crept up (address was
-    # already timing out at 40 min by 2026-07-20, leak within ~1-2 min of
-    # the cap by 2026-07-22), so 40 min started clipping healthy runs;
-    # 80 min restores headroom without reopening the 6 h risk.
+    # Explicit timeout — see test.yml's `required` job. The sanitizer `cargo
+    # test` step runs the BDD scenarios that can hang, and without a cap a
+    # hung run holds the runner for GitHub's 360-minute default. A healthy
+    # run takes about 40 minutes (measured July 2026: address past 40, leak
+    # within a minute or two of it), so 80 leaves headroom while still
+    # cutting a hang short.
     timeout-minutes: 80
     name: ubuntu / nightly / ${{ matrix.sanitizer }}
     strategy:
       fail-fast: false
       matrix:
-        # only --lib --tests for asan b/c of https://github.com/rust-lang/rust/issues/53945
+        # only --lib --tests for asan, because of a sanitizer link failure in ld
+        # ("__sancov_guards has both ordered and unordered sections",
+        # https://github.com/rust-lang/rust/issues/53945)
         include:
           - sanitizer: address
             test-targets: --lib --tests
@@ -41,10 +42,11 @@ jobs:
             test-targets: --all-targets
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
-      # Workspace code builds at opt-level 1 for the sanitizers. The variable
-      # sets [profile.dev]'s opt-level over Cargo.toml's, and `cargo test`'s
-      # test profile inherits it.
-      # https://github.com/japaric/rust-san#unrealiable-leaksanitizer
+      # Workspace code builds at opt-level 1 for the sanitizers: LeakSanitizer
+      # does not always catch a leak in code built below it
+      # (https://github.com/japaric/rust-san#unrealiable-leaksanitizer). The
+      # variable sets [profile.dev]'s opt-level over Cargo.toml's, and
+      # `cargo test`'s test profile inherits it.
       CARGO_PROFILE_DEV_OPT_LEVEL: "1"
       # Build the zwo + qhy + svbony crates' pure-Rust `simulation` path with
       # no native SDK link, so they can be sanitized without provisioning any

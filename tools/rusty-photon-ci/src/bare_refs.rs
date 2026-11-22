@@ -18,12 +18,9 @@
 //! a heading's anchor. A full URL has no `#` before a number, so a citation
 //! passes as it is.
 //!
-//! [`PENDING`] holds the numbers the cleanup has not reached: for each file,
-//! each number its comments name and how often. A row whose number the file
-//! no longer names is the cleanup's progress, recorded by deleting the row
-//! or lowering its count; a number no row holds is a new breach, fixed in
-//! the comment and never by a row. So a clean file stays clean, and a
-//! pending one grows no worse.
+//! [`PENDING`], the table of exceptions, is empty: every file the guard reads
+//! is clean. A number in a comment is a breach, fixed by rewording the
+//! comment and never by a row, so a clean file stays clean.
 //!
 //! What is a comment is decided by syntax: a Rust lexer that knows strings,
 //! raw strings, char literals and lifetimes, so a `//` inside a string is
@@ -45,34 +42,12 @@ use std::path::Path;
 
 use crate::repo_root;
 
-/// The numbers the cleanup has not reached, in path order.
+/// The files whose comments may name a number: none.
 ///
-/// Each row is a file, a number its comments name as written, and how often
-/// they name it. Delete a row, or lower its count, once the file names the
-/// number less often; never add one. A row follows its file when the file
-/// moves.
-const PENDING: &[(&str, &str, usize)] = &[
-    (".bazelrc", "#342", 2),
-    (".bazelrc", "#452", 1),
-    (".bazelrc", "#624", 2),
-    (".bazelrc", "#676", 1),
-    (".bazelrc", "#781", 1),
-    (".github/actions/lib/install.mjs", "#5360", 1),
-    (".github/actions/lib/install.test.mjs", "#5360", 1),
-    (".github/workflows/bazel.yml", "#1120", 1),
-    (".github/workflows/check.yml", "#984", 2),
-    (".github/workflows/check.yml", "#988", 3),
-    (".github/workflows/check.yml", "#990", 1),
-    (".github/workflows/ui-browser-nightly.yml", "#494", 1),
-    ("MODULE.bazel", "#3490", 1),
-    ("MODULE.bazel", "#3808", 1),
-    ("MODULE.bazel", "#587", 2),
-    ("MODULE.bazel", "#739", 1),
-    ("MODULE.bazel", "#749", 1),
-    ("MODULE.bazel", "#752", 2),
-    ("MODULE.bazel", "#781", 1),
-    ("MODULE.bazel", "#796", 1),
-];
+/// A row would be a file, a number as written and how often its comments
+/// name it. Every file is clean, so a number in a comment is reworded, never
+/// listed.
+const PENDING: &[(&str, &str, usize)] = &[];
 
 /// This file, for the messages.
 const HERE: &str = "tools/rusty-photon-ci/src/bare_refs.rs";

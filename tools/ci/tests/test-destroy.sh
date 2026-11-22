@@ -8,9 +8,9 @@
 # to get pasted in while chasing a failure on the hypervisor. Do not. Volume
 # inventories and runner registrations are host state, and invented values
 # exercise the code exactly as well. Every VMID, pool and slot name below is
-# invented: the slot table moved to a host-local file, so the script no
-# longer carries real ids for a fixture to borrow, and one pasted in here
-# would be the only copy of it in this repository.
+# invented: the slot table is a host-local file, so the script carries no real
+# ids for a fixture to borrow, and one pasted in here would be the only copy
+# of it in this repository.
 #
 # The harness never needs a Proxmox host: every command that would reach one
 # (`qm`, `pvesm`, ...) is stubbed, and the config filesystem is a tmpdir
@@ -104,8 +104,8 @@ printf '9999\n' >"$STATE_DIR/8300.injected.tmp"
 destroy_clone 8300; rc=$?
 check "published marker wins over an unpublished one" " 4242" 0 "$rc"
 
-# 2. THE new case: killed between the write and the rename. The id exists only
-#    in .tmp, and without reading it the runner outlives its clone.
+# 2. THE unpublished case: killed between the write and the rename. The id
+#    exists only in .tmp, and without reading it the runner outlives its clone.
 reset
 printf '4242\n' >"$STATE_DIR/8300.injected.tmp"
 destroy_clone 8300; rc=$?
@@ -118,7 +118,7 @@ printf '4242' >"$STATE_DIR/8300.injected.tmp" # no trailing newline
 destroy_clone 8300; rc=$?
 check "truncated unpublished marker deregisters nothing" "" 0 "$rc"
 
-# 4. Nothing to read: unchanged behaviour.
+# 4. Nothing to read: nothing is deregistered.
 reset
 destroy_clone 8300; rc=$?
 check "no marker at all -> no deregistration" "" 0 "$rc"

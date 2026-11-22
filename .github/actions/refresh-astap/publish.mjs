@@ -4,8 +4,7 @@
 // replaces; when one failed, it opens or comments on the blocker issue
 // instead. Either way it comments on install-astap's open tracking issue. It
 // reads main's table and writes the commit through the GitHub API, so the job
-// holds no checkout to push from. Plan item J8 in
-// docs/plans/archive/ci-shell-to-code.md.
+// holds no checkout to push from.
 
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';

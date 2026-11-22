@@ -8,9 +8,9 @@
 # to get pasted in while chasing a failure on the hypervisor. Do not. Volume
 # inventories and runner registrations are host state, and invented values
 # exercise the code exactly as well. Every VMID, pool and slot name below is
-# invented: the slot table moved to a host-local file, so the script no
-# longer carries real ids for a fixture to borrow, and one pasted in here
-# would be the only copy of it in this repository.
+# invented: the slot table is a host-local file, so the script carries no real
+# ids for a fixture to borrow, and one pasted in here would be the only copy
+# of it in this repository.
 #
 # The harness never needs a Proxmox host: every command that would reach one
 # (`qm`, `pvesm`, ...) is stubbed, and the config filesystem is a tmpdir
@@ -124,8 +124,8 @@ run "volume clears on attempt 2 -> retry earns the success" 0
 STILL_PRESENT_UNTIL=0; LIST_BROKEN=1; TRAILING_ROWS=0
 run "storage will not list -> could not confirm (not 'still listed')" 2
 
-# The regression Copilot found: a match followed by more output used to make
-# the pipeline return 141 under pipefail, which read as "gone".
+# A match followed by more output: piped into a matcher that exits on its
+# first match, the pipeline returns 141 under pipefail, which reads as "gone".
 STILL_PRESENT_UNTIL=-1; LIST_BROKEN=0; TRAILING_ROWS=200000
 run "volume present with 200k rows after it -> still present, no SIGPIPE lie" 1
 
@@ -200,8 +200,8 @@ awk() {
 run "storage.cfg parse fails mid-retry -> stopped (verdict 5)" 5
 unset -f awk
 
-# THE within-function race: the directory probe and the config test used to be
-# separate reads, so pmxcfs could go away between them -- and the second read
+# THE within-function race: were the directory probe and the config test
+# separate reads, pmxcfs could go away between them -- and the second read
 # failing looks exactly like the config file being absent, which is the answer
 # that licenses a delete. Simulate by breaking `find` alone.
 STILL_PRESENT_UNTIL=-1; LIST_BROKEN=0; TRAILING_ROWS=0
@@ -210,8 +210,9 @@ run "config read fails mid-probe -> stopped, not read as absent" 5
 unset -f find
 
 # A config directory that is a regular FILE must not pass as enumerable:
-# `ls -A` on a file succeeds by listing it, and the config test is then false
-# for every VMID -- an enumeration that "worked" licensing every deletion.
+# `find` on a file succeeds and reports nothing, and the config test is then
+# false for every VMID -- an enumeration that "worked" licensing every
+# deletion.
 STILL_PRESENT_UNTIL=-1; LIST_BROKEN=0; TRAILING_ROWS=0
 rmdir "$PVE_CONF_ROOT/qemu-server"
 printf 'not a directory\n' >"$PVE_CONF_ROOT/qemu-server"
@@ -222,7 +223,7 @@ mkdir -p "$PVE_CONF_ROOT/qemu-server"
 # destroy_clone_holding_id must keep passing the SAME id across deferrals,
 # because a later reconcile has no marker left to recover it from. The VM has
 # to still EXIST for this to be the case under test -- with no config the
-# helper now correctly stops instead of retrying (see below).
+# helper stops instead of retrying (see below).
 printf 'name: live\n' >"$PVE_CONF_ROOT/qemu-server/8300.conf"
 calls=0
 ids=""

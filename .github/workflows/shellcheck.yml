@@ -4,8 +4,9 @@
 # Cadence: paths-filtered push to main + pull_request, and workflow_dispatch
 # (manual). It lints only these files, and they change rarely, so it runs only
 # when one of them changes, or this workflow, or the action that holds the
-# job's pin and logic, or the helpers it imports. ADR-022 leaves this shell in
-# bash, so the job keeps the same work after the CI shell plan.
+# job's pin and logic, or the helpers it imports. This is the runner pool's
+# host provisioning, which stays shell (docs/skills/ci-logic.md § Where it
+# goes).
 #
 # Not a required check, and it cannot be one while it is path-filtered: a
 # workflow the filter skips leaves its check pending, and a required check
@@ -39,17 +40,15 @@ concurrency:
 name: shellcheck
 jobs:
   shellcheck:
-    # No other check lints shell. The runner-pool orchestrator is ~1900 lines
-    # of bash that deletes storage on a CI host, and several of its worst
-    # defects were shell-specific footguns of exactly the kind shellcheck
-    # names — a pipeline status read through `!`, an assignment in a `local`
-    # reading an outer variable of the same name. Those were caught by running
-    # shellcheck locally, by hand, which is not a gate.
+    # No other check lints shell. The runner-pool orchestrator is ~1800 lines
+    # of bash that deletes storage on a CI host, and the defects shellcheck
+    # names are the shell-specific footguns a reader misses — a pipeline
+    # status read through `!`, an assignment in a `local` reading an outer
+    # variable of the same name.
     #
-    # Scoped to tools/ci for now rather than the whole tree: that is the shell
-    # that runs with root on the hypervisor, and a clean baseline there is
-    # worth more than a partial sweep everywhere. Widening it is a follow-up,
-    # not a reason to delay this.
+    # Scoped to tools/ci rather than the whole tree: that is the shell that
+    # runs with root on the hypervisor, and a clean baseline there is worth
+    # more than a partial sweep everywhere.
     runs-on: ubuntu-latest
     name: stable / shellcheck
     steps:

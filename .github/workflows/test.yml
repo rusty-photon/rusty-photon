@@ -6,11 +6,10 @@
 #
 # Jobs:
 # - required: workspace build + nextest + BDD + doctests on ubuntu/stable
-# - macos / windows: the same on the other two host OSes
-#   (Windows BDD runs in one job here — on a nightly run the ~10m sequential
-#    per-scenario spawn cost is irrelevant, so it is not split per-service.)
-#   The macOS job additionally denies rustc warnings, because no per-PR check
-#   does that for macOS any more — see its `env:` block.
+# - macos / windows: the same on the other two host OSes, the Windows suites
+#   in one job (its comment says why). The macOS job additionally denies
+#   rustc warnings, because no per-PR check does that for macOS — see its
+#   `env:` block.
 # - notify-macos-failure: a `macos-nightly` tracking issue when the scheduled
 #   run's macOS job fails
 #
@@ -48,11 +47,9 @@ env:
 jobs:
   required:
     runs-on: ubuntu-latest
-    # Explicit job timeout. Without one, GitHub's default is 360 min (6 h): a BDD
-    # hang in `cargo test --test bdd` could silently burn a full 6 h. The root
-    # cause (rp's `do_capture` looping forever on a failed exposure) is fixed at
-    # the source; this cap is defense-in-depth. Generous because the nightly run
-    # exercises the FULL workspace BDD suite.
+    # Explicit job timeout. Without one, GitHub's default is 360 min (6 h), and
+    # a hung BDD scenario would hold the runner that long. Generous because the
+    # nightly run exercises the FULL workspace BDD suite.
     timeout-minutes: 45
     name: ubuntu / stable
     steps:
@@ -93,7 +90,9 @@ jobs:
           path: '**/bdd-infra-omnisim-logs/**'
           if-no-files-found: ignore
           retention-days: 14
-      # https://github.com/rust-lang/cargo/issues/6669
+      # Doc tests need a step of their own: nextest does not run them, and
+      # neither does `cargo test --all-targets`
+      # (https://github.com/rust-lang/cargo/issues/6669).
       - name: cargo test --doc
         run: cargo test --locked --workspace --all-features --doc
   macos:

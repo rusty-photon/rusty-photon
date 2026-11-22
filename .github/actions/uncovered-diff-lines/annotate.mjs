@@ -30,8 +30,8 @@ export const POSTER = fileURLToPath(new URL('../../../tools/coverage/post_check_
 /**
  * Scores pull request `pr`'s diff against the LCOV report `lcov` and posts
  * the check on its head `sha`, working in the directory `dir`. Each program
- * gets `env` without the runner's variables (withoutRunnerVariables), as the
- * `run:` step it replaces gave them, and only the poster gets the token.
+ * gets `env` without the runner's variables (withoutRunnerVariables), as a
+ * `run:` step's program would, and only the poster gets the token.
  * Never throws: a stage that fails is a warning, with why, and the check is
  * posted neutral, naming the stage alone, since the check's text is public
  * and a program's error can hold a LAN address (a proxy's). When `signal`

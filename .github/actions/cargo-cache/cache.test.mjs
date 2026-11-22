@@ -259,7 +259,7 @@ test('a store that does not answer in time is a cold build', async (t) => {
   const started = Date.now();
   const { stdout } = await capture(() => restore(restoreOptions(silent, emptyRunner(), { pointerTimeoutMs: 200 })));
   // Between the 200 ms timeout given and the 10 s default, well clear of the
-  // first for a loaded runner (docs/skills/testing.md, on ceilings).
+  // first for a loaded runner (docs/skills/testing.md § 5.10, on ceilings).
   assert.ok(Date.now() - started < 8_000, 'it waited for the default timeout, not the one given');
   assert.equal(stdout, '::warning::The LAN cache failed (no answer in time); the build runs cold.\n');
 });

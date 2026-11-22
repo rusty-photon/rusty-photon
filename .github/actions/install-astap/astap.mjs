@@ -1,4 +1,4 @@
-// ASTAP, the plate solver plate-solver runs (ADR-005): which CLI archive each
+// ASTAP, the plate solver plate-solver runs: which CLI archive each
 // runner takes, and its install, with the D20 star database when a job asks
 // for it, into <workspace>/astap and <workspace>/astap-db on a runner, or
 // both into a directory a developer names.
@@ -121,9 +121,8 @@ export function resolve({ runner, table = TABLE, server = SERVER }) {
 // fail in any way: a bad certificate, a malformed body, a 404 for a file it
 // has not synced yet, a transfer dropped part way, or one served at a crawl.
 // The next attempt likely lands on another mirror, so both downloads try
-// again after any failure (retryAll), as curl's --retry-all-errors did. A
-// crawl does not fail: only a time limit or a floor on the rate ends such an
-// attempt.
+// again after any failure (retryAll). A crawl does not fail: only a time
+// limit or a floor on the rate ends such an attempt.
 
 /**
  * The CLI archive, about 1 MB. A mirror that takes two minutes over it is
@@ -254,8 +253,6 @@ export async function install({
     await installCli(cli, dir, options);
   }
   await makeRunnable(dir, cli.binary);
-  // `${workspace}/astap/...`, joined with '/' on Windows too, as the action
-  // wrote them before.
   const binary = `${workspace}/astap/${cli.binary}`;
   addPath(`${workspace}/astap`);
   exportVariable('ASTAP_BINARY', binary);

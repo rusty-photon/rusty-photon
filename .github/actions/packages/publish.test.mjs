@@ -113,12 +113,12 @@ const bodyOf = (api, call) => JSON.parse(api.requests.find((r) => `${r.method} $
 
 // --- The notes --------------------------------------------------------------------------
 
-test('the notes are what the shell step wrote: the links, the versions and a row per asset', () => {
+test('the notes hold the links, the versions and a row per asset', () => {
   const assets = [
     { name: 'rusty-photon-rp_0.1.0+nightly.202607120507.gba09dc9_amd64.deb', sha256: 'a'.repeat(64) },
     { name: 'rusty-photon-rp-0.1.0.202607120507.gba09dc9-1.x86_64.rpm', sha256: 'b'.repeat(64) },
   ];
-  // The shell step's own output for these inputs.
+  // The notes for these inputs, word for word.
   const docs = `https://github.com/o/r/blob/${SHA}/docs`;
   const expected = `Rolling nightly build of \`main\`. Assets are replaced on
 every publish — no dated history; fetch \`SHA256SUMS.txt\`

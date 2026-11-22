@@ -81,15 +81,17 @@ Write-Output "clock after resync:  $(Get-Date -Format o)"
 
 # Every job runs as this account, and the account's %TEMP% is whatever the
 # template captured - the debris of the BDD run that warmed the template
-# included. Windows never empties a user temp on its own (Linux clones get the
-# equivalent from tmpfiles' `D /tmp` rule at every boot), so a leftover rp
-# session registry there, still marked active, sits at a path a job's test
-# process can be handed again - same PID, same sequence number - and rp then
-# restores a session the scenario never started. Empty the directory here, in
-# the job account's own session and before the runner starts. Anything held
-# open (Windows keeps a few handles in it at logon) is skipped, which is fine:
-# no job depends on the contents, and Bazel re-extracts its own JNI/perf files
-# on the next server start.
+# included, rp session registries still marked active among it. Windows never
+# empties a user temp on its own (Linux clones get the equivalent from
+# tmpfiles' `D /tmp` rule at every boot), so a test process that minted one of
+# those paths again - same PID, same sequence number - would hand rp a session
+# the scenario never started. The harness mints its paths inside a per-process
+# random-named scratch directory (crates/bdd-infra, rp_harness/scratch.rs),
+# which closes that collision on every venue; this sweep is the pool's half.
+# Empty the directory here, in the job account's own session and before the
+# runner starts. Anything held open (Windows keeps a few handles in it at
+# logon) is skipped, which is fine: no job depends on the contents, and Bazel
+# re-extracts its own JNI/perf files on the next server start.
 foreach ($t in @($env:TEMP, $env:TMP) | Select-Object -Unique) {
   if (-not $t -or -not (Test-Path $t)) { continue }
   $before = (Get-ChildItem $t -Force -ErrorAction SilentlyContinue | Measure-Object).Count

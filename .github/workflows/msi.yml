@@ -1,4 +1,4 @@
-# Windows suite MSI — build + lifecycle verify (windows-packaging W4/W5).
+# Windows suite MSI — build + lifecycle verify.
 #
 # Runs `cargo ci build-msi` (SDK staging, CRT-static release build, wix
 # build) and `cargo ci verify-msi` (silent install -> per-service-class
@@ -9,9 +9,8 @@
 # from, and the service-lifecycle crate, whose SCM dispatch only this
 # verify runs; and workflow_dispatch for on-demand runs. release.yml runs the
 # same two tools as the release gate, and the msi leg of
-# nightly-packages.yml runs them nightly with the nightly version stamp
-# (phase N3 of docs/plans/archive/nightly-releases.md) — the schedule lives
-# there, not here.
+# nightly-packages.yml runs them nightly with the nightly version stamp —
+# the schedule lives there, not here.
 permissions:
   contents: read
 on:

@@ -1,5 +1,5 @@
 //! `cargo ci build-msi`: builds the Windows suite MSI, every service in one
-//! installer (ADR-015), into `dist/<version>/rusty-photon-<version>-x64.msi`,
+//! installer, into `dist/<version>/rusty-photon-<version>-x64.msi`,
 //! with a `SHA256SUMS.txt` (docs/packaging-windows.md).
 //!
 //! It builds on the machine the MSI is for, `x86_64` Windows with the MSVC
@@ -7,15 +7,15 @@
 //!
 //! 1. It stages the native SDKs in the cache ([`packaging::cache_dir`]):
 //!    QHYCCD's import library, which qhy-camera's delay-load link takes (the
-//!    DLL is the operator's, ADR-013), and ZWO's import libraries and DLLs,
-//!    ASI's for zwo-camera and EAF's for zwo-focuser (ADR-014), which the MSI
-//!    bundles. ZWO publishes its SDKs for Windows behind rolling links only,
+//!    DLL is the operator's), and ZWO's import libraries and DLLs, ASI's for
+//!    zwo-camera and EAF's for zwo-focuser, which the MSI bundles.
+//!    ZWO publishes its SDKs for Windows behind rolling links only,
 //!    with no version to pin or hash to check: the builder reads them from
 //!    `install-zwo-sdk`'s module, so it fetches what CI links, and the cache
 //!    keeps one download of them, which deleting `zwo-win64` in it refreshes.
 //! 2. It release-builds every service the MSI installs, and doctor, which
 //!    sentinel's feature carries, CRT-static, so no VC++ redistributable is
-//!    needed (ADR-015), each zwo service in a cargo run of its own
+//!    needed, each zwo service in a cargo run of its own
 //!    ([`packaging::cargo_runs`]).
 //! 3. It runs `WiX` at [`WIX_VERSION`] over `installer/`, after installing
 //!    that version as a .NET tool when the `wix` on `PATH` is another.
@@ -33,8 +33,8 @@ use std::path::{Path, PathBuf};
 use crate::packaging::{self, io, qhy};
 use crate::process::{self, Cmd, Runner};
 
-/// The `WiX` release that builds the MSI, and its extensions' (ADR-015). The
-/// Windows pool template installs it too
+/// The `WiX` release that builds the MSI, and its extensions'. The Windows
+/// pool template installs it too
 /// (`tools/ci/runner-guest/provision-msi.ps1`).
 pub const WIX_VERSION: &str = "5.0.2";
 

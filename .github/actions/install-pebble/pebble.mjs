@@ -120,9 +120,10 @@ export async function install({ assets, workspace, cached, download: options }) 
     await fetchInto(assets, dir, options);
   }
   for (const { file } of assets) await makeRunnable(dir, file);
-  // `${workspace}/pebble/...`, joined with '/' on Windows too, as the
-  // workflows wrote it before: Bazel forwards both variables into its tests
-  // (.bazelrc), so the strings are part of doctor's BDD test's cache key.
+  // `${workspace}/pebble/...`, joined with '/' on Windows too: Bazel forwards
+  // both variables into its tests (.bazelrc), so the strings are part of
+  // doctor's BDD test's cache key, and a new spelling of the same path would
+  // miss it once.
   for (const { file, variable } of assets) exportVariable(variable, `${workspace}/pebble/${file}`);
 }
 

@@ -1,8 +1,6 @@
 # Builds one workspace package's release binary on a chosen runner and
-# uploads it as an artifact. The pre-packaging validation path for running
-# a not-yet-packaged binary on a real host (a Windows VM, the field rig, a
-# Mac) — first used for rusty-photon-doctor's D2 host validation, useful
-# for any service before its packaging phase lands.
+# uploads it as an artifact, for running a binary on a real host (a
+# Windows VM, the field rig, a Mac) without building a package.
 #
 # workflow_dispatch only resolves against the default branch, so a branch
 # that introduces or edits this file cannot be dispatched — the push

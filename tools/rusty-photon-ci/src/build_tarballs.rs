@@ -5,7 +5,7 @@
 //! 1. It stages the native SDKs in the cache ([`packaging::cache_dir`]):
 //!    QHYCCD's static `libqhyccd.a`, which qhy-camera links, and the ZWO
 //!    dylibs each zwo service links and ships, ASI's for zwo-camera and EAF's
-//!    for zwo-focuser (ADR-014). The ZWO dylibs come from the commit
+//!    for zwo-focuser. The ZWO dylibs come from the commit
 //!    `install-zwo-sdk` pins, with `@rpath/` install names already; the one
 //!    change is the ASI dylib's libusb, which it loads by `@rpath` and which
 //!    nothing on a Mac provides there, pointed at Homebrew's, which the
@@ -205,7 +205,7 @@ fn pack(
     let stage = tempfile::tempdir().map_err(io(&std::env::temp_dir()))?;
     let copy = |from: &Path, to: &Path| fs::copy(from, to).map(|_| ()).map_err(io(from));
     // Cargo's binary names stay; the tarball ships them renamed, as the deb
-    // does (ADR-012).
+    // does.
     let mut contents = vec![format!("rusty-photon-{service}")];
     copy(
         &release.join(service),

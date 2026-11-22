@@ -15,8 +15,8 @@
 // One rolling apt suite, `nightly`, and one flat dnf repository per
 // architecture, each rendered afresh on every run: the channel replaces its
 // packages and keeps none. apt's Release is signed twice, clearsigned as
-// InRelease, which current apt reads, and detached as Release.gpg, which
-// older apt reads. It sets Acquire-By-Hash, and each index is copied under
+// InRelease, which apt reads, and detached as Release.gpg, for an apt that
+// predates InRelease. It sets Acquire-By-Hash, and each index is copied under
 // its hashes: with the one generation the push keeps (r2.mjs), a client that
 // read the outgoing InRelease still finds the index bytes it names. The
 // canonical Packages(.gz) stay for clients that do not fetch by hash, which
@@ -147,8 +147,8 @@ export async function renderApt({ dist, site, env, run = execute }) {
     // Run from the tree's root, so each package's Filename is pool/main/….
     const index = Buffer.from(await run('dpkg-scanpackages', ['--arch', arch, 'pool'], { cwd: root, echo: false }));
     const gzipped = gzipSync(index, { level: 9 });
-    // apt fetches by the strongest hash Release lists, SHA512 on current
-    // apt; SHA256 is kept for a client that prefers it.
+    // apt fetches by the strongest hash Release lists, SHA512; SHA256 is
+    // kept for a client that prefers it.
     for (const [name, bytes] of [
       ['Packages', index],
       ['Packages.gz', gzipped],

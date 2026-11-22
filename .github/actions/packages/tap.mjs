@@ -15,7 +15,8 @@ export const TAP = 'rusty-photon/homebrew-rusty-photon';
 export const BRANCH = 'main';
 export const FORMULA = 'Formula';
 
-// Who the commit is by, as the job's push from a clone had it.
+// The commit's author and committer, whoever owns the token: the API makes
+// the token's owner both when a commit names neither.
 const BOT = { name: 'github-actions[bot]', email: 'github-actions[bot]@users.noreply.github.com' };
 
 // Each channel's commit message, for a version.

@@ -21,11 +21,11 @@ fi
 
 echo '+cargo clippy --all --all-targets --all-features -- -D warnings'
 cargo clippy --all --all-targets --all-features -- -D warnings
-# Second pass, default features + production targets: lints the `not(feature =
-# "mock")` / `not(feature = "simulation")` slices that `--all-features` cfgs
-# out (#988). `--lib --bins` rather than `--all-targets` — dev-dependency
-# edges would otherwise force those features back on via unification (see the
-# `clippy` job comment in check.yml, which runs the same pair).
+# Second pass, default features + production targets: it lints the
+# `not(feature = "mock")` / `not(feature = "simulation")` slices that
+# `--all-features` cfgs out. check.yml's `clippy` job runs the same pair;
+# docs/skills/pre-push.md § check.yml says why both, and why this one is
+# `--lib --bins`.
 echo '+cargo clippy --all --lib --bins -- -D warnings'
 cargo clippy --all --lib --bins -- -D warnings
 echo '+cargo fmt --all -- --check'

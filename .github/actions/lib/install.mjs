@@ -1,11 +1,11 @@
 // What every install-* action does: choose the asset for the runner, download
-// it, check it against its pin and unpack it (plan item J2,
-// docs/plans/archive/ci-shell-to-code.md). An action keeps its assets in a table keyed
-// by runner, and runs as a composite of three steps (docs/skills/ci-logic.md
-// §An action that needs another action): resolve the asset and its cache key,
-// restore the cache with that key, then install on a miss and export the
-// paths either way. A developer installs the same release with the same code
-// through `bazel run //.github/actions:install` (local-install/).
+// it, check it against its pin and unpack it. An action keeps its assets in a
+// table keyed by runner, and runs as a composite of three steps
+// (docs/skills/ci-logic.md §An action that needs another action): resolve the
+// asset and its cache key, restore the cache with that key, then install on a
+// miss and export the paths either way. A developer installs the same release
+// with the same code through `bazel run //.github/actions:install`
+// (local-install/).
 //
 // Every asset carries one of three kinds of pin:
 //
@@ -177,10 +177,11 @@ function withoutAuthorization(headers) {
  * 2xx after following redirects, an Authorization header going to `url`'s
  * origin only; any other answer throws an HttpError. Not
  * fetch: Node 24's (undici 7) crashes the process, beyond any catch, when a
- * server closes the connection while the reader has paused the body
- * (nodejs/undici#5360, fixed in undici 8 only). A SourceForge mirror answers
- * `Connection: close`, and a disk slower than the network pauses the body, so
- * between them every large download risked it.
+ * server closes the connection while the reader has paused the body (undici
+ * issue 5360, https://github.com/nodejs/undici/issues/5360, fixed in undici 8
+ * only). A SourceForge mirror answers `Connection: close`, and a disk slower
+ * than the network pauses the body, so through fetch any large download would
+ * risk it.
  */
 export async function get(url, { headers = {}, signal } = {}) {
   let target = new URL(url);
@@ -297,7 +298,7 @@ function check(asset, digest) {
  * meet again, such as a 404 or a bad certificate, is not tried again, unless
  * `retryAll` says the server is one of a pool of mirrors, any of which can be
  * broken in any way, where the next attempt likely reaches another: then
- * every failure is, as curl's --retry-all-errors did. `headers` go with each
+ * every failure is, as with curl's --retry-all-errors. `headers` go with each
  * request, such as the Authorization a private mirror asks for. Nothing is
  * left at `file` unless every check passed: the bytes land beside it first.
  * Resolves to the file's SHA-256, which for a rolling download is the one

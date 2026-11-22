@@ -64,8 +64,8 @@ export function services(text) {
 
 /**
  * The action: runs the suite of every service the services input `text`
- * lists at once, in `env` without the runner's variables, as the `run:` step
- * it replaces ran them, and prints each one's log as a group of its own
+ * lists at once, in `env` without the runner's variables, as a `run:` step
+ * would run them, and prints each one's log as a group of its own
  * however the run ends. Fails the step for each suite that failed, by name,
  * or once when `signal` stopped them. Its logs go in `tmp`.
  */

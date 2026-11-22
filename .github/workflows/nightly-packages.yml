@@ -1,4 +1,4 @@
-# Nightly rolling-release packaging (docs/plans/archive/nightly-releases.md).
+# Nightly rolling-release packaging (docs/packaging.md § Nightly channel).
 #
 # Builds installable packages from the HEAD of main and publishes them to
 # ONE rolling `nightly` prerelease: the tag is force-moved to the packaged
@@ -10,25 +10,24 @@
 #              one version computation; each packager renders its own
 #              dialect of "sorts after 0.1.0, before 0.1.1".
 #   linux    — build + FULL lifecycle verification per leg, on hosted
-#              runners (the N0 spike closed the self-hosted contingency).
-#              Each leg builds the .deb AND .rpm set and verifies both:
-#              the debs through the Debian container lifecycle, the rpms
-#              through the Fedora one (which doubles as the proof that the
-#              rpms' declared requires resolve — N2). Building without
+#              runners. Each leg builds the .deb AND .rpm set and verifies
+#              both: the debs through the Debian container lifecycle, the
+#              rpms through the Fedora one (which doubles as the proof that
+#              the rpms' declared requires resolve). Building without
 #              installing is not a gate: nothing publishes unless every
 #              enabled leg passed its verifiers.
-#   msi      — the Windows suite MSI (ADR-015) with the nightly version
+#   msi      — the Windows suite MSI with the nightly version
 #              stamp; its verifier additionally installs over the
 #              previously PUBLISHED nightly MSI and runs the shipped
 #              doctor's --fix in the loop, proving the
 #              AllowSameVersionUpgrades in-place upgrade that release-tag
 #              testing never exercises PLUS the operator migration path
-#              that absorbs pre-1.0 config-schema churn (phase N3).
+#              that absorbs pre-1.0 config-schema churn.
 #   macos    — per-service arm64 tarballs (the Homebrew formula payloads),
 #              lifecycle-verified through real brew (install → services →
-#              probe → uninstall) before anything publishes (phase N4).
-#   repo     — the apt/dnf repository trees for pkg.rustyphoton.space
-#              (phase N5), rendered from the linux legs' already-verified
+#              probe → uninstall) before anything publishes.
+#   repo     — the apt/dnf repository trees for pkg.rustyphoton.space,
+#              rendered from the linux legs' already-verified
 #              packages and consumer-verified (podman clients holding only
 #              the public signing key install through the real resolvers)
 #              before anything publishes.
@@ -111,9 +110,9 @@ jobs:
             arch: arm64
     name: linux / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    # N0 spike: ~12 min cold / ~8 min warm per leg (arm64 slightly faster);
-    # the Fedora rpm verification (N2) adds its container build plus a dnf
-    # dependency resolution per service on top.
+    # The debs alone measured ~12 min cold / ~8 min warm per leg (arm64
+    # slightly faster); the Fedora rpm verification adds its container build
+    # plus a dnf dependency resolution per service on top.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7

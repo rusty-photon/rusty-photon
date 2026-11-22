@@ -1,6 +1,6 @@
-// OmniSim, the ASCOM Alpaca simulators rp's BDD scenarios spawn: which
-// release asset each runner takes, and its install, into <workspace>/omnisim
-// on a runner or into a directory a developer names.
+// OmniSim, the ASCOM Alpaca simulators the BDD suites spawn: which release
+// asset each runner takes, and its install, into <workspace>/omnisim on a
+// runner or into a directory a developer names.
 //
 // The SHA-256 values are pinned against the OmniSim release assets named
 // below. They point at the patched fork ivonnyssen/ASCOM.Alpaca.Simulators
@@ -128,10 +128,10 @@ export async function install({ asset, binary, workspace, cached, download: opti
     await unpackInto({ asset, binary, dir, download: options });
   }
   await makeRunnable(dir, binary);
-  // `${workspace}/omnisim/...`, joined with '/' on Windows too, as the
-  // workflows wrote it before: Bazel forwards OMNISIM_PATH into its tests
-  // (.bazelrc), so the string is part of every BDD test's cache key, and a
-  // new spelling of the same path would miss every one of them once.
+  // `${workspace}/omnisim/...`, joined with '/' on Windows too: Bazel
+  // forwards OMNISIM_PATH into its tests (.bazelrc), so the string is part of
+  // every BDD test's cache key, and a new spelling of the same path would miss
+  // every one of them once.
   addPath(`${workspace}/omnisim`);
   exportVariable('OMNISIM_PATH', `${workspace}/omnisim/${binary}`);
 }

@@ -6,7 +6,7 @@
 // to leave the link out (docs/services/svbony-camera.md "Native dependency &
 // build gating"). Bazel's builds always leave it out.
 //
-// The SDK carries no license grant, so nothing we ship bundles it (ADR-018).
+// The SDK carries no license grant, so nothing we ship bundles it.
 // Its FFI is written by hand, with no bindgen, so it needs no libclang, and
 // it needs libusb-1.0 and no libudev: readelf -d of the vendored blobs shows
 // undefined libusb_* symbols and no NEEDED entry for libusb at all, which the
@@ -36,11 +36,12 @@
 // Windows takes SVBony's own SDK, whose download from svbony.com sits behind
 // a CAPTCHA, and INDI's packaging has no Windows build. CI fetches the
 // operator's copy of the vendor zip from the project's private mirror,
-// token-gated on every request and never republished (ADR-018 §7,
-// tools/private-mirror-worker/), and checks it against the SHA-256 of the
-// vendor's original: the mirror is trusted for availability, not integrity.
-// So the zip goes into no cache, which a fork's pull request could restore,
-// and the developer's install offers no Windows SDK.
+// token-gated on every request and never republished
+// (docs/services/svbony-camera.md "Windows", tools/private-mirror-worker/),
+// and checks it against the SHA-256 of the vendor's original: the mirror is
+// trusted for availability, not integrity. So the zip goes into no cache,
+// which a fork's pull request could restore, and the developer's install
+// offers no Windows SDK.
 
 import { copyFile, mkdir, rename, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -137,8 +138,7 @@ export function resolve({ runner, server = 'https://github.com' }) {
 
 /**
  * The INDI repository's files through GitHub's raw links, and the private
- * mirror, with retries for a 429 or a timeout, as curl's --retry 3
- * --retry-delay 2 had them.
+ * mirror, with retries for a 429 or a timeout.
  */
 export const DOWNLOAD = { attempts: 4, delayMs: 2_000 };
 

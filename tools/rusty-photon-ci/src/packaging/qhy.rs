@@ -24,8 +24,7 @@ pub const SHA256_LINUX_AARCH64: &str =
     "d28795977311fba1cb7a4fdc48bbd6d5f994716674b2154d9a860d1fdf2f5e0e";
 
 /// The SHA-256 of the Windows x64 archive, whose import library the MSI's
-/// build links. The DLL is the operator's, from QHYCCD's All-in-One pack
-/// (ADR-013).
+/// build links. The DLL is the operator's, from QHYCCD's All-in-One pack.
 pub const SHA256_WIN64: &str = "dd696bce5f3a702ef55ad6ad7ae10a8f424879156675916387955170c3455347";
 
 /// The macOS arm64 archive, as QHYCCD names it; it unpacks to a directory

@@ -2,10 +2,10 @@
 //
 // Serves vendor files CI needs but cannot fetch from the vendor directly
 // (captcha-gated downloads with no scriptable URL — e.g. SVBony's Windows
-// SDK, see ADR-018). The mirror is private, not published: EVERY request,
-// reads included, must present the bearer token, so the bucket's contents
-// are never exposed to anyone but our own CI — the opposite of the bazel
-// cache worker's anonymous-read model.
+// SDK, docs/services/svbony-camera.md § Windows). The mirror is private, not
+// published: EVERY request, reads included, must present the bearer token, so
+// the bucket's contents are never exposed to anyone but our own CI — the
+// opposite of the bazel cache worker's anonymous-read model.
 //
 // Read-only by design: there is no PUT path at all. Uploads happen
 // out-of-band via `wrangler r2 object put` from an operator's

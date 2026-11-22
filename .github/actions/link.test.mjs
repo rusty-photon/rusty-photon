@@ -48,7 +48,7 @@ async function load(url, cache) {
 }
 
 // Actions import Node built-ins and the repo's own .mjs files, and nothing
-// else: ADR-022 allows no npm packages.
+// else: docs/skills/ci-logic.md § Layout allows no npm package.
 async function link(file) {
   const cache = new Map();
   const root = await load(pathToFileURL(join(ROOT, file)).href, cache);

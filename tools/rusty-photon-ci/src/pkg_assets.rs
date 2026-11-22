@@ -6,10 +6,10 @@
 //! from that table and `pkg/`, its macOS tarball and Homebrew formula by
 //! `cargo ci build-tarballs` and `cargo ci brew-formulas`, and
 //! its feature of the Windows suite MSI from
-//! `installer/fragments/<service>.wxs` (docs/packaging.md, ADR-012,
-//! ADR-015). Most of what can go wrong there shows only when a nightly
-//! installs the package, long after the pull request that broke it merged.
-//! These tests catch it in that pull request:
+//! `installer/fragments/<service>.wxs` (docs/packaging.md and its macOS
+//! and Windows siblings). Most of what can go wrong there shows only when a
+//! nightly installs the package, long after the pull request that broke it
+//! merged. These tests catch it in that pull request:
 //!
 //! - **Units.** Each systemd unit starts `/usr/bin/rusty-photon-<service>`
 //!   with no arguments: the config is found by XDG. A service that reloads
@@ -56,10 +56,11 @@
 //! This is the one list of these checks; the packaging docs point here. One
 //! run names every problem it finds.
 //!
-//! The units, scripts and `WiX` fragments are read line by line, as the shell
-//! they replaced did; `Cargo.toml` with the TOML parser. Under Bazel the
-//! files are the unit test's data in `BUILD.bazel`, so a file missing from it
-//! fails these tests: every `services/*` member must be in its `_SERVICES`.
+//! The units, scripts and `WiX` fragments are read line by line, as no
+//! parser in the workspace reads them; `Cargo.toml` with the TOML parser.
+//! Under Bazel the files are the unit test's data in `BUILD.bazel`, so a
+//! file missing from it fails these tests: every `services/*` member must be
+//! in its `_SERVICES`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -110,8 +111,9 @@ const OWN_FILES: &[(&str, &str)] = &[
     ("svbony-camera", "90-rusty-photon-svbony.rules"),
 ];
 
-/// It has no `SVBony` SDK on macOS or Windows (ADR-018), so no tarball,
-/// formula or MSI feature.
+/// It has no `SVBony` SDK a build can link on macOS, nor one it may ship on
+/// Windows ([`packaging::NO_MACOS_SDK`], [`packaging::NO_WINDOWS_SDK`]), so
+/// no tarball, formula or MSI feature.
 const SVBONY: &str = "svbony-camera";
 
 const QHY_HELPER: &str = "services/qhy-camera/pkg/rusty-photon-qhy-firmware-install";
@@ -706,12 +708,12 @@ fn vendor_id(rule: &str) -> Option<&str> {
 }
 
 /// `SVBony`'s SDK has no license grant, so its package ships a helper that
-/// downloads it on the target (ADR-018).
+/// downloads it on the target.
 fn svbony_helper(check: &mut Check, service: &Service) {
     let (svc, pkg) = (&service.name, service.pkg());
     if let Some(helper) = check.read(SVBONY_HELPER) {
-        // Nothing else makes the loader look in the RUNPATH, which is off
-        // ldconfig's path on purpose (ADR-013, ADR-018).
+        // The binary finds the SDK nowhere but in the RUNPATH, which is off
+        // ldconfig's path on purpose (`build_packages::RUNPATH` says why).
         let installs_there = has_line(&helper, "DEST=\"$DEST_DIR/libSVBCameraSDK.so\"")
             && has_line(&helper, &format!("DEST_DIR=\"$ROOT{RUNPATH}\""));
         check.require(installs_there, || {

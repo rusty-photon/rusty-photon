@@ -13,10 +13,12 @@ exports_files(
 )
 
 # The workflows and actionlint's list of our runners' labels, read by the tools
-# crate's guard on self-hosted runners (tools/rusty-photon-ci/src/pool_routing.rs).
-# Neither `.github/workflows` nor `.github` has a BUILD file, so these files
-# belong to this package. A glob that matches nothing leaves the guard finding
-# no routes, which fails it.
+# crate's guard on self-hosted runners (tools/rusty-photon-ci/src/pool_routing.rs);
+# its bare-reference guard reads the workflows' comments too
+# (tools/rusty-photon-ci/src/bare_refs.rs). Neither `.github/workflows` nor
+# `.github` has a BUILD file, so these files belong to this package. A glob
+# that matches nothing leaves the routing guard finding no routes, which
+# fails it.
 filegroup(
     name = "workflows",
     srcs = glob(
@@ -36,7 +38,8 @@ exports_files(
 
 # MODULE.bazel's Rust toolchain pins, read by the tools crate's test that they
 # agree with each other and with the MSRV
-# (tools/rusty-photon-ci/src/toolchain_pins.rs).
+# (tools/rusty-photon-ci/src/toolchain_pins.rs), and both files' comments,
+# read by its bare-reference guard (tools/rusty-photon-ci/src/bare_refs.rs).
 exports_files(
     [
         "BUILD.bazel",
@@ -67,8 +70,9 @@ exports_files(
     visibility = ["//.github/actions:__pkg__"],
 )
 
-# The cloud cache's URL and the file CI's remote-cache config is in, which the
-# remote-cache action's tests check it agrees with.
+# .bazelrc: the remote-cache action's tests check its cloud cache URL and the
+# file CI's remote-cache config is in, the bazel-coverage action's tests read
+# its configs, and the tools crate's bare-reference guard reads its comments.
 exports_files(
     [".bazelrc"],
     visibility = [
@@ -101,14 +105,15 @@ buildifier(
 
 # `bazel test //:buildifier_check` fails if any BUILD / *.bzl file is unformatted.
 # Runs non-sandboxed over the real tree (rooted at MODULE.bazel) so it covers every
-# package, not just this one. Wire into Bazel CI as the format gate.
+# package, not just this one. `bazel test //...` runs it, so it is Bazel CI's
+# format gate.
 #
 # `exclude_patterns` prunes `.claude/` from the walk. In `no_sandbox` + `workspace`
 # mode this rule's generated runner does a literal `cd <repo-root> && find . -name
 # '*.bazel' ... | xargs buildifier`. Agent git worktrees are nested *inside* the
 # checkout at `.claude/worktrees/<name>/`, each a full repo copy with its own BUILD
-# files, so the bare `find .` descends into them and lints their (often stale, e.g.
-# pre-buildifier-adoption) BUILD files — failing the check and blocking every commit
+# files, so the bare `find .` descends into them and lints their (often stale)
+# BUILD files — failing the check and blocking every commit
 # via the pre-commit hook. `.bazelignore` does NOT help: it only governs Bazel's
 # loading phase (`//...`, `glob()`), not a non-sandboxed test that shells out to
 # `find`, which honors neither `.bazelignore` nor git-worktree boundaries.

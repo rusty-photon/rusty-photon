@@ -5,9 +5,9 @@
 // PINNED, and not merely for reproducibility: shellcheck's finding set moves
 // between releases, so an unpinned gate lints different code on different
 // days. The runner image ships 0.9.0, which reports the harness stubs under
-// SC2317 where 0.11 reports them under SC2329, so a suppression written
-// against a locally installed 0.11 passes locally and fails here, for a
-// difference that has nothing to do with the code. Same reasoning as
+// SC2317 where 0.11 reports them under SC2329, so unpinned, a suppression
+// written against a locally installed 0.11 would pass locally and fail here,
+// for a difference that has nothing to do with the code. Same reasoning as
 // buildifier being pinned through MODULE.bazel: the developer's run and CI's
 // must be the same run. Bump VERSION deliberately, with its SHA-256.
 

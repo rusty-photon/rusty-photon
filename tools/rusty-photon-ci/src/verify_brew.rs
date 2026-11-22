@@ -21,7 +21,7 @@
 //!   cannot: it is held to staying alive under launchd, then probed in the
 //!   foreground;
 //! - each zwo service must load its own SDK dylib, and only that one,
-//!   through `@rpath` (ADR-014).
+//!   through `@rpath`.
 //!
 //! A run refuses to start while any formula of either channel is installed:
 //! the scratch tap's formulas share their kegs, or conflict with them.
@@ -334,8 +334,7 @@ impl<R: Runner> Run<'_, R> {
         Ok(())
     }
 
-    /// Exactly its own SDK dylib, loaded through `@rpath` and in the keg
-    /// (ADR-014).
+    /// Exactly its own SDK dylib, loaded through `@rpath` and in the keg.
     fn zwo_dylib(&mut self, service: &str, own: &str, others: [&str; 2]) -> Result<(), Error> {
         let bin = self.bin(service);
         let loads = self

@@ -3,8 +3,7 @@ description: >-
   Download and install ASCOM Alpaca Simulators (OmniSim) for BDD tests: puts
   <workspace>/omnisim on PATH and exports OMNISIM_PATH, the binary's path. The
   release, its asset table and their SHA-256 pins are in omnisim.mjs; the
-  download, check and unpack are lib/install.mjs's (plan item J2 in
-  docs/plans/archive/ci-shell-to-code.md).
+  download, check and unpack are lib/install.mjs's.
 
 runs:
   using: composite

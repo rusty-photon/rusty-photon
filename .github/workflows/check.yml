@@ -25,14 +25,14 @@
 # `if: github.event_name != 'pull_request'`):
 #   - clippy-os:   stable clippy on windows + macos, `-D warnings` — enforces
 #                  the deny set on the `#[cfg(windows)]` / `#[cfg(target_os =
-#                  "macos")]` code the ubuntu gate never compiles (#984)
+#                  "macos")]` code the ubuntu gate never compiles
 #   - hack:        cargo-hack feature-powerset (feature additivity)
 #   - msrv:        verify the declared workspace MSRV
 #
 # notify-clippy-failure opens (or comments on) a `check-nightly`-labeled
 # tracking issue when a scheduled clippy job fails, same pattern as
 # safety.yml / conformu.yml / install-astap.yml / plate-solver-smoke.yml.
-# Since clippy-beta no longer fails on lints, reaching it from there means a
+# clippy-beta does not fail on lints, so reaching it from there means a
 # genuine break rather than an upstream lint addition; reaching it from
 # clippy-os most likely means an OS-cfg'd lint violation landed on main.
 permissions:
@@ -58,7 +58,7 @@ on:
         type: boolean
         default: false
 # If new code is pushed to a PR branch, then cancel in progress workflows for that PR. Ensures that
-# we don't waste CI time, and returns results quicker https://github.com/jonhoo/rust-ci-conf/pull/5
+# we don't waste CI time, and returns results quicker.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -79,36 +79,17 @@ jobs:
     # template notes in docs/skills/proxmox-runner-pool.md). Its crates come
     # from the LAN bazel-remote (the lan-crates step below).
     #
-    # Two passes, because one feature point cannot lint everything (#988):
-    # `--all-features` turns `mock` / `simulation` ON, cfg'ing OUT the
-    # real-hardware production slices behind `not(feature = "mock")` /
-    # `not(feature = "simulation")` (~10 crates). The second pass compiles
-    # each crate's default feature set — empty for every campaign crate
-    # (zwo-rs/libzwo-sys default to their device features, still sim-off) —
-    # so those slices turn ON. Its exact shape matters:
-    #
-    #  - `--lib --bins`, NOT `--all-targets`: building dev targets pulls in
-    #    dev-dependency edges (qhy-camera/zwo-camera/zwo-focuser/svbony-camera
-    #    force `simulation`; rp forces `mock` onto rp-guider/rp-plate-solver)
-    #    and resolver feature unification then re-enables those features for
-    #    five crates, silently un-linting the complement (unit-graph-proven
-    #    in the #990 review). Test-target code behind `not(feature = ...)` is
-    #    the accepted residual: pass 1 has the feature on, pass 2 skips dev
-    #    targets.
-    #  - This pass is the first to compile the dual-homed FFI wrappers'
-    #    real-FFI paths, whose C-type conversions are platform-conditional
-    #    (c_char signedness, c_long width — a cast clippy calls useless on
-    #    one OS is required on another). Handled at the site, not crate-wide:
-    #    byte-exact `from_ne_bytes` for c_char reads, and svbony-rs's
-    #    `ffi_util::c_long_field` helper whose allow is cfg'd to exactly the
-    #    LP64-unix targets where the lint fires. A new finding on the
-    #    windows/macos legs gets the same targeted treatment.
-    #  - zwo-rs also holds the tree's only feature-on+feature-off cfg gates
-    #    (`all(not(simulation), any(camera|efw|focuser))` in src/lib.rs) —
-    #    covered here because its defaults enable the device features. A
-    #    future mixed gate elsewhere could escape both passes (`hack`'s
-    #    nightly powerset still rustc-compiles it); a deny-set widening
-    #    should re-scan cfgs paren-aware, not by line grep.
+    # Two passes, because one feature point cannot lint everything:
+    # docs/skills/pre-push.md § check.yml ("Every clippy job runs two passes")
+    # says why, why the second is `--lib --bins` and not `--all-targets`, and
+    # what neither pass compiles. The second pass is also the first to compile
+    # the dual-homed FFI wrappers' real-FFI paths, whose C-type conversions
+    # are platform-conditional (c_char signedness, c_long width — a cast
+    # clippy calls useless on one OS is required on another). Handled at the
+    # site, not crate-wide: byte-exact `from_ne_bytes` for c_char reads, and
+    # svbony-rs's `ffi_util::c_long_field` helper, whose `expect` is cfg'd to
+    # exactly the LP64-unix targets where the lint fires. A new finding on
+    # the windows/macos legs gets the same targeted treatment.
     #
     # On hosted runners the shared `linux-stable` cache is saved by test.yml's
     # --all-features build, so pass 2 rebuilds most deps — a check-only
@@ -116,14 +97,14 @@ jobs:
     # (83 s and 27 s, measured), and a pull request restores those
     # dependencies from the LAN first (the cargo-cache step below).
     #
-    # Venue routing (ADR-020): byte-for-byte the expression in
-    # bazel-coverage.yml, so the Linux pool serves it for push-to-main and
-    # same-repo PRs under the same RP_POOL_LINUX kill switch. The hosted
-    # queue is what this avoids: about one hosted start in ten waited over
-    # two minutes, where the Linux pool starts within seconds. Keep the
-    # copies identical — a divergence here is a security boundary moving,
-    # and tools/rusty-photon-ci/src/pool_routing.rs fails `bazel test //...`
-    # on one.
+    # Venue routing (docs/skills/proxmox-runner-pool.md § Security Model):
+    # byte-for-byte the expression in bazel-coverage.yml, so the Linux pool
+    # serves it for push-to-main and same-repo PRs under the same
+    # RP_POOL_LINUX kill switch. The hosted queue is what this avoids: about
+    # one hosted start in ten waited over two minutes, where the Linux pool
+    # starts within seconds. Keep the copies identical — a divergence here is
+    # a security boundary moving, and tools/rusty-photon-ci/src/pool_routing.rs
+    # fails `bazel test //...` on one.
     # Every falsy branch (fork PR, the nightly schedule, kill switch off,
     # null head.repo) lands on the hosted runner.
     runs-on: >-
@@ -166,10 +147,10 @@ jobs:
       # crate the cache lacks comes from crates.io; a cache that is down is a
       # miss, never a failure. A no-op on hosted runners (no RP_LAN_CACHE_URL).
       # On push to main it also uploads what it fetched, with the write
-      # credential bazel.yml uses under the same push-only expression (ADR-020
-      # layer 4). It goes to this step alone, as an input, and the uploads
-      # finish before any Cargo step, so no build script runs while a step
-      # holds it.
+      # credential bazel.yml uses under the same push-only expression
+      # (docs/skills/proxmox-runner-pool.md § Security Model). It goes to this
+      # step alone, as an input, and the uploads finish before any Cargo step,
+      # so no build script runs while a step holds it.
       - name: Crates from the LAN cache
         if: ${{ !cancelled() }}
         uses: ./.github/actions/lan-crates
@@ -189,13 +170,13 @@ jobs:
       # and lints only the workspace's own crates. A push to main never
       # restores: it builds cold, and the action's post step saves the result
       # if the job succeeded and the commit is still main's head, with the
-      # write credential under bazel.yml's push-only expression (ADR-020
-      # layer 4). Unlike lan-crates', that step runs after the build, from the
-      # checkout, which a build script compromised on main could rewrite first
-      # to take the credential; the plan accepts that (J1, "Write key"). A
-      # cache that is missing, down or wrong is a cold build, never a failure.
-      # A no-op on hosted runners (no RP_LAN_CACHE_URL). Plan item J1 in
-      # docs/plans/archive/ci-shell-to-code.md.
+      # write credential under bazel.yml's push-only expression. Unlike
+      # lan-crates', that step runs after the build, from the checkout, which a
+      # build script compromised on main could rewrite first to take the
+      # credential: an accepted risk, weighed under "Write key" in
+      # docs/plans/archive/ci-shell-to-code.md. A cache that is missing, down
+      # or wrong is a cold build, never a failure. A no-op on hosted runners
+      # (no RP_LAN_CACHE_URL).
       - name: Build cache from the LAN
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         uses: ./.github/actions/cargo-cache
@@ -225,11 +206,11 @@ jobs:
     # `#[cfg(windows)]` / `#[cfg(target_os = "macos")]` is never compiled by
     # it, and these legs are the only clippy that lints it. Without them an
     # OS-gated violation of the workspace deny set lands green in CI and then
-    # fails that OS's contributors' pre-commit hooks (#984). Same two passes
-    # as the gate (#988): here the default-features pass is what lints
+    # fails that OS's contributors' pre-commit hooks. Same two passes as the
+    # gate: here the default-features pass is what lints
     # `#[cfg(all(windows, not(feature = "simulation")))]` — qhy-camera's
-    # delay-load DLL machinery, the code #988 was filed about — which no
-    # `--all-features` run anywhere compiles.
+    # delay-load DLL machinery — which no `--all-features` run anywhere
+    # compiles.
     #
     # Off-PR like `hack` / `msrv`: the cfg'd code changes rarely, so a
     # violation surfaces on main within minutes of a merge (push) or overnight
@@ -320,7 +301,7 @@ jobs:
     # debugging runs and required-PR-gate failures (already visible in the PR
     # itself) don't churn an issue.
     #
-    # Note what this no longer covers: clippy-beta reports lints instead of
+    # Note what this does not cover: clippy-beta reports lints instead of
     # failing on them, and each gets its own `beta-clippy` issue. Reaching here
     # means something else broke — except via clippy-os, whose whole purpose is
     # to fail on an OS-cfg'd lint violation the ubuntu gate could not see.
@@ -379,7 +360,8 @@ jobs:
         with:
           shared-key: linux-stable
           save-if: false
-      # intentionally no target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
+      # intentionally no target specifier: `--lib --tests` fails on a package with
+      # only binaries ("no library targets found", https://github.com/jonhoo/rust-ci-conf/pull/4)
       # --feature-powerset runs for every combination of features
       - name: cargo hack
         run: cargo hack --feature-powerset check

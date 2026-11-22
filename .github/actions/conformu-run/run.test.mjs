@@ -13,7 +13,7 @@ function tempDir() {
   return mkdtempSync(path.join(base, 'conformu-run-'));
 }
 
-// Every service's command today has this shape.
+// Every service's `[package.metadata.conformu]` command has this shape.
 const command = (name) => `cargo test -p ${name} --features conformu --test conformu_integration -- --nocapture`;
 
 const SERVICES = ['filemonitor', 'qhy-camera', 'zwo-camera'];

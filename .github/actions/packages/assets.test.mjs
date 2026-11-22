@@ -91,7 +91,7 @@ test('a sums line that is no sum and name is refused', async () => {
 
 // --- The media types ----------------------------------------------------------------
 
-test('each asset goes up as gh uploaded it', () => {
+test('each asset goes up with the media type gh gives it', () => {
   assert.equal(mediaType(LEGS[0]), 'application/x-debian-package');
   assert.equal(mediaType(LEGS[2]), 'application/x-rpm');
   assert.equal(mediaType(LEGS[4]), 'application/x-msi');

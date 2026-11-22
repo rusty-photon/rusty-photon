@@ -7,8 +7,9 @@ import { io } from '../lib/helpers.mjs';
 
 /**
  * The workspace's version: the first line of `cargoToml` that reads
- * `version = "<version>"` from its first column, which is how the packaging
- * scripts read it. None throws.
+ * `version = "<version>"` from its first column, which in the root
+ * Cargo.toml is `[workspace.package]`'s, the version the packaging tools
+ * stamp (tools/rusty-photon-ci's packaging::workspace_version). None throws.
  */
 export function workspaceVersion(cargoToml) {
   for (const line of cargoToml.split(/\r?\n/)) {

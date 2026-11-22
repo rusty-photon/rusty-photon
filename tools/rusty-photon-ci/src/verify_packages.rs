@@ -16,11 +16,11 @@
 //! - a [`SERIAL`] driver exits on its absent device and systemd restarts
 //!   it: it is checked for its handshake attempt in the journal and its
 //!   config, and held to serving only if it settles active;
-//! - svbony-camera's package does not ship the SDK it links (ADR-018): the
+//! - svbony-camera's package does not ship the SDK it links: the
 //!   run checks it is absent and installs it with the helper the package
 //!   carries, as an operator would, before the ordinary checks;
 //! - each zwo service, and svbony-camera, must load its own SDK through the
-//!   RUNPATH, and no other (ADR-014);
+//!   RUNPATH, and no other;
 //! - sentinel's package carries the polkit rule that lets it restart the
 //!   services, and doctor with its renewal timer.
 //!
@@ -81,7 +81,7 @@ fn refused(reason: impl Into<String>) -> Error {
 }
 
 /// The service the package only ships the helper for: the operator installs
-/// its SDK (ADR-018).
+/// its SDK.
 const SVBONY: &str = "svbony-camera";
 
 /// The helper svbony-camera's package ships, in both flavors.
@@ -517,8 +517,8 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
     }
 
     /// The SDK the service links loads from the RUNPATH, and no other ZWO
-    /// SDK does (ADR-014). The zwo packages ship theirs; svbony-camera's
-    /// the operator installed.
+    /// SDK does. The zwo packages ship theirs; svbony-camera's the operator
+    /// installed.
     fn loads(&mut self, service: &str, own: &str, others: &[&str]) -> Result<(), Error> {
         let ldd = self.read(&["ldd", &binary(service)]);
         self.require(
