@@ -9,8 +9,11 @@
 #   × every packaged service + the rusty-photon meta-formula) via
 #   `cargo ci brew-formulas` — the same renderer the nightly channel uses
 #   for the -nightly siblings
+# Only the release job writes to this repository. The build legs run every
+# service's build and download the vendor SDKs, so none of them holds a
+# token that can push or edit a release.
 permissions:
-  contents: write
+  contents: read
 on:
   push:
     tags:
@@ -136,6 +139,8 @@ jobs:
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     name: create release
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - name: Download all artifacts
