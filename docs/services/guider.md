@@ -675,8 +675,9 @@ size. A frame back on the side of the last correction, a star-lost
 frame, a pause, a dither, a dither's abort and a new selection start
 the count again. The first Dec correction of a run goes either way.
 `control.dec.mode` selects `"auto"` (both directions), `"north"` or
-`"south"` (corrections in that direction only) or `"off"` (no Dec
-corrections).
+`"south"` (corrections in that direction only, except while a dither
+settles: see [Dither, settle and abort](#dither-settle-and-abort)) or
+`"off"` (no Dec corrections).
 
 **The minimum move.** An axis whose error is smaller than
 `control.min_move_px` gets no correction in that frame. With `null` the
@@ -721,9 +722,13 @@ point closer than half of `amount` to the current offset. So every
 dither moves the stars by at least half the amount, and no sequence of
 dithers takes them further than `amount` from home on either axis.
 With `ra_only`, only the RA component is drawn and the Dec component
-keeps its value. The same holds whenever `control.dec.mode` is not
-`"auto"`: the controller cannot steer to a Dec point it may correct
-towards in one direction only, or not at all. Should a hundred draws
+keeps its value. The same holds with `control.dec.mode` `"off"`, where
+the controller does not steer Dec. With `"north"` or `"south"`, a
+dither that draws the Dec component corrects Dec in both directions
+until it has settled, timed out or been aborted, so that the
+controller can steer to the new Dec point; Dec then goes back to its
+mode's direction. PHD2 does the same for a dither that settles
+([`phdcontrol.cpp`](https://github.com/OpenPHDGuiding/phd2/blob/264a64d21710967bd37fcfab3004747cf1cae0a0/src/phdcontrol.cpp#L171-L196)). Should a hundred draws
 all fall closer than half the amount, the dither takes the corner of
 the square furthest from the current offset. `dither` is valid only in
 `guiding`.
@@ -988,7 +993,7 @@ settled at the new lock and answers with the shape of `guiding/start`.
 
 - Valid only in `guiding`; `not_guiding` otherwise, `paused` and
   `star_lost` included.
-- `ra_only` is taken as `true` while `control.dec.mode` is not `"auto"`
+- `ra_only` is taken as `true` while `control.dec.mode` is `"off"`
   ([Dither, settle and abort](#dither-settle-and-abort)).
 - `settle_timeout`, `guide_failed`, `dither_aborted` and `stopped` are
   its errors once accepted.

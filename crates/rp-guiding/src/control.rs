@@ -147,6 +147,9 @@ pub struct Controller {
     /// The frames in a row with the Dec error on the other side of the
     /// lock from the last Dec pulse.
     dec_other_side: u32,
+    /// Whether Dec is corrected in both directions until a dither that
+    /// moved the Dec lock ends, whatever `control.dec.mode` says.
+    dec_both_ways: bool,
     ra_watch: RunawayWatch,
     dec_watch: RunawayWatch,
 }
@@ -191,6 +194,7 @@ impl Controller {
             previous_ra: 0.0,
             dec_last: None,
             dec_other_side: 0,
+            dec_both_ways: false,
             ra_watch: RunawayWatch::default(),
             dec_watch: RunawayWatch::default(),
         };
@@ -286,9 +290,11 @@ impl Controller {
     ///
     /// The new offset is drawn uniformly from the square of half-width
     /// `amount_px` around home, leaving out every point closer than half
-    /// of `amount_px` to the current one. With `ra_only`, or whenever Dec
-    /// is not corrected in both directions, only the RA part is drawn. An
-    /// amount that is not a positive number moves nothing.
+    /// of `amount_px` to the current one. With `ra_only`, or when Dec is
+    /// not corrected, only the RA part is drawn. A dither that moves the
+    /// Dec lock in the `north` or `south` mode corrects Dec in both
+    /// directions until [`Controller::dither_ended`]. An amount that is not
+    /// a positive number moves nothing.
     pub fn dither<R: Rng + ?Sized>(
         &mut self,
         amount_px: f64,
@@ -300,7 +306,7 @@ impl Controller {
         }
         let current = self.lock;
         let half = amount_px / 2.0;
-        let ra_only = ra_only || self.params.dec_mode != DecMode::Auto || self.dec_axis.is_none();
+        let ra_only = ra_only || self.dec_axis.is_none();
         let lock = if ra_only {
             AxisOffset {
                 ra: draw_outside(rng.random::<f64>(), amount_px, current.ra, half),
@@ -322,15 +328,23 @@ impl Controller {
         debug!(?current, ?lock, amount_px, "dither");
         self.lock = lock;
         self.forget();
+        self.dec_both_ways = !ra_only;
         lock
     }
 
+    /// Ends a dither's settle, settled, timed out or cut short: Dec is
+    /// corrected in its mode's direction again.
+    pub const fn dither_ended(&mut self) {
+        self.dec_both_ways = false;
+    }
+
     /// Sets the lock offset to where the stars are in a frame with
-    /// `offset`, as an aborted dither does.
+    /// `offset`, as an aborted dither does, which ends the dither.
     pub fn lock_at(&mut self, offset: Offset) {
         self.lock = self.along_axes(offset);
         debug!(lock = ?self.lock, "lock set to the stars");
         self.forget();
+        self.dither_ended();
     }
 
     /// Notes a star-lost frame. It sends no correction, so it ends the
@@ -352,6 +366,7 @@ impl Controller {
         self.home = home;
         self.lock = AxisOffset::default();
         self.forget();
+        self.dither_ended();
     }
 
     /// Clears what earlier steps carry into the next: the previous RA
@@ -423,7 +438,12 @@ impl Controller {
             0
         };
         let direction = wanted?;
-        let allowed = match self.params.dec_mode {
+        let mode = if self.dec_both_ways {
+            DecMode::Auto
+        } else {
+            self.params.dec_mode
+        };
+        let allowed = match mode {
             DecMode::Auto => !reverses || self.dec_other_side >= self.params.dec_reversal_frames,
             DecMode::North => direction == Direction::North,
             DecMode::South => direction == Direction::South,
@@ -1047,20 +1067,17 @@ mod tests {
     #[test]
     fn an_ra_only_dither_keeps_the_dec_part() {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(9);
-        for params in [
-            ControlParams::default(),
-            ControlParams {
-                dec_mode: DecMode::North,
-                ..ControlParams::default()
-            },
-        ] {
-            let ra_only = params.dec_mode == DecMode::Auto;
+        let off = ControlParams {
+            dec_mode: DecMode::Off,
+            ..ControlParams::default()
+        };
+        for (params, ra_only, dec) in [(ControlParams::default(), true, 1.5), (off, false, 0.0)] {
             let mut controller = controller(params);
             controller.lock_at(along(0.0, 1.5));
             let mut previous = controller.lock();
             for _ in 0..1_000 {
                 let lock = controller.dither(4.0, ra_only, &mut rng);
-                assert_eq!(lock.dec, 1.5);
+                assert_eq!(lock.dec, dec);
                 assert!(lock.ra.abs() <= 4.0, "{lock:?}");
                 assert!(
                     (lock.ra - previous.ra).abs() >= 2.0,
@@ -1069,6 +1086,48 @@ mod tests {
                 previous = lock;
             }
         }
+    }
+
+    #[test]
+    fn a_one_way_dec_mode_corrects_both_ways_until_the_dither_ends() {
+        let ends: [fn(&mut Controller); 3] = [
+            Controller::dither_ended,
+            |c| c.lock_at(along(0.0, 0.0)),
+            |c| c.rehome(Offset::default()),
+        ];
+        for end in ends {
+            let mut controller = controller(ControlParams {
+                dec_mode: DecMode::North,
+                ..ControlParams::default()
+            });
+            let mut rng = Xoshiro256PlusPlus::seed_from_u64(4);
+            let moved = (0..100)
+                .map(|_| controller.dither(4.0, false, &mut rng))
+                .any(|lock| lock.dec != 0.0);
+            assert!(moved, "no dither moved the Dec lock");
+            let lock = controller.lock();
+            let south = controller.step(along(lock.ra, lock.dec + 2.0)).unwrap();
+            assert_eq!(
+                south.dec.map(|pulse| pulse.direction),
+                Some(Direction::South)
+            );
+            end(&mut controller);
+            let lock = controller.lock();
+            let held = controller.step(along(lock.ra, lock.dec + 2.0)).unwrap();
+            assert_eq!(held.dec, None);
+        }
+    }
+
+    #[test]
+    fn an_ra_only_dither_keeps_a_one_way_dec_mode() {
+        let mut controller = controller(ControlParams {
+            dec_mode: DecMode::North,
+            ..ControlParams::default()
+        });
+        let lock = controller.dither(4.0, true, &mut Xoshiro256PlusPlus::seed_from_u64(4));
+        assert_eq!(lock.dec, 0.0);
+        let held = controller.step(along(lock.ra, 2.0)).unwrap();
+        assert_eq!(held.dec, None);
     }
 
     #[test]
@@ -1404,6 +1463,39 @@ mod tests {
         let held = run.frames(40).unwrap();
         let rms = rms(&held);
         assert!(rms < 0.45, "{rms} px from the new lock");
+    }
+
+    #[test]
+    fn a_dither_in_a_one_way_dec_mode_settles_at_its_dec_point() {
+        let mut run = Run::start(
+            |_| {},
+            ControlParams {
+                dec_mode: DecMode::North,
+                ..ControlParams::default()
+            },
+        );
+        run.frames(20).unwrap();
+        // A lock whose Dec point only South pulses reach.
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(1);
+        let lock = (0..100)
+            .map(|_| run.controller.dither(5.0, false, &mut rng))
+            .find(|lock| lock.dec <= -2.0);
+        assert!(lock.is_some(), "no dither reached a Dec point 2 px South");
+        let mut settle = Settle::new(
+            SettleParams {
+                tolerance_px: 1.0,
+                time: Duration::from_secs(10),
+                timeout: Duration::from_secs(60),
+            },
+            run.now(),
+        );
+        let mut settling = Settling::Settling;
+        while settling == Settling::Settling {
+            let guided = run.frame().unwrap();
+            settling = settle.frame(guided.distance_px, run.now());
+        }
+        run.controller.dither_ended();
+        assert_eq!(settling, Settling::Settled);
     }
 
     #[test]
