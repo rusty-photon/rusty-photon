@@ -469,9 +469,20 @@ place it.
 - **What it keeps guiding.** A change of brightness that every star
   shares, as cloud brings when it settles in or clears, leaves the stars
   usable.
+- **What it lets in.** Noise that settles within 2 px of a star's place
+  with a signal-to-noise ratio of at least `stars.min_snr` counts as the
+  star, and its flux joins the reference. Its offset lies within 2 px of
+  the others' median, and the frame's offset is the median of all the
+  usable stars, so one such star moves it little.
 - **2 px** is a starting value of this design, like the ten frames
   below. It is several times a star's scatter in seeing, and far inside
   the search region.
+- **Field rotation.** Offsets are taken from the frame the stars were
+  selected in, so field rotation moves a star far from the others
+  against them as a run goes on. With the pole 5′ off, a star 1,000 px
+  from the others moves about 0.4 px an hour at the equator and 0.75 px
+  an hour at declination 60°. A star it moves further than 2 px is
+  judged by the flux test, as a star found elsewhere is.
 
 **How a frame is measured.** Each guide star is measured in an aperture
 that starts at its position in the last frame in which it was usable,
@@ -494,22 +505,26 @@ found is usable or not by the tests above.
 
 **A change of brightness that lasts.** A usable frame's flux joins the
 star's reference, whichever test it passed. A frame that fails the flux
-test adds nothing to the reference, so a change larger than
-`stars.mass_change` that lasts fails the test in every frame that
-follows. That happens to a star the others do not place, as when haze
-clears or thin cloud settles in over a field with fewer than three
-stars found. A star that
-fails only the flux test in ten frames in a row therefore starts its
-reference again from those ten: they take the place of its last ten
-usable frames, so the frames from before the change no longer count,
-and each usable frame after them takes its place among the ten. The
-sharpness test keeps a hot pixel from becoming the reference while the
-star is behind cloud, and ten frames in a row keep out noise that
-reaches `stars.min_snr` in a frame now and then. Ten is a starting
-value of this design, for the frames the reference is taken over and
-for the frames in a row alike. The tenth frame is judged against the
-new reference, and a frame in which the star is usable, not found or
-too faint ends the row.
+test and that the others do not place adds nothing to the reference, so
+a change larger than `stars.mass_change` that lasts fails the test in
+every frame that follows. That happens to a star the others do not
+place, as when haze clears or thin cloud settles in over a field with
+fewer than three stars found.
+- **The reference starts again.** A star whose flux is outside
+  `stars.mass_change` of its reference in ten frames in a row, whether
+  the others place it or not, starts its reference again from those
+  ten. They take the place of its last ten usable frames, so the frames
+  from before the change no longer count, and each usable frame after
+  them takes its place among the ten.
+- **The row.** A frame in which the star is not found, too faint, or
+  within `stars.mass_change` of its reference ends the row. The tenth
+  frame is judged against the new reference.
+- **Noise.** The sharpness test keeps a hot pixel from becoming the
+  reference while the star is behind cloud. For a star the others do not
+  place, ten frames in a row keep out noise that reaches
+  `stars.min_snr` in a frame now and then.
+- **Ten** is a starting value of this design, for the frames the
+  reference is taken over and for the frames in a row alike.
 
 **A star-lost frame** is one with fewer than `stars.min` usable stars.
 It gives no offset and is followed by no pulse. In `guiding` it moves

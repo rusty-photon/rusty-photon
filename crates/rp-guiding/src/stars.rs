@@ -386,32 +386,43 @@ impl GuideStar {
             return StarReading::Faint { snr };
         }
         let reference = self.reference_flux();
-        if placed || within(star.flux, reference, params.mass_change) {
+        if within(star.flux, reference, params.mass_change) {
             self.flux_failures.clear();
-            self.fluxes.push_back(star.flux);
-            if self.fluxes.len() > REFERENCE_FRAMES {
-                self.fluxes.pop_front();
-            }
+            self.join_reference(star.flux);
             return self.usable(&star, snr);
         }
+        // Outside the flux band, placed or not, the frame continues the
+        // row.
         self.flux_failures.push(star.flux);
-        if self.flux_failures.len() < REFERENCE_FRAMES {
-            return StarReading::FluxChanged {
-                flux: star.flux,
-                reference,
+        if self.flux_failures.len() >= REFERENCE_FRAMES {
+            // A change that lasted: the reference starts again from the
+            // frames that showed it, this one among them.
+            self.fluxes = self.flux_failures.drain(..).collect();
+            let restarted = self.reference_flux();
+            return if placed || within(star.flux, restarted, params.mass_change) {
+                self.usable(&star, snr)
+            } else {
+                StarReading::FluxChanged {
+                    flux: star.flux,
+                    reference: restarted,
+                }
             };
         }
-        // A change that lasted: the reference starts again from the
-        // frames that showed it, this one among them.
-        self.fluxes = self.flux_failures.drain(..).collect();
-        let restarted = self.reference_flux();
-        if within(star.flux, restarted, params.mass_change) {
-            self.usable(&star, snr)
-        } else {
-            StarReading::FluxChanged {
-                flux: star.flux,
-                reference: restarted,
-            }
+        if placed {
+            self.join_reference(star.flux);
+            return self.usable(&star, snr);
+        }
+        StarReading::FluxChanged {
+            flux: star.flux,
+            reference,
+        }
+    }
+
+    /// Adds a usable frame's flux to the star's reference.
+    fn join_reference(&mut self, flux: f64) {
+        self.fluxes.push_back(flux);
+        if self.fluxes.len() > REFERENCE_FRAMES {
+            self.fluxes.pop_front();
         }
     }
 
@@ -473,10 +484,10 @@ fn drop_inside_brighter(found: &mut [Option<MeasuredStar>]) {
     }
 }
 
-/// A frame's measurement from its stars' readings.
 /// For each guide star, whether it is found where the other guide stars
-/// found in the frame place it: within [`PLACED_WITHIN_PX`] of its offset
-/// from its reference position being the median of theirs, on each axis.
+/// found in the frame place it: whether its offset from its reference
+/// position lies within [`PLACED_WITHIN_PX`] of the median of theirs, the
+/// median taken on each axis and the distance measured on the sensor.
 /// A star counts as found here when its signal-to-noise ratio reaches
 /// `stars.min_snr`, and no star is placed while fewer than
 /// [`MIN_PLACING_STARS`] are found.
@@ -519,6 +530,7 @@ fn placed_by_others(
         .collect()
 }
 
+/// A frame's measurement from its stars' readings.
 fn summarize(stars: Vec<StarReading>, min: usize) -> FrameMeasurement {
     let usable: Vec<Usable> = stars
         .iter()
@@ -1316,6 +1328,12 @@ mod tests {
             placed_by_others(&stars, &found, 1.0, &params),
             [true, true, true, false]
         );
+        // 1.5 px off on each axis is 2.12 px on the sensor.
+        found[3] = Some(at(132.5, 12.5, 1_000.0));
+        assert_eq!(
+            placed_by_others(&stars, &found, 1.0, &params),
+            [true, true, true, false]
+        );
     }
 
     #[test]
@@ -1375,6 +1393,31 @@ mod tests {
         assert!(matches!(
             star.read(Some(measured(50.0, 1_000.0)), false, 1.0, &params),
             StarReading::FluxChanged { .. }
+        ));
+    }
+
+    #[test]
+    fn a_placed_frame_outside_the_flux_band_continues_the_row() {
+        let params = StarParams::default();
+        let mut star = GuideStar::new(&measured(50.0, 1_000.0));
+        for _ in 0..9 {
+            star.read(Some(measured(50.0, 1_000.0)), false, 1.0, &params);
+        }
+        let readings: Vec<bool> = (1..=10)
+            .map(|frame| {
+                matches!(
+                    star.read(Some(measured(50.0, 100.0)), frame % 3 == 0, 1.0, &params),
+                    StarReading::Usable(_)
+                )
+            })
+            .collect();
+        assert_eq!(
+            readings,
+            [false, false, true, false, false, true, false, false, true, true]
+        );
+        assert!(matches!(
+            star.read(Some(measured(50.0, 100.0)), false, 1.0, &params),
+            StarReading::Usable(_)
         ));
     }
 }
