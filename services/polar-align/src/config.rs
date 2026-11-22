@@ -124,8 +124,8 @@ impl TryFrom<f64> for SweepDeg {
     }
 }
 
-/// How the three measurement points are chosen (design doc
-/// §Measurement phase; plan D1/D9/D11).
+/// How the three measurement points are chosen
+/// ([§ Measurement phase](../../../docs/services/polar-align.md#measurement-phase)).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasurementMode {
@@ -180,8 +180,8 @@ pub struct MeasurementConfig {
     #[serde(default)]
     pub mode: MeasurementMode,
     /// Measurement declination in degrees, `near_pole` mode only.
-    /// The magnitude is what matters; the sign is folded to the site
-    /// hemisphere at load.
+    /// The magnitude is what matters; the sign is folded to the
+    /// resolved site's hemisphere at workflow start.
     #[serde(default = "default_measurement_dec")]
     pub dec_deg: f64,
     #[serde(default = "default_first_point_ha")]
@@ -251,8 +251,8 @@ impl Default for RefractionConfig {
     }
 }
 
-/// The polar-align service configuration. Doubles as the plugin's
-/// standalone config file, so it carries the HTTP `server` block.
+/// The polar-align service configuration, read from the service's own
+/// config file.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolarAlignConfig {
@@ -267,9 +267,8 @@ pub struct PolarAlignConfig {
     pub mcp_server_url: Option<String>,
     pub camera_id: String,
     pub mount_id: String,
-    /// Observer site. Optional since D10: when absent, each workflow
-    /// resolves the site from rp's `get_site` tool; an explicit
-    /// block wins.
+    /// Observer site. Optional: when absent, each workflow resolves
+    /// the site from rp's `get_site` tool; an explicit block wins.
     #[serde(default)]
     pub site: Option<SiteConfig>,
     #[serde(default = "default_measurement")]
@@ -280,13 +279,12 @@ pub struct PolarAlignConfig {
     pub solve: SolveConfig,
     #[serde(default)]
     pub refraction: RefractionConfig,
-    /// HTTP Basic credentials presented to `rp` on MCP calls. The D6
-    /// observatory credential; doctor `--fix` wires it (ADR-017).
+    /// HTTP Basic credentials presented to `rp` on MCP calls: the
+    /// observatory credential, which doctor `--fix` wires.
     #[serde(default)]
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
-    /// PEM CA path used to trust a TLS-enabled `rp`. Per the ADR-017
-    /// policy, `service_auth` is only sent when this is set and the
-    /// URL is https.
+    /// PEM CA path used to trust a TLS-enabled `rp`. `rp-mcp-client`
+    /// sends `service_auth` only when this is set and the URL is https.
     #[serde(default)]
     pub ca_cert: Option<String>,
 }
@@ -553,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn site_block_is_optional_since_d10() {
+    fn the_site_block_is_optional() {
         let json = r#"{ "camera_id": "c", "mount_id": "m" }"#;
         let config = parse_with_cross_field(json).unwrap();
         assert!(config.site.is_none(), "absent site resolves from rp");

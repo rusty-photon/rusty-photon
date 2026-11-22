@@ -8,23 +8,21 @@ exports_files(
 
 # rp-vocabulary is a first-party leaf (not an `@cr` entry), so it is named
 # as an explicit Bazel label rather than resolved by `all_crate_deps`. The
-# store's Binning/IcrsCoord value types are re-exported from it (ADR-019);
-# the `schema` feature stays off so the store leaf remains schemars-free.
+# store's Binning/IcrsCoord value types are re-exported from it; the
+# `schema` feature stays off so the store leaf remains schemars-free.
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-vocabulary:rp-vocabulary",
 ]
 
 # Production-clean library: no `mock` feature, no mockall in the linked
-# binary. crate_universe only resolves the optional `mockall` dependency
-# into the "normal" bucket once a real consumer activates rp-targets'
-# `mock` feature (e.g. services/rp's `[dev-dependencies] rp-targets =
-# { features = ["mock"] }`, added when rp integration starts consuming
-# `MockTargetStore`) — see rp-guider's BUILD.bazel for the resulting
-# `_with_mock` testonly variant pattern this crate adopts once that lands.
-# Until then, `rust_test` below recompiles this target's sources directly
-# (`cfg(test)` alone satisfies `cfg(any(test, feature = "mock"))`), so the
-# crate's own unit tests already exercise `MockTargetStore`/automock via
-# the plain normal_dev dependency on `mockall`.
+# binary. No consumer enables rp-targets' `mock` feature, so crate_universe
+# leaves the optional `mockall` out of the "normal" bucket and this package
+# needs no `_with_mock` testonly variant (rp-guider's BUILD.bazel holds that
+# pattern, for a crate whose consumer does enable `mock`). `rust_test` below
+# recompiles this target's sources directly (`cfg(test)` alone satisfies
+# `cfg(any(test, feature = "mock"))`), so the crate's own unit tests
+# exercise `MockTargetStore`/automock via the plain normal_dev dependency
+# on `mockall`.
 rust_library(
     name = "rp-targets",
     srcs = glob(["src/**/*.rs"]),

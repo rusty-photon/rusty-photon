@@ -1,9 +1,8 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
-//! The standard authenticated MCP client for `rp`'s `/mcp` endpoint
-//! ([ADR-017](../../../docs/decisions/017-standard-mcp-client-construction.md)).
+//! The standard authenticated MCP client for `rp`'s `/mcp` endpoint.
 //!
 //! Every first-party MCP consumer connects through this crate. It owns the
-//! three things that must not drift between consumers:
+//! four things that must not drift between consumers:
 //!
 //! - **Transport construction**: rmcp streamable HTTP over a reqwest client
 //!   built by `rusty-photon-tls` (CA-pinned when a CA is configured).
@@ -20,7 +19,7 @@
 //!   bootstrapped with `server/discover` and pinned rather than
 //!   inherited from rmcp's default, so the revision `rp` serves is the
 //!   one our own CI exercises. There are no sessions
-//!   ([ADR-021](../../../docs/decisions/021-session-less-mcp-and-the-safety-contract.md)):
+//!   ([rp.md § MCP Server](../../../docs/services/rp.md#mcp-server)):
 //!   every request is self-contained, nothing is re-established behind
 //!   a consumer's back, and "rp unreachable" surfaces at connect as a
 //!   failed discovery.
@@ -282,9 +281,9 @@ impl ClientHandler for RpClientHandler {
 
 /// A connected MCP client for `rp`.
 ///
-/// There is no session behind it (ADR-021): each request is
-/// self-contained, so nothing expires and nothing is re-established
-/// behind the consumer's back. That is a statement about protocol
+/// There is no session behind it: each request is self-contained, so
+/// nothing expires and nothing is re-established behind the consumer's
+/// back. That is a statement about protocol
 /// state, not about cost: a standing client can keep a long-lived HTTP
 /// connection open into `rp`, which stalls `rp`'s graceful stop — the
 /// reason `ui-htmx` and `planetarium-bridge` connect per request or

@@ -808,7 +808,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_config_actions_are_gone() {
+    async fn no_action_is_offered_and_config_get_is_not_implemented() {
         let device = make_device();
         assert_eq!(
             device.supported_actions().await.unwrap(),

@@ -6,7 +6,7 @@
 //! [`AlpacaServerConfig`] for Alpaca drivers, which adds the optional UDP
 //! discovery responder port, and [`AdvertisingServerConfig`] for services
 //! that advertise their own URL to another process, which adds
-//! `advertised_url` (rp alone today). They are separate types so neither
+//! `advertised_url` (rp). They are separate types so neither
 //! extra field can appear — accepted but silently inert — in a service
 //! that never reads it. The two extended shapes repeat
 //! the core fields instead of flattening them because serde's
@@ -16,14 +16,15 @@
 //! than its own copy, so the shape a service accepts and the shape doctor
 //! validates it against cannot drift.
 //!
-//! Absent `tls` / `auth` means plain, unauthenticated HTTP (ADR-016
-//! decision 10(d)): both are switched on by doctor's generated config, never
-//! by a serde default. Default ports are per-service and supplied by each
-//! service's parent config, not by these types.
+//! Absent `tls` / `auth` means plain, unauthenticated HTTP: both are switched
+//! on by doctor's generated config, never by a serde default. Default ports
+//! are per-service and supplied by each service's parent config, not by
+//! these types.
 //!
 //! [`switch_labels`] holds one more shared config shape that is not part of
-//! the `server` block: the operator label map the two Pegasus powerbox
-//! drivers embed in their `switch` block.
+//! the `server` block: the operator label map the powerbox drivers
+//! (`ppba-driver`, `upbv2-driver`, `gemini-powerbox-adv3-driver`) embed in
+//! their `switch` block.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
@@ -170,8 +171,8 @@ impl AlpacaServerConfig {
 /// Server configuration for services that advertise their own URL to
 /// another process.
 ///
-/// [`ServerConfig`]'s fields plus `advertised_url`. rp is the only one
-/// today — it hands an orchestrator its MCP endpoint.
+/// [`ServerConfig`]'s fields plus `advertised_url`, with which rp hands an
+/// orchestrator its MCP endpoint.
 ///
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.

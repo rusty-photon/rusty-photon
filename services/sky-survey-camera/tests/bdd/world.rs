@@ -1,7 +1,5 @@
-// Phase-3 is shipping in slices: fields populated by later slices'
-// step bodies (e.g. last_image_dimensions, last_error) are read only
-// by step files that haven't landed yet. Silence dead-code so the
-// husky precommit hook (`-D warnings`) stays green between slices.
+// No step constructs `MountStubBehavior::NoTelescope` or reads the
+// `last_image_dimensions` and `last_error` fields.
 #![allow(dead_code)]
 
 use ascom_alpaca::api::{Camera, TypedDevice};
@@ -45,8 +43,8 @@ pub struct StubState {
 }
 
 /// Behaviour the in-test ASCOM Telescope stub serves on each
-/// `right_ascension` / `declination` read. Drives the F1/F2/F5
-/// follow-mode scenarios.
+/// `right_ascension` / `declination` read. Drives the follow-mode
+/// scenarios.
 #[derive(Debug, Clone)]
 pub enum MountStubBehavior {
     /// Serve `Value=<ra_hours>` / `Value=<dec_deg>` with `ErrorNumber=0`.
@@ -55,7 +53,7 @@ pub enum MountStubBehavior {
     /// drives F2.
     AscomError,
     /// `/management/v1/configureddevices` returns an empty list, so
-    /// device resolution fails — drives the `DeviceNotFound` branch.
+    /// device resolution fails with `DeviceNotFound`. No step selects it.
     NoTelescope,
 }
 
@@ -396,8 +394,9 @@ impl SkySurveyCameraWorld {
         self.stub_state = Some(state);
     }
 
-    /// Backwards-compat alias used by step bodies that only care about
-    /// the connection-time HEAD reachability check.
+    /// [`Self::spawn_skyview_stub`], for step bodies that only need the
+    /// connection-time HEAD reachability check, which the stub always
+    /// answers 200.
     pub async fn spawn_skyview_stub_ok(&mut self) {
         self.spawn_skyview_stub().await;
     }
@@ -817,11 +816,10 @@ impl SkySurveyCameraWorld {
         response.json().await.expect("response not JSON")
     }
 
-    /// Pre-seed the `cache_dir` with a FITS file matching the cache key
-    /// the next exposure will compute. Slice 4 derives the same key
-    /// formula in `survey::SurveyRequest::cache_key` so we re-use it
-    /// here (via a tiny dependency-free reimplementation in the
-    /// helper, to avoid pulling library types into tests).
+    /// Pre-seed the `cache_dir` with a FITS file stored under `cache_key`.
+    /// The cache-hit step derives that key with the library's own
+    /// `build_full_sensor_request` and `SurveyRequest::cache_key`, so it
+    /// is the key the next exposure computes.
     pub fn preseed_cache(&mut self, cache_key: &str, bytes: &[u8]) {
         let cache_dir = self.cache_dir();
         std::fs::create_dir_all(&cache_dir).expect("create cache_dir");

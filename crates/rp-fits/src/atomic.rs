@@ -1,8 +1,5 @@
-//! Atomic file-write helper.
-//!
-//! Lifts the stage→fsync→rename→fsync-parent dance from
-//! `services/rp/src/persistence/fits.rs::write_fits_sync` into a
-//! generic, reusable helper.
+//! Atomic file-write helper: the stage→fsync→rename→fsync-parent
+//! sequence, generic over what is written.
 //!
 //! Guarantees:
 //! 1. Data is fsynced *before* the rename — a crash after rename

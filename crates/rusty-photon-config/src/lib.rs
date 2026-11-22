@@ -1,4 +1,4 @@
-//! Shared config helpers for rusty-photon drivers.
+//! Shared config helpers for rusty-photon services.
 //!
 //! ASCOM Alpaca requires every device's `UniqueID` to be **globally unique** and to **never
 //! change**, but the protocol enforces neither — uniqueness has to come from how the id is
@@ -114,7 +114,7 @@ pub trait ConfigFile: DeserializeOwned {
 /// the one failure named below — so in practice config persistence is never disabled
 /// for lack of a path.
 ///
-/// Windows deliberately does **not** use the per-user profile (ADR-015): the services run under
+/// Windows deliberately does **not** use the per-user profile: the services run under
 /// service accounts whose profile is buried in `...\systemprofile\AppData\Roaming`, so the
 /// default must live in the one obvious, operator-editable machine-wide folder.
 ///
@@ -372,8 +372,8 @@ const fn sync_dir(_parent: &Path) -> std::io::Result<()> {
 /// root-owned and unreadable by the service user. The invariant is that a save never changes who
 /// owns the file: the chown runs whenever the staged file's owner differs from the original's,
 /// and a chown that fails is a save error. For an unprivileged caller that only happens in an
-/// anomalous state (a config hand-chowned to another user), where the save now fails with
-/// `PermissionDenied` instead of silently re-owning the file to the writer — surfacing the
+/// anomalous state (a config hand-chowned to another user), where the save fails with
+/// `PermissionDenied` rather than silently re-own the file to the writer — surfacing the
 /// anomaly beats papering over it.
 #[cfg(unix)]
 fn preserve_owner_and_mode(path: &Path, tmp: &tempfile::NamedTempFile) -> std::io::Result<()> {
@@ -764,8 +764,8 @@ mod tests {
         let p = resolve_config_path("dsd-fp2", None).unwrap();
         assert!(p.ends_with(r"rusty-photon\dsd-fp2.json"), "{p:?}");
         assert!(p.is_absolute(), "{p:?}");
-        // The per-user profile must never be the service default (ADR-015):
-        // under a service account it lands in the hidden systemprofile dir.
+        // The per-user profile must never be the service default: under a
+        // service account it lands in the hidden systemprofile dir.
         assert!(!p.to_string_lossy().contains("AppData"), "{p:?}");
     }
 

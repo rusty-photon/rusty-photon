@@ -26,10 +26,12 @@ const MAX_BIN: u8 = 4;
 const EXPOSURE_MIN: Duration = Duration::from_micros(1);
 const EXPOSURE_MAX: Duration = Duration::from_hours(1);
 
-/// Builds the v0 cutout `SurveyRequest` for a snapshot of camera
-/// state: the cutout is always sized to the binned full sensor (the
-/// design doc crops sub-frames out client-side after the FITS comes
-/// back).
+/// Builds the cutout `SurveyRequest` for a snapshot of camera state.
+///
+/// The cutout is always sized to the binned full sensor, and the
+/// sub-frame is cropped out locally once the FITS comes back, so one
+/// cached cutout serves every sub-frame at that pointing and bin
+/// ([§ `StartExposure` Pipeline](../../../docs/services/sky-survey-camera.md#startexposure-pipeline)).
 ///
 /// One `bin` divides both axes, because binning is symmetric (E8).
 #[must_use]
@@ -69,18 +71,6 @@ pub struct ExposureOutcome {
     pub data: Vec<i32>,
 }
 
-/// Shared state held by the [`SkySurveyCamera`] device and the custom
-/// `/sky-survey/*` HTTP routes.
-///
-/// Cloning a [`SkySurveyCamera`] only clones the `Arc` — both views
-/// observe the same connection and pointing state.
-///
-/// `exposure_generation` is bumped on every `start_exposure`, every
-/// `abort_exposure` / `stop_exposure`, and every `set_connected(false)`
-/// — the spawned exposure task captures the value at start and only
-/// commits its result if the captured value still matches when it
-/// finishes, so a late-completing task can never resurrect an image
-/// after Abort/Stop/disconnect.
 /// A `Mutex<()>` that also counts how many callers are queued on it.
 ///
 /// The count exists for the regression tests that guard the serialisation
@@ -115,6 +105,18 @@ impl ResultLock {
     }
 }
 
+/// Shared state held by the [`SkySurveyCamera`] device and the custom
+/// `/sky-survey/*` HTTP routes.
+///
+/// Cloning a [`SkySurveyCamera`] only clones the `Arc` — both views
+/// observe the same connection and pointing state.
+///
+/// `exposure_generation` is bumped on every `start_exposure`, every
+/// `abort_exposure` / `stop_exposure` that finds an exposure in flight,
+/// and every `set_connected(false)` — the spawned exposure task captures
+/// the value at start and only commits its result if the captured value
+/// still matches when it finishes, so a late-completing task can never
+/// resurrect an image after Abort/Stop/disconnect.
 #[derive(Debug)]
 pub struct DeviceState {
     pub config: Config,
@@ -202,10 +204,10 @@ pub struct SkySurveyCamera {
 
 impl SkySurveyCamera {
     /// Construct in static-pointing mode. Asserts that
-    /// `config.pointing.telescope` is `None` — follow-mode setup
-    /// requires fallible network construction (see
-    /// [`mount::AlpacaMountReader::from_config`]) and must go through
-    /// `lib::build_device`, which returns `Result`.
+    /// `config.pointing.telescope` is `None` — follow-mode setup builds
+    /// an Alpaca client, which can fail (see
+    /// [`crate::mount::AlpacaMountReader::from_config`]), so it goes
+    /// through `build_device` in `src/lib.rs`, which returns `Result`.
     /// Tests that want to exercise follow mode against a mock
     /// `MountReader` should call [`Self::from_parts`] directly.
     pub fn new_static(config: Config, survey_client: Arc<dyn SurveyClient>) -> Self {
@@ -224,8 +226,8 @@ impl SkySurveyCamera {
     }
 
     /// Construct from a fully-prepared [`PointingSource`]. Used by
-    /// `lib.rs::run_with_client` when follow mode is configured, and
-    /// by tests that want to inject a mock `MountReader`.
+    /// `build_device` in `src/lib.rs` for either pointing mode and by
+    /// [`Self::new_static`].
     pub fn from_parts(
         config: Config,
         survey_client: Arc<dyn SurveyClient>,
@@ -894,9 +896,9 @@ impl Camera for SkySurveyCamera {
         let sy = self.state.start_y.load(Ordering::Acquire);
         let binned_sensor_width = self.state.config.optics.sensor_width_px / divisor;
         let binned_sensor_height = self.state.config.optics.sensor_height_px / divisor;
-        // E4: NumX/NumY must be > 0. The setters now accept any u32
-        // per ASCOM convention; we enforce E4/E5 here at the moment
-        // the geometry is actually used.
+        // E4: NumX/NumY must be > 0. The setters accept any u32 per
+        // ASCOM convention, so E4/E5 are enforced here, at the moment
+        // the geometry is used.
         if nx == 0 || ny == 0 {
             return Err(ASCOMError::invalid_value(format!(
                 "NumX/NumY must be > 0 (got NumX={nx} NumY={ny})"
@@ -1010,9 +1012,8 @@ impl Camera for SkySurveyCamera {
     /// error they *do* carry is for the opposite case — busy and unstoppable,
     /// e.g. mid-download — which cannot arise here, since detaching the fetch
     /// is a generation bump that always succeeds. So an idle cancel reports
-    /// success (A2) rather than the refusal that once stood here; a refusal
-    /// would now say only that there is no session at all, which is what the
-    /// connected check is for (A4).
+    /// success (A2), and a refusal says only that there is no session at
+    /// all, which is what the connected check is for (A4).
     async fn abort_exposure(&self) -> ASCOMResult<()> {
         self.cancel_in_flight()
     }
@@ -1374,7 +1375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_config_actions_are_gone() {
+    async fn no_action_is_offered_and_config_get_is_not_implemented() {
         let (cam, _reload, _dir, _path) = camera_with_setup_pages();
         assert_eq!(cam.supported_actions().await.unwrap(), Vec::<String>::new());
         let err = cam
@@ -1457,7 +1458,8 @@ mod tests {
 
     /// A client whose `health_check` parks until a test releases it, so a
     /// connect can be caught *inside* the awaited part of the transition —
-    /// the window the false → true test used to be read outside of.
+    /// the window in which a false → true test read before the await goes
+    /// stale.
     #[derive(Debug)]
     struct GatedSurveyClient {
         entered: Arc<tokio::sync::Notify>,
@@ -1957,8 +1959,8 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
-    /// A1 is unchanged by A2: a cancel that finds a fetch in flight still
-    /// detaches it and clears the ready flag.
+    /// A1 holds beside A2: a cancel that finds a fetch in flight detaches it
+    /// and clears the ready flag.
     #[tokio::test]
     async fn abort_when_in_flight_clears_ready_and_bumps_generation() {
         let cam = connected_camera();
@@ -2295,7 +2297,7 @@ mod tests {
         assert!(cam.state.image_ready.load(Ordering::Acquire));
         let img = cam.state.last_image.lock();
         let outcome = img.as_ref().unwrap();
-        // Default num_x/num_y match the sensor dimensions.
+        // `FULL_FRAME` is the whole 640x480 sensor.
         assert_eq!(outcome.width, 640);
         assert_eq!(outcome.height, 480);
         assert!(outcome.data.iter().all(|v| *v == 0));

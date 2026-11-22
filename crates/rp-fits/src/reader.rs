@@ -1,7 +1,6 @@
 //! Thin reader facade over [`fitsrs`].
 //!
-//! Three entry points cover what the workspace's three FITS consumers
-//! need:
+//! Three entry points cover what the workspace's FITS consumers need:
 //!
 //! - [`read_primary`] returns the on-disk pixel type plus header
 //!   metadata (`bscale`, `bzero`, `blank`). Callers that need exact
@@ -14,9 +13,10 @@
 //!   keyword (e.g. rp's `DOC_ID` lookup).
 //!
 //! BLANK handling: the raw integer sentinel value is surfaced via
-//! [`FitsImage::blank`] and **not** filtered or replaced. Per
-//! ADR-001 Amendment A, silently dropping pixels (the previous
-//! `fitrs`-based path's behaviour) is a bug we're fixing here.
+//! [`FitsImage::blank`] and **not** filtered or replaced. Filtering the
+//! marked pixels out would drop them silently and leave the buffer
+//! shorter than its geometry; the caller decides what a blank pixel
+//! means.
 
 use std::fmt::Debug;
 use std::io::{Read, Seek};
@@ -195,7 +195,7 @@ pub fn read_primary<R: Read + Seek + Debug>(reader: R) -> Result<FitsImage, Fits
 
 /// Read the primary HDU and return scaled-to-`i32` pixels in row-major
 /// order. Applies BSCALE/BZERO and saturates to `i32::MIN..=i32::MAX`,
-/// matching the legacy sky-survey-camera and rp behaviour.
+/// the shape sky-survey-camera and rp read.
 ///
 /// # Errors
 ///

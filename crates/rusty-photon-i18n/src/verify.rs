@@ -752,8 +752,8 @@ mod tests {
 
     #[test]
     fn placeholder_mismatch_inside_selector_arm_is_reported() {
-        // Fluent's plural / variant selectors are the main reason we picked it
-        // over JSON-flavoured i18n (`i18n.md` §2). If `walk_expression` ever
+        // Plural and variant selectors are why the workspace uses Fluent
+        // rather than JSON-flavoured i18n. If `walk_expression` ever
         // stopped recursing into selector variants, a placeholder rename
         // *inside* a `{ $count -> ... }` arm would slip through unnoticed.
         // This guards that traversal.

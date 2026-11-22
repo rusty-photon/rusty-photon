@@ -1,9 +1,9 @@
 //! HTTP routes: POST /runs to start an alignment and GET /status for
 //! the live alignment state.
 //!
-//! `/runs` is design § Runs; `/status` is where the outcome lands —
-//! nothing is posted back to `rp`, which has no notion of a session
-//! (mcp-sessionless D6).
+//! `/runs` is [§ Runs](../../../docs/services/polar-align.md#runs);
+//! `/status` is where the outcome lands — nothing is posted back to
+//! `rp`, which has no notion of a session.
 //!
 //! The operator-facing rest: POST /measure/continue to confirm a manual
 //! rotation, POST /adjust/finish to end the adjustment loop, and

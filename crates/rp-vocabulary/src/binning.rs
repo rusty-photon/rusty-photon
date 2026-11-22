@@ -118,8 +118,10 @@ mod tests {
         assert_eq!(serde_json::from_value::<Binning>(v).unwrap(), b);
     }
 
+    // `{"x": 2, "y": 2}` is what a plain derive would accept; the wire form
+    // is only the `"AxB"` string.
     #[test]
-    fn deserialize_rejects_the_old_struct_shape_and_bad_strings() {
+    fn deserialize_rejects_the_derived_struct_shape_and_bad_strings() {
         assert!(serde_json::from_value::<Binning>(serde_json::json!({"x": 2, "y": 2})).is_err());
         assert!(serde_json::from_value::<Binning>(serde_json::json!("2x")).is_err());
     }

@@ -330,8 +330,9 @@ impl Device for GeminiSwitchDevice {
     )]
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         // Connecting actuates nothing (tenet 3): `acquire()` joins the
-        // conduit `start()` opened and handshook, or, on a transport nothing
-        // started, runs that read-only handshake (`>H#` / `>V#` / `>G#`).
+        // conduit `start()` opened and handshook, or, as the first session on
+        // a transport nothing started, opens the conduit and runs that
+        // read-only handshake (`>H#` / `>V#` / `>G#`).
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {

@@ -958,7 +958,7 @@ Layered per `docs/skills/testing.md`:
   contracts including the warn-only behaviour for an unreachable
   endpoint and the session settings a disconnected camera neither
   reports nor accepts, the S1–S6 survey-error paths against a stub HTTP server,
-  and the F1/F2/F5/F6/F8 follow-mode contracts against tiny in-test
+  and the F1/F2/F4–F8 follow-mode contracts against tiny in-test
   axum stubs serving the two ASCOM Telescope reads (`right_ascension`,
   `declination`) and the one ASCOM Rotator read (`position`). The
   end-to-end `slew → expose → plate-solve →

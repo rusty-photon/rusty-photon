@@ -146,7 +146,7 @@ negative or not finite, which no accumulator reports.
   accumulators, such as two runs of a service, needs its own way to tell them
   apart: the guider service sends an `epoch` beside its readings.
 - **`rms` converts the count through `u32`.** A count past `u32::MAX` answers
-  `None` rather than an approximate root; no caller comes near it.
+  `None`; no caller comes near it.
 
 ## The `observing_conditions` policy module
 

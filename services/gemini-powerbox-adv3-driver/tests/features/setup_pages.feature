@@ -11,9 +11,8 @@ Feature: Setup pages
   are named on the switch's page as edited in the configuration file. No
   password hash reaches a page. A POST that does not come from the page
   itself is refused with 403 and the file is untouched. With auth configured
-  the pages answer 401 without a credential and render with one. The
-  config.get, config.apply and config.schema actions are gone:
-  SupportedActions is empty on both devices.
+  the pages answer 401 without a credential and render with one. No
+  action is offered: SupportedActions is empty on both devices.
 
   Scenario: The server page shows the current configuration and links to both device pages
     Given a Gemini hub server config with switch enabled and OC enabled
@@ -108,7 +107,7 @@ Feature: Setup pages
     And the page shows an empty password input named "auth.password"
     And the page does not contain the stored password hash
 
-  Scenario: The configuration actions are gone on both devices
+  Scenario: No action is offered on either device
     Given a Gemini hub server config with switch enabled and OC enabled
     When I start the Gemini hub server
     And the supported actions are queried on the switch device

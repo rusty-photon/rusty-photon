@@ -66,9 +66,10 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
 
     let config_path = test_dir.path().join("config.json");
     let conformu_settings_path = test_dir.path().join("conformu-settings.json");
-    // ConformU's sync tests fire imports, so the spool has to start empty for
-    // backlog assertions to mean anything; the scratch directory is minted
-    // fresh per run, so it does.
+    // ConformU's sync tests fire imports, which spool (rp is a dead port
+    // below). The spool goes in the scratch directory, minted fresh per run:
+    // an absent `spool.path` resolves to, and creates, the platform config
+    // directory, which a test must never touch.
     let spool_path = test_dir.path().join("spool.jsonl");
 
     let config = serde_json::json!({
@@ -202,9 +203,9 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         handle.port()
     );
 
-    // Capture both builder-construction and run-time errors so `handle.stop()`
-    // below is unconditional and the service gets a graceful SIGTERM with a
-    // chance to flush coverage data.
+    // Capture the run's errors so `handle.stop()` below is unconditional and
+    // the service gets a graceful SIGTERM with a chance to flush coverage
+    // data.
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
         match run_conformu_from_settings(&conformu_settings_path, EXPECTED_ALERTS).await? {
             ConformuRun::Skipped => {

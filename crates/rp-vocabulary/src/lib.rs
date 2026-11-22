@@ -5,7 +5,7 @@
 //!
 //! Exposure is deliberately *not* here: it is a plain [`std::time::Duration`]
 //! (serialized with `humantime`, no custom format), and its filename-token
-//! codec lives with the naming engine in `rp`. See ADR-019 / the crate doc.
+//! codec lives with the naming engine in `rp`. See the crate doc.
 //!
 //! Each type is *parse-don't-validate*: a value that exists is valid by
 //! construction, and that one constructor is the single validator every
@@ -14,7 +14,7 @@
 //! nouns those layers exchange.
 //!
 //! See [`docs/crates/rp-vocabulary.md`](https://github.com/rusty-photon/rusty-photon/blob/main/docs/crates/rp-vocabulary.md)
-//! and ADR-019 for the design and the reasoning.
+//! for the design and the reasoning.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![deny(unsafe_code)]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.

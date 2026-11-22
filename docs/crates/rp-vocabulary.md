@@ -45,7 +45,7 @@ surfaces" is the setup pages' `ConfigurableDriver` in
 dotted-path field errors the page renders inline, and one authoritative
 server-side gate. Extending that
 pattern to plan data (targets, goals, naming patterns — see
-[Schema + validate protocol](#schema--validate-protocol-the-decision-1-role))
+[Schema + validate protocol](#schema--validate-protocol))
 needs a crate that owns the *typed vocabulary + its schema + its
 constructor validation*. That is this crate.
 
@@ -263,7 +263,7 @@ coordinate as `"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }`
 (above), so the redb rows and the MCP JSON both carry one canonical
 `coord` object.
 
-## Schema + validate protocol (the decision-1 role)
+## Schema + validate protocol
 
 `rp-vocabulary` is the *enabler* of a plan-data analogue of the setup
 pages' schema and validation; it does not own the protocol. The division:
@@ -451,5 +451,5 @@ allows in test scope.
   scatters the plan vocabulary that the multi-surface schema/validate
   protocol wants in one place. The leaf crate is what makes the
   [coordinate-field guarantee](#the-coordinate-fields) and the
-  [schema + validate protocol](#schema--validate-protocol-the-decision-1-role)
+  [schema + validate protocol](#schema--validate-protocol)
   both buildable.

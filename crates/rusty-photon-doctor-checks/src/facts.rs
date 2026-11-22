@@ -620,9 +620,9 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
 /// The host's USB scan alone, without the rest of a [`gather`].
 ///
 /// The passive collector a camera driver places its SDK cameras with
-/// (docs/services/doctor.md, "USB inventory"). Read-only — nothing is opened,
-/// claimed or reset — and bounded: the macOS and Windows shell-outs run under
-/// the collector's deadline.
+/// (docs/services/doctor.md § The hardware gatherer, "USB inventory").
+/// Read-only — nothing is opened, claimed or reset — and bounded: the macOS
+/// and Windows shell-outs run under the collector's deadline.
 ///
 /// # Errors
 ///
@@ -3941,7 +3941,8 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         );
     }
 
-    /// A host that lists both — none seen yet — is read through macOS 26's.
+    /// A host that lists both, which no measured release does, is read
+    /// through macOS 26's.
     #[test]
     fn test_a_host_listing_both_usb_reports_is_read_through_the_host_report() {
         assert_eq!(
@@ -3992,7 +3993,7 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
 
     /// The key is the one the macOS 26 capture carries; that capture shows
     /// only its value for a device publishing no serial, so a published
-    /// serial's spelling under it is assumed, not yet seen. Nothing but
+    /// serial's spelling under it is assumed rather than observed. Nothing but
     /// `doctor --devices`' USB serial column reads it while no driver
     /// offers the join an SDK serial (claims.rs, `keyed_match`).
     #[test]
@@ -4262,7 +4263,8 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         assert_eq!(scan.faults[0].model, None);
     }
 
-    /// The staged USB inventory — docs/services/doctor.md, "USB inventory".
+    /// The staged USB inventory — docs/services/doctor.md § The hardware
+    /// gatherer, "USB inventory".
     #[cfg(feature = "mock")]
     mod staged_inventory {
         use std::path::{Path, PathBuf};

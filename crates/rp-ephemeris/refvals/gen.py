@@ -2,12 +2,12 @@
 """Generate reference values for `rp-ephemeris` against Astropy.
 
 Astropy uses ERFA internally — agreement with `ErfarsEphemeris` should
-be near-perfect (sub-arcsecond for alt/az, sub-second for transit /
-rise/set). This script writes one JSON file per (object, site, time)
-tuple under ``crates/rp-ephemeris/refvals/``; the matching test in
-``tests/reference_values.rs`` reads those files and asserts the trait
-output matches within tight tolerances. Disagreement is a wrapping
-bug, not an algorithmic one.
+be near-perfect (sub-arcsecond for alt/az). This script writes one JSON
+file per (time, site) pair, holding every object's alt/az, under
+``crates/rp-ephemeris/refvals/``; the matching test in
+``tests/reference_values.rs`` reads those files and asserts the trait's
+``alt_az`` matches within 1e-4°. Disagreement is a wrapping bug, not an
+algorithmic one.
 
 Run by hand, not in CI. Re-run after upgrading erfars or astropy.
 
@@ -15,9 +15,9 @@ Requirements:
 
     pip install 'astropy>=6' numpy
 
-Provenance is the commit message + this file. The generated JSONs
-are committed alongside it. Reviewers should re-run the script and
-diff to confirm the values they're seeing in the PR.
+Provenance is the commit message + this file: commit the generated
+JSONs alongside it, and a reviewer re-runs the script and diffs to
+confirm the values in the PR.
 
 Usage::
 

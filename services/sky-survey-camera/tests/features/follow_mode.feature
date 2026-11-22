@@ -1,4 +1,4 @@
-Feature: Telescope-following pointing mode (F1, F2, F5, F6, F7, F8)
+Feature: Telescope-following pointing mode (F1, F2, F4, F5, F6, F7, F8)
 
   When `pointing.telescope` is configured, every `StartExposure`
   reads RA/Dec from the configured ASCOM Telescope (with an

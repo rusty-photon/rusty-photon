@@ -13,7 +13,7 @@
 //! Ids are written as literals in both [`SwitchId::from_id`] and
 //! [`SwitchId::info`] rather than computed from family offsets. The two are
 //! kept in agreement by `every_id_in_range_resolves`, which round-trips every
-//! id in `0..MAX_SWITCH` through both — so a drifted row fails the build, and
+//! id in `0..MAX_SWITCH` through both — so a drifted row fails that test, and
 //! the table stays readable as data.
 
 use std::sync::LazyLock;

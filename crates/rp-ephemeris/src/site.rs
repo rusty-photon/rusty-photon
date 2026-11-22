@@ -3,9 +3,10 @@ use std::sync::OnceLock;
 use chrono::{DateTime, NaiveDate, Utc};
 use tzf_rs::DefaultFinder;
 
-/// Observer site: geographic latitude / longitude only. Elevation is
-/// deferred to a future revision (see `docs/services/rp.md`
-/// §"Planning and Ephemeris").
+/// Observer site: geographic latitude and longitude. A site has no
+/// elevation: the transforms run at sea level, which
+/// [rp.md § Site Configuration](../../../docs/services/rp.md#site-configuration)
+/// explains is enough.
 #[derive(Debug, Clone, Copy)]
 pub struct Site {
     pub latitude_degrees: f64,
@@ -30,8 +31,9 @@ fn finder() -> &'static DefaultFinder {
 impl Site {
     /// Construct a site, validating the lat/lon range and resolving
     /// the IANA timezone via `tzf-rs`. The finder is constructed on
-    /// first call and held for the lifetime of the process — see the
-    /// memory-footprint discussion in `docs/plans/rp-planning-tools.md`.
+    /// first call and held for the lifetime of the process;
+    /// [rp.md § Site Configuration](../../../docs/services/rp.md#site-configuration)
+    /// gives its memory footprint.
     ///
     /// # Errors
     ///

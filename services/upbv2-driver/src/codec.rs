@@ -9,7 +9,8 @@
 //! Wire shape (UPBv2, firmware >= 2.4):
 //!
 //! * Commands are short ASCII strings terminated by `\n`.
-//! * Replies are one line per request, also `\n`-terminated.
+//! * Replies are one line per request, ending in CRLF: the transport splits
+//!   on the `\n` and `decode` trims the `\r`.
 //! * Five reply shapes: the ping reply (`UPB2_OK`), the status frame
 //!   (`UPB2:...` or `UPB:...`), the boot-state frame (`PS:...`), the power
 //!   counters (a bare `a:b:c:d` tuple), or an echo of the command string for

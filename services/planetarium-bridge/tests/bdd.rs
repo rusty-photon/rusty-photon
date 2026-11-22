@@ -1,8 +1,7 @@
 //! BDD entry point. Spawns the planetarium-bridge binary and drives it
 //! through the typed ASCOM Alpaca Telescope client plus a stub rp MCP server
 //! (`bdd/stub_rp.rs`) — the harness the design doc's Testing section
-//! specifies. Every feature is `@wip` until the device implementation lands
-//! (development-workflow.md Phase 2).
+//! specifies.
 
 #![allow(
     clippy::arithmetic_side_effects,

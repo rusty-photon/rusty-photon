@@ -23,8 +23,8 @@ use crate::error::TargetStoreError;
 /// collapse to `-`, so `"NGC 7000"` → `ngc-7000`); [`TargetSlug::new`]
 /// parses an already-canonical token and *rejects* whitespace rather than
 /// silently normalizing it. Keeping the lossy step in exactly one place is
-/// deliberate: when both constructors accepted a name and answered
-/// differently, a target stored under one spelling was invisible to a
+/// deliberate: if both constructors accepted a name and answered
+/// differently, a target stored under one spelling would be invisible to a
 /// lookup that used the other.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, derive_more::Display,
@@ -159,9 +159,12 @@ pub struct AcquisitionGoal {
     pub desired_count: u32,
 }
 
-/// Per-target scheduling constraints. Each `None` field falls back to the
-/// rp-config global default. Storage only — evaluated by rp's planner via
-/// `rp-ephemeris`.
+/// Per-target scheduling constraints.
+///
+/// Each `None` field falls back to the rp-config global default. Storage
+/// only: rp's planner gates selection on `min_altitude_degrees` (through
+/// `rp-ephemeris`); the other three are stored and validated, and no
+/// selection reads them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct SchedulingConstraints {
     /// Minimum altitude, in degrees, the target must be above to be
@@ -181,8 +184,10 @@ pub struct SchedulingConstraints {
     pub meridian_window_hours: Option<f64>,
 }
 
-/// Per-target grading thresholds. The grading plugin owns the *meaning* of
-/// these; this crate only stores the overriding values. Each `None` falls
+/// Per-target grading thresholds.
+///
+/// rp's progress derivation applies them to the metrics in each frame's
+/// sidecar; this crate only stores the overriding values. Each `None` falls
 /// back to the rp-config global default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct GradingThresholds {
@@ -210,8 +215,8 @@ pub struct Target {
     /// existing on-disk frames.
     pub display_name: String,
 
-    /// J2000/ICRS pointing, validated by construction ([`IcrsCoord`],
-    /// ADR-019). Serialized as a nested `"coord": { "ra_hours",
+    /// J2000/ICRS pointing, validated by construction ([`IcrsCoord`]).
+    /// Serialized as a nested `"coord": { "ra_hours",
     /// "dec_degrees" }` object — one canonical coordinate shape across the
     /// on-disk store and the MCP wire (no `#[serde(flatten)]`).
     pub coord: IcrsCoord,
@@ -234,13 +239,13 @@ pub struct Target {
     /// north (`docs/services/rp.md` § Target Store → Position angle).
     /// `None` ⇒ inherit the imaging train's configured default angle,
     /// then 0.0 north-up — resolved by rp at read time, never written
-    /// back. Serde default, so pre-P2 rows deserialize as `None` (the
-    /// whole migration story, exactly like the writer-identity fields;
-    /// no schema-version bump).
+    /// back. Serde default, so a row stored without the field
+    /// deserializes as `None`, with no schema-version step, like the
+    /// writer-identity fields.
     #[serde(default)]
     pub position_angle_degrees: Option<f64>,
 
-    /// Scheduling priority; higher values are preferred by the planner.
+    /// Scheduling priority, stored and editable; no selection reads it.
     pub priority: i32,
     /// Whether the planner may select this target. Bridge-imported targets
     /// land with `active: false` pending operator review.
@@ -271,8 +276,7 @@ pub struct Target {
     /// [`OPERATOR_WRITER`] for the operator MCP tools, an import's
     /// `source.kind` (e.g. `"planetarium-bridge"`) otherwise. Preserved
     /// across `upsert_target` of an existing slug, like `created_at`.
-    /// Rows written before this field existed deserialize as
-    /// operator-created.
+    /// A row stored without this field deserializes as operator-created.
     #[serde(default = "default_writer")]
     pub created_by: String,
     /// Writer identity of the last write, same domain as `created_by`.
@@ -447,7 +451,7 @@ mod tests {
     }
 
     // `Binning`'s Display/FromStr round-trip is tested in `rp-vocabulary`,
-    // where the type now lives (ADR-019).
+    // where the type lives.
 
     fn goal(filter: &str, x: u8, y: u8, secs: u64, desired_count: u32) -> AcquisitionGoal {
         AcquisitionGoal {
@@ -485,11 +489,10 @@ mod tests {
         assert!(matches!(err, TargetStoreError::InvalidGoals { .. }));
     }
 
-    // A row serialized before the writer-identity fields existed must
-    // deserialize as operator-owned — this is the whole redb migration
-    // story for the additive change (no schema-version step).
+    // A row stored without the writer-identity fields must deserialize as
+    // operator-owned, with no schema-version step.
     #[test]
-    fn pre_writer_identity_row_deserializes_as_operator_owned() {
+    fn a_row_without_writer_identity_deserializes_as_operator_owned() {
         let old_row = serde_json::json!({
             "slug": "m31",
             "display_name": "M 31",
@@ -504,11 +507,11 @@ mod tests {
         assert_eq!(target.updated_by, OPERATOR_WRITER);
     }
 
-    // Same migration story for the P2 framing field: a pre-P2 row has
-    // no `position_angle_degrees` and must deserialize as `None`
-    // (inherit the train default) — no schema-version step.
+    // Likewise a row stored without `position_angle_degrees` must
+    // deserialize as `None` (inherit the train default), with no
+    // schema-version step.
     #[test]
-    fn pre_position_angle_row_deserializes_as_inheriting() {
+    fn a_row_without_position_angle_deserializes_as_inheriting() {
         let old_row = serde_json::json!({
             "slug": "m31",
             "display_name": "M 31",

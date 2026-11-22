@@ -239,8 +239,7 @@ impl ServerBuilder {
         let local_addr = listener.local_addr()?;
 
         // Opt-in Alpaca UDP discovery responder (config `discovery_port`,
-        // absent by default — plan Decision 1); bound here so a taken port
-        // fails startup.
+        // absent by default); bound here so a taken port fails startup.
         let discovery =
             rusty_photon_driver::discovery::bind(local_addr, config.server.discovery_port).await?;
 
@@ -375,7 +374,7 @@ impl BoundServer {
         // Stop the import worker after serving ends; the spool keeps any
         // undelivered backlog durable across the stop. The worker stops
         // after the delivery in flight, and the wait for it is bounded so a
-        // wedged rp session can never hold the service's stop hostage (the
+        // delivery wedged on rp can never hold the service's stop hostage (the
         // Windows SCM escalates a slow stop into an uninstall failure).
         // Past the bound it is aborted, and the abort waited for: after a
         // reload the next server's worker loads the same spool file, and

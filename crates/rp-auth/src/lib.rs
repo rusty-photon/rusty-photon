@@ -26,9 +26,6 @@
 //!   + `Retry-After: 1`, after waiting 1 s for the gate.
 //! - compares the username in constant time and only after the KDF has run,
 //!   so a wrong username costs the same as a wrong password.
-//!
-//! The stored hash, the wire format and the 401 challenge are unchanged; see
-//! ADR-003 § Verification memo and KDF admission control.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(

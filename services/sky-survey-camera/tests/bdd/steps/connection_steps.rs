@@ -129,9 +129,9 @@ fn member_method(member: &str) -> &'static str {
 /// contract is about the surface as a whole — one member answering while its
 /// neighbours refuse is the contradiction the check exists to remove — and an
 /// outline would pay a service start, and for the post-frame case a survey
-/// exposure, per member. That cost is what pushed this suite past its 60s
-/// Bazel budget on Windows; the members stay listed in the feature file, which
-/// is what §2.5 of the testing skill asks for.
+/// exposure, per member, which would take this suite past its 60s Bazel
+/// budget on Windows. The members stay listed in the feature file, which is
+/// what §2.5 of the testing skill asks for.
 #[then("reading these members is rejected with ASCOM NOT_CONNECTED:")]
 async fn reads_rejected_not_connected(world: &mut SkySurveyCameraWorld, step: &Step) {
     let table = step

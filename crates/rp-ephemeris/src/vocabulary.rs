@@ -1,5 +1,5 @@
 //! Boundary conversions between this crate's computed [`IcrsCoord`] and the
-//! validated plan coordinate [`rp_vocabulary::IcrsCoord`] (ADR-019).
+//! validated plan coordinate [`rp_vocabulary::IcrsCoord`].
 //!
 //! These are two deliberately *different* types. `rp_vocabulary::IcrsCoord`
 //! is a **plan value**: private fields, `try_new`-validated to
@@ -9,9 +9,10 @@
 //! ERFA output, and the degradation contract fills it with `NaN` when the
 //! host clock or an upstream wrapper misbehaves (`sun_position`/
 //! `moon_position` return NaN-filled coords rather than panicking — see
-//! [`docs/crates/rp-ephemeris.md`]). A validated newtype cannot serve that
-//! role: `try_new` rejects `NaN`, and its half-open `[0, 24)` upper bound
-//! rejects a body computed to land exactly on the RA=24h≡0h seam.
+//! [rp-ephemeris.md § Panic Safety and Degradation](../../../docs/crates/rp-ephemeris.md#panic-safety-and-degradation)).
+//! A validated newtype cannot serve that role: `try_new` rejects `NaN`, and
+//! its half-open `[0, 24)` upper bound rejects a body computed to land
+//! exactly on the RA=24h≡0h seam.
 //!
 //! Hence the asymmetry these impls encode:
 //!

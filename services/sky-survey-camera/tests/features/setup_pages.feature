@@ -16,8 +16,8 @@ Feature: Setup pages
   pinned. No password hash reaches a page. A POST that does not come from the
   page itself is refused with 403 and the file is untouched. With auth
   configured the pages answer 401 without a credential and render with one.
-  The config.get, config.apply and config.schema actions are gone:
-  SupportedActions is empty.
+  SupportedActions is empty, and config.get, like any action name, answers
+  that it is not implemented.
 
   Background:
     Given a sky-survey-camera with default optics
@@ -112,7 +112,7 @@ Feature: Setup pages
     And the page shows an empty password input named "auth.password"
     And the page does not contain the stored password hash
 
-  Scenario: The configuration actions are gone
+  Scenario: No action is offered and config.get is not implemented
     Given the service is running
     When the supported actions are queried
     Then the supported actions are empty

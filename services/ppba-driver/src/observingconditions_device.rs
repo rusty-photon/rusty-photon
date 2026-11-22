@@ -173,10 +173,11 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
         ensure_connected!(self);
         // A range check, not a pair of ordered comparisons: every ordered
         // comparison against NaN is false, so a `period < low || period > high`
-        // form accepts NaN and passes it to the manager's seconds-to-`Duration`
-        // conversion, which panics on a non-finite value. `contains` is false
-        // for NaN, so this rejects it. The range comes from the manager, which
-        // enforces the same bound for callers that bypass the device.
+        // form accepts NaN and hands it to the manager, which ignores a period
+        // outside the range and leaves the client an `Ok` for a setting that
+        // never took. `contains` is false for NaN, so this rejects it. The
+        // range is the shared `average_period_hours()`, which the manager
+        // enforces too for callers that bypass the device.
         let allowed = average_period_hours();
         if !allowed.contains(&period) {
             return Err(ASCOMError::new(
@@ -414,8 +415,8 @@ mod tests {
     #[tokio::test]
     async fn set_average_period_nan_is_invalid_value() {
         // NaN compares false against both range bounds, so any check built
-        // from ordered comparisons accepts it and hands it to the manager's
-        // `Duration` conversion, which panics on a non-finite value.
+        // from ordered comparisons accepts it, and the manager, which ignores
+        // a period outside its range, leaves it unapplied behind an `Ok`.
         let device = connected_device().await;
         let err = device.set_average_period(f64::NAN).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
@@ -545,7 +546,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_config_actions_are_gone() {
+    async fn no_action_is_offered_and_config_get_is_not_implemented() {
         let device = make_device();
         assert_eq!(
             device.supported_actions().await.unwrap(),

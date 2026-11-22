@@ -2226,13 +2226,10 @@ mod tests {
     async fn a_value_the_typed_config_refuses_is_a_general_error() {
         let fx = fixture(&config());
         let p = pages(&fx, config(), Overrides::default());
-        // The walker's range check lets 70000 through? No — the schema caps
-        // u16 at 65535, so send something the walker cannot catch: a baud
-        // rate below zero is caught too. Use a port of -1 on the typed side
-        // by bypassing the range: the schema has no minimum for `level`?
-        // `u32` does have one. So drive the general path through a string
-        // where the typed config wants a number is impossible from a form;
-        // instead remove a required field from the file and submit nothing.
+        // The walker range-checks every number, and a form cannot send a
+        // string where the typed config wants a number, so no submitted
+        // value alone reaches the typed parse's refusal: the file lacks
+        // required fields, and the submission supplies none of them.
         std::fs::write(&fx.path, r#"{ "serial": { "port": "/dev/mock" } }"#).unwrap();
         let response = p
             .handle(PageScope::Server, post(&[("serial.port", "/dev/mock")]))

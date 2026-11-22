@@ -1,5 +1,5 @@
-//! Textual udev-rule inspection: enough parsing to catch the failure that
-//! motivated the check, plus the `ATTRS{idVendor}` extraction the catalog
+//! Textual udev-rule inspection: enough parsing to catch the failure the
+//! check exists for, plus the `ATTRS{idVendor}` extraction the catalog
 //! parity test joins against.
 //!
 //! The failure: udev silently drops an entire rule line when a `GROUP=`

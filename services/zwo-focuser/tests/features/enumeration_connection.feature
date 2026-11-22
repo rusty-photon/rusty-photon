@@ -4,9 +4,10 @@ Feature: Focuser enumeration and connection lifecycle
   each as an ASCOM Focuser device, index 0, 1, 2, ..., on one port (C0).
   Each device's UniqueID is derived from its SDK serial; because
   EAFGetSerialNumber requires an open focuser, enumeration opens each
-  focuser briefly to read the serial. Connect is per-device (C4). Opening
-  a device (C1) caches its EAF_INFO (name) and working travel limit
-  (EAFGetMaxStep). An open failure leaves the device not connected (C2).
+  focuser briefly to read the serial, and caches its EAF_INFO (name) and
+  working travel limit (EAFGetMaxStep) from the same open. Connecting a
+  device opens its focuser (C1), and connect is per-device (C4). An open
+  failure leaves the device not connected (C2).
   Disconnect closes the device (C3). With zero focusers discovered the
   service still starts, registering no Focuser devices and logging a
   warning. Against the zwo-rs simulation backend exactly one focuser
