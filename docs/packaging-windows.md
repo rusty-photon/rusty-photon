@@ -102,8 +102,9 @@ hand, then start the service, or reboot:
 sc.exe start rusty-photon-<svc>
 ```
 
-**Serial-device drivers** (`ppba-driver`, `qhy-focuser`,
-`pa-falcon-rotator`, `pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`)
+**Serial-device drivers** (`ppba-driver`, `upbv2-driver`,
+`gemini-powerbox-adv3-driver`, `qhy-focuser`, `pa-falcon-rotator`,
+`pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`)
 validate their hardware eagerly at startup and exit if the device is
 missing — by design, so a broken device is never advertised on the
 network. Until the device is attached (and its COM port matches the

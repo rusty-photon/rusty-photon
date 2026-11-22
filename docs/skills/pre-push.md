@@ -30,7 +30,7 @@ ships, before the clippy passes below. Bazel's own Rust pin (`MODULE.bazel`)
 moves with it, so Bazel's rustc knows the lints the tree is written against
 (*Bazel's Rust pin*, below). Each stable bump can add newly-denied
 lints; the `beta / clippy` census files them as `beta-clippy` issues ~6 weeks
-ahead (docs/plans/archive/workspace-lints.md, "Standing consequences").
+ahead (*Stable and beta clippy answer different questions*, below).
 Absorb them before the release with a change that is clean on **both**
 channels: an `#[expect]` for a site only beta flags is unfulfilled on stable
 and fails the gate, and a site left alone turns `main` red the day CI picks up
@@ -320,7 +320,7 @@ edges (four camera/focuser services force `simulation` onto their FFI wrapper;
 unification would re-enable those features for five crates, silently un-linting
 the complement. The accepted residuals: test-target code behind `not(feature =
 ...)` is compiled by neither pass, and a cfg mixing feature-on with feature-off
-escapes both (the only ones today are zwo-rs's `all(not(simulation),
+escapes both (the tree's only ones are zwo-rs's `all(not(simulation),
 any(camera|efw|focuser))` gates — covered, since zwo-rs's defaults enable the
 device features; a future one elsewhere still compiles under the nightly `hack`
 powerset, rustc-only, and a deny-set widening should re-scan cfgs paren-aware
@@ -387,10 +387,10 @@ is the sole coverage source.
 
 **Doctests are the one test kind Bazel does not pick up on its own.** rules_rust
 runs none unless a `rust_doc_test` target declares them, so only the crates that
-have one — `rusty-photon-service-lifecycle` and `qhyccd-rs` (real + sim) — are in
-the per-PR gate. Every other crate's examples are proven here, off-PR: a broken
-example lands on main and surfaces in the next nightly. When you add examples to
-a crate, add a `rust_doc_test` for it; if the crate has feature variants, give
+have one — `rusty-photon-service-lifecycle`, `rusty-photon-camera-core` and
+`qhyccd-rs` (real + sim) — are in the per-PR gate. Every other crate's examples
+are proven here, off-PR: a broken example lands on main and surfaces in the
+next nightly. When you add examples to a crate, add a `rust_doc_test` for it; if the crate has feature variants, give
 each variant its own target and repeat `crate_features` on it, because
 `rust_doc_test` does not inherit them from the crate it wraps.
 
@@ -445,7 +445,7 @@ manifest entry of its own, and inferring one from a file beneath it is
 ambiguous whenever a repo contributes both sources and generated outputs to
 the runfiles — `<output_base>/external/<repo>` versus
 `<output_base>/execroot/…/bazel-out/<cfg>/bin/external/<repo>`. Rewriting them
-resolved to the source directory, which contains no rlib. If you ever need to
+resolves to the source directory, which contains no rlib. If you ever need to
 resolve a directory here, prove which tree it lands in first.
 
 **To see what the runner actually handed rustdoc**, run the doc tests with the
@@ -456,13 +456,13 @@ bazel test --test_env=RUSTDOC_TEST_TRACE_ARGV=1 //crates/qhyccd-rs:all
 ```
 
 Each resolved argv element is written to stderr as `RUSTDOC-ARGV <value>`,
-which Bazel prints only for a failing test. That trace is what identified the
-`-L` bug above; nothing else shows it, because resolution happens at test time
-inside the generated script and rustdoc reports an argument it could not use
-exactly like one it never received. It is off by default on purpose:
-`--test_env` is part of every test's action key, so enabling it in `.bazelrc`
-re-executes the entire suite on every platform, and that load surfaces
-unrelated timing flakes.
+which Bazel prints only for a failing test. Nothing else shows what the runner
+resolved — a wrong `-L` rewrite like the one above included — because
+resolution happens at test time inside the generated script and rustdoc
+reports an argument it could not use exactly like one it never received. It is
+off by default on purpose: `--test_env` is part of every test's action key, so
+enabling it in `.bazelrc` re-executes the entire suite on every platform, and
+that load surfaces unrelated timing flakes.
 
 **Reading a doc-test dependency failure on Windows.** rustdoc reports a lost
 rlib two different ways, and which one you get says *where* the loss happened,
@@ -738,8 +738,8 @@ Bazel runs no clippy: Cargo's `stable / clippy` is a PR's only Rust lint (the
 check.yml section above). What Bazel's own build needs from you:
 
 - **Bazel reads no `[lints]` table.** Its rustc runs at rustc's default lint
-  levels, with `-Dwarnings` under `--config=ci`. Today that is Cargo's set
-  too: `[workspace.lints.rust]` sets only `unexpected_cfgs`, at its default
+  levels, with `-Dwarnings` under `--config=ci`. That is Cargo's set too,
+  since `[workspace.lints.rust]` sets only `unexpected_cfgs`, at its default
   level. A rustc lint added there reaches Cargo's build and clippy, not
   Bazel's. To carry it to Bazel, give each package rules_rust's
   `extract_cargo_lints` and each Rust target its `lint_config`.
@@ -990,8 +990,10 @@ Known limitations:
 
 ## Conditional Compilation Notes
 
-- The `mock` feature is used by ppba-driver and qhy-focuser for integration
-  testing (including ConformU). It is not required for normal builds.
+- The `mock` feature replaces what a crate talks to — a device, a remote
+  service, the host's service manager — with a test double, for integration
+  testing (including ConformU). The device drivers, `doctor` and several
+  library crates carry it. It is not required for normal builds.
 - Feature powerset checks (`cargo hack --feature-powerset`) test all
   combinations of feature flags to verify features are additive -- this is
   important for feature unification in workspaces.

@@ -1,7 +1,6 @@
 # Packaging assets
 
-Canonical shared files for the per-service `.deb`/`.rpm` packages
-([ADR-012](../docs/decisions/012-service-packaging-architecture.md)).
+Canonical shared files for the per-service `.deb`/`.rpm` packages.
 Operator-facing docs (building, installing, configuring) live in
 [`docs/packaging.md`](../docs/packaging.md).
 
@@ -24,7 +23,7 @@ with [`postinst.udev-stanza`](postinst.udev-stanza) inserted before the
 construction, byte for byte. The stanza also prints a pointer to
 `/usr/sbin/<pkg-minus-camera>-firmware-install` when the package ships one
 (qhy-camera does — proprietary firmware is downloaded by the operator, never
-packaged, per ADR-013; zwo-camera and zwo-focuser bundle their MIT blobs
+packaged; zwo-camera and zwo-focuser bundle their MIT blobs
 instead, so the pointer is a no-op for both — `zwo-focuser`'s package name
 doesn't even end in `-camera`, so the substitution leaves the helper path
 unchanged and permanently missing, which is exactly the desired no-op).
@@ -47,11 +46,11 @@ entry enables and starts the timer, the rpm scriptlets enable it — no
 vehicle);
 qhy-camera the firmware helper; svbony-camera the SDK helper, which
 installs the operator-downloaded SDK where the RUNPATH finds it (SVBony
-grants no licence to ship it, ADR-018); zwo-camera and zwo-focuser each their own
+grants no licence to ship it); zwo-camera and zwo-focuser each their own
 committed `ZWO-SDK-LICENSE.txt` (checker-`cmp`'d against the copy vendored
 with the libzwo-sys headers) plus a gitignored `lib/` dir into which
 `cargo ci build-packages` stages that service's ONE MIT SDK blob right
-before `cargo deb` runs — libzwo-sys links per device feature (ADR-014), so
+before `cargo deb` runs — libzwo-sys links per device feature, so
 zwo-camera's `lib/` carries exactly `libASICamera2.so` and zwo-focuser's
 exactly `libEAFFocuser.so` (the link-search dir during the build is the
 blob cache itself, not a pkg/lib dir). No blob appears in two packages, so
@@ -67,7 +66,7 @@ module comment is the list of checks. Run it after touching anything under
 
 1. copy `postinst.common` / `postrm.common` into `services/<svc>/pkg/`,
 2. write `rusty-photon-<svc>.service` (start from filemonitor's and apply
-   the service-class delta from the plan: serial → per-flavor unit copies
+   the delta for the service's class: serial → per-flavor unit copies
    under `pkg/deb/` and `pkg/rpm/`, identical except
    `SupplementaryGroups=dialout plugdev` (deb) vs
    `SupplementaryGroups=dialout` (rpm) — dialout is the distro default

@@ -40,14 +40,14 @@ Out of scope — owned elsewhere, called out so the boundary is explicit
   layer. See [rp Integration](#rp-integration-outside-this-crate).
 - **Ephemeris evaluation** (is the target up / is the moon too close) —
   [`rp-ephemeris`](rp-ephemeris.md), driven by `rp`'s planner.
-- **The grading plugin** that measures per-frame metrics — a separate
-  `rp` plugin; this crate only stores the *thresholds* its verdict is
-  computed against.
+- **The grading component** that measures per-frame metrics — not part
+  of `rp`, and no such component exists; this crate only stores the
+  *thresholds* its verdict is computed against.
 - **The catalog** — [`rp-catalog`](../../crates/rp-catalog) stays the
   embedded read-only source of truth. Targets **denormalize** the
   resolved coordinates; no catalog rows are stored here.
-- **Frames, sidecars, sessions, and the event log** — FITS + sidecar
-  JSON files and the in-RAM event ring buffer, all unchanged.
+- **Frames, sidecars, and the event log** — FITS + sidecar JSON files
+  and the in-RAM event ring buffer.
 
 ## Crate boundary (pure plan repository)
 
@@ -117,9 +117,9 @@ pub struct Target {
     /// north (rp.md § Target Store → Position angle). None ⇒ inherit
     /// the imaging train's configured default angle, then 0.0
     /// north-up — resolved by rp at read time, never written back.
-    /// `#[serde(default)]`, so pre-P2 rows deserialize as None (the
-    /// whole migration story, exactly like the writer-identity
-    /// fields; no version bump).
+    /// `#[serde(default)]`, so a row written without the field
+    /// deserializes as None — no schema-version bump, like the
+    /// writer-identity fields.
     pub position_angle_degrees: Option<f64>,
 
     // --- Planning ---
@@ -136,14 +136,13 @@ pub struct Target {
     /// timestamp as a parameter — it does not read the clock).
     pub created_at: String,
     pub updated_at: String,
-    /// Writer identity (P3 import provenance, rp.md § Target Store →
-    /// Writer identity): "operator" for the operator MCP tools, an
-    /// import's `source.kind` otherwise. `created_by` is preserved
-    /// across upserts like `created_at`; `updated_by` is stamped on
-    /// every write. Both `#[serde(default = "operator")]`, so rows
-    /// written before the fields existed deserialize as operator-owned
-    /// — the whole migration story for this additive change (see
-    /// Schema migration below; no version bump).
+    /// Writer identity (rp.md § Target Store → Writer identity):
+    /// "operator" for the operator MCP tools, an import's `source.kind`
+    /// otherwise. `created_by` is preserved across upserts like
+    /// `created_at`; `updated_by` is stamped on every write. Both
+    /// `#[serde(default = "operator")]`, so a row written without them
+    /// deserializes as operator-owned — no schema-version bump (see
+    /// Schema migration below).
     pub created_by: String,
     pub updated_by: String,
 }
@@ -161,14 +160,14 @@ pub struct AcquisitionGoal {
 }
 
 // Binning and IcrsCoord are the shared plan value types from
-// `rp-vocabulary` (ADR-019), re-exported here as `rp_targets::{Binning,
+// `rp-vocabulary`, re-exported here as `rp_targets::{Binning,
 // IcrsCoord}`. `Binning { pub x: u8, pub y: u8 }` serializes as its
 // canonical `"AxB"` string; `IcrsCoord` is a validated newtype (private
 // fields, `try_new`).
 
 /// Per-target scheduling constraints. Each `None` field falls back to
-/// the rp-config global default. *Stored here; evaluated by rp's
-/// planner via rp-ephemeris.*
+/// the rp-config global default. *Stored here; rp's planner evaluates
+/// `min_altitude_degrees` via rp-ephemeris (§ Constraint evaluation).*
 pub struct SchedulingConstraints {
     pub min_altitude_degrees: Option<f64>,
     pub min_moon_separation_degrees: Option<f64>,
@@ -206,12 +205,13 @@ It has **two constructors and exactly one derivation**:
   have produced, so a caller who passed a display name to a `slug`
   parameter is told what to use instead.
 
-Splitting them this way is deliberate. When both constructors accepted a
-name and answered *differently* — one stripping whitespace, one
-hyphenating it — a target stored under one spelling was invisible to any
-lookup that used the other, and the symptom was a silent `progress:
-null` rather than an error. One lossy step, in one place, is what keeps
-the stored spelling and the looked-up spelling in agreement.
+Splitting them this way is deliberate. Two constructors that each
+accepted a name and answered *differently* — one stripping whitespace,
+one hyphenating it — would make a target stored under one spelling
+invisible to any lookup that used the other, with a silent `progress:
+null` rather than an error as the symptom. One lossy step, in one place,
+is what keeps the stored spelling and the looked-up spelling in
+agreement.
 
 The slug is **immutable** once created — it is the
 on-disk acquisition identity (the `{target}` token in every frame's path
@@ -230,24 +230,25 @@ events); a target is a durable plan entity, so it is name-keyed.
 ### Coordinates: validated `IcrsCoord`, nested `coord` object
 
 The pointing is `coord: IcrsCoord` — the validated plan value type from
-[`rp-vocabulary`](rp-vocabulary.md) ([ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md)),
-re-exported as `rp_targets::IcrsCoord`. It is a private-field newtype
-constructed through `IcrsCoord::try_new` (`ra_hours ∈ [0,24)`,
+[`rp-vocabulary`](rp-vocabulary.md), re-exported as
+`rp_targets::IcrsCoord`. It is a private-field newtype constructed
+through `IcrsCoord::try_new` (`ra_hours ∈ [0,24)`,
 `dec_degrees ∈ [-90,90]`), so a `Target` cannot hold an out-of-range
-pointing — the store-write validation gap the old bare-`f64` fields left
-open (`add_target`/`update_target` accepted any `f64`) is closed by
-construction. The coordinate is **not** `#[serde(flatten)]`ed — it
+pointing: no write path (`add_target`, `update_target`, an import) can
+build one without passing the check. The coordinate is **not**
+`#[serde(flatten)]`ed — it
 serializes as a nested `coord` object,
 `"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }`, one canonical
 coordinate shape shared by the on-disk redb store and the MCP wire (the
 `target_to_json` output of `get_target`/`list_targets`/`add_target`); read
 sites use `coord.ra_hours()` / `coord.dec_degrees()`.
 
-This unifies the plan-side coordinate with `rp_catalog::ResolvedTarget`
-(catalog → store → planner is now one `IcrsCoord` type).
-`rp_ephemeris::IcrsCoord` stays a *separate* computed, `NaN`-capable type
-(a false cognate), bridged by `From`/`TryFrom` at the planner boundary —
-see ADR-019. This is distinct from [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md)'s
+`rp_catalog::ResolvedTarget` holds the same type, so catalog → store →
+planner is one `IcrsCoord` type. `rp_ephemeris::IcrsCoord` is a
+*separate* computed, `NaN`-capable type (a false cognate), bridged by
+`From`/`TryFrom` at the planner boundary
+([rp-vocabulary.md § Not this crate](rp-vocabulary.md#not-this-crate-false-cognates)).
+Both are distinct from the Star Adventurer GTi driver's
 **mount-local** `MechHa`/`Ra`/`Dec` typed quantities, which model
 frame/unit mix-ups in pointing math and are not plan data.
 
@@ -273,9 +274,12 @@ attribution for `set_goals` — the store never reads the clock, so rp
 supplies both at the call boundary, exactly as it does for the
 `Target` fields on `upsert_target`.
 
-`list_targets` returns every row; the planner filters (`active`) and
-orders (`priority`, then least-progress) in Rust — the row count is tens,
-so a scan-and-sort is cheaper and simpler than maintaining an index.
+`list_targets` returns every row; the planner filters (`active`, the
+altitude floor) and orders (nearest transit, then least progress, then
+the filter in the wheel — rp.md § Decision Logic) in Rust — the row
+count is tens, so a scan-and-sort is cheaper and simpler than
+maintaining an index. `priority` is stored and editable, but no
+selection reads it.
 There is intentionally **no** `record_exposure`/counter-mutation method:
 actuals are derived from the filesystem, never written here
 (see [rp Integration](#rp-integration-outside-this-crate)).
@@ -317,6 +321,14 @@ pub enum TargetStoreError {
     UnsupportedSchemaVersion { found: u32, supported: u32 },
     /// A goals-only operation referenced a slug with no stored target.
     NotFound { slug: String },
+    /// A goal set (upsert or set_goals) repeats a key or has a zero
+    /// desired_count/exposure_duration.
+    InvalidGoals { reason: String },
+    /// The blocking task running a redb operation panicked or was cancelled.
+    Join(String),
+    /// The meta table holds a value this crate never writes (hand-edited
+    /// or corrupt file).
+    Corrupt(String),
 }
 ```
 
@@ -358,8 +370,8 @@ generation, but the generation has changed across major releases
 `DatabaseError::UpgradeRequired` and needs a one-time
 `Database::upgrade()`. This is **distinct from** the crate's own
 `schema_version` (which versions the *value* shape, not redb's file
-layout). `redb` is therefore pinned to a known major in
-`crates/rp-targets/Cargo.toml`, and `RedbTargetStore::open` surfaces a
+layout). `redb` is therefore pinned to a known major in the workspace
+`Cargo.toml`, and `RedbTargetStore::open` surfaces a
 redb-format bump as a dedicated `TargetStoreError::RedbUpgradeRequired`
 rather than burying it in the opaque `Open` variant — so a format upgrade
 is an explicit, logged step, not a silent failure.
@@ -376,7 +388,8 @@ On open, read `meta["schema_version"]`:
   `#[serde(default)]` their new fields and tolerate unknown ones, so an
   old value deserializes into the new `Target` directly. A migration
   step is only authored for a breaking re-shape (rename, split, type
-  change), as a `Target_vN → Target` transform.
+  change), as a `Target_vN → Target` transform. `CURRENT_SCHEMA_VERSION`
+  is 1, so no step exists: an older version is stamped current.
 - **> current** → `UnsupportedSchemaVersion` (refuse to run against a
   database written by a newer build, rather than silently dropping
   fields).
@@ -392,9 +405,10 @@ frames it describes and a single directory copy backs up both. Backup is
 
 Everything in this section lives in `services/rp`, not in `rp-targets`.
 It is documented here because it is the context that makes the crate
-useful, and because it is what `docs/services/rp.md` must absorb in the
-matching Rule-2 update. The authoritative home for these contracts is
-`rp.md`; this is the summary.
+useful. [rp.md § Target Store](../services/rp.md#target-store) is the
+authoritative home of the target contracts and this is their summary;
+§ File-naming template below is itself the home of the naming-token
+contract, which rp.md § Persistence points to.
 
 ### Slug allocation (add-time)
 
@@ -421,22 +435,22 @@ an in-place overwrite, never a duplicate row.
 
 `add_target`'s `source` import form (rp.md § Target Store → Import
 form) deviates deliberately: identity is proximity-only dedup against
-`target_store.import.dedup_arcsec` (the `catalog_ref`-match branch is
-never consulted — two framings of one object are two targets), an
+`target_store.import.dedup_arcsec` rather than the 10′ same-object
+window (two framings of one object are two targets), an
 import only ever upserts a row that is still pending and import-owned
 (`!active && updated_by == source.kind`), and a base-slug collision
 always suffix-allocates.
 
 ### File-naming template (render + parse)
 
-**Landed: config-load validation of the token contract below, the
-render/parse engine itself** (`rp::config::naming_template::CompiledTemplate`
-— `compile`/`render`/`parse`, regex-backed, unit-tested including a
-`parse(render(x)) == x` round trip against the documented example
-below), **`session.directory_pattern`, and `capture`'s
-`target`/`frame_type` parameters (Decision 11) — the caller that drives
-both patterns.** `capture` renders the full path (replacing
-`<doc_uuid_8>.fits`) whenever `frame_type` is supplied, and calls
+`rp::config::naming_template` validates both patterns at config load
+against the token contract below and compiles each into a
+`CompiledTemplate` — `compile`/`render`/`parse`, regex-backed,
+unit-tested including a `parse(render(x)) == x` round trip against the
+documented example below. `capture`'s `target`/`frame_type` parameters
+drive both patterns: `capture` renders the full path (replacing
+`<doc_uuid_8>.fits`) whenever `frame_type` is supplied and
+`session.file_naming_pattern` is configured, and calls
 `parse` to derive each new frame's `{frame_number}` by scanning its
 target directory. The same two compiled templates drive the multi-night
 frame scan behind target *progress* derivation
@@ -447,29 +461,32 @@ and the planner itself) — see rp.md § Progress derivation.
 These frames don't image a sky object, so `capture` uses a **reserved
 slug equal to the lowercased frame type** (`"dark"`/`"flat"`/`"bias"`)
 for `{target}` when no explicit `target` is supplied — a single shared
-bucket per calibration type. An explicit `target` is still accepted
-(resolved against the store like a `Light` frame) for a future
-per-target flat-capture flow: today's flats assume one set works for
-every target in a night (adequate rotator repeatability), but a rig
-whose rotator can't reliably return to the same position would need
-flats taken right after each target finishes, tied to that target's
-own slug. See rp.md § Capture Tool Details for the full resolution
+bucket per calibration type. An explicit `target` is accepted too
+(resolved against the store like a `Light` frame) and files the frame
+under that target's own slug: the shared bucket assumes one set of
+flats serves every target in a night (adequate rotator repeatability),
+and a rig whose rotator cannot reliably return to the same position
+needs flats taken right after each target finishes, tied to that
+target. See rp.md § Capture Tool Details for the full resolution
 rules, including the `"NA"`/`0` fallback `{filter}`/`{filter_position}`
 render when no filter wheel is present (or, for `Dark`/`Bias`, always).
 
-**Deferred, not yet decided:** organizing a focus sweep's captures and
-`center_on_target`'s internal diagnostic captures through this same
-mechanism. They can run multiple times against one target in a night,
-which `{night_date}`-granularity directories can't disambiguate — a
-`{time}` token doesn't exist in the shape table below. Both keep
-calling `capture` with `frame_type` omitted (today's flat-file
-behavior) until this is designed; see rp.md § Capture Tool Details.
+**Diagnostic captures are not filed by target.** A focus sweep's
+captures and `center_on_target`'s internal diagnostic captures call
+`capture` with `frame_type` omitted and land as flat files. They can
+run several times against one target in a night, which
+`{night_date}`-granularity directories cannot tell apart, and the shape
+table below has no `{time}` token; how to file them is an open design
+question (rp.md § Capture Tool Details).
 
-`rp` turns `session.file_naming_pattern` (rp.md § Persistence) from
-a render-only field into a **round-trippable** template, plus
-`session.directory_pattern`. Tokens use the `{token}` brace syntax;
-an unrecognized token is rejected at config load (§ Config-load
-validation below). The default reproduces the agreed scheme:
+`session.file_naming_pattern` (rp.md § Persistence) and
+`session.directory_pattern` are **round-trippable** templates. Tokens
+use the `{token}` brace syntax; an unrecognized token is rejected at
+config load (§ Config-load validation below). `file_naming_pattern`
+has no default — unset, `capture` writes flat `<doc_uuid_8>.fits`
+files — and `directory_pattern` defaults to the first line below
+whenever `file_naming_pattern` is set. Together the two lines spell
+out the scheme the [Configuration](#configuration) example sets:
 
 ```
 directory_pattern    = "{target}/{night_date}/{frame_type}"
@@ -515,15 +532,14 @@ it has no token spelling.)
 wire and the `humantime_serde` store value — `humantime::format_duration`
 (so 300 s is `5m`, 120 s is `2m`), with humantime's inter-unit spaces
 stripped (`1s 500ms` → `1s500ms`) so it stays a single filename token;
-`humantime::parse_duration` reads the space-free form back unchanged. This
-deliberately supersedes the earlier whole-second-only `\d+sec` form, whose
-`as_secs()` truncation rounded a sub-second calibration exposure (a 32 µs
-bias) to `0s`; humantime carries `32us`/`500ms` faithfully. `{frame_number}`
+`humantime::parse_duration` reads the space-free form back unchanged. A
+whole-second form would truncate a sub-second calibration exposure (a
+32 µs bias) to `0s`; humantime carries `32us`/`500ms` faithfully. `{frame_number}`
 renders zero-padded to width 4. `{frame_type}` names all capture intents,
 but only `FrameType=Light` frames bucket against `AcquisitionGoal` quotas
 (Dark/Flat/Bias live under their own dirs).
 
-**Config-load validation (parse-don't-validate) — landed**
+**Config-load validation (parse-don't-validate)**
 (`rp::config::naming_template`). Both patterns are parsed and checked
 at startup; a bad pattern fails the load, not a session.
 `file_naming_pattern`'s rejection rules: the pattern must contain every
@@ -563,16 +579,18 @@ is rejected. Unknown tokens are rejected with the offending token named.
    directory yields `total = 0` for every sub-spec, so each goal reports
    `0/desired_count` — an uncaptured filter is 0 %, not an error.
 2. **Good vs rejected** — for each frame, read its sidecar's grading
-   section (metrics written once by the grading plugin), apply the
+   section (metrics a separate grading component writes once; no
+   component writes one, so every frame counts as good — rp.md
+   § Progress derivation), apply the
    **effective** thresholds (`target.grading` field-wise over the config
    default), and classify. A frame is rejected only on evidence: with no
    sidecar, no grading section, or no value for the metric a threshold
-   judges, it counts as good, so progress still advances on a rig with
-   no grading plugin installed. When the effective thresholds are empty
+   judges, it counts as good, so progress advances with no grading
+   component installed. When the effective thresholds are empty
    there is nothing to contradict, and the sidecar reads are skipped
    entirely. The verdict is dynamic: changing a threshold
-   re-partitions good/rejected with nothing renamed or moved. The
-   grading plugin may cache `(verdict, thresholds_version)` in the
+   re-partitions good/rejected with nothing renamed or moved. A
+   grading component may cache `(verdict, thresholds_version)` in the
    sidecar to avoid re-evaluating unchanged frames — a cache only,
    recomputed whenever the effective thresholds change, so the verdict is
    never authoritative on disk and stays fully reversible (consistent
@@ -601,44 +619,45 @@ planner already holds resolves that timezone from lat/long via `tzf-rs`.
 The crate is not involved.
 
 **Rejected-frame representation.** None on disk. Frames are never moved
-or renamed for rejection (the verdict is reversible). When handing off to
-PixInsight, `rp` materializes the *current* good set (e.g. a generated
-list or a copy/symlink folder) — or PixInsight's own SubframeSelector
-culls. This hand-off mechanism is deferred and out of scope for the MVP.
+or renamed for rejection (the verdict is reversible). `rp` has no
+PixInsight hand-off: materializing the *current* good set (a generated
+list, or a copy/symlink folder) is not implemented, and PixInsight's own
+SubframeSelector can cull instead.
 
 ### `record_exposure` and progress tools
 
 Because actuals are filesystem-derived, `record_exposure(target, filter)`
 (rp.md § Planner Tools) does not increment a stored counter — capture
-already wrote the frame. It survives as the orchestrator's per-frame
+already wrote the frame. It serves as the orchestrator's per-frame
 progress readback; the filter-batching tie-break reads the filter in
 the imaging train's wheel, not a recorded one. `get_session_progress` and
 `get_target_status.progress` are computed from the store (goals) + the
 derivation above (actuals).
 
-**Progress shape supersedes the filter-only map.** Progress keyed by
-filter alone (`{"Luminance": {completed, goal}}`) collapses two goals
+**Progress is keyed by the full sub-spec.** Progress keyed by filter
+alone (`{"Luminance": {completed, goal}}`) would collapse two goals
 that share a filter (e.g. Ha@2m and Ha@5m). Because an
 `AcquisitionGoal` is keyed by the full
-`(filter, binning, exposure_duration)` triple, the progress shape is,
-per target, a list of
+`(filter, binning, exposure_duration)` triple, the progress shape on
+every progress surface is, per target, a list of
 `{filter, binning, exposure_duration, desired_count, good, total}` (the JSON
-key is `exposure_duration` on the wire) — landed on every progress
-surface, rp.md § Progress derivation.
+key is `exposure_duration` on the wire; rp.md § Progress derivation).
 
 ### Constraint evaluation
 
-The planner reads `target.scheduling` (falling back field-wise to the
-config defaults) and evaluates it with `rp-ephemeris`: `alt_az` ≥
-`min_altitude_degrees`, `moon_separation` ≥ `min_moon_separation_degrees`,
-moon illumination ≤ `max_moon_illumination_fraction`, and |hour angle
-from `transit`| ≤ `meridian_window_hours`. Storage of these fields is
-MVP; *enforcement* in selection can be wired in incrementally (store
-first, gate later) without a schema change.
+The planner gates selection on one field of `target.scheduling`: a
+target is eligible while its `alt_az` altitude (from `rp-ephemeris`) is
+at least `min_altitude_degrees` — the target's own, falling back to
+`target_store.default_scheduling`'s and then to the planner-wide
+`planner.min_altitude_degrees`. The other three —
+`min_moon_separation_degrees`, `max_moon_illumination_fraction` and
+`meridian_window_hours` — are stored and validated, but no selection
+enforces them; enforcing one needs no schema change.
 
 ## Configuration
 
-New/extended `rp` config (durations are humantime strings per the
+The `rp` config this integration reads (durations are humantime
+strings per the
 [workspace Duration convention](../workspace.md#duration-units); angles
 are bare decimal degrees):
 
@@ -679,39 +698,31 @@ as good rather than as not-good.
 
 ## MVP scope
 
-**In MVP (this crate):** the `Target` + `AcquisitionGoal` model, the
+**This crate:** the `Target` + `AcquisitionGoal` model, the
 `TargetSlug` newtype, the `TargetStore` trait, `RedbTargetStore`
 (two-table layout, transaction-per-op, ACID), the `schema_version`
 migration scaffold, and override storage for scheduling + grading. An
 in-memory test double for consumer tests.
 
-**In MVP (rp-side):** target CRUD MCP tools (resolve via
+**rp-side:** target CRUD MCP tools (resolve via
 `rp-catalog` → derive slug → `upsert`), the round-trippable naming
 template with config-load validation, progress derivation (total from
 filenames, good/rejected from sidecar metrics + effective thresholds),
-and `get_session_progress` / `get_target_status.progress`.
+`get_session_progress` / `get_target_status.progress`, least-progress
+ordering (rp.md's planner bullet 3, which needs only progress
+derivation), and altitude gating: `get_next_target` reads a
+store-backed target's `scheduling.min_altitude_degrees`, falling back
+to `target_store.default_scheduling.min_altitude_degrees`
+([rp.md § Target Store](../services/rp.md#target-store)).
 
-**Deferred:** ephemeris-gated constraint *enforcement* in target
-selection (the constraint fields are stored in MVP, gated incrementally —
-note that least-progress *ordering* per rp.md's planner bullet 3 needs
-only the in-MVP progress derivation and is therefore in scope, whereas
-moon/meridian *gating* needs ephemeris and is deferred). **Amended by
-[Decision 9](../plans/archive/planetarium-target-import.md#decisions-fixed--settled-interactively-2026-07-22-revised-same-day-after-adversarial-review):
-altitude *gating* is explicitly NOT deferred** — it is a fixed P1
-migration requirement (parity with the shipped v1 planner, which
-already evaluates it via `rp-ephemeris`; see
-[rp.md § Target Store](../services/rp.md#target-store)) — **landed**:
-`get_next_target` reads a store-backed target's
-`scheduling.min_altitude_degrees`, falling back to
-`target_store.default_scheduling.min_altitude_degrees`. So only
-moon-separation, moon-illumination, and meridian-window gating remain
-deferred here; seasonal/date scheduling windows; seeding the catalog into the DB for
-indexed type/magnitude/cone-search browse; alternative naming grammars
-beyond the validated `{token}` brace form (the configurable `{token}`
-template itself ships in MVP); the PixInsight good-set hand-off; the
-grading plugin itself; multi-site / multi-`rp` plans; and any durable
-session/event history (still file/ring-buffer per the predictive-deadlines
-plan).
+**Not implemented:** moon-separation, moon-illumination, and
+meridian-window gating (the fields are stored, so gating on them needs
+no schema change); seasonal/date scheduling windows; seeding the
+catalog into the DB for indexed type/magnitude/cone-search browse;
+naming grammars beyond the validated `{token}` brace form; the
+PixInsight good-set hand-off; a grading component; multi-site /
+multi-`rp` plans; and durable event history (events live in the
+in-RAM ring buffer).
 
 ## Behavioral contracts
 
@@ -721,7 +732,7 @@ Happy path:
   `rp_catalog::Catalog::resolve`, denormalizes
   `name/object_type/ra/dec/magnitude/size` onto a `Target`, derives a
   slug, sets `catalog_ref`, and `upsert`s. `get_target(slug)` returns it
-  with its (initially empty) goals.
+  with the goals it was written with.
 - **Add non-catalog target** — caller supplies raw `ra_hours/dec_degrees`
   (comet, custom framing, mosaic panel); `catalog_ref`/`object_type`/…
   are `None`. Accepted identically.
@@ -733,15 +744,15 @@ Happy path:
   filter/order; `delete_target` returns `false` for an absent slug.
   Deleting a target removes only its plan row; slug-keyed frames already
   on disk are intentionally left untouched, so re-adding the same slug
-  later silently re-adopts them — `rp` should warn on delete-with-frames,
-  or prefer `active = false` to retire a target without orphaning.
+  later silently re-adopts them. `rp` does not check for frames before a
+  delete; `active = false` retires a target without orphaning them.
 - **Reopen after upgrade** — opening a `schema_version < current`
   database migrates it forward within one transaction.
 
 Errors:
 
-- **Invalid slug** — `TargetSlug::new` rejects empty / out-of-charset
-  input (caller-side, before `upsert`).
+- **Invalid slug** — `TargetSlug::new` rejects empty, whitespace, or
+  out-of-charset input (caller-side, before `upsert`).
 - **Newer on-disk schema** — `UnsupportedSchemaVersion` rather than
   lossy load.
 - **Encode/storage faults** — surfaced as the corresponding
@@ -750,10 +761,10 @@ Errors:
 - **(rp-side) bad naming pattern** — rejected at config load with the
   offending token/ambiguity named.
 - **(rp-side) missing sidecar for a frame** — that frame counts toward
-  `total` but is *ungraded* (cannot be classified good/rejected) until a
-  sidecar exists.
+  `total` and, with no evidence against it, as good
+  (§ Progress derivation).
 
-Concurrency: `rp` is the sole owner (Q4). The database is opened once;
+Concurrency: `rp` is the sole owner. The database is opened once;
 writes are serialized by `redb`'s single-writer transaction model.
 External consumers (UI, orchestrator) read/write targets through `rp`'s
 API, never the file directly. `redb` takes an exclusive OS file lock on
@@ -770,7 +781,7 @@ crates/rp-targets/src/
 │                 #   rp_vocabulary::{Binning, IcrsCoord})
 ├── model.rs      # Target, AcquisitionGoal, SchedulingConstraints,
 │                 #   GradingThresholds, TargetSlug (Binning/IcrsCoord
-│                 #   come from rp-vocabulary, ADR-019)
+│                 #   come from rp-vocabulary)
 ├── error.rs      # TargetStoreError (thiserror)
 ├── redb_store.rs # RedbTargetStore: tables, transaction-per-op, spawn_blocking
 ├── migrate.rs    # schema_version constant + ordered migration steps
@@ -786,18 +797,20 @@ Crate-root attributes match the sibling crates:
 - **Unit (in-crate):** `Target`/`AcquisitionGoal` serde round-trip;
   `TargetSlug` normalization + rejection; `upsert` overwrites rather than
   duplicates; `delete` of present vs absent; `set_goals` replaces;
-  migration from a checked-in `v1` fixture database; `UnsupportedSchema`
-  on a future version. Tests use `.unwrap()` per
-  [testing.md](../skills/testing.md), scoped via the `#[allow(...)]` on
-  the test module.
-- **Test double:** `InMemoryTargetStore` (a `BTreeMap<String, Target>`
+  reopening preserves data; the schema-version check passes the current
+  and an older version and refuses a newer one, and `open` refuses a
+  database a newer build wrote. Tests use `.unwrap()` per
+  [testing.md](../skills/testing.md), which the workspace `clippy.toml`
+  allows in test scope.
+- **Test doubles:** `InMemoryTargetStore` (a `BTreeMap<String, Target>`
   behind the same trait) gives `rp`'s planner deterministic, clock-free
-  unit tests without a temp database. Offered alongside (not instead of)
-  a `mockall::automock` option for tests that want call-assertions.
-- **BDD (rp-side, Phase 2):** target CRUD via MCP; progress derivation
+  unit tests without a temp database. `MockTargetStore`
+  (`mockall::automock`) serves tests that want call-assertions; both
+  are behind `cfg(any(test, feature = "mock"))`.
+- **BDD (rp-side):** target CRUD via MCP; progress derivation
   over a fixture `data_directory` (total from filenames, good/rejected
   from fixture sidecars + thresholds); naming-pattern validation
-  rejections; constraint-gated selection. Feature files are the contract
+  rejections; altitude-gated selection. Feature files are the contract
   per [development-workflow.md](../skills/development-workflow.md).
 
 ## Dependencies
@@ -805,7 +818,7 @@ Crate-root attributes match the sibling crates:
 | Crate | Purpose |
 |---|---|
 | `redb` | embedded ACID key-value store (the file format) |
-| `rp-vocabulary` | shared plan value types `Binning` / `IcrsCoord` (ADR-019); `schema` feature off, so the store stays schemars-free |
+| `rp-vocabulary` | shared plan value types `Binning` / `IcrsCoord`; `schema` feature off, so the store stays schemars-free |
 | `serde` / `serde_json` | value encoding inside `redb` |
 | `humantime-serde` | `exposure_duration` (`Duration`) config/value encoding |
 | `derive_more` | `Display` derive for `TargetSlug` |
@@ -813,25 +826,16 @@ Crate-root attributes match the sibling crates:
 | `tracing` | `debug!` on store operations |
 | `async-trait` | the `TargetStore` async seam |
 
-`redb` is a new crates.io dependency. It is MIT-OR-Apache-2.0 and pure
-Rust with no `build.rs` C compile — satisfying the no-system-C /
-permissive-license bar that [ADR-001](../decisions/001-fits-file-support.md)
-and [ADR-002](../decisions/002-tls-for-inter-service-communication.md)
-established, and building cleanly on all four target platforms including
-the Raspberry Pi 5. As only `rp-targets` uses it initially, it is
-declared in `crates/rp-targets/Cargo.toml` rather than hoisted to the
-workspace (CLAUDE.md Rule 10); after adding it, run
-`cargo ci repin-bazel-lock` to refresh `MODULE.bazel.lock` (Rule 10 /
-[pre-push.md](../skills/pre-push.md#refreshing-modulebazellock)).
+`redb` is MIT-OR-Apache-2.0 and pure Rust with no `build.rs` C
+compile, so it adds no system library or C toolchain and builds on all
+four target platforms, the Raspberry Pi 5 included. It is a workspace
+dependency, shared with the stores of `calibrator-flats` and
+`focus-model`, which follow this crate's conventions.
 The crate does **not** depend on `rp-catalog` or `rp-ephemeris`: catalog
 resolution and ephemeris evaluation happen in `rp`, which passes already
 -resolved coordinates into `upsert_target`, keeping the store pure.
 
 ## Decision Rationale (alternatives considered)
-
-Captured from the requirements discussion that produced this design, so
-the *why* travels with the crate (a candidate to promote to a formal
-ADR-007 if desired):
 
 - **redb over SQLite / a structured file / native_db.** SQLite is C
   (against the pure-Rust lean; its SQL strengths go unused since the hard
@@ -843,8 +847,7 @@ ADR-007 if desired):
   pure-Rust, permissive, ACID middle: a real database with a stable
   *within-generation* file format (a major redb upgrade may need a
   one-time `Database::upgrade()`) and a minimal dependency footprint that
-  fits the Pi and the conservative-dependency culture the licensing /
-  no-system-C ADRs established (ADR-001/002).
+  fits the Pi and the workspace's conservative dependency posture.
 - **Slug identity, not UUID.** A human, immutable slug *is* the filename
   token, so frame→target matching is trivial; it matches `rp-catalog`'s
   name-keying; UUIDs stay on transient operational artifacts.

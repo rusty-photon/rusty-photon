@@ -58,24 +58,22 @@ Four rules for anyone adding cases:
   nothing to do with what it claims. The cheap version is a sweep: mutate one
   behaviour at a time in a scratch copy — flip a priority, drop a branch,
   rename a tag, delete a guard — and count the failures. Anything landing at
-  zero is a gap. That is how the ECC suite's last hole was found: two refusals
-  whose messages shared a phrase, each covering for the other, so deleting
-  either one left the suite green. Watch what a fix *displaces*, not only what
-  it repairs.
+  zero is a gap. Two refusals whose messages share a phrase cover for each
+  other: a case that matches the phrase stays green when either refusal is
+  deleted. Watch what a fix *displaces*, not only what it repairs.
 * **A test run must never be able to pass for a real one.** These scripts
   report on live infrastructure, and a fixture's output landing where an
   operator reads production output is worse than having no output at all: it
   fabricates exactly the evidence the tool exists to provide honestly, and it
-  outlives the fixture. The ECC watch hit this — a harness run announced 42
-  correctable errors, at `err`, under the production syslog tag, on a host
-  whose counters were all zero — and now derives its tag and a message prefix
+  outlives the fixture: a harness run of the ECC watch that logs under the
+  production syslog tag announces correctable errors, at `err`, on a host
+  whose counters are all zero. The watch derives its tag and a message prefix
   from where its paths resolve, which is the part worth copying: keying that
   off whether an override was *passed* gets it wrong in both directions, since
   an override can name the production path and a default can be overridden
-  with itself. Note that a script's output is rarely
-  its only production artifact: the same watch keeps a high-water file, which
-  defaulted to the production path independently of the fixture root, so
-  isolating the journal line still left a test run able to overwrite the
+  with itself. A script's output is rarely its only production artifact: the
+  same watch keeps a high-water file, and a test run that isolates the
+  journal line but leaves that file at its production path overwrites the
   baseline. Enumerate what a run writes, not just what it prints. The pool
   script has no such hazard to
   guard: it logs with `echo` and has no `logger` call anywhere, so nothing it
@@ -86,8 +84,8 @@ Four rules for anyone adding cases:
 `shellcheck.yml`) on any pull request that changes one, so a footgun it names
 shows on the PR before it reaches `main`. It is not a required check: its
 workflow runs only when one of those files changes, and a required check would
-wait forever on every other pull request. It exists because several of this
-script's worst defects were exactly that kind: a pipeline status inverted
+wait forever on every other pull request. It is there for defects of that
+kind, which read as correct and fail quietly: a pipeline status inverted
 through `!`, an assignment in a `local` reading an outer variable of the same
 name.
 
@@ -98,14 +96,13 @@ the operator's LAN, plus a LAN `bazel-remote` cache served by the operator's
 NAS over the same 25 GbE switch fabric. Measured
 against the GitHub-hosted `bazel / ubuntu-latest` leg (which runs 4-core
 runners and re-fetches its remote cache over the operator's WAN link every
-run), the pool's 6-vCPU clones complete the same three Bazel steps in
-roughly 16 seconds on an unchanged tree with a warm LAN cache — all with zero
-WAN traffic after the first population. A fully cold cache measured about
-6.5 minutes, but that number belongs to the **16-vCPU** sizing and has not
-been re-measured since; it is compute-bound, so expect it to be materially
-worse at 6 vCPU. (The 16 s warm figure dates from that same 16-vCPU sizing —
-which dropped to 12 and then 6 as slots were added — but warm runs are
-cache-lookup-bound rather than compute-bound, which is why it still holds.)
+run), a pool clone completes the same three Bazel steps in roughly 16
+seconds on an unchanged tree with a warm LAN cache — all with zero WAN
+traffic after the first population — and in about 6.5 minutes from a fully
+cold cache. Both were measured on **16-vCPU** clones, and the slots run 6
+vCPUs: a warm run is bound by cache lookups rather than compute, so its
+figure holds at 6, but a cold build is compute-bound, so expect it to be
+materially slower there.
 
 Components:
 
@@ -163,7 +160,7 @@ Components:
   invisible to the `GITHUB_WORKSPACE` fallback hosted runners rely on); and
   **PowerShell 7 (`pwsh`) must be installed**, because a stock Windows Server
   ships only Windows PowerShell 5.1 and every `shell: pwsh` step then has
-  nothing to run — the failure that broke this venue's first real job.
+  nothing to run.
 
   The general rule behind that last one: **the template must supply whatever
   GitHub's hosted image supplies and the workflows assume.** Hosted images
@@ -182,24 +179,25 @@ Components:
   `System.InvalidOperationException: TryCreate failed` and dies with exit
   code `0xe0434352`. Every BDD suite then fails or times out while `bazel
   build` stays perfectly green. The harness's `--multi-instance` instances
-  build no icon from fork release `v0.5.0-467.3`
-  ([omnisim.md § The Windows tray icon is machine-global too](../references/omnisim.md#the-windows-tray-icon-is-machine-global-too)),
-  so OmniSim no longer needs the desktop; whether anything else in the
-  Windows job does is unproven, and the template keeps the session until a
-  `proxmox-runner-test.yml` dispatch on a session-0 runner shows nothing
-  does. GitHub's own hosted Windows images use the same autologon
+  build no icon (fork release `v0.5.0-467.3` and later:
+  [omnisim.md § The Windows tray icon is machine-global too](../references/omnisim.md#the-windows-tray-icon-is-machine-global-too)),
+  so the harness's OmniSim does not need the desktop; whether anything else
+  in the Windows job does is unproven, and the template keeps the session
+  until a `proxmox-runner-test.yml` dispatch on a session-0 runner shows
+  nothing does. GitHub's own hosted Windows images use the same autologon
   arrangement.
 
   **The credential tradeoff is deliberate and bounded.** Autologon stores the
   local administrator password in the registry in cleartext, which reads at
-  first glance like a breach of ADR-020 layer 4 ("no standing credentials on
-  the runner"). That layer is about credentials which unlock something
-  *outside* the VM — a GitHub token, a cache write key. This one unlocks only
-  the ephemeral clone itself, on which the job already runs elevated, so it
-  grants a malicious job nothing it does not already have. What keeps the
+  first glance like a breach of the no-credentials-on-the-runner layer of
+  [§ Security Model](#security-model--do-not-weaken). That layer is about
+  credentials which unlock something *outside* the VM — a GitHub token, a
+  cache write key. This one unlocks only the ephemeral clone itself, on
+  which the job already runs elevated, so it grants a malicious job nothing
+  it does not already have. What keeps the
   blast radius at one VM: the clones are VLAN-fenced from the rest of the
-  network, the Linux template does not share the password, and — now that two
-  Windows slots share this credential — each clone's NIC drops all inbound
+  network, the Linux template does not share the password, and — since every
+  Windows slot shares this credential — each clone's NIC drops all inbound
   traffic (the per-clone firewall policy written by the orchestrator; see the
   storage/isolation notes below), so a compromised clone cannot reach a peer's
   SMB/RDP/WinRM even knowing the shared password. Measured directly: clone-to-
@@ -207,7 +205,7 @@ Components:
   `policy_in: DROP`, connections hang and time out rather than being refused
   with a RST/ICMP reject, so validate isolation by expecting a timeout, not a
   "connection refused". Only ICMP echo passes, which carries no credential and
-  no lateral-movement capability. Adding a *third* concurrent
+  no lateral-movement capability. Adding another concurrent
   Windows slot needs no new review — the isolation is per-clone, not
   pair-specific — but re-confirm the host has the RAM and that cipool still
   scales at the new concurrency (fio, per docs below) before doing so.
@@ -237,10 +235,10 @@ Components:
 
   **Measure a job's I/O through a scheduled task, never through `qm guest
   exec`.** Guest-agent commands run as SYSTEM at normal priority, so they
-  read the same files at full speed and hide the problem — which is how it
-  went unnoticed. The one-shot tasks that warm and validate a template (the
-  rebuild notes below) need `-Priority 4` for the same reason, or they run at
-  the slow priorities the job no longer has.
+  read the same files at full speed and hide the problem. The one-shot tasks
+  that warm and validate a template (the rebuild notes below) need
+  `-Priority 4` for the same reason, or they run at the slow priorities, not
+  at the job's.
 * **Pool orchestrator** (`tools/ci/rp-runner-pool.sh`): runs on the Proxmox
   host; keeps one warm linked clone per **pool slot** registered just-in-time
   and destroys it after its single job. Slots are declared in a host-local
@@ -260,17 +258,15 @@ Components:
   queueing behind each other, and how
   a second PR event's Linux legs land while the first is still running. How
   many slots there are is host state, not repo state: the slot tables
-  declare it (seven Linux slots on the EPYC host since the 2026-09-09
-  cutover, three Windows), and the run history is the check — on
-  2026-09-09 three dependabot PRs opened within 35 s and all six of their
-  Linux legs started within two seconds of queueing, each on a different
-  runner. Every slot holds one powered-on clone, so host memory must cover
-  their sum. See the script header for deployment.
+  declare it, and the run history is the check — with seven Linux slots on
+  the EPYC host, three dependabot PRs opened within 35 s had all six of
+  their Linux legs started within two seconds of queueing, each on a
+  different runner (2026-09-09). Every slot holds one powered-on clone, so
+  host memory must cover their sum. See the script header for deployment.
 * **LAN build cache**: a `bazel-remote` Docker app (pinned image) on the
   operator's NAS, its data on the NAS's SSD pool — anonymous reads,
   credential-gated writes (same public-read / token-write model as the cloud
-  R2 cache; the same htpasswd file moved with the data, so the GitHub secret
-  did not change). The NAS holds a VLAN interface **on the runner VLAN** over
+  R2 cache). The NAS holds a VLAN interface **on the runner VLAN** over
   its 2×25G LACP bond, and the runner bridge on the Proxmox host uplinks
   through a 25G port, so clone↔cache traffic is switched L2 at 25 GbE and
   never crosses the inter-VLAN gateway. Only the cache's ports — HTTP, plus
@@ -284,9 +280,7 @@ Components:
   the runner VM: it is a GitHub Actions secret
   (`BAZEL_LAN_CACHE_WRITE_AUTH`) that bazel.yml, bazel-coverage.yml and
   check.yml's `stable / clippy` attach only on push-to-main events,
-  mirroring the cloud cache's poisoning defense (ADR-020 layer 4). The
-  cache formerly ran in a container on the Proxmox host; it moved to the
-  NAS when the 25G fabric arrived (2026-08).
+  mirroring the cloud cache's poisoning defense.
 
   The same HTTP CAS serves the pool `stable / clippy` its crates:
   `.github/actions/lan-crates` reads every crates.io package `Cargo.lock`
@@ -296,8 +290,7 @@ Components:
   it, as Cargo's own registry does. A crate the cache lacks comes from
   crates.io and, on push to main, is uploaded with the write credential;
   bazel-remote refuses an upload whose SHA-256 is not its key. A cache that
-  is down costs the job a download from crates.io, never a failure
-  ([ci-shell-to-code.md](../plans/archive/ci-shell-to-code.md) J14).
+  is down costs the job a download from crates.io, never a failure.
 
   It also keeps that job's compiled dependencies:
   `.github/actions/cargo-cache` restores `target/` (without the
@@ -308,8 +301,7 @@ Components:
   head. The entry's key covers the toolchain, the runner's system packages
   and the paths Cargo records, so a template rebuild starts a new cache
   with nothing to bump by hand, and eviction retires the old one. A cache
-  that is missing, down or wrong is a cold build, never a failure
-  ([ci-shell-to-code.md](../plans/archive/ci-shell-to-code.md) J1).
+  that is missing, down or wrong is a cold build, never a failure.
 
 * **Remote Asset API — repository-fetch caching, gated on the
   `RP_LAN_ASSET_API` repo variable.** The same bazel-remote can also serve
@@ -327,7 +319,7 @@ Components:
   ephemeral clone re-fetches the delta over WAN on its single job
   (measured at ~12 min for a cold nightly coverage toolchain against
   ~2m47s warm); with the asset API on, runs carrying the write
-  credential — today that is push-to-main — fetch via the NAS, the
+  credential — the push-to-main runs — fetch via the NAS, the
   first of them populating it for the rest. (A template-rebuild warmup
   can join them by adding the downloader flags and the credential to
   its command; as documented below it uses the HTTP cache path and
@@ -352,7 +344,7 @@ Components:
     overhead, no behavior change. Only push-to-main, which carries
     `BAZEL_LAN_CACHE_WRITE_AUTH` (which the remote-cache action's
     credential helper gives the downloader's calls too), fetches via the
-    LAN and populates — ADR-020 layer 4 unchanged. The downloader flags stay on
+    LAN and populates. The downloader flags stay on
     anonymous jobs anyway: both venues run one code path, and a
     bazel-remote release that serves anonymous checksummed hits from CAS
     (a pure read, poison-proof) would upgrade PR fetches to LAN hits
@@ -377,8 +369,8 @@ Components:
     credential must log `GRPC ASSET FETCH <url> 200 OK` on the NAS; only
     then flip the variable.
 
-  Template rebuilds keep their warmup steps unchanged: a warm output base
-  skips the fetch entirely, and the asset API is what makes the remaining
+  Template rebuilds warm up the same way with the asset API on or off: a
+  warm output base skips the fetch entirely, and the asset API is what makes the remaining
   misses — the window between a pin bump and the next rebuild — LAN-fast
   instead of WAN-bound.
 
@@ -407,9 +399,9 @@ Components:
     is destroyed with the clone; if it were lost mid-job the job simply
     reruns. `cipool` is deliberately non-redundant.
 
-  The cache's 230 GiB ceiling lives on the NAS's SSD pool now (the cloud R2
+  The cache's 230 GiB ceiling lives on the NAS's SSD pool (the cloud R2
   cache reaches ~150 GB within its 7-day retention window, so the LAN cache
-  needs the same order of headroom); neither host pool carries it any more.
+  needs the same order of headroom); neither host pool carries it.
 
   Clones inherit their template's storage, so moving the pool to `cipool`
   means rebuilding the templates there (`qm clone --full --storage cipool`,
@@ -421,31 +413,31 @@ Components:
   journal carries one `sync=disabled on N zvol(s)` line per clone, and names
   any clone it could not relax). It only ever touches datasets named
   `vm-<vmid>-*` — the clone's own — so a config line that merely looks like
-  a volid cannot make it relax a template or another VM's disk. Root cause it addresses (#876): every flush
-  a guest issues (ext4/NTFS journal commits, `fsync` from Bazel, the runner,
-  the services under test writing configs, FITS frames and OmniSim profiles)
-  became a synchronous ZFS write on the single cipool NVMe, queued behind
-  ZFS's 10-slot sync-write class. Measured on the host with several busy
-  slots: `zpool iostat -w cipool` accumulated tens of thousands of sync
-  writes with 8–34 s queue wait while the device itself answered in
-  milliseconds; per-VM cgroup PSI showed every clone I/O-stalled 5–7 % of the
-  time; and the failing runs' logs showed all concurrently running suites in
-  a guest going silent for ~20 s at once while timers kept firing. That is a
-  frozen guest filesystem, and any wall-clock-bounded BDD step whose work
-  touches disk times out inside it — the sky-survey `PUT /connected`
-  (answered only after a probe write), an OmniSim site PUT (persists its
-  profile), a 10 s wait for a service to materialise its config. Coverage
-  runs were hit most because instrumented suites write the most and run
-  longest, but the freeze is guest-wide. With `sync=disabled` a guest's
-  flush completes immediately and the data still lands with the next
-  transaction group; the cost — a host crash can lose a clone's last few
-  seconds of writes — is nothing for a VM that is destroyed after one job.
-  It is deliberately per clone, not `zfs set sync=disabled cipool`: the
-  templates (`base-920-disk-0`, `base-910-disk-{0,1}`) stay durable through
-  a rebuild, and nothing else lives on cipool. If a clone ever shows the
-  freeze signature again, check the journal line first: a `pvesm path`
-  change or a storage rename would silently stop the relaxation and the
-  script only reports it, it does not refuse to boot.
+  a volid cannot make it relax a template or another VM's disk. Without it,
+  every flush a guest issues (ext4/NTFS journal commits, `fsync` from Bazel,
+  the runner, the services under test writing configs, FITS frames and
+  OmniSim profiles) is a synchronous ZFS write on the single cipool NVMe,
+  queued behind ZFS's 10-slot sync-write class. Measured on the host with
+  several busy slots at the default `sync`: `zpool iostat -w cipool`
+  accumulated tens of thousands of sync writes with 8–34 s queue wait while
+  the device itself answered in milliseconds; per-VM cgroup PSI showed every
+  clone I/O-stalled 5–7 % of the time; and the failing runs' logs showed all
+  concurrently running suites in a guest going silent for ~20 s at once
+  while timers kept firing. That is a frozen guest filesystem, and any
+  wall-clock-bounded BDD step whose work touches disk times out inside it —
+  the sky-survey `PUT /connected` (answered only after a probe write), an
+  OmniSim site PUT (persists its profile), a 10 s wait for a service to
+  materialise its config. Coverage runs suffer most because instrumented
+  suites write the most and run longest, but the freeze is guest-wide.
+  With `sync=disabled` a guest's flush completes immediately and the data
+  still lands with the next transaction group; the cost — a host crash can
+  lose a clone's last few seconds of writes — is nothing for a VM that is
+  destroyed after one job. It is deliberately per clone, not `zfs set
+  sync=disabled cipool`: the templates (`base-<vmid>-disk-*`) stay durable
+  through a rebuild, and nothing else lives on cipool. If a clone shows the
+  freeze signature, check the journal line first: a `pvesm path` change or
+  a storage rename would silently stop the relaxation and the script only
+  reports it, it does not refuse to boot.
 
 * **ZFS ARC is capped well below what this host can afford.** With a 1 GiB
   cap the demand-data hit rate sits near 73%, so a quarter of data reads go
@@ -458,8 +450,8 @@ Components:
   through the gateway) and the LAN cache (the NAS's runner-VLAN interface,
   on-subnet at L2) — and never to a peer, so dropping all inbound costs
   nothing and blocks clone-to-clone TCP entirely.
-  This is what makes two Windows slots sharing one local-admin password safe
-  (see the autologon note in the security model). The host firewall stays
+  This is what makes Windows slots sharing one local-admin password safe
+  (see the autologon credential note above). The host firewall stays
   unconfigured, so host SSH is never affected; only the guest NICs are filtered.
   Known residual: Proxmox permits ICMP echo regardless of the DROP policy —
   clones can ping each other but nothing more, which carries no
@@ -476,19 +468,20 @@ dangerous combination. The rule bifurcates by runner kind
   keep the binary rule: `workflow_dispatch:`/`schedule:` triggers only,
   never `pull_request` or `push`. Non-negotiable.
 * **This ephemeral pool** may serve `push` and **same-repo**
-  `pull_request` jobs under ADR-020's six-layer contract: a fork-excluding
+  `pull_request` jobs under a six-layer contract: a fork-excluding
   `runs-on` expression (every falsy branch lands on GitHub-hosted), the
   fork-PR approval checkpoint, JIT single-use VMs, no credentials on the
   runner, VLAN fencing, and the per-OS kill-switch variables
   (`RP_POOL_LINUX`, `RP_POOL_WINDOWS`).
   bazel.yml's Linux and Windows legs, bazel-coverage.yml, check.yml's
   `stable / clippy`, and repin-bazel.yml's Linux job are the
-  implementation; the last is also the
-  one pool job that holds a push credential on a `pull_request` event — a
-  Dependabot-secret PAT on dependabot PRs only, bounded as ADR-020 layer 4's
-  2026-09-10 amendment records. **Approving a fork PR's
-  workflow runs is the human layer: review the workflow-file diff first —
-  a fork can only reach this pool by editing `runs-on`.**
+  implementation; the last is also the one pool job that holds a push
+  credential on a `pull_request` event: `RP_REPIN_PUSH_TOKEN`, a
+  fine-grained PAT with Contents read/write on this repository and nothing
+  else, stored as a Dependabot secret so that only a run Dependabot
+  triggers receives it, and handed to the push step alone. **Approving a
+  fork PR's workflow runs is the human layer: review the workflow-file diff
+  first — a fork can only reach this pool by editing `runs-on`.**
 * Runners are **JIT-registered and single-use**: the config injected into a
   clone registers one runner for one job; a compromised job cannot mint
   further registrations. The orchestrator deletes the runner's org
@@ -511,8 +504,8 @@ dangerous combination. The rule bifurcates by runner kind
   cache, whose writes are credential-gated.
 * The runner VMs live on a dedicated VLAN whose router firewall allows
   exactly two things off-VLAN: the WAN and DNS. Everything else on RFC1918
-  is dropped — verified by probing from inside a clone. The LAN cache no
-  longer needs a router rule: the NAS serves it from an interface **on** the
+  is dropped — verified by probing from inside a clone. The LAN cache needs
+  no router rule: the NAS serves it from an interface **on** the
   runner VLAN, reached at L2. What bounds that exposure is the NAS's own
   binding discipline — only the cache's HTTP and gRPC ports are published
   on the runner-VLAN interface; the NAS UI, SSH, and shares are bound to
@@ -524,7 +517,7 @@ dangerous combination. The rule bifurcates by runner kind
   mechanics.
 * The repo-level "require approval for all outside collaborators" fork-PR
   policy must stay enabled — approval is the checkpoint for a fork PR that
-  edits workflow YAML (ADR-020 layer 2).
+  edits workflow YAML.
 
 ## Operational Notes
 
@@ -710,24 +703,24 @@ dangerous combination. The rule bifurcates by runner kind
     guess. In this pool only a human creates a VM on a slot's VMID; if that
     was you, nothing is wrong.
 
-  A `dataset already exists` wedge is no longer permanent by construction. The
+  A `dataset already exists` wedge is not permanent by construction. The
   slot *attempts* to clear it: every failed clone sweeps volumes owned by its
   VMID, 30 seconds apart, which covers a leak from *outside* the gated teardown
-  (a pre-gate deployment, or `qm clone`'s own rollback on a half-imported pool)
-  and one left by a teardown that was interrupted before it finished.
+  (`qm clone`'s own rollback on a half-imported pool, for one) and one left by
+  a teardown that was interrupted before it finished.
 
   An attempt is not an outcome, and the journal is what tells them apart. The
   sweep can decline (below), and the free it runs can end still-listed or
   unconfirmed, or stop because the VMID has a config again or its config view
   went away — the same six verdicts as the teardown sweep. **A wedge that
   repeats is not evidence of self-healing in progress; it is the signal to read
-  the outcome lines and go to the runbook.** What has changed is that most
-  wedges now clear without anyone, not that every wedge does.
+  the outcome lines and go to the runbook.** Most wedges clear without
+  anyone; not every wedge does.
 
   What that sweep will not do is act while it cannot tell an orphan from a live
   volume, which is the whole reason it is safe to run automatically. It stops
   when pmxcfs is down and when the VM still has a config, and it reports either
-  rather than guessing. So a wedge that *persists* now means one of three
+  rather than guessing. So a wedge that *persists* means one of three
   things, and the journal says which: the sweep declined (fix pmxcfs), the free
   could not be confirmed, or the volume genuinely will not go.
 
@@ -749,7 +742,7 @@ dangerous combination. The rule bifurcates by runner kind
   before acting, since step 3 below is what tells an orphan from a volume
   already in use again.
 
-  Manual recovery, now the exception rather than the routine:
+  Manual recovery, the exception rather than the routine:
 
   1. `systemctl stop rp-runner-pool` — never race the slot loops with a
      manual `zfs destroy`; they recreate the very names being cleaned.
@@ -813,10 +806,10 @@ dangerous combination. The rule bifurcates by runner kind
   a unique hostname derived from its NIC MAC. **These live in
   `tools/ci/runner-guest/` too and a rebuild must copy them in exactly like the
   one-job scripts, then `systemctl enable rp-hostname.service`.** A rebuild
-  that forgets them produces a template whose clones all share one name again,
-  silently — which is how the duplicate arose in the first place. A hostname is a DHCP
-  identity (option 12), so clones sharing one collide on a lease however large
-  the address pool is. The unit is ordered ahead of `systemd-networkd`, and
+  that forgets them produces a template whose clones all share one name,
+  silently. A hostname is a DHCP identity (option 12), so clones sharing one
+  collide on a lease however large the address pool is. The unit is ordered
+  ahead of `systemd-networkd`, and
   that ordering is the whole point: a unit running after it is too late,
   because the first DHCP request already carried the template's name and that
   is the request which takes the lease.
@@ -864,7 +857,7 @@ dangerous combination. The rule bifurcates by runner kind
     logs `static net pin did not land`, so a slot that stops logging either
     has lost its entry.
   * A failed pin is deliberately non-fatal: the clone boots on DHCP and
-    serves jobs exactly as the pool always did, with the failure named in
+    serves jobs exactly as an unpinned slot does, with the failure named in
     the journal.
 * **Running the pool on more than one hypervisor.** Each host gets its own
   `/etc/rp-runner/slots`, its own PAT at `/etc/rp-runner/github-token`, and
@@ -893,24 +886,24 @@ dangerous combination. The rule bifurcates by runner kind
 * **The Windows one-job loop empties the job account's `%TEMP%` at logon,
   before the runner starts.** A clone's user temp is whatever the template
   captured, and a template is warmed by running the workspace's tests inside
-  it — so every Windows clone used to boot with the debris of that run:
-  hundreds of `rp-test-*` data directories and configs, and a handful of rp
-  session registries still marked `active` (rp keeps an active registry
-  across a stop on purpose; that is its restart recovery). Windows never
-  empties a user temp on its own, and Bazel does not re-point `TMP`/`TEMP`
-  for test actions, so a job's test process could be handed the same PID as
-  one of those leftovers, mint the same registry name, and hand rp a
-  thirteen-day-old live session to restore — one flake of exactly that shape
-  is what surfaced it. The harness now mints its paths inside a per-process
-  random-named scratch directory (`crates/bdd-infra`, `rp_harness/scratch.rs`),
-  which closes the collision on every venue; the sweep is the pool-side
-  half, and it is deliberately the whole directory rather than a name
-  pattern: an inventory of a live clone found nothing in there but that
-  debris plus Bazel's self-healing JNI/perf-data extractions, and emptying it
-  is what Linux clones already get from Ubuntu's tmpfiles `D /tmp` rule at
-  every boot. Locked entries are skipped silently. `one-job.log` in the guest
-  prints one `emptied <dir>: N entries before, M left` line per sweep. The
-  Linux loop needs no counterpart while `/tmp` stays on the tmpfiles rule.
+  it — so without the sweep every Windows clone boots with the debris of
+  that run: hundreds of `rp-test-*` data directories and configs, and a
+  handful of rp session registries still marked `active` (rp keeps an active
+  registry across a stop on purpose; that is its restart recovery). Windows
+  never empties a user temp on its own, and Bazel does not re-point
+  `TMP`/`TEMP` for test actions, so a test process that minted its paths
+  from its PID, handed the PID of one of those leftovers, would mint the
+  same registry name and hand rp a days-old live session to restore. The
+  harness mints its paths inside a per-process random-named scratch
+  directory (`crates/bdd-infra`, `rp_harness/scratch.rs`), which closes the
+  collision on every venue; the sweep is the pool-side half, and it is
+  deliberately the whole directory rather than a name pattern: an inventory
+  of a live clone found nothing in there but that debris plus Bazel's
+  self-healing JNI/perf-data extractions, and emptying it is what Linux
+  clones get from Ubuntu's tmpfiles `D /tmp` rule at every boot. Locked
+  entries are skipped silently. `one-job.log` in the guest prints one
+  `emptied <dir>: N entries before, M left` line per sweep. The Linux loop
+  needs no counterpart while `/tmp` stays on the tmpfiles rule.
 * **The whole Windows action cache hangs off `GITHUB_WORKSPACE`.**
   `.bazelrc` sets `build:windows --action_env=GITHUB_WORKSPACE`, so that path
   string is baked into every Windows action key. Consequences worth knowing
@@ -1210,9 +1203,9 @@ dangerous combination. The rule bifurcates by runner kind
     `yes`, so grepping for `SendHostname=` passes a config that still sends
     the name. Then confirm the router stops showing a shared name.
 
-    This remedy has not been exercised on this pool — the rename was taken
-    instead — so treat the mechanics above as the documented behaviour of the
-    tools rather than as something verified here.
+    This pool uses the rename, so this remedy is unexercised here: treat the
+    mechanics above as the documented behaviour of the tools rather than as
+    something verified on it.
 
     Note what neither remedy does: the client-id is derived from `machine-id`,
     so both remove one duplicated identity and leave the other untouched. The
@@ -1234,11 +1227,10 @@ dangerous combination. The rule bifurcates by runner kind
     measure a live clone instead — one mid-job has job working files in `/tmp`
     that say nothing about what the template carries.
   * **Check that an SDK installer has not chowned system directories to
-    `ci`.** The QHY SDK install left `/etc`, `/usr`, `/usr/sbin`, `/usr/lib`,
-    `/usr/share` and their udev and firmware subdirectories owned by `ci` at
-    mode 775, and every Linux template through 921 inherited it — 920 among them,
-    so the hazard was live until the roll to 926 landed; 927 inherits the
-    fix, and any later template must be checked the same way. Directory
+    `ci`.** The QHY SDK install can leave `/etc`, `/usr`, `/usr/sbin`,
+    `/usr/lib`, `/usr/share` and their udev and firmware subdirectories owned
+    by `ci` at mode 775, and a template captured that way hands it to every
+    clone, so every template is checked before capture. Directory
     write permission governs unlink and create regardless of who owns the
     files inside, so the unprivileged job account could replace binaries under
     `/usr/sbin`, libraries under `/usr/lib`, and udev rules that root executes
@@ -1246,9 +1238,9 @@ dangerous combination. The rule bifurcates by runner kind
 
     **`/usr/local` cannot be skipped wholesale**, tempting as it is to write
     it off as the SDK's own tree. `rp-set-hostname` is installed in
-    `/usr/local/sbin` and systemd runs it **as root at early boot**. Its file
-    and its directory were already root-owned — and that was not enough,
-    because `/usr/local` itself was `ci`-writable, and write permission on the
+    `/usr/local/sbin` and systemd runs it **as root at early boot**. A
+    root-owned file in a root-owned directory is not enough while
+    `/usr/local` itself is `ci`-writable, because write permission on the
     *parent* is what governs renaming `sbin` and substituting a directory of
     one's own. So `/usr/local`, `/usr/local/sbin` and `/usr/local/bin` must be
     `root:root` too. Only the SDK's own subtrees below them (`include`, `lib`,
@@ -1300,8 +1292,8 @@ dangerous combination. The rule bifurcates by runner kind
     clone. A clone mid-job has `ci`-owned runtime state the runner itself
     creates — `/usr/share/GitHubActionsService/...`, `/tmp/clr-debug-pipe-*` —
     which is legitimate there and says nothing about the image. Measured on a
-    920-derived clone the sweep returned 137 paths; the same sweep on the
-    template it was built from returns none.
+    clone, the sweep returned 137 paths; the same sweep on the template it
+    was built from returned none.
   * **A Linux template rebuild must run a coverage warmup before capture, not
     just a build/test warmup** — specifically
     `bazel coverage --config=coverage //...`. That `--config=coverage` flag is
@@ -1343,9 +1335,9 @@ dangerous combination. The rule bifurcates by runner kind
     upload dies with exit 143); an idle one deletes its session and comes back
     as a wrapper waiting for a config it already consumed, in a VM that stays
     up — the health check reclaims it as wedged ten probes later. Both
-    signatures arrived within an hour of the first clone booted after such an
+    signatures arrive within an hour of the first clone booted after such an
     update, dozens a day, and read exactly like a host or network fault; the
-    host had nothing to show. The proof is in the guest:
+    host has nothing to show. The proof is in the guest:
     `/var/log/unattended-upgrades/unattended-upgrades-dpkg.log` reads
     `Restarting services... systemctl restart ... gha-runner.service ...`, and
     `journalctl -u gha-runner` shows a `Stopping`/`Started` pair with no job
@@ -1368,10 +1360,9 @@ dangerous combination. The rule bifurcates by runner kind
     prints `masked`, `dpkg -l unattended-upgrades needrestart` lists neither
     as installed, and `/etc/apt/apt.conf.d/99needrestart` is gone. The
     template's own wrapper is not exempt from the rule about drift, either:
-    the Linux guests ran a six-line predecessor of
-    `tools/ci/runner-guest/one-job.sh` for a month, without the no-config
-    deadline the repo copy has carried since — compare `md5sum` of the two
-    before capture, not just their presence.
+    a guest copy of `one-job.sh` that differs from
+    `tools/ci/runner-guest/one-job.sh` can lack its no-config deadline, so
+    compare `md5sum` of the two before capture, not just their presence.
   * **Keep the pip-baked annotation tooling working, and verify it the way
     the job runs it.** The template carries `python3-pip`, the `ci` user's
     `pip install --user` copy of the `diff-cover` pin from the
@@ -1422,8 +1413,8 @@ dangerous combination. The rule bifurcates by runner kind
     ```
 
     The second command must print `/home/ci/.cargo/bin/rustup`. The rest of
-    the `PATH` line is the PATH the `gha-runner` unit gave the runner
-    before the line existed; a rebuild keeps it as it is. Finally, check
+    the `PATH` line is the PATH the `gha-runner` unit would otherwise give
+    the runner; a rebuild keeps it as it is. Finally, check
     that `/home/ci/.cargo` holds no `config.toml` and no `registry`:
     `lan-crates` writes its directory source into the first, and a
     template that carries either hands every clone a Cargo that is not the
@@ -1431,8 +1422,7 @@ dangerous combination. The rule bifurcates by runner kind
 * **Windows template rebuilds, things that will bite:**
   * **The template must provision the MSI packaging toolchain**, or the msi
     job (`msi.yml` / `release.yml` / the msi leg of `nightly-packages.yml`)
-    cannot run on the pool even though `bazel build` is green. Three parts,
-    all measured the hard way:
+    cannot run on the pool even though `bazel build` is green. Three parts:
     * **.NET SDK** — the wix CLI is a dotnet global tool; `cargo ci
       build-msi` refuses to start without it (`dotnet not found`).
     * **`DOTNET_ROOT` set machine-wide** — not optional. `wix.exe` is a
@@ -1455,8 +1445,8 @@ dangerous combination. The rule bifurcates by runner kind
     do occur** once more than one clone runs at a time (both come up as
     `RUNNER-TPL` on the same segment). That was measured benign at the
     *NetBIOS* layer — no NetBT/Tcpip name-conflict events, registration
-    unaffected — and that part still holds. It is **not** benign at the DHCP
-    layer: a duplicate hostname is a duplicate option-12 identity, the problem
+    unaffected. It is **not** benign at the DHCP layer: a duplicate hostname
+    is a duplicate option-12 identity, the problem
     described in the **hostname bullet** under the Linux rebuild notes above —
     not the `machine-id` one next to it, which is a different failure with
     different remedies. An address conflict was observed on this pool while
@@ -1467,30 +1457,30 @@ dangerous combination. The rule bifurcates by runner kind
     file are Linux-only, and there is nothing there for a Windows rebuild to
     apply.
 
-    Windows has two options, neither yet taken. `Rename-Computer` gives a
-    unique name but option 12 uses the *active* computer name, which does not
-    change until restart — so it costs a reboot per clone, roughly 30–60s
+    Windows has two options. `Rename-Computer` gives a unique name but
+    option 12 uses the *active* computer name, which does not change until
+    restart — so it costs a reboot per clone, roughly 30–60s
     against a pool whose value is fast pickup. That is far cheaper than a
     sysprep specialize pass, so it is affordable if needed, but it is not
     free. The other is a **DHCP reservation per Windows MAC**, which costs
-    nothing at runtime and sidesteps hostnames entirely; the catch is that
-    `qm clone` regenerates the MAC every cycle, so the address has to be
-    pinned in the slot's config first. Try the reservation before the rename.
-    Neither has been done because Windows is the smaller duplicate group (two
-    clones against Linux's three) and it is not established that Windows was
-    ever implicated in the observed conflict — so this stays a watch item, to
-    be revisited if a conflict recurs after the Linux fix. Skipping
-    sysprep stays the right call for the reasons above. The
-    shared-credential exposure the second slot introduced (#872) is contained
-    by the per-clone inbound-DROP firewall described above, not by name
-    uniqueness.
+    nothing at runtime and sidesteps hostnames entirely: `qm clone`
+    regenerates the MAC every cycle, so the slot needs a line in the
+    static-net file (the bullet on pinned network identities above), which
+    gives its clones one fixed MAC for the router to reserve an address for.
+    Try the reservation before the rename. The one-job loop does not rename:
+    nothing establishes that a Windows clone was implicated in the observed
+    conflict, so the rename waits for a conflict that recurs while the Linux
+    clones' names are unique. Skipping sysprep stays the right call for the
+    reasons above. The shared-credential exposure of several Windows slots is
+    contained by the per-clone inbound-DROP firewall described above, not by
+    name uniqueness.
   * **A linked clone inherits the template's RTC** and boots badly out of
     date (~9 hours, in practice). That alone breaks TLS to GitHub. It also
-    means an in-guest script must never use a wall-clock deadline: the first
-    one-job loop computed an end time, Windows then corrected the clock past
-    it, and every clone powered itself off before the orchestrator could
-    inject. The loop resyncs time before touching the network and measures
-    its wait with a monotonic timer.
+    means an in-guest script must never use a wall-clock deadline: Windows
+    corrects the clock past a computed end time, and a loop waiting on one
+    powers its clone off before the orchestrator can inject. The loop
+    resyncs time before touching the network and measures its wait with a
+    monotonic timer.
   * **The warm-up's test debris is captured with the image.** Running the
     workspace's tests in the template to warm its caches leaves the job
     account's `%TEMP%` full of BDD scratch, live rp session registries among
@@ -1527,20 +1517,18 @@ dangerous combination. The rule bifurcates by runner kind
     "[IO.File]::WriteAllText('C:/path/x.sh', [Console]::In.ReadToEnd())"`,
     which keeps LF line endings; Git bash will not run a script that picked
     up CRLF. Delete the checkout before capture, since `actions/checkout`
-    recreates it. `Remove-Item -Recurse` on the checkout removed its
-    `bazel-*` junctions without following them on the last rebuild (the
+    recreates it. `Remove-Item -Recurse` on the checkout removes its
+    `bazel-*` junctions without following them (on a measured rebuild the
     output base under `C:\b` kept all 12 GB of its outputs), but check that
     size after the delete all the same: a junction that is followed empties
     the cache every clone inherits.
-* What lives where: **VMIDs are on the hypervisor**, in `/etc/rp-runner/slots`.
-  They used to sit in the repo in a `SLOTS` array — defensible while the pool
-  ran on one host, since a VMID is local to that host and meaningless
-  elsewhere — but a second hypervisor turned the array into a hand-edited
-  fork of a tested file on each host, so the table moved to where the rest of
-  the per-host state already lives. Test fixtures must therefore **invent**
-  their VMIDs and slot names rather than borrowing the real ones: the script
-  no longer carries a copy for them to be consistent with, so a pasted-in
-  live value would be the only record of it in this public repo. What is
+* What lives where: **VMIDs are on the hypervisor**, in `/etc/rp-runner/slots`,
+  with the rest of the per-host state: a VMID is local to its host, and a
+  table in the repository would be a hand-edited fork of a tested file on
+  every host the pool runs on. Test fixtures must therefore **invent** their
+  VMIDs and slot names rather than borrowing the real ones: the script
+  carries no table for them to be consistent with, so a pasted-in live value
+  would be the only record of it in this public repo. What is
   deliberately absent
   is anything that identifies or unlocks infrastructure: **addresses**
   (this repo is public — see the LAN cache endpoint, which reaches jobs only

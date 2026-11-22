@@ -62,13 +62,13 @@ Replace `{PREFIX}` with the worktree name from the Context section above:
 |---------------------|------------------------------------------------------------------------------------------|
 | clippy (fmt first)  | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j clippy`         |
 | hack                | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j hack`           |
-| msrv                | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j discover-msrv -j msrv` |
+| msrv                | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j msrv`           |
 | required            | `act --container-name-prefix={PREFIX}- -W .github/workflows/test.yml -j required`        |
-| coverage            | `act --container-name-prefix={PREFIX}- -W .github/workflows/test.yml -j coverage`        |
 | sanitizers          | `act --container-name-prefix={PREFIX}- -W .github/workflows/safety.yml -j sanitizers`    |
 | nightly             | `act --container-name-prefix={PREFIX}- -W .github/workflows/scheduled.yml -j nightly`    |
+| beta                | `act --container-name-prefix={PREFIX}- -W .github/workflows/scheduled.yml -j beta`       |
 | update              | `act --container-name-prefix={PREFIX}- -W .github/workflows/scheduled.yml -j update`     |
-| conformu            | `act --container-name-prefix={PREFIX}- -W .github/workflows/conformu.yml -j discover -j conformu` |
+| conformu            | `act workflow_dispatch --container-name-prefix={PREFIX}- -W .github/workflows/conformu.yml -j plan -j conformu` |
 
 **Optional** — only when `$ARGUMENTS` contains `miri`:
 
@@ -77,8 +77,12 @@ Replace `{PREFIX}` with the worktree name from the Context section above:
 | miri                | `act --container-name-prefix={PREFIX}- -W .github/workflows/scheduled.yml -j discover-miri -j miri` |
 
 **Notes:**
-- Skip `test.yml` `os-check` job entirely (act runs Linux Docker containers).
-- For `conformu.yml`, act will run the ubuntu variant only.
+- Skip the `test.yml` `macos` and `windows` jobs (act runs Linux Docker
+  containers).
+- For `conformu.yml`, act will run the ubuntu variant only, launched with the
+  `workflow_dispatch` event as `docs/skills/pre-push.md` Step 1 launches it.
+- No job here collects coverage: it comes from `bazel coverage`
+  (`bazel-coverage.yml`), which `docs/skills/pre-push.md` says how to run.
 
 ### 3. Subagent prompt template
 

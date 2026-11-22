@@ -63,7 +63,8 @@ defines what the system does, not how it is built.
 
 #### MVP scope definition
 
-The design doc should clearly separate MVP from future work. Example from rp:
+The design doc should clearly separate MVP from future work. Example, rp's
+MVP:
 
 - **MVP:** equipment connectivity, MCP tool execution, event delivery, session
   lifecycle
@@ -145,7 +146,7 @@ Map each design doc section to a feature file. Each feature should cover:
 3. **State transitions** — Connect/disconnect, start/stop, state changes
 4. **Edge cases** — Missing parameters, unreachable services, timeouts
 
-Example mapping from rp:
+Example mapping, rp's MVP:
 
 | Design Doc Section | Feature File | Scenarios |
 |-------------------|--------------|-----------|

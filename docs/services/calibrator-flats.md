@@ -14,9 +14,7 @@ own primitive tools as an MCP client. A night document takes flats with
 one `take_flats` call and a `train_id`.
 
 The service has no run surface of its own: MCP is the only way in, and
-`/health` stays for systemd, sentinel and `doctor`. It is the first
-first-party tool provider; the decision record is the
-[calibrator-flats-provider plan](../plans/archive/calibrator-flats-provider.md).
+`/health` serves systemd, sentinel and `doctor`.
 
 ### Tenets
 
@@ -53,7 +51,7 @@ first-party tool provider; the decision record is the
 
 `calibrator-flats` is both an MCP **server** (`/mcp`, registered in
 `rp` as a `type: "tool_provider"` plugin) and an MCP **client** of `rp`
-(the standard `rp-mcp-client`, [ADR-017](../decisions/017-standard-mcp-client-construction.md)).
+(the standard `rp-mcp-client`).
 A client of `rp` — a `session-runner` document, an operator's MCP
 client — calls `take_flats` on `rp`; `rp` proxies the call here; the
 tool body connects back to `rp` and drives the cover, panel, wheel and
@@ -208,8 +206,8 @@ Progress: one tick per frame, `progress` = frames captured so far,
 `total` = `count` × number of filters, message naming the filter and
 the frame index.
 
-`take_flats` never writes the store (no write-back, no aging model —
-plan D5, O5).
+`take_flats` never writes the store: there is no write-back and no
+aging model.
 
 ### `get_flat_training {train_id, filter?}`
 
@@ -297,7 +295,7 @@ is a separate knob.
 
 ## Exposure search
 
-The proportional search is unchanged from the orchestrator days:
+The search is proportional:
 
 ```
 new_duration = current_duration * (target_adu / measured_median)
@@ -307,7 +305,7 @@ with a doubling guard for a zero median, clamped above at the camera's
 `exposure_max`. Convergence is a measured deviation within `tolerance`;
 `max_iterations` bounds one pass.
 
-**The floor** (plan D8): a search never exposes shorter than the larger
+**The floor**: a search never exposes shorter than the larger
 of `min_exposure` (default `250ms`) and the camera's `exposure_min`. The
 first exposure of a pass is at least the floor, and a step that *wants*
 less than the floor ends the pass at once as **over-bright** — short
@@ -400,9 +398,9 @@ via `rusty-photon-config`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `server` | object | `{ "port": 11170 }` | The shared `ServerConfig` ([ADR-016](../decisions/016-service-config-ownership-and-doctor.md)): `port`, `bind_address`, optional `tls` / `auth`. Guards `/mcp` and `/health` alike |
+| `server` | object | `{ "port": 11170 }` | The shared `ServerConfig` (`rusty-photon-server-config`): `port`, `bind_address`, optional `tls` / `auth`. Guards `/mcp` and `/health` alike |
 | `mcp_server_url` | string | required | `rp`'s MCP endpoint, dialed per tool call |
-| `service_auth` | object or null | null | HTTP Basic credential presented to `rp` — the D6 observatory credential; sent only over verified HTTPS ([ADR-017](../decisions/017-standard-mcp-client-construction.md)) |
+| `service_auth` | object or null | null | HTTP Basic credential presented to `rp` — the observatory credential; sent only over verified HTTPS |
 | `ca_cert` | string or null | null | PEM CA path used to trust a TLS-enabled `rp` |
 | `tolerance` | float | 0.05 | Convergence: acceptable deviation of the measured median from the 50 % target |
 | `max_iterations` | int | 10 | Search exposures per pass, per brightness level |
@@ -415,12 +413,11 @@ via `rusty-photon-config`.
 from the command line. Unknown keys fail the load (`deny_unknown_fields`).
 
 **Retired keys fail loud.** `camera_id`, `filter_wheel_id`,
-`calibrator_id`, `filters`, `brightness` and `target_adu_fraction` — the
-flat plan of the orchestrator era — are refused at load with a message
-naming the key and where the plan went (the tool arguments), rather than
-being ignored as unknown. There is no flat plan in the config: the train
-is a tool argument, the filters come from the wheel, the fraction is
-fixed.
+`calibrator_id`, `filters`, `brightness` and `target_adu_fraction`, the
+keys of a flat plan, are refused at load by name, with a message saying
+where each value comes from instead, rather than with the generic
+unknown-key error. There is no flat plan in the config: the train is a
+tool argument, the filters come from the wheel, the fraction is fixed.
 
 `calibrator-flats doctor [--config <file>] [--json]` diagnoses the config
 read-only through the same load path — [doctor.md § Per-service
@@ -514,12 +511,12 @@ credential — and that `tools/list` answers with no `rp` running.
 
 ## Future Considerations
 
-- **Rotator-aware and per-filter-brightness flats** (plan O2): taking
+- **Rotator-aware and per-filter-brightness flats**: taking
   flats at the light frames' rotator angle is a `take_flats` argument
   for a later plan; brightness is already per filter in the record.
-- **Panel aging** (plan O5): deliberately not modeled. If retraining
+- **Panel aging**: deliberately not modeled. If retraining
   becomes a chore, write-back of a corrected duration fits the record
   shape.
-- **Two calibrator devices on one train** (plan O1): a motorized dust
+- **Two calibrator devices on one train**: a motorized dust
   cap plus a separate light panel needs capability-resolved addressing
   in `rp`'s train model.

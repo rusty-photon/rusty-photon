@@ -31,7 +31,9 @@ build:remote-cache --remote_cache=http://<your-lan-cache-host>:8088
   (which hold the GitHub secret) can write, so forks can't poison the cache.
 
 The `WRITE_TOKEN` Worker secret must equal the `BAZEL_CACHE_WRITE_TOKEN` GitHub
-Actions secret (`bazel.yml` already sends `Authorization: Bearer` on push/schedule).
+Actions secret, which `bazel.yml` and `bazel-coverage.yml` send as
+`Authorization: Bearer` on push/schedule, through the remote-cache action's
+credential helper.
 
 ## Deploy (one-time)
 
@@ -58,7 +60,7 @@ wrangler deploy
 
 R2 has no built-in LRU. Growth is bounded by an **object lifecycle rule**
 (Cloudflare dashboard → R2 → `rusty-photon-bazel-cache` → Settings → Object
-lifecycle), currently **delete objects older than 7 days**. On its own that
+lifecycle), set to **delete objects older than 7 days**. On its own that
 rule would be an age bomb, not an LRU: R2 expires by *upload* time, and Bazel
 never re-uploads an entry that keeps getting cache hits, so every object would
 die a fixed time after it was last *built* — the stable core of the graph
@@ -81,11 +83,10 @@ Bazel actually *downloads*. `--remote_download_outputs=toplevel`
 intermediate/tool outputs whenever nothing local needs the bytes — so a
 steady-state dependency (a build-script action nothing else forces a fresh
 compile of) stays "used" via its `/ac/` entry every day while the CAS content
-backing it quietly ages past the 7-day window underneath it. This bit
-2026-07-14: `aws-lc-sys`/`aws-lc-rs`'s build-script outputs went missing
-("Lost inputs no longer available remotely") ahead of a routine rustls
-0.23.42 bump, despite green daily builds, because nothing had forced a real
-download of that corner of the graph in over a week.
+backing it quietly ages past the 7-day window underneath it. The next
+build that does need those bytes — a rustls bump recompiling on top of
+`aws-lc-sys`'s build-script outputs, say — then fails with "Lost inputs no
+longer available remotely", however green the daily builds were.
 
 The Worker closes this by touching an AC entry's *referenced* CAS digests on
 every read of the entry itself, regardless of whether Bazel downloads them:
@@ -121,10 +122,6 @@ whatever the slower branch hasn't consumed, with no limit and no
 backpressure; the slower branch is Bazel, and the blobs that miss are the
 big test binaries (~88 MiB for `rp_unit_test`) against a 128 MB isolate
 memory limit. The second read costs one Class B operation per edge miss.
-This was changed as a suspect in the macOS `bazel build` wedge
-([#765](https://github.com/rusty-photon/rusty-photon/issues/765)) — on
-push-to-main, with the pool switches on, macOS is the only leg that still
-reads this Worker.
 
 Interplay with retention: an edge hit never reaches R2, so it cannot touch —
 a hot blob's R2 clock only advances on the origin reads between TTL

@@ -19,12 +19,12 @@
   therefore contain minor copy-paste artifacts, inverted checks, or typos present in the original manual (for
   example, a status string printed in both the success and failure branch). Treat the examples as illustrative
   and add proper error handling for production use.
-- **How it was produced:** the Chinese source text was extracted, split by section, translated, and then each
-  section was independently re-checked against the source by a separate reviewer for completeness, accuracy,
-  code fidelity, and terminology. To avoid redistributing QHYCCD's copyrighted imagery, the diagrams have been
-  **redrawn from scratch as original SVGs** (conveying the same coordinates/geometry), the SDK-archive screenshot is
-  rendered as a text listing, and the trigger-board photographs are omitted (described in a table, with a pointer to
-  QHYCCD's official board notes); data tables were reconstructed as Markdown. Generated 2026-06-20.
+- **Provenance:** each translated section has been checked against the source by a reviewer other than its
+  translator, for completeness, accuracy, code fidelity, and terminology. To avoid redistributing QHYCCD's
+  copyrighted imagery, the diagrams are **redrawn from scratch as original SVGs** (conveying the same
+  coordinates/geometry), the SDK-archive screenshot is rendered as a text listing, and the trigger-board photographs
+  are omitted (described in a table, with a pointer to QHYCCD's official board notes); data tables are reconstructed
+  as Markdown. Generated 2026-06-20.
 
 ## Table of Contents
 
@@ -3837,7 +3837,7 @@ if(retVal == QHYCCD_SUCCESS)
 
      //Get the gain
      double value;
-     value = GetQHYCCDParam(camHandle, CONTROL_GAIN);   //Translator note: the source had CONTROL_OFFSET here, which is a source bug; corrected to CONTROL_GAIN
+     value = GetQHYCCDParam(camHandle, CONTROL_GAIN);   //Translator note: the source has CONTROL_OFFSET here, which is a source bug; corrected to CONTROL_GAIN
 }
 ```
 

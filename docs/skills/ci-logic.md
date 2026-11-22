@@ -4,9 +4,7 @@
 decides where CI logic lives: workflow YAML for a step that runs one
 command, a local JavaScript action for logic that runs inside GitHub
 Actions, one Rust tools crate for tools a developer also runs. This doc
-says how to write it there. The existing shell moved under
-[docs/plans/archive/ci-shell-to-code.md](../plans/archive/ci-shell-to-code.md),
-now complete.
+says how to write it there.
 
 ## When to Read This
 
@@ -23,8 +21,8 @@ now complete.
 | A tool a developer also runs (AGENTS.md rules 4 and 10 name some) | The Rust tools crate, `tools/rusty-photon-ci`, run as `cargo ci <tool>` |
 | A developer's install of what an `install-*` action installs | That action's own module, which `bazel run //.github/actions:install` runs ([below](#a-developers-install)) |
 
-Shell stays for the one-command steps above and for what ADR-022 leaves
-out: host provisioning, the Python scripts, the git hooks. A reviewer may
+Shell stays for the one-command steps above, and the table leaves out
+host provisioning, the Python scripts and the git hooks. A reviewer may
 ask for a new shell block of more than a few lines to move.
 
 ## The Rust tools crate
@@ -89,8 +87,9 @@ tools/rusty-photon-ci/
   test's `data` in `BUILD.bazel`. It finds them from `CARGO_MANIFEST_DIR`:
   Cargo sets it when it runs a test, and the BUILD file sets it for Bazel,
   relative to the runfiles root. It reads a YAML file with the parser
-  (`saphyr`), never line by line: R6's guard started line by line, and
-  each review of it found YAML it misread. A guard over comments is the
+  (`saphyr`), never line by line: quoting, escapes, folding, block
+  scalars and aliases make a line-by-line reader read YAML otherwise
+  than GitHub does. A guard over comments is the
   exception, since a parser drops them: `bare_refs.rs` takes a `#`
   outside quotes that starts the line or follows a space, YAML's own
   rule, and reads nothing else of the file. No parser in the workspace
@@ -102,8 +101,8 @@ tools/rusty-photon-ci/
   takes the services from the workspace's members and fails on one it
   cannot read: under Bazel it sees only the files its test's `data`
   names, so a service left out of `data` would otherwise go unchecked.
-- **The shell it replaces goes in the same PR**, with every mention of it
-  (ADR-022): search the repository for its path before deleting it.
+- **The shell it replaces goes in the same PR**, with every mention of
+  it: search the repository for its path before deleting it.
 - **Dependencies are the workspace's** (rule 10), and few: `clap` for the
   command line, `thiserror` for the errors, `serde` with `toml` (reading
   only) for TOML, `tempfile` for a work directory, and for the tests
@@ -113,7 +112,7 @@ tools/rusty-photon-ci/
   check a signature, where an OpenPGP crate would bring about 150 crates
   into every build of `//...` for a tool run once a Rust release.
 - **A workflow runs a tool with `cargo ci <tool>`**, which builds it from
-  the checkout. The packaging tools are the ones so far:
+  the checkout. The packaging tools are the ones a workflow runs:
   `build-packages` and `verify-packages` in the Linux jobs,
   `build-tarballs`, `verify-brew` and `brew-formulas` in the macOS jobs,
   and `build-msi` and `verify-msi` in the Windows ones, which install the
@@ -125,10 +124,10 @@ tools/rusty-photon-ci/
   no lock on the target directory once the tool is built. A step that does
   what a tool does but does not run it stays YAML, and the tool's source
   names the step to keep in step with (`repin-bazel-lock`,
-  `repin-bazel.yml`). The Linux pool template has carried Cargo since the
-  plan's T1, so a tool run there needs no install; a tool that drives
-  Bazel settles how it is launched in the Bazel legs (ADR-022's
-  Consequences).
+  `repin-bazel.yml`). The Linux pool template carries Cargo, so a tool
+  run there needs no install. A tool that drives Bazel from inside a
+  Bazel leg, whose jobs install no Rust toolchain of their own, settles
+  how Cargo is launched there, and verifies it.
 
 ## JavaScript actions
 
@@ -263,8 +262,9 @@ it stays in the action.
   no system `tar` to make one and can make one no packager would.
 - Show that a test which guards a behaviour fails with the behaviour
   broken: break it on purpose and watch the test go red.
-- There is no JavaScript formatter or linter (ADR-022). Match
-  `helpers.mjs`: two-space indent, single quotes, semicolons.
+- There is no JavaScript formatter or linter, as both would be npm
+  packages. Match `helpers.mjs`: two-space indent, single quotes,
+  semicolons.
 
 ### An action with a post step
 
@@ -302,8 +302,7 @@ declares `contents: read` beside what the action needs:
 ### An action that needs another action
 
 A JavaScript action cannot call another action. One that needs
-`actions/cache` is a composite action with three steps, in the order
-ADR-022 gives:
+`actions/cache` is a composite action with three steps, in this order:
 
 1. a JavaScript action that resolves what to fetch and outputs the cache
    key, which carries the pin;
@@ -343,11 +342,12 @@ above.
   Node's own HTTP client (`get`), not `fetch`: Node 24's `fetch` (undici 7)
   crashes the process, past any `catch`, when a server closes the
   connection while the reader has paused the body
-  ([nodejs/undici#5360](https://github.com/nodejs/undici/issues/5360),
+  ([undici issue 5360](https://github.com/nodejs/undici/issues/5360),
   fixed in undici 8 only). A SourceForge mirror answers
-  `Connection: close`, and two of three legs of a `plate-solver-smoke` run
-  crashed so. `get` follows redirects, refuses one from https to http, and
-  throws an `HttpError` for an answer outside 2xx. For a server
+  `Connection: close`, and through `fetch` two of a `plate-solver-smoke`
+  run's three legs crash on it. `get` follows redirects, refuses one from
+  https to http, and throws an `HttpError` for an answer outside 2xx. For
+  a server
   that crawls rather than fails, such as a SourceForge mirror, a caller
   can also set a floor on the rate (`minBytesPerSecond`, measured over the
   stall time) and a time after which no attempt starts (`retryForMs`), as
@@ -370,9 +370,9 @@ above.
 - **A private download sends its token as `headers`** to `download`,
   which `get` sends on through a redirect to the same origin only, as
   fetch does. `install-svbony-sdk` does, for the SVBony SDK for Windows on
-  the project's private mirror (ADR-018 §7), and caches nothing it
-  fetched with the token: a fork's pull request can restore the
-  repository's caches.
+  the project's private mirror (`tools/private-mirror-worker/`), and
+  caches nothing it fetched with the token: a fork's pull request can
+  restore the repository's caches.
 - **An SDK a native crate links** has the helpers both SDK actions share:
   `findRuntime` finds a runtime library through the loader's cache,
   `linkRuntime` links a -dev package's linker name to it on the sudo-less
@@ -388,10 +388,8 @@ above.
   archive format and have no xz decoder: on Linux GNU tar, and `unzip`
   for a zip, which GNU tar does not read; on macOS and Windows bsdtar,
   which reads both. Windows' is `%SystemRoot%\System32\tar.exe`, run by
-  that path: Git for Windows' GNU tar can come first on PATH. A zip on
-  Linux takes `unzip` rather than a zip reader of our own, which is what
-  the shell ran before. `onlyDirectory` finds the folder an archive
-  unpacked into.
+  that path: Git for Windows' GNU tar can come first on PATH.
+  `onlyDirectory` finds the folder an archive unpacked into.
 - **Each OS leg tests its own tools** on the formats its assets come in:
   `install_test` unpacks small archives made by GNU tar, xz and Info-ZIP's
   zip.
@@ -427,9 +425,9 @@ above.
 `bazel run //.github/actions:install -- <tool> [--prefix DIR]` installs a
 tool an `install-*` action installs, from the same release and URL,
 checked against the same pin, by that action's own module. It runs on the
-Node `MODULE.bazel` pins, through `node_binary`; ADR-022 makes this the
-exception to "a tool a developer also runs is Rust", since a Rust tool
-would be a second implementation of the module to keep in step.
+Node `MODULE.bazel` pins, through `node_binary`. This is the exception
+to "a tool a developer also runs is Rust", since a Rust tool would be a
+second implementation of the module to keep in step.
 
 - **Each tool's module exports `installAt(dir, resolved, options)`**
   beside `install`: it installs what `resolve` chose into a directory the
@@ -454,11 +452,12 @@ would be a second implementation of the module to keep in step.
   looks. ConformU's on Windows is where its installer installs it,
   `C:\Program Files\ASCOM\ConformU`, and any other is refused there.
 - **It ships nothing.** It downloads on the developer's machine from
-  where CI downloads, as the operator helpers of ADR-013 and ADR-018 do:
-  nothing goes into a package, and nothing is mirrored for developers.
-  Nothing downloads from the project's private mirror (ADR-018 §7): the
-  SVBony SDK installs on Linux and Intel Macs, and on Windows, whose SDK
-  only the mirror holds, says where to get it.
+  where CI downloads, as the packages' download-on-target helpers
+  (`rusty-photon-qhy-firmware-install`, `rusty-photon-svbony-sdk-install`)
+  do: nothing goes into a package, and nothing is mirrored for developers.
+  Nothing downloads from the project's private mirror, which developers
+  are not given: the SVBony SDK installs on Linux and Intel Macs, and on
+  Windows, whose SDK only the mirror holds, says where to get it.
 - **Its launcher is tested as `bazel run` runs it**, from the runfiles
   tree: `local_install_test` takes `:install` as data and runs it, so a
   launcher that drops its arguments or its exit code fails the PR. The
@@ -507,9 +506,9 @@ stream's log as a group.
 - **A program the action downloaded and nobody has checked** gets the
   step's environment without the runner's `ACTIONS_*` variables and the
   action's `INPUT_*` (`withoutRunnerVariables`, which `execute` applies
-  unless given an environment). So does a program the action runs where
-  a `run:` step ran it, so that the move hands it nothing the step did
-  not: `bazel-coverage` and `rules-rust-patches` run Bazel so, which
+  unless given an environment). So does a program the action runs in
+  place of a `run:` step, so that it gets nothing a `run:` step's program
+  would not: `bazel-coverage` and `rules-rust-patches` run Bazel so, which
   runs the build's repository rules, `uncovered-diff-lines` runs pip,
   diff-cover and the coverage scripts' poster so, `cargo-workspace` runs
   Cargo and cargo-msrv so, `conformu-run` runs each service's `cargo
@@ -643,7 +642,9 @@ a dispatch must not or cannot run the branch:
   What only that leg runs, such as the remote-cache flags, is proven by
   tests, and a change to code the leg runs watches its first push-to-main
   run. Adding `workflow_dispatch` to bazel.yml would change the matrix
-  and routing expressions ADR-020 reviews, so only the owner decides it.
+  and the pool-routing expression, a security boundary
+  ([proxmox-runner-pool.md § Security Model](proxmox-runner-pool.md#security-model--do-not-weaken)),
+  so only the owner decides it.
 - **Code that runs only on an event a PR cannot produce**, such as a
   failed scheduled run or a push to main, never runs from a dispatch.
 
@@ -674,7 +675,3 @@ the dry-run path it needs in a pull request of its own, first.
 
   A PR that moves a pin updates its readers and writers in the same PR,
   or leaves the pin where they find it.
-
-The CI shell plan's
-[Working an item](../plans/archive/ci-shell-to-code.md#working-an-item),
-where these rules began, records how its items applied them.

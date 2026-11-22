@@ -27,9 +27,7 @@ Out of scope:
 
 - **The Alpaca devices.** The Alpaca Camera and Telescope that put the
   simulator behind the guider's own clients come with the `guider`
-  service, the first piece that talks to them
-  ([native-guider.md § Staging](../plans/native-guider.md#staging),
-  stage G4).
+  service, the first piece that talks to them.
 - **Hardware binning and subframes.** The guider reads full frames, and a
   test that wants binned pixels sets a coarser pixel scale.
 - **Other physics:** field rotation, dark current, refraction, and any star

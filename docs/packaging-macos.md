@@ -4,13 +4,12 @@ How to install, configure, and operate the rusty-photon services on a Mac.
 macOS distribution is **Homebrew** — per-service binary formulas in the
 [`rusty-photon/homebrew-rusty-photon`](https://github.com/rusty-photon/homebrew-rusty-photon)
 tap, with `brew services` supervising the daemons the way systemd does on
-Linux. The rationale (why not a suite `.pkg`) and the full design live in
-[docs/plans/archive/nightly-releases.md](plans/archive/nightly-releases.md) (phase N4); the
-native camera-SDK payload policy is
-[ADR-013](decisions/013-native-sdk-payload-policy.md) /
-[ADR-014](decisions/014-zwo-per-device-services-and-link-features.md). The
-Linux guide is [docs/packaging.md](packaging.md), the Windows guide
-[docs/packaging-windows.md](packaging-windows.md).
+Linux. A suite `.pkg`, the analogue of the Windows MSI, is not offered:
+Gatekeeper blocks an unnotarized one, and it would manage no upgrade or
+uninstall. Windows needs its MSI for want of a package manager; on a Mac,
+Homebrew is one, and its per-service formulas take the place of the MSI's
+feature tree. The Linux guide is [docs/packaging.md](packaging.md), the
+Windows guide [docs/packaging-windows.md](packaging-windows.md).
 
 Apple Silicon (arm64) only — Intel macOS is not a target. Homebrew on
 Linux is not supported either; Linux machines use the `.deb`/`.rpm`
@@ -37,9 +36,9 @@ typo: `brew tap <owner>/<name>` resolves to the repo `<owner>/homebrew-<name>`,
 so `rusty-photon/rusty-photon` is the tap living at
 `rusty-photon/homebrew-rusty-photon` — a separate repository from this one.
 
-If you tapped before 2026-08-21 the tap was `ivonnyssen/rusty-photon`; that repo
-transferred into the org, so an existing tap keeps updating through GitHub's
-redirect. To move to the new name:
+A tap added under its retired name, `ivonnyssen/rusty-photon`, keeps updating
+through GitHub's redirect to the org's repository. To move it to the current
+name:
 
 ```sh
 brew untap ivonnyssen/rusty-photon
@@ -47,10 +46,9 @@ brew tap rusty-photon/rusty-photon
 ```
 
 The services and their ports are the same family as on Linux (see the
-table in [docs/packaging.md](packaging.md#what-gets-installed);
-`session-runner` is likewise not yet packaged, and `svbony-camera` has no
-macOS formula at all today — see "Camera specifics" below). The launchd
-mapping:
+table in [docs/packaging.md](packaging.md#what-gets-installed)), except
+that `svbony-camera` has no macOS formula — see "Camera specifics" below.
+The launchd mapping:
 
 | Linux concept | macOS equivalent |
 |---|---|
@@ -98,8 +96,9 @@ the config first, then `brew services start` it. Started without a
 config they exit immediately and launchd respawn-loops them — harmless,
 but noisy.
 
-**Serial-device drivers** (`ppba-driver`, `qhy-focuser`,
-`pa-falcon-rotator`, `pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`)
+**Serial-device drivers** (`ppba-driver`, `upbv2-driver`,
+`gemini-powerbox-adv3-driver`, `qhy-focuser`, `pa-falcon-rotator`,
+`pa-scops-oag`, `dsd-fp2`, `star-adventurer-gti`)
 validate their hardware eagerly at startup and exit if the device is
 missing — by design, so a broken device is never advertised on the
 network. Until the device is attached (and its path matches the config —
@@ -167,8 +166,9 @@ creates it at startup when it opens the target store, so the account
 running the service must be able to write there; under `sudo brew
 services` that resolves under root's home like the config does.
 
-Caveat for configs written before this default was corrected: they carry
-the unwritable Linux path verbatim, and rp now exits at startup with
+A config whose `session.data_directory` holds the Linux path,
+`/var/lib/rusty-photon/rp/data`, names a directory your user cannot
+create, and rp exits at startup with
 `target_store.db_path ...: failed to create parent directory: Permission
 denied`. Edit `session.data_directory` in
 `~/Library/Application Support/rusty-photon/rp.json` to the path above and
@@ -183,7 +183,7 @@ confirmation is skipped on macOS.
 
 ## First wiring: rusty-photon-doctor
 
-The formulas put bytes on disk; doctor wires the configs (ADR-016).
+The formulas put bytes on disk; doctor wires the configs.
 After installing — or later adding — formulas, run once as the user the
 services run as (under `sudo brew services`, prefix with `sudo`):
 
@@ -227,7 +227,7 @@ never practically need it.
 MIT-licensed SDK dylib (`libASICamera2.dylib` / `libEAFFocuser.dylib`,
 license installed into the formula's docdir), resolved keg-relative via
 `@loader_path` rpaths (the macOS equivalent of the Linux packages'
-RUNPATH; ADR-014's one-blob-per-service split unchanged). `zwo-camera`
+RUNPATH). `zwo-camera`
 additionally depends on Homebrew's `libusb`. No udev, no firmware
 uploads — macOS needs no device-permission setup for USB *cameras*.
 
@@ -246,16 +246,15 @@ probe; the exact grant UX is confirmed as part of the physical-Mac
 validation pass.
 
 **qhy-camera** — QHYCCD's proprietary SDK is linked statically (never
-redistributed as files; ADR-013 is satisfied differently here: the mac SDK
-embeds the camera firmware images *inside* the library). The formula
+redistributed as files; the mac SDK embeds the camera firmware images
+*inside* the library, so there is no firmware file to install either). The formula
 depends on Homebrew's `libusb`. **Caveat:** a factory-fresh ("cold") QHY
 camera needs a one-time firmware upload. On Linux that is udev + fxload
 (the firmware-install helper); on macOS the SDK instead exposes in-process
-entry points (`OSXInitQHYCCDFirmware*`) which qhy-camera does not call
-yet — so a cold camera will not enumerate on a Mac. A camera that has been
+entry points (`OSXInitQHYCCDFirmware*`), which qhy-camera does not
+call, so a cold camera will not enumerate on a Mac. A camera that has been
 flashed since its last power-cycle (e.g. first plugged into a Linux host,
-or previously used by another macOS app) works normally. Wiring the
-in-process upload is a tracked follow-up.
+or previously used by another macOS app) works normally.
 
 **svbony-camera — not available on macOS today.** indi-3rdparty's
 `libsvbony` packaging ships no `mac_arm64` blob (Intel/`mac64` only), and

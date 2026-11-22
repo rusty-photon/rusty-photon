@@ -5,9 +5,10 @@ positions, times, and twilight windows, plus an in-process
 implementation that wraps the BSD-licensed ERFA library.
 
 This is a workspace library, not a service. The `rp` orchestrator
-consumes it directly. See [`docs/services/rp.md`](../services/rp.md)
-for how the planner and MCP tools project the trait onto the
-external surface; this doc covers the crate's own design.
+consumes it directly, as do `polar-align` and `planetarium-bridge`.
+See [`docs/services/rp.md`](../services/rp.md) for how the planner and
+MCP tools project the trait onto the external surface; this doc covers
+the crate's own design.
 
 ## Scope
 
@@ -28,23 +29,31 @@ positions:
 ```text
 sidereal_time(site, time)                              -> LocalSiderealTime
 alt_az(site, target_icrs, time)                        -> Result<AltAz, EphemerisError>
-transit(site, target_icrs, date)                       -> Option<UtcTime>
+transit(site, target_icrs, date)                       -> Option<DateTime<Utc>>
 rise_set(site, target_icrs, date, min_alt_deg)         -> Option<RiseSet>
-meridian_flip(site, target_icrs, time, side_of_pier)   -> Option<DurationToFlip>
+meridian_flip(site, target_icrs, time, side_of_pier)   -> Option<Duration>
 sun_position(site, time)                               -> SunInfo
 twilight(site, date, kind)                             -> TwilightWindow
 moon_position(site, time)                              -> MoonInfo
-moon_separation(target_icrs, time)                     -> AngleDeg
+moon_separation(target_icrs, time)                     -> f64 (degrees)
 ```
 
-Methods take inputs by value (`Site`/`IcrsCoord`/`DateTime<Utc>` are
-all `Copy`) and return owned values. Implementations may not retain
-mutable state across calls — `&self` is reserved for caching only.
+Methods borrow the `Site`, take the target and the time by value
+(`IcrsCoord` and `DateTime<Utc>` are `Copy`), and return owned values.
+Implementations may not retain mutable state across calls — `&self` is
+reserved for caching only. `meridian_flip` takes the side of pier but
+does not consult it: it returns the time to the next meridian crossing.
 
 `Site` is constructed via `Site::new(latitude_degrees,
 longitude_degrees)`, which validates range and resolves the IANA
 timezone once via `tzf-rs`. The timezone is stored as a `&'static
-str` borrowed from a process-static finder.
+str` borrowed from a process-static finder. A site has no elevation:
+the transforms run at sea level, which
+[rp.md § Site Configuration](../services/rp.md#site-configuration)
+explains is enough. `Site::night_date(at)` names the observing night an
+instant belongs to — the night rolls at local noon, in the site's
+timezone under `chrono-tz`'s DST rules
+([rp-targets.md § Progress derivation](rp-targets.md#progress-derivation-the-actuals)).
 
 ## `ErfarsEphemeris` Implementation
 
@@ -73,7 +82,7 @@ in production.
 Two inherent methods on `ErfarsEphemeris` (not trait methods — the
 trait's consumers never need them, and adding required methods would
 break every test double) serve callers that must control refraction,
-today `polar-align`:
+such as `polar-align`:
 
 ```
 alt_az_with_conditions(site, target_icrs, time, Option<RefractionConditions>)
@@ -94,12 +103,15 @@ is `alt_az_with_conditions` with the default conditions.
 
 ### Operations not in ERFA's surface
 
-Rise/set, twilight, transit, and meridian-flip ETA are small
-root-finders inside `derived.rs` that close over the ERFA-supplied
-positions. Each does ≤ 20 sun/alt-az evaluations per call via
-midpoint bisection on a sign-changing function (e.g. "sun altitude
-minus threshold" for twilight, "target altitude minus threshold"
-for rise/set).
+Rise/set, twilight, transit, and meridian-flip ETA live in
+`derived.rs` and close over the ERFA-supplied positions. Rise/set and
+twilight are midpoint bisections, to a 1 s tolerance over a bracket of
+at most 12 hours, on a sign-changing function ("target altitude minus
+threshold" for rise/set, "sun altitude minus threshold" for twilight):
+about 18 alt/az or Sun evaluations per bound. Transit is closed-form
+from local sidereal time, refined by one Newton step against the LST
+at the candidate time; the meridian-flip ETA is closed-form from the
+hour angle.
 
 The bisection helper short-circuits to `None` if either endpoint is
 NaN, so NaN inputs propagate to `Option::None` rather than spinning
@@ -197,7 +209,8 @@ for the life of the process and concurrent callers only ever read it,
 so the guard costs a single relaxed atomic load per call. The
 `tests/leap_second_init_race.rs` integration test (its own binary, so
 it owns the process's cold start) drives 64 threads onto their first
-call at once and is the regression guard for this fix.
+call at once, to catch the race should the guard ever go
+([Testing](#testing)).
 
 ## Time-Scale Treatment
 
@@ -240,7 +253,7 @@ accumulated leapsecond count; bumping `erfars` resyncs it.
 Annual aberration is not applied to the Sun (sub-arcmin effect;
 below the resolution that matters for "is the Sun up?").
 
-### `IcrsCoord` vs the validated plan coordinate (ADR-019)
+### `IcrsCoord` vs the validated plan coordinate
 
 This crate's `IcrsCoord` (in `types.rs`) is a **computed** value: the
 transforms build it from ERFA output, and the [panic-safety
@@ -259,8 +272,7 @@ computed, **total** — a validated coord is always a valid transform input)
 and `TryFrom<IcrsCoord> for rp_vocabulary::IcrsCoord` (computed → plan,
 **partial** — `NaN`/seam surface as a `CoordError`; a plain `From` here
 would panic on the seam or clamp silently). See
-[ADR-019](../decisions/019-plan-data-vocabulary-and-validation.md) and
-[rp-vocabulary.md](rp-vocabulary.md).
+[rp-vocabulary.md § Not this crate](rp-vocabulary.md#not-this-crate-false-cognates).
 
 ## Module Layout
 
@@ -270,11 +282,11 @@ crates/rp-ephemeris/src/
 ├── types.rs        # IcrsCoord, AltAz, LocalSiderealTime, RiseSet,
 │                   #   SunInfo, MoonInfo, TwilightKind, TwilightWindow,
 │                   #   EphemerisError
-├── site.rs         # Site + tzf-rs timezone resolution
+├── site.rs         # Site + tzf-rs timezone resolution, night_date
 ├── erfars_impl.rs  # ErfarsEphemeris, time_jds, alt_az_at, sun_icrs,
 │                   #   moon_icrs, run_with_guard, NaN-fallback ctors
 ├── vocabulary.rs   # From/TryFrom bridge between the computed IcrsCoord
-│                   #   and the validated rp_vocabulary::IcrsCoord (ADR-019)
+│                   #   and the validated rp_vocabulary::IcrsCoord
 └── derived.rs      # bisect_dt, transit, rise_set, meridian_flip,
                     #   twilight (root-finders over ERFA positions)
 ```
@@ -286,21 +298,26 @@ re-exports keeps the crate root self-explanatory.
 ## Testing
 
 - Unit tests live next to the code under `#[cfg(test)] mod tests`.
-- A small reference-value integration test lives in
-  `tests/reference_values.rs` and asserts canonical values
-  (e.g., GMST at J2000) within tolerance.
+- `tests/reference_values.rs` compares `alt_az` against Astropy's
+  values in `refvals/*.json`, within 1e-4°. `refvals/gen.py`, run by
+  hand, writes those files; none is committed, so the test finds no
+  file and passes without checking anything
+  ([`refvals/README.md`](../../crates/rp-ephemeris/refvals/README.md)).
 - `tests/leap_second_init_race.rs` is a standalone-binary
   concurrency regression test for the ERFA leap-second lazy-init race
   (see [Thread Safety](#thread-safety)): 64 threads make their first
-  ephemeris call under a barrier, which segfaults ~1-in-4 cold starts
-  without the `Once` warm-up and is deterministically clean with it.
-- `Site` tests cover lat/lon range validation and tz resolution
-  (Seattle → America/Los_Angeles, Madrid → Europe/Madrid).
-- `ErfarsEphemeris` tests cover normal-case math (Polaris altitude
-  at Seattle ≈ latitude; Sun on the vernal equinox ≈ RA 0/Dec 0;
-  Sun below horizon at Seattle midnight in winter), the kept
-  `Dtf2d` Err path via year=-10000, end-to-end NaN/None
-  degradation across all trait methods for an out-of-range year,
+  ephemeris call under a barrier. Without the `Once` warm-up that
+  segfaults 20–40 % of cold starts on a 16-core host; with it the test
+  is deterministically clean.
+- `Site` tests cover lat/lon range validation, tz resolution
+  (Seattle → America/Los_Angeles, Madrid → Europe/Madrid), and
+  `night_date`'s roll at local noon.
+- `ErfarsEphemeris` tests cover normal-case math (GMST at the J2000
+  epoch; Polaris altitude at Seattle ≈ latitude; Sun on the vernal
+  equinox ≈ RA 0/Dec 0; Sun below horizon at Seattle midnight in
+  winter), the kept `Dtf2d` Err path via year=-10000, end-to-end
+  NaN/None degradation across all trait methods for an out-of-range
+  year,
   and the [panic-safety contract](#panic-safety-and-degradation):
   - `run_with_guard` happy path and panic-recovery path
   - `panic_payload_message` for `&'static str`, `String`, and
@@ -319,8 +336,9 @@ code.
 | Crate | Purpose |
 |---|---|
 | `chrono` | calendar/time arithmetic, `DateTime<Utc>` |
+| `chrono-tz` | DST rules for `Site::night_date`'s local-time conversion |
 | `erfars` | Rust FFI for ERFA (the math) |
-| `rp-vocabulary` | validated plan `IcrsCoord`, for the `From`/`TryFrom` boundary bridge only (ADR-019) |
+| `rp-vocabulary` | validated plan `IcrsCoord`, for the `From`/`TryFrom` boundary bridge only |
 | `tzf-rs` | offline lat/lon → IANA timezone, used by `Site` |
 | `tracing` | error logging on degraded paths |
 | `thiserror` | `EphemerisError` derive |

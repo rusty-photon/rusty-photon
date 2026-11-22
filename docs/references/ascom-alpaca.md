@@ -15,7 +15,7 @@ This document contains reference information for ASCOM Alpaca development in the
 
 This project uses the `ascom-alpaca` crate: https://crates.io/crates/ascom-alpaca
 
-Current version: `1.0.0-beta.10`
+The workspace pins an org fork of it, which [workspace.md § Build Notes](../workspace.md#build-notes) describes; `Cargo.lock` holds the version.
 
 Features used:
 - `server` - HTTP server for exposing devices
@@ -34,8 +34,8 @@ Features used:
 - All responses return JSON format
 
 **Examples:**
-- Switch max count: `http://192.168.1.89:11112/api/v1/switch/0/maxswitch`
-- Get switch value: `http://192.168.1.89:11112/api/v1/switch/0/getswitchvalue?Id=2`
+- Switch max count: `http://<host>:11112/api/v1/switch/0/maxswitch`
+- Get switch value: `http://<host>:11112/api/v1/switch/0/getswitchvalue?Id=2`
 
 ## Response Format
 
@@ -85,7 +85,7 @@ selectwheel and SELECTWHEEL all refer to the same action".
 
 The Management API defines two HTML pages, served by the server itself
 (our drivers serve them behind their own TLS and Basic Auth; see
-[driver-setup-pages.md](../plans/archive/driver-setup-pages.md)):
+[rusty-photon-setup.md](../crates/rusty-photon-setup.md)):
 
 | Path | Method | Purpose |
 |------|--------|---------|
@@ -93,8 +93,8 @@ The Management API defines two HTML pages, served by the server itself
 | `/setup/v1/{device_type}/{device_number}/setup` | GET, POST | One device's configuration page; "must be implemented, even if the response to the user is that the device is not configurable"; 403 with an HTML message for an unknown device |
 
 The pinned `ascom-alpaca` fork routes both for `GET` and `POST` through
-`Device::setup_request` and `Server::setup`; the crate's old device page
-path, `/api/v1/{device_type}/{device_number}/setup`, answers a 308 to the
+`Device::setup_request` and `Server::setup`; upstream's device page path,
+`/api/v1/{device_type}/{device_number}/setup`, answers a 308 to the
 specification's path.
 
 ---
@@ -181,7 +181,7 @@ device spec — <https://ascom-standards.org/api/>.
 |----------|------|------|-------------|
 | `sitelatitude` | GET | `f64` (degrees, +N) | Geodetic latitude (WGS84) of the observing site |
 | `sitelongitude` | GET | `f64` (degrees, +E) | Longitude (WGS84) of the observing site |
-| `siteelevation` | GET | `f64` (metres, ASL) | Site elevation — `rp` does not consume this in v1 |
+| `siteelevation` | GET | `f64` (metres, ASL) | Site elevation — `rp` does not read it |
 
 ### Capability Probe Pattern
 

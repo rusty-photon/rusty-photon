@@ -25,7 +25,7 @@ Coveralls repo settings (they act on the upload this workflow sends):
 
 - **USE STATUS UPDATES** must be on for Coveralls to post commit
   statuses/checks at all. While it is off, Coveralls posts PR comments
-  only — flipping it is the first step.
+  only, and the required `coverage/coveralls` never reports.
 - **COVERAGE DECREASE THRESHOLD FOR FAILURE** is the ratchet. Prefer a small
   non-zero value (0.05–0.1) over 0: run-to-run instrumentation jitter is
   real, and a 0 threshold reddens on noise.
@@ -33,10 +33,11 @@ Coveralls repo settings (they act on the upload this workflow sends):
   ratchet.
 
 A required check that never reports stays pending forever and blocks
-**every** PR, so the Coveralls status joins the ruleset only after being
-observed posting on several PRs (the same observe-first discipline every
-vendor check here has gone through). Confirm with both API shapes, because a
-vendor may post either commit statuses or check runs:
+**every** PR. So a vendor's check joins the ruleset only after it has been
+observed posting on several PRs, and a check that is about to stop posting —
+its vendor or its workflow retired — leaves the ruleset before the change
+that retires it merges. Confirm that a check posts with both API shapes,
+because a vendor may post either commit statuses or check runs:
 
 ```bash
 gh api 'repos/{owner}/{repo}/commits/<sha>/status' --jq '.statuses[] | "\(.context) \(.state)"'
@@ -44,9 +45,13 @@ gh api 'repos/{owner}/{repo}/commits/<sha>/check-runs' \
   --jq '.check_runs[] | "\(.app.slug) \(.status) \(.conclusion // "-") \(.name)"'
 ```
 
-Approving a drop, once the status is required, is an admin bypass of that
-check — visible in the PR timeline — made after reading what §0/§1 say is
-uncovered.
+The ratchet needs a vendor that posts a repo-wide status for a repository an
+organization owns. Codecov's free tier posts none: `codecov/project` never
+reports there, whatever the configuration
+([the record](../plans/archive/coverage-codecov-era-record-2026.md)).
+
+Approving a drop is an admin bypass of `coverage/coveralls` — visible in the
+PR timeline — made after reading what §0/§1 say is uncovered.
 
 ## What is (and is not) in the numbers
 
@@ -64,30 +69,6 @@ A `#[cfg(test)] mod tests` block is already excluded by the `coverage(off)`
 attribute the nightly toolchain honours (see `.bazelrc` `--config=coverage`),
 so nothing you write in one distorts the result. The CI artifact (§1) keeps
 the *unfiltered* report, so the exempt files remain inspectable.
-
-## History: the Codecov era (through 2026-08-30)
-
-Codecov was the vendor before Coveralls, and three of its lessons are kept so
-nobody re-derives them:
-
-- Its required `codecov/patch` check enforced diff-coverage ≥ the base's
-  project coverage (`target: auto`) — the same ratchet intent the Coveralls
-  decrease threshold now carries. **When the Coveralls migration merged, the
-  `codecov/patch` entry had to leave the `main_protection` ruleset**, or every
-  PR would block on a check that never reports again.
-- `codecov/project` stopped posting when the repo moved to the
-  `rusty-photon` org (2026-08-02): the free tier does not include Project
-  Coverage. It was never a configuration problem.
-- The 21 per-service flag badges spent 08-22→08-30 all rendering the
-  identical repo-wide number: the codecov CLI ran without `--disable-search`,
-  so the `combined-coverage.info` file created for Coveralls was auto-added
-  to **every** flag upload. Per-service badges were removed with the
-  migration (Coveralls has no per-flag badges); per-file detail lives in the
-  Coveralls UI instead.
-
-Pre-transfer history (through commit `bf00fe3c`) is frozen in the
-`ivonnyssen/rusty-photon` Codecov project; 2026-08-02→2026-08-21 has no
-coverage data anywhere. Nothing should link either Codecov project any more.
 
 ## Which route answers which question
 
@@ -218,7 +199,9 @@ Changes" list, so `gh pr view <n> --comments` is often the fastest look of
 all.
 
 The badge is
-`https://coveralls.io/repos/github/rusty-photon/rusty-photon/badge.svg?branch=main`.
+`https://coveralls.io/repos/github/rusty-photon/rusty-photon/badge.svg?branch=main`,
+and it is the only one: Coveralls has no per-flag badges, so per-file numbers
+are read in the UI and per-package ones from the artifact (§1).
 Check a badge by its rendered text, not its HTTP status — a badge with no
 data still returns 200 with "unknown" painted in it:
 
@@ -256,6 +239,10 @@ This is the heaviest item in the pre-push set. See [pre-push.md](pre-push.md).
   The cost is that an upload failure leaves the badge and the PR comment
   stale until the next green run — read the run's log/annotations before
   concluding a number moved.
+- **The upload names its report** (`file: combined-coverage.info`). The
+  checkout also holds the per-package splits, and an uploader left to search
+  for reports adds every one it finds to the upload, as the codecov CLI does
+  unless given `--disable-search`.
 - **Coveralls compares against the PR's base build.** A base commit with no
   successful upload makes the "coverage changed by X%" verdict meaningless
   rather than red — its comment names the base build it compared against;
