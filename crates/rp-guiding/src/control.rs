@@ -1100,17 +1100,29 @@ mod tests {
                 dec_mode: DecMode::North,
                 ..ControlParams::default()
             });
+            // The mode's own correction first: the gear is meshed North.
+            let north = controller.step(along(0.0, -2.0)).unwrap();
+            assert_eq!(
+                north.dec.map(|pulse| pulse.direction),
+                Some(Direction::North)
+            );
             let mut rng = Xoshiro256PlusPlus::seed_from_u64(4);
             let moved = (0..100)
                 .map(|_| controller.dither(4.0, false, &mut rng))
                 .any(|lock| lock.dec != 0.0);
             assert!(moved, "no dither moved the Dec lock");
+            // South is a reversal, which waits out its count as in "auto".
             let lock = controller.lock();
-            let south = controller.step(along(lock.ra, lock.dec + 2.0)).unwrap();
-            assert_eq!(
-                south.dec.map(|pulse| pulse.direction),
-                Some(Direction::South)
-            );
+            let decs: Vec<Option<Direction>> = (0..3)
+                .map(|_| {
+                    controller
+                        .step(along(lock.ra, lock.dec + 2.0))
+                        .unwrap()
+                        .dec
+                        .map(|pulse| pulse.direction)
+                })
+                .collect();
+            assert_eq!(decs, [None, None, Some(Direction::South)]);
             end(&mut controller);
             let lock = controller.lock();
             let held = controller.step(along(lock.ra, lock.dec + 2.0)).unwrap();
@@ -1467,14 +1479,24 @@ mod tests {
 
     #[test]
     fn a_dither_in_a_one_way_dec_mode_settles_at_its_dec_point() {
+        // The Dec drift the North mode is for: its corrections all go North.
         let mut run = Run::start(
-            |_| {},
+            |config| {
+                config.mount.drift = Drift {
+                    east_arcsec_per_min: 0.0,
+                    north_arcsec_per_min: -1.0,
+                };
+            },
             ControlParams {
                 dec_mode: DecMode::North,
                 ..ControlParams::default()
             },
         );
-        run.frames(20).unwrap();
+        let before = run.frames(40).unwrap();
+        assert!(before
+            .iter()
+            .filter_map(|frame| frame.step.and_then(|step| step.dec))
+            .any(|pulse| pulse.direction == Direction::North));
         // A lock whose Dec point only South pulses reach.
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(1);
         let lock = (0..100)
