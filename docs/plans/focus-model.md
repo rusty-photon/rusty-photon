@@ -80,8 +80,11 @@ once and kept.
 Every slice is merged, S7 in three
 ([§ S7](#s7--three-slices-decided-2026-11-04)). Its rig night met three
 of the gate's five checks on rig2 on 2026-11-04, and the owner decided
-that day to start it; the other two, the `shared: true` walk and the
-temperature rule, remain to be validated on pier1.
+that day to start it. Of the other two, the temperature rule remains to
+be validated on pier1, and it is the last thing this plan holds open.
+The `shared: true` walk moved to the native guider's stage G5 on
+2026-11-22 (owner), because it ends in a guide-metric sweep that needs
+a guider guiding.
 
 S8 to S11 come out of the 2026-09-13 review of the open items below,
 ordered by what they unblock: S8 is `rp` reads plus a sizing change;
@@ -1495,7 +1498,8 @@ validate S4 before S7: the derived sweep against the hand-tuned block,
 a hand-entered offset, a `focus_train` with a prediction that lands
 inside the sweep's band, a `shared: true` walk on the guide-coupled
 rig, and a temperature delta that fires the rule. rig2 ran the first
-three, and the rest are S7's own.
+three. The temperature rule is S7's own, and the walk is the native
+guider's stage G5 ([§ S7](#s7--three-slices-decided-2026-11-04)).
 
 S8 is an `rp` change of one config field, two reported numbers and
 one sidecar field, the D9 line that reads them, and — provider-side —
@@ -1549,16 +1553,46 @@ rig2 has no guider and no `session-runner`, so the `shared: true` walk
 and the temperature rule could not run there. The owner decided on
 2026-11-04 to start S7 on that evidence: the two are validated on
 pier1 once S7b reaches it. S7c does not wait for that night, because
-after S7b no session calls what S7c removes. pier1 needs one config
-change first. Its guiding train `[zwo-eaf, scops-oag, guide camera]`
-carries no `auto_focus` block, and the shared walk ends in `rp`'s
-metric `auto_focus` on that train, which takes its `step_size` and
-`half_width` from the guiding train's block and refuses without one
-(rp.md § `auto_focus` Contract). So the guiding train needs a metric block
-before that night, or the walk fails at its guide step after moving
-the EAF. Nor does pier1 run `focus-model` or `session-runner` yet:
-neither package is installed there (2026-10-31), and the night needs
-both, `focus-model` registered with `rp` and configured for both trains.
+after S7b no session calls what S7c removes.
+
+*Amended 2026-11-22 (owner).* The `shared: true` walk moves to the
+native guider's stage G5 ([native-guider.md](native-guider.md) §
+Staging), and this plan no longer validates it. The walk ends in `rp`'s
+guide-metric `auto_focus` on the guiding train, which measures the HFD
+a guider reports while it guides. PHD2 has left the tree, and the
+`guider` service that replaces it is that plan's stage G4, so no build
+can run the walk before G4, and pier1 cannot run it before G5 has it
+guiding under `rp`. The temperature rule needs no guider, since
+`deep_sky.json` guides only when `params.guide` is true. It stays
+here, and its night on pier1 is all that remains of the gate:
+[#1683](https://github.com/rusty-photon/rusty-photon/issues/1683)
+closes on it, and this plan is then archived with the walk parked
+under G5.
+
+What pier1 needs for the temperature night, read from it on
+2026-11-22:
+
+- `focus-model` and `session-runner` installed. pier1 runs a nightly
+  of 2026-11-09, without either.
+- `focus-model` registered in `rp.json`'s `plugins`, which holds none.
+- A sweep `focus-model` can size for the imaging train `main`
+  `[zwo-eaf, falcon, sv605cc]`. Its entry has a focal length but no
+  `aperture_mm`, and the EAF's driver answers `StepSize` with
+  `NOT_IMPLEMENTED` while the `zwo-eaf` entry sets no
+  `microns_per_step`. The provider refuses to derive a sweep until
+  both facts are in `rp`'s config, or until `trains.main` sets
+  `step_size` and `half_width` in `focus-model.json`.
+- A build later than the native guider's G6 also changes pier1's
+  guiding configuration, which still names `phd2-guider`
+  ([native-guider.md](native-guider.md) § Staging).
+
+What the walk needs at G5, besides a guider guiding: the guiding train
+`[zwo-eaf, scops-oag, guide camera]` carries no `auto_focus` block,
+and the guide-metric sweep takes its `step_size` and `half_width` from
+that block and refuses without one (rp.md § `auto_focus` Contract). So
+pier1's config gains that block before the walk, or the walk fails at
+its guide step after moving the EAF. `focus-model` is configured for
+both trains.
 
 **S7a** is this design: the decisions above as amended (D12, D16, D17)
 and this section.
