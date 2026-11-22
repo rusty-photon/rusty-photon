@@ -1,0 +1,79 @@
+load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(
+    ["Cargo.toml"],
+    visibility = ["//visibility:public"],
+)
+
+_INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-guiding:rp-guiding",
+]
+
+# The tests replay recordings the simulator renders.
+_INTRA_WORKSPACE_DEV_DEPS = [
+    "//crates/guide-simulator:guide-simulator",
+]
+
+# testonly: a production target that links it fails to build.
+rust_library(
+    name = "guide-replay",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    aliases = aliases(),
+    crate_name = "guide_replay",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "guide-replay-bin",
+    testonly = True,
+    srcs = ["src/main.rs"],
+    aliases = aliases(),
+    crate_name = "guide_replay_bin",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [":guide-replay"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+# The replays render simulated hours through guide-simulator.
+rust_test(
+    name = "guide-replay_unit_test",
+    size = "medium",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":guide-replay",
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = _INTRA_WORKSPACE_DEV_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# The files the tools crate's bare-reference guard reads
+# (tools/rusty-photon-ci/src/bare_refs.rs).
+filegroup(
+    name = "sources",
+    srcs = glob(
+        [
+            "**/*.rs",
+            "**/*.feature",
+            "**/*.toml",
+            "**/*.bzl",
+            "**/*.bazel",
+        ],
+        allow_empty = True,
+    ),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
+)

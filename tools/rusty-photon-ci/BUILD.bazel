@@ -64,6 +64,7 @@ _SERVICES = [
 # the members from Cargo.toml, so a member missing here fails it.
 _MEMBERS = [
     "crates/bdd-infra",
+    "crates/guide-replay",
     "crates/guide-simulator",
     "crates/qhyccd-rs",
     "crates/qhyccd-rs/libqhyccd-sys",

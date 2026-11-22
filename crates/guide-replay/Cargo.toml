@@ -1,0 +1,25 @@
+[package]
+name = "guide-replay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Guide-camera frames recorded on a rig, replayed through the guider's measurement: whether it holds its guide stars, and whether the stars agree with one another"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true }
+csv = { workspace = true }
+ndarray = { workspace = true }
+rp-guiding = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+guide-simulator = { workspace = true }
+tempfile = { workspace = true }
