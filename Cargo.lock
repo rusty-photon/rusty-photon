@@ -1937,6 +1937,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "guide-replay"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "csv",
+ "guide-simulator",
+ "ndarray",
+ "rp-guiding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "guide-simulator"
 version = "0.1.0"
 dependencies = [

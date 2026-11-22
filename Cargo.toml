@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/bdd-infra",
+  "crates/guide-replay",
   "crates/guide-simulator",
   "crates/qhyccd-rs",
   "crates/qhyccd-rs/libqhyccd-sys",

@@ -4,7 +4,7 @@
 **Parent design docs:** [`docs/workspace.md`](../workspace.md#project-tenets) (project tenets), [`docs/services/guider.md`](../services/guider.md), [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md), [`docs/services/rp.md`](../services/rp.md), [`docs/services/phd2-guider.md`](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md), [`docs/plans/optical-trains.md`](optical-trains.md), [`docs/plans/daily-power-cycle.md`](daily-power-cycle.md)
 
 > **Status:** decided on 2026-11-12. Stages G0, G6, G1 and G2 are
-> merged, and no other stage has started. The owner read this study and settled its
+> merged, stage G3 is in progress, and no other stage has started. The owner read this study and settled its
 > main questions: rusty-photon builds a native guider as a standalone
 > service that is an Alpaca client, and drops PHD2
 > ([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)).
@@ -894,8 +894,8 @@ it changes for the later stages follows the table; G6 took PHD2's
 pieces out of the tree and moved `rp` to the native contract. G1 is
 merged: both rigs were measured on 2026-11-17, and what G1 found
 follows what G0 changes. G2 is merged: the guider's core guides
-`guide-simulator`'s mount in closed loop in CI. No other stage has
-started. No stage measures the guider
+`guide-simulator`'s mount in closed loop in CI. G3 is in progress, on
+rig2 (decision 15), and no other stage has started. No stage measures the guider
 against PHD2, and no new work is started for PHD2 (decisions 6 and 12).
 
 The stages run in the order of the table. G6 comes right after G0, as
@@ -909,7 +909,7 @@ G7a is the stage decision 13 adds.
 | **G6** | PHD2's pieces leave the tree, and `rp` speaks the native contract. `phd2-guider`, its facade, its mock, its packaging, `restart_guider` and the old contract types go. The types and the client of the contract [`guider.md`](../services/guider.md) designs take their place in `crates/rp-guider`, and `rp`'s guiding tools move to them, tested against a test double of that contract. No compatibility is kept with the old contract or its configuration. Four pull requests, in this order. **The design:** `rp.md`, `focus-model.md`, `session-runner.md`, `sentinel.md`, `guider.md` and [`daily-power-cycle.md`](daily-power-cycle.md) say what `rp` and its plugins do against the native guider, and mark it designed and not yet built where the code still speaks PHD2's contract. In `rp.md` that is § Guider Service with the check that the guider's devices are `rp`'s and the watch over a run, the train lease's camera-lease step, the capture through the guide camera, the motion gate's text about pulses, the rotate-while-guiding ladder and the end of `restart_guider`, among others; in `focus-model.md`, the training runs on a guiding train; in `session-runner.md`, the night document's two rules for a lost star and for a run the guider stopped; in `sentinel.md`, the units the `phd2-guider` package ships for PHD2 and its display; in `guider.md`, the `UniqueID` the guider reports for each device; in `daily-power-cycle.md`, decision 10 and PHD2's restart in stages P2 and P4. **The BDD scenarios** of that design, against the double. **The code:** the contract's types and client in `crates/rp-guider`, the double in `bdd-infra`, and what the design changes in `rp`, in `focus-model`, in the night document and in the cards `ui-htmx`'s stream draws for `guide_stopped` and `guide_star_lost`. **The removal:** `services/phd2-guider` with its packaging and its entries in CI, in doctor's catalog and in sentinel, and with it `phd2-guider.md` and what the other living documents say of the removed pieces, the packaging guides, `doctor.md`, `README.md` and `workspace.md` among them | `rp`'s BDD green against the double, and nothing of PHD2 left in the tree to build or to package | Merged 2026-11-17. The design merged 2026-11-14: [stage G6, the design](https://github.com/rusty-photon/rusty-photon/pull/1785). The BDD scenarios merged 2026-11-15: [stage G6, the scenarios](https://github.com/rusty-photon/rusty-photon/pull/1789). The code merged 2026-11-16: [stage G6, the code](https://github.com/rusty-photon/rusty-photon/pull/1795). The removal merged 2026-11-17: [stage G6, the removal](https://github.com/rusty-photon/rusty-photon/pull/1807) |
 | **G1** | Cadence spike, no guider: loop 2 s exposures through `qhy-camera` on each guide camera, full frame binned and subframe; time short pulses through the GTi driver; time the kernels on the Pi 5. Both guide cameras get a validation record under `qhy-camera` | Exposure end to pixels in the client well under the exposure length, sustained for an hour. If not, the driver overhead is fixed first | Merged 2026-11-18: [stage G1](https://github.com/rusty-photon/rusty-photon/pull/1821). Both guide cameras pass, measured on 2026-11-17 (below, "What G1 found") |
 | **G2** | The kernels move to `rp-image-analysis`. `rp-guiding` and `guide-simulator`: multi-star measurement, step calibration, the two controllers, dither and settle. Five pull requests, in this order. **The kernels:** `crates/rp-image-analysis` holds the image kernels, and `rp` uses them from there. **The simulator:** `guide-simulator`'s mount model and star renderer, stepped in simulated time: drift, periodic error, backlash, short pulses delivered as coarsely as G1 measured on the GTi, seeing and clouds. The Alpaca devices in front of them wait for G4, the first stage that talks to them. **The measurement:** `rp-guiding`'s star selection, several stars measured each frame and combined, the flux test and the star-lost frame, with the frame-wide σ made cheap. **The calibration:** the legs, the step, the cross-checks, the Dec rules, and when a stored record is used. **The control:** the two controllers, the minimum move, the pulse floor and cap, the runaway stop, dither and settle, and the closed-loop runs against the simulator that the stage passes on | The loop converges and recovers across the simulator's mount and sky conditions in CI | Merged 2026-11-22. The kernels merged 2026-11-18: [stage G2, the kernels](https://github.com/rusty-photon/rusty-photon/pull/1824). The simulator merged 2026-11-19: [stage G2, the simulator](https://github.com/rusty-photon/rusty-photon/pull/1835). The measurement merged 2026-11-19: [stage G2, the measurement](https://github.com/rusty-photon/rusty-photon/pull/1840). The calibration merged 2026-11-21: [stage G2, the calibration](https://github.com/rusty-photon/rusty-photon/pull/1855). The control merged 2026-11-22: [stage G2, the control](https://github.com/rusty-photon/rusty-photon/pull/1856). The closed-loop runs pass in CI: drift and periodic error, the GTi's coarse pulses and backlash, a cloud, a gust under a fast drift and a dither's settle, and the guider pulses no more at a mount that stops following the pulses or reverses them |
-| **G3** | Replay: record guide-camera frames on sky on pier1 through `qhy-camera`, the mount tracking and nothing guiding, and run the measurement over them | The measurement holds its guide stars through the recording, and the stars' offsets agree with one another frame by frame within a stated tolerance | Not started |
+| **G3** | Replay: record guide-camera frames on sky on rig2 through `qhy-camera`, the mount tracking and nothing guiding, and run the measurement over them. The owner points rig2's mount and starts it tracking, since nothing of the workspace reaches it before G7a (decision 15). Two pull requests, in this order. **The replay:** [`guide-replay`](../crates/guide-replay.md), the recorder `record.ps1` beside it, and the tolerance, stated before the recording. **The recording:** an hour of the QHY5III678M binned 2 × 2, its validation record with the replay's report, and frames cropped from it that a test replays in CI | The measurement holds its guide stars through the recording, and the stars' offsets agree with one another frame by frame within [`guide-replay`'s tolerance](../crates/guide-replay.md#the-report): at least four guide stars, no frame lost while its stars are there, each star's scatter at most 0.5 px of the binned frame on each axis, and at most one deviation in 1,000 at 2 px or more from its star's mean | In progress |
 | **G4** | The `guider` service as [`guider.md`](../services/guider.md) specifies it: Alpaca clients, the HTTP API, the guide log, the setup page, packaging. It serves the contract `crates/rp-guider` holds since G6, and where building it changes that contract, `rp` changes with it | BDD green against `guide-simulator`'s devices, and `rp`'s guiding scenarios green against the service in place of the double; ConformU is not applicable | Not started |
 | **G5** | pier1 on sky under `rp`: calibrate, guide and dither, in the evaluation sessions and the unattended night of § 9 | The acceptance list in § 9 | Not started |
 | **G7a** | rig2's mount over Alpaca: an Alpaca bridge in front of the vendor's ASCOM driver, and a mount entry for it in `rp` on rig2. Which bridge is not verified, nor whether the COM driver runs with nobody logged on | The mount answers over Alpaca with nobody logged on. If it does not, the question returns to the owner (decision 13) | Not started |
@@ -1057,7 +1057,8 @@ follow from decision 7 going further than the study recommended. The
 owner settled decisions 6 and 12 on 2026-11-14, on what G0 found, and
 decisions 3, 5 and 11 the same day. Decision 13 is new with G0 and was
 settled with them. Decision 14 arose while G6's code was written, and
-the owner settled it on 2026-11-15.
+the owner settled it on 2026-11-15. Decision 15 arose when G3 started,
+and the owner settled it on 2026-11-22.
 
 1. **Build a native guider?** Or stay with PHD2 (E0, E1), or adopt
    INDIGO's agent (E3). **Settled: a native guider is built.**
@@ -1162,6 +1163,18 @@ the owner settled it on 2026-11-15.
     exposes, and a restart of `rp` forgets what it held.
     [ADR-026](../decisions/026-rp-keeps-its-guide-camera-captures-and-the-guider-apart.md) records the decision and supersedes ADR-024's
     decision 6.
+15. **Where G3 records.** On pier1 the workspace drives the mount
+    itself. rig2 gets more clear nights and is the rig G7 guides, but
+    nothing of the workspace reaches its mount before G7a. **Settled on
+    2026-11-22: G3 records on rig2.** The owner points the mount at a
+    field near the meridian and starts it tracking, and the recorder
+    reads the guide camera alone. G7a stays where the table puts it.
+    The owner settled two more points the same day:
+    - frames cropped from the recording are checked in, and a test
+      replays them in CI;
+    - G3's tolerance is stated before the recording, as
+      [`guide-replay` § The report](../crates/guide-replay.md#the-report)
+      states it.
 
 ## Not verified
 

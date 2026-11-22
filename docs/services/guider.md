@@ -1562,7 +1562,8 @@ clients as they cover `rp`'s.
   middle of a run.
 - **Recorded frames.** Guide-camera frames recorded on the rigs through
   the camera's driver, with nothing guiding, are replayed through the
-  measurement.
+  measurement
+  ([docs/crates/guide-replay.md](../crates/guide-replay.md)).
 - **The service.** BDD scenarios start the `guider` binary against
   `guide-simulator`'s Alpaca devices and hold it to this document
   section by section: the states, starting idle, the mount

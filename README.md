@@ -231,6 +231,7 @@ rusty-photon/
   CLAUDE.md / AGENTS.md   Operating rules for AI agents and human contributors
   crates/
     bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)
+    guide-replay/                    Recorded guide-camera frames replayed through the guider's measurement
     guide-simulator/                 Mount model + star renderer in simulated time, for the guider's tests
     rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum + memoised verifier)
     rp-catalog/                      Embedded Messier/NGC/IC catalog with name resolution
