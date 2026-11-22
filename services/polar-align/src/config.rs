@@ -283,8 +283,9 @@ pub struct PolarAlignConfig {
     /// observatory credential, which doctor `--fix` wires.
     #[serde(default)]
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
-    /// PEM CA path used to trust a TLS-enabled `rp`. `rp-mcp-client`
-    /// sends `service_auth` only when this is set and the URL is https.
+    /// PEM CA path used to trust a TLS-enabled `rp` with a self-signed
+    /// certificate; unset, `rp` is verified against the platform roots.
+    /// `rp-mcp-client` sends `service_auth` only when the URL is https.
     #[serde(default)]
     pub ca_cert: Option<String>,
 }

@@ -882,7 +882,10 @@ and the two cannot name different fields. `joins.client-transport` is
 fully fix-eligible for them: the scheme is rewritten in place and the
 `ca_cert` written from the resolved pki tree. The scheme rewrite is what
 puts the pair to use — `rp-mcp-client` sends the credential only over
-`https://`, and a TLS-only rp refuses the plain-HTTP connection anyway.
+`https://`, verified against that `ca_cert` on a self-signed install and
+against the platform roots on an ACME one, where no `ca_cert` is written
+([ADR-027](../decisions/027-mcp-credentials-ride-https-verified-by-pin-or-platform-roots.md)),
+and a TLS-only rp refuses the plain-HTTP connection anyway.
 They carry no per-target credential, so `joins.client-auth` files
 nothing for them; an absent pair is the provisioning pass's to write.
 

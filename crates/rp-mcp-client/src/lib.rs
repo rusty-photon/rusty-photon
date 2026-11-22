@@ -7,9 +7,11 @@
 //! - **Transport construction**: rmcp streamable HTTP over a reqwest client
 //!   built by `rusty-photon-tls` (CA-pinned when a CA is configured).
 //! - **The credential policy**: the observatory credential is presented as
-//!   HTTP Basic **only over verified HTTPS** — a configured credential
-//!   without a configured CA, or on a non-HTTPS URL, is not sent; the
-//!   client connects unauthenticated and logs a loud warning.
+//!   HTTP Basic **only over verified HTTPS** — verified against the
+//!   configured CA when one is pinned, against the platform roots
+//!   otherwise (an ACME install's publicly-trusted certificates). A
+//!   configured credential on a non-HTTPS URL is not sent; the client
+//!   connects unauthenticated and logs a loud warning.
 //! - **The result convention**: rp returns tool results as one JSON text
 //!   content block; anything else is a loud error, and request-level
 //!   failures are kept distinct from tool failures — and from rp's
@@ -514,10 +516,13 @@ impl RpMcpClient {
 /// The credential policy, shared by every connection to an rp.
 ///
 /// An `Authorization: Basic …` header is produced only when a credential
-/// **and** a CA are configured **and** the URL is HTTPS. Any other
-/// combination with a credential present warns loudly and produces
-/// `None` — plaintext credentials never travel over cleartext or
-/// unverified channels.
+/// is configured **and** the URL is HTTPS. The connection is verified
+/// either way: against `ca_cert` when it is pinned, against the platform
+/// roots when it is not (`rusty_photon_tls::client::build_reqwest_client`),
+/// which is how an ACME install's publicly-trusted certificates verify —
+/// a pin there would disable those roots. A credential on a non-HTTPS URL
+/// warns loudly and produces `None`: plaintext credentials never travel
+/// over cleartext.
 ///
 /// Public so a consumer's *other* connections to the same rp (an SSE
 /// subscription, a completion POST) apply the identical policy instead of
@@ -536,14 +541,6 @@ pub fn basic_authorization(
     let Some(auth) = service_auth else {
         return Ok(None);
     };
-    if ca_cert.is_none() {
-        warn!(
-            url = %url,
-            "service_auth is configured without ca_cert; connecting UNAUTHENTICATED \
-             (credentials only ride verified HTTPS — configure ca_cert to send them)"
-        );
-        return Ok(None);
-    }
     if !url.starts_with("https://") {
         warn!(
             url = %url,
@@ -553,6 +550,13 @@ pub fn basic_authorization(
         return Ok(None);
     }
 
+    if ca_cert.is_none() {
+        debug!(
+            url = %url,
+            "service_auth is set with no ca_cert pin; authenticating, verifying rp \
+             against the platform trust roots"
+        );
+    }
     let encoded = base64::engine::general_purpose::STANDARD
         .encode(format!("{}:{}", auth.username, auth.password));
     let mut header = HeaderValue::from_str(&format!("Basic {encoded}"))
@@ -671,8 +675,19 @@ mod tests {
     }
 
     #[test]
-    fn credential_without_ca_is_not_sent() {
-        let header = basic_authorization("https://localhost:1/mcp", Some(&auth()), None).unwrap();
+    fn credential_without_ca_over_https_produces_basic_header() {
+        // No pin: the connection verifies against the platform roots,
+        // as an ACME install's publicly-trusted certificate requires.
+        let header = basic_authorization("https://localhost:1/mcp", Some(&auth()), None)
+            .unwrap()
+            .expect("header expected");
+        assert_eq!(header.to_str().unwrap(), "Basic b2JzZXJ2YXRvcnk6c2VjcmV0");
+        assert!(header.is_sensitive());
+    }
+
+    #[test]
+    fn credential_on_plain_http_without_ca_is_not_sent() {
+        let header = basic_authorization("http://localhost:1/mcp", Some(&auth()), None).unwrap();
         assert!(header.is_none());
     }
 

@@ -3508,7 +3508,8 @@ caller (below), and `rp` writes nothing for it.
 `rp` dials each provider at startup through the standard client
 (`rp-mcp-client`, with the credential policy every first-party client
 follows: the registration's `auth` is presented as HTTP Basic over
-verified HTTPS only, trusting the top-level `ca_cert`), runs
+verified HTTPS only, trusting the top-level `ca_cert` when it is set and
+the platform roots when it is not), runs
 `tools/list`, and adds
 one proxy route per discovered tool under the provider's own `Tool`
 record (name, description, input and output schemas, annotations),
