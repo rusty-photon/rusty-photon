@@ -29,6 +29,15 @@ const MAX_HALF_FLUX_AREA: usize = 1_000;
 /// starts again from them.
 const REFERENCE_FRAMES: usize = 10;
 
+/// How close to where the other guide stars place it a star must be found
+/// to count as that star, whatever its flux, in pixels of the measured
+/// frame.
+const PLACED_WITHIN_PX: f64 = 2.0;
+
+/// The fewest guide stars found in a frame for each to be placed by the
+/// others: two others for each.
+const MIN_PLACING_STARS: usize = 3;
+
 /// The star settings of the guider's configuration (`stars.*`) and the
 /// calibration distance the edge margin adds. The service validates
 /// them when it loads its configuration.
@@ -292,11 +301,13 @@ impl GuideStars {
             })
             .collect();
         drop_inside_brighter(&mut found);
+        let placed = placed_by_others(&self.stars, &found, sigma, &params);
         let readings: Vec<StarReading> = self
             .stars
             .iter_mut()
             .zip(found)
-            .map(|(star, found)| star.read(found, sigma, &params))
+            .zip(placed)
+            .map(|((star, found), placed)| star.read(found, placed, sigma, &params))
             .collect();
         let measurement = summarize(readings, params.min);
         debug!(
@@ -355,10 +366,12 @@ impl GuideStar {
     }
 
     /// Judges the star as `found` in a frame whose background's standard
-    /// deviation is `sigma`.
+    /// deviation is `sigma`; `placed` when it was found where the other
+    /// guide stars place it.
     fn read(
         &mut self,
         found: Option<MeasuredStar>,
+        placed: bool,
         sigma: f64,
         params: &StarParams,
     ) -> StarReading {
@@ -373,7 +386,7 @@ impl GuideStar {
             return StarReading::Faint { snr };
         }
         let reference = self.reference_flux();
-        if within(star.flux, reference, params.mass_change) {
+        if placed || within(star.flux, reference, params.mass_change) {
             self.flux_failures.clear();
             self.fluxes.push_back(star.flux);
             if self.fluxes.len() > REFERENCE_FRAMES {
@@ -461,6 +474,51 @@ fn drop_inside_brighter(found: &mut [Option<MeasuredStar>]) {
 }
 
 /// A frame's measurement from its stars' readings.
+/// For each guide star, whether it is found where the other guide stars
+/// found in the frame place it: within [`PLACED_WITHIN_PX`] of its offset
+/// from its reference position being the median of theirs, on each axis.
+/// A star counts as found here when its signal-to-noise ratio reaches
+/// `stars.min_snr`, and no star is placed while fewer than
+/// [`MIN_PLACING_STARS`] are found.
+fn placed_by_others(
+    stars: &[GuideStar],
+    found: &[Option<MeasuredStar>],
+    sigma: f64,
+    params: &StarParams,
+) -> Vec<bool> {
+    let offsets: Vec<Option<(f64, f64)>> = stars
+        .iter()
+        .zip(found)
+        .map(|(star, found)| {
+            found
+                .filter(|found| aperture_snr(found.flux, found.radius, sigma) >= params.min_snr)
+                .map(|found| (found.x - star.reference.x, found.y - star.reference.y))
+        })
+        .collect();
+    if offsets.iter().flatten().count() < MIN_PLACING_STARS {
+        return vec![false; stars.len()];
+    }
+    offsets
+        .iter()
+        .enumerate()
+        .map(|(index, own)| {
+            own.is_some_and(|(x, y)| {
+                let others: Vec<(f64, f64)> = offsets
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, _)| *other != index)
+                    .filter_map(|(_, offset)| *offset)
+                    .collect();
+                let along =
+                    |axis: fn(&(f64, f64)) -> f64| median(others.iter().map(axis).collect());
+                along(|offset| offset.0)
+                    .zip(along(|offset| offset.1))
+                    .is_some_and(|(mx, my)| distance(x, y, mx, my) <= PLACED_WITHIN_PX)
+            })
+        })
+        .collect()
+}
+
 fn summarize(stars: Vec<StarReading>, min: usize) -> FrameMeasurement {
     let usable: Vec<Usable> = stars
         .iter()
@@ -850,9 +908,16 @@ mod tests {
         assert_eq!(lost, [false, true, true, false]);
     }
 
+    /// Two bright stars well apart: too few for each to be placed by the
+    /// others, so the flux test judges them.
+    fn pair() -> Vec<Star> {
+        vec![star(-100.0, -60.0, 20_000.0), star(100.0, 60.0, 80_000.0)]
+    }
+
     #[test]
-    fn a_dimming_that_lasts_fails_the_flux_test_until_the_reference_starts_again() {
-        let mut sim = simulator(field(), |config| {
+    fn with_too_few_stars_to_place_a_dimming_that_lasts_fails_the_flux_test_until_the_reference_starts_again(
+    ) {
+        let mut sim = simulator(pair(), |config| {
             config.sky.clouds = vec![Cloud {
                 start: Duration::from_secs(2),
                 duration: Duration::from_hours(1),
@@ -875,8 +940,8 @@ mod tests {
     }
 
     #[test]
-    fn a_brief_dimming_keeps_the_reference() {
-        let mut sim = simulator(field(), |config| {
+    fn with_too_few_stars_to_place_a_brief_dimming_keeps_the_reference() {
+        let mut sim = simulator(pair(), |config| {
             config.sky.clouds = vec![Cloud {
                 start: Duration::from_secs(2),
                 duration: Duration::from_secs(6),
@@ -1080,19 +1145,19 @@ mod tests {
         let mut star = GuideStar::new(&measured(50.0, 1000.0));
         for _ in 0..9 {
             assert!(matches!(
-                star.read(Some(measured(50.0, 300.0)), 1.0, &params),
+                star.read(Some(measured(50.0, 300.0)), false, 1.0, &params),
                 StarReading::FluxChanged { .. }
             ));
         }
-        assert_eq!(star.read(None, 1.0, &params), StarReading::NotFound);
+        assert_eq!(star.read(None, false, 1.0, &params), StarReading::NotFound);
         for _ in 0..9 {
             assert!(matches!(
-                star.read(Some(measured(50.0, 300.0)), 1.0, &params),
+                star.read(Some(measured(50.0, 300.0)), false, 1.0, &params),
                 StarReading::FluxChanged { .. }
             ));
         }
         assert!(matches!(
-            star.read(Some(measured(50.0, 300.0)), 1.0, &params),
+            star.read(Some(measured(50.0, 300.0)), false, 1.0, &params),
             StarReading::Usable(_)
         ));
     }
@@ -1102,11 +1167,11 @@ mod tests {
         let params = StarParams::default();
         let mut star = GuideStar::new(&measured(50.0, 1000.0));
         assert_eq!(
-            star.read(Some(measured(66.0, 1000.0)), 1.0, &params),
+            star.read(Some(measured(66.0, 1000.0)), false, 1.0, &params),
             StarReading::NotFound
         );
         assert!(matches!(
-            star.read(Some(measured(64.0, 1000.0)), 1.0, &params),
+            star.read(Some(measured(64.0, 1000.0)), false, 1.0, &params),
             StarReading::Usable(Usable { offset: Offset { x, .. }, .. }) if x == 14.0
         ));
     }
@@ -1133,5 +1198,183 @@ mod tests {
         assert_eq!(lost.median_hfd, Some(2.0));
         let kept = summarize(vec![usable, StarReading::NotFound], 1);
         assert_eq!(kept.offset, Some(Offset { x: 0.5, y: -0.5 }));
+    }
+
+    #[test]
+    fn stars_found_at_their_places_stay_usable_through_a_change_of_brightness() {
+        // Dimmed to 0.3 for an hour, then a field selected under 0.3 that
+        // clears to full light.
+        let clouds = [
+            Cloud {
+                start: Duration::from_secs(2),
+                duration: Duration::from_hours(1),
+                ramp: Duration::ZERO,
+                transmission: 0.3,
+            },
+            Cloud {
+                start: Duration::ZERO,
+                duration: Duration::from_secs(6),
+                ramp: Duration::ZERO,
+                transmission: 0.3,
+            },
+        ];
+        for cloud in clouds {
+            let mut sim = simulator(field(), |config| config.sky.clouds = vec![cloud]);
+            let (frame, _) = expose(&mut sim);
+            let (mut stars, _) = GuideStars::select(&frame, StarParams::default()).unwrap();
+            let usable: Vec<usize> = (0..8)
+                .map(|_| stars.measure(&expose(&mut sim).0).usable)
+                .collect();
+            assert_eq!(usable, [4; 8], "{cloud:?}");
+        }
+    }
+
+    /// Moves the light of the star at `(x, y)` by `by` px along x within a
+    /// 16 px square, its signal above `floor` times `gain`.
+    fn move_light(pixels: &mut ndarray::Array2<u16>, (x, y): (f64, f64), by: usize, gain: f64) {
+        let (x, y) = (x.round() as usize, y.round() as usize);
+        let floor = 520.0;
+        let window = pixels
+            .slice(ndarray::s![y - 8..y + 8, x - 8..x + 8])
+            .mapv(|value| {
+                (floor + gain * (f64::from(value) - floor).max(0.0)).min(65_535.0) as u16
+            });
+        pixels
+            .slice_mut(ndarray::s![y - 8..y + 8, x - 8..x + 8])
+            .fill(floor as u16);
+        pixels
+            .slice_mut(ndarray::s![y - 8..y + 8, x - 8 + by..x + 8 + by])
+            .assign(&window);
+    }
+
+    #[test]
+    fn a_star_found_off_its_place_is_judged_by_its_flux() {
+        for (gain, usable) in [(3.0, false), (1.0, true)] {
+            let mut sim = simulator(field(), |_| {});
+            let (frame, _) = expose(&mut sim);
+            let (mut stars, _) = GuideStars::select(&frame, StarParams::default()).unwrap();
+            let mut shot = sim.expose(EXPOSURE);
+            // The second guide star by signal-to-noise ratio is the
+            // simulator's third star, at the field's centre.
+            let at = truth_of(&shot, 2);
+            move_light(&mut shot.pixels, at, 4, gain);
+            let frame =
+                Frame::new(&shot.pixels.view(), SensorType::Monochrome, Some(65_535)).unwrap();
+            let measured = stars.measure(&frame);
+            assert_eq!(
+                matches!(measured.stars[1], StarReading::Usable(_)),
+                usable,
+                "gain {gain}: {:?}",
+                measured.stars[1]
+            );
+            if !usable {
+                assert!(matches!(measured.stars[1], StarReading::FluxChanged { .. }));
+            }
+            assert_eq!(measured.usable, if usable { 4 } else { 3 }, "gain {gain}");
+        }
+    }
+
+    fn at(x: f64, y: f64, flux: f64) -> MeasuredStar {
+        MeasuredStar {
+            x,
+            y,
+            ..measured(0.0, flux)
+        }
+    }
+
+    #[test]
+    fn a_star_is_placed_within_two_pixels_of_the_others_median_offset() {
+        let params = StarParams::default();
+        let stars: Vec<GuideStar> = [10.0, 50.0, 90.0, 130.0]
+            .iter()
+            .map(|x| GuideStar::new(&at(*x, 10.0, 1_000.0)))
+            .collect();
+        let shifted = |x: f64, dx: f64| Some(at(x + 1.0 + dx, 11.0, 1_000.0));
+        let found = [
+            shifted(10.0, 0.0),
+            shifted(50.0, 0.0),
+            shifted(90.0, 0.0),
+            shifted(130.0, 2.0),
+        ];
+        assert_eq!(
+            placed_by_others(&stars, &found, 1.0, &params),
+            [true, true, true, true]
+        );
+        let found = [
+            shifted(10.0, 0.0),
+            shifted(50.0, 0.0),
+            shifted(90.0, 0.0),
+            shifted(130.0, 2.01),
+        ];
+        assert_eq!(
+            placed_by_others(&stars, &found, 1.0, &params),
+            [true, true, true, false]
+        );
+        let mut found = found;
+        found[3] = Some(at(131.0, 13.01, 1_000.0));
+        assert_eq!(
+            placed_by_others(&stars, &found, 1.0, &params),
+            [true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn two_pairs_of_stars_that_disagree_place_none() {
+        let params = StarParams::default();
+        let stars: Vec<GuideStar> = [10.0, 50.0, 90.0, 130.0]
+            .iter()
+            .map(|x| GuideStar::new(&at(*x, 10.0, 1_000.0)))
+            .collect();
+        let found = [
+            Some(at(10.0, 10.0, 1_000.0)),
+            Some(at(50.0, 10.0, 1_000.0)),
+            Some(at(93.0, 10.0, 1_000.0)),
+            Some(at(133.0, 10.0, 1_000.0)),
+        ];
+        assert_eq!(placed_by_others(&stars, &found, 1.0, &params), [false; 4]);
+    }
+
+    #[test]
+    fn no_star_is_placed_while_fewer_than_three_are_found_above_the_lowest_snr() {
+        let params = StarParams::default();
+        let stars: Vec<GuideStar> = [10.0, 50.0, 90.0]
+            .iter()
+            .map(|x| GuideStar::new(&at(*x, 10.0, 1_000.0)))
+            .collect();
+        let two = [
+            Some(at(10.0, 10.0, 1_000.0)),
+            Some(at(50.0, 10.0, 1_000.0)),
+            None,
+        ];
+        assert_eq!(placed_by_others(&stars, &two, 1.0, &params), [false; 3]);
+        let one_faint = [
+            Some(at(10.0, 10.0, 1_000.0)),
+            Some(at(50.0, 10.0, 1_000.0)),
+            Some(at(90.0, 10.0, 1.0)),
+        ];
+        assert_eq!(
+            placed_by_others(&stars, &one_faint, 10.0, &params),
+            [false; 3]
+        );
+    }
+
+    #[test]
+    fn a_placed_star_s_flux_joins_its_reference() {
+        let params = StarParams::default();
+        let mut star = GuideStar::new(&measured(50.0, 1_000.0));
+        for _ in 0..6 {
+            assert!(matches!(
+                star.read(Some(measured(50.0, 3_000.0)), true, 1.0, &params),
+                StarReading::Usable(_)
+            ));
+        }
+        assert!(matches!(
+            star.read(Some(measured(50.0, 3_000.0)), false, 1.0, &params),
+            StarReading::Usable(_)
+        ));
+        assert!(matches!(
+            star.read(Some(measured(50.0, 1_000.0)), false, 1.0, &params),
+            StarReading::FluxChanged { .. }
+        ));
     }
 }

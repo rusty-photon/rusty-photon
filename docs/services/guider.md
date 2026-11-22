@@ -446,12 +446,32 @@ on its own in the middle of a run.
 within `stars.search_region_px` of its position in the last frame in
 which it was usable. A star is **usable** in a frame when its
 signal-to-noise ratio is at least `stars.min_snr`, it is not too sharp
-to be a star, and its flux is within `stars.mass_change` of its
-reference, the median of its flux over its last ten usable frames, or
-over all of them while it has fewer. The frame a star was selected in
+to be a star, and either it lies where the other guide stars place it
+or its flux is within `stars.mass_change` of its reference. Its
+reference is the median of its flux over its last ten usable frames,
+or over all of them while it has fewer. The frame a star was selected in
 is its first usable frame. The frame's offset is the median, on each
 sensor axis, of the usable stars' offsets from their reference
 positions.
+
+**Where the other stars place a star.** A star lies where the others
+place it when its offset from its reference position is within 2 px of
+the median of the other guide stars' offsets. Only stars found in the
+frame with a signal-to-noise ratio of at least `stars.min_snr` count,
+and at least three must be found, so that each star has two others to
+place it.
+- **Why position wins over flux.** Selection keeps no star with another
+  inside its search region, so a star found where the field's shift puts
+  it is that star. Only a hot pixel or something passing through could
+  stand in for it.
+- **What it leaves to the flux test:** a star found elsewhere in its
+  search region, and every star of a frame with fewer than three found.
+- **What it keeps guiding.** A change of brightness that every star
+  shares, as cloud brings when it settles in or clears, leaves the stars
+  usable.
+- **2 px** is a starting value of this design, like the ten frames
+  below. It is several times a star's scatter in seeing, and far inside
+  the search region.
 
 **How a frame is measured.** Each guide star is measured in an aperture
 that starts at its position in the last frame in which it was usable,
@@ -472,10 +492,13 @@ found is usable or not by the tests above.
   mean of the middle two.
 - A star's half-flux diameter is twice its aperture's half-flux radius.
 
-**A change of brightness that lasts.** A frame that fails the flux test
-adds nothing to the reference, so a change larger than
-`stars.mass_change` that lasts, as when haze clears or thin cloud
-settles in, fails the test in every frame that follows. A star that
+**A change of brightness that lasts.** A usable frame's flux joins the
+star's reference, whichever test it passed. A frame that fails the flux
+test adds nothing to the reference, so a change larger than
+`stars.mass_change` that lasts fails the test in every frame that
+follows. That happens to a star the others do not place, as when haze
+clears or thin cloud settles in over a field with fewer than three
+stars found. A star that
 fails only the flux test in ten frames in a row therefore starts its
 reference again from those ten: they take the place of its last ten
 usable frames, so the frames from before the change no longer count,

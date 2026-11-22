@@ -1359,6 +1359,29 @@ mod tests {
     }
 
     #[test]
+    fn guiding_carries_on_through_a_thin_cloud_and_its_clearing() {
+        let start = Run::start(drifting, ControlParams::default()).now();
+        let cloud = Cloud {
+            start: start + Duration::from_secs(60),
+            duration: Duration::from_secs(90),
+            ramp: Duration::from_secs(2),
+            transmission: 0.3,
+        };
+        let mut run = Run::start(
+            |config| {
+                drifting(config);
+                config.sky.clouds = vec![cloud];
+            },
+            ControlParams::default(),
+        );
+        let guided = run.frames(160).unwrap();
+        let lost = guided.iter().filter(|frame| frame.step.is_none()).count();
+        assert_eq!(lost, 0, "star-lost frames through the cloud");
+        let rms = rms(&guided);
+        assert!(rms < 0.35, "{rms} px over the run");
+    }
+
+    #[test]
     fn a_fast_drift_through_a_cloud_does_not_run_away() {
         let fast = |config: &mut SimConfig| {
             config.mount.drift = Drift {
