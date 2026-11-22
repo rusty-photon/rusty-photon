@@ -176,9 +176,9 @@ pub struct SchedulingConstraints {
     pub meridian_window_hours: Option<f64>,
 }
 
-/// Per-target grading thresholds. The grading plugin owns the *meaning*
-/// of these; this crate only stores the overriding values. Each `None`
-/// falls back to the rp-config global default.
+/// Per-target grading thresholds. Each `None` falls back to the rp-config
+/// global default. *Stored here; rp's progress derivation applies them to
+/// the metrics in each frame's sidecar (§ Progress derivation).*
 pub struct GradingThresholds {
     pub max_hfr_pixels: Option<f64>,
     pub min_star_count: Option<u32>,
