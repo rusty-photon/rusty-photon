@@ -5,12 +5,11 @@ description: |
   ASTAP_BINARY (and optionally ASTAP_DB_DIR) for downstream steps.
 
   This is repo tooling that mirrors install-omnisim. CI is acting as a
-  normal user that installs ASTAP for itself. See ADR-005 for the
-  bring-your-own posture this action implements. The archive each runner
-  takes and its SHA-256 pin are in assets.json, which refresh-astap-shas.yml
-  rewrites when upstream rotates an archive; the download, check and unpack
-  are astap.mjs's and lib/install.mjs's (plan item J4 in
-  docs/plans/archive/ci-shell-to-code.md).
+  normal user that installs ASTAP for itself, the bring-your-own posture
+  docs/services/plate-solver.md § Overview describes. The archive each
+  runner takes and its SHA-256 pin are in assets.json, which
+  refresh-astap-shas.yml rewrites when upstream rotates an archive; the
+  download, check and unpack are astap.mjs's and lib/install.mjs's.
 
 inputs:
   download-database:

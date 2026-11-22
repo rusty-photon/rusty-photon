@@ -402,7 +402,7 @@ mod tests {
 
     // testdata/brew-formulas holds the formulas these inputs render to.
     #[test]
-    fn renders_each_kind_of_service_as_the_shell_did() {
+    fn renders_each_kind_of_service_to_its_saved_formula() {
         let nightly = request(Channel::Nightly, NIGHTLY);
         for (service, description, expected) in [
             (
@@ -446,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_the_meta_formula_as_the_shell_did() {
+    fn renders_the_meta_formula_to_its_saved_formula() {
         let services = ["filemonitor", "sentinel", "zwo-camera"].map(str::to_owned);
         assert_eq!(
             meta_formula(

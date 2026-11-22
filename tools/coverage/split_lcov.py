@@ -2,21 +2,20 @@
 """Split a combined LCOV coverage report into one file per workspace package.
 
 `bazel coverage --combined_report=lcov` emits a single merged LCOV report
-covering every first-party crate. The Cargo coverage job, by contrast, emits
-one report per package (`cargo llvm-cov report --package <pkg>`) and uploads
-each to Codecov under its own flag so the per-service badges work. To keep that
-behaviour under Bazel we split the combined report here: every LCOV record is
-routed to a package by the `crates/<pkg>/`, `services/<pkg>/` or
-`tools/<pkg>/` segment of its
-`SF:` source path (the directory basename is the Cargo package name throughout
-this workspace), producing `lcov-<pkg>.info` files ready to upload with
-`--flag <pkg>` (or `--flag bazel-<pkg>` in shadow mode).
+covering every first-party crate. This splits it: every LCOV record is routed
+to a package by the `crates/<pkg>/`, `services/<pkg>/` or `tools/<pkg>/`
+segment of its `SF:` source path (the directory basename is the Cargo package
+name throughout this workspace), producing one `lcov-<pkg>.info` file per
+package. bazel-coverage.yml uploads them as the `bazel-coverage-lcov`
+artifact, the line-level truth of docs/skills/coverage.md § 1, and the same
+command reproduces that artifact locally (§ 3).
 
-Records whose source path is under none of those (generated
-files, or external crates that slipped past the instrumentation filter) are
-dropped -- they have no package flag. Test-file records (tests/, mock_*/test_*
-bins) are kept; Codecov's `ignore:` rules drop them uniformly, exactly as for
-the Cargo-produced reports.
+Records whose source path is under none of those (generated files, or
+external crates that slipped past the instrumentation filter) are dropped --
+they belong to no package. Test-file records (tests/, mock_*/test_* bins) are
+kept: the artifact is the unfiltered report, so the coverage-exempt files stay
+inspectable, and filter_lcov.py is what strips them from the report Coveralls
+receives.
 """
 
 from __future__ import annotations

@@ -5,8 +5,8 @@
 //! download, the cargo runs that build the services, and the checksum
 //! manifest.
 //!
-//! A packaged service is one with a `services/<svc>/pkg` directory, the
-//! packaging's authority since ADR-016 (decision 11). The ZWO and `SVBony`
+//! A packaged service is one with a `services/<svc>/pkg` directory, which
+//! [`packaged`] lists for every tool. The ZWO and `SVBony`
 //! SDKs are pinned once, by the commit their install action fetches
 //! (`REF` in `.github/actions/install-zwo-sdk/zwo-sdk.mjs` and
 //! `install-svbony-sdk/svbony-sdk.mjs`), which the builders read, so the
@@ -107,8 +107,8 @@ pub const NO_MACOS_SDK: &str = "svbony-camera";
 /// The service the suite MSI has no feature for.
 ///
 /// `SVBony`'s SDK for Windows downloads only through a CAPTCHA, and the
-/// project's private mirror holds the one copy CI links (ADR-018 §7), which
-/// nothing may ship (docs/services/svbony-camera.md, Windows).
+/// project's private mirror holds the one copy CI links, which nothing may
+/// ship (docs/services/svbony-camera.md, Windows).
 pub const NO_WINDOWS_SDK: &str = "svbony-camera";
 
 /// The QHY SDK's pins, in a file of their own: the packaging jobs' SDK
@@ -483,7 +483,7 @@ fn find(dir: &Path, name: &str) -> Result<Option<PathBuf>, Error> {
 }
 
 /// The ZWO SDKs the selected services link, by library name: ASI's for
-/// zwo-camera and EAF's for zwo-focuser (ADR-014).
+/// zwo-camera and EAF's for zwo-focuser.
 #[must_use]
 pub fn zwo_sdks(services: &[String]) -> Vec<&'static str> {
     let mut sdks = Vec::new();

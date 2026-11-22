@@ -84,7 +84,7 @@ const fast = { delayMs: 1 };
 
 // --- The table ------------------------------------------------------------------
 
-test('the table pins a CLI for each runner ADR-005 names, and the database', () => {
+test('the table pins a CLI for Linux and Windows on X64 and ARM64 and for macOS on ARM64, and the database', () => {
   assert.deepEqual(Object.keys(TABLE.cli).sort(), ['Linux-ARM64', 'Linux-X64', 'Windows-ARM64', 'Windows-X64', 'macOS-ARM64']);
   assert.equal(TABLE.database.archive, 'd20_star_database.zip');
   for (const [runner, { binary }] of Object.entries(TABLE.cli)) {
@@ -119,9 +119,11 @@ test('readTable refuses a table missing what an install needs', () => {
 // --- Choosing the assets ----------------------------------------------------------
 
 test('resolve gives each runner its archive on SourceForge, with its pin and binary', () => {
-  // The URLs the shell built, folder and all, but for Windows-ARM64's: its
-  // folder is where upstream filed CLI-2026.10.30 (ADR-005), and each part
-  // of that path is encoded on its own, so the slash between them stays one.
+  // SourceForge's URLs, folder and all. Windows-ARM64's folder is a path,
+  // since upstream filed its CLI-2026.10.30 archive under `older versions`
+  // (docs/decisions/005-plate-solver.md § Pinned SHA-256 + refresh
+  // procedure), and each part of that path is encoded on its own, so the
+  // slash between them stays one.
   const urls = {
     'Linux-X64': 'linux_installer/astap_command-line_version_Linux_amd64.zip',
     'Linux-ARM64': 'linux_installer/astap_command-line_version_Linux_aarch64.zip',
@@ -168,10 +170,9 @@ test('resolve keys each cache on its archive and pin, so moving a pin misses the
 
 // --- Downloading -------------------------------------------------------------------
 
-test('the database download re-rolls a crawling mirror the way the curl flags did', () => {
-  // --retry 4 --retry-all-errors, --retry-delay 5, --speed-limit 100000
-  // --speed-time 30. The time limits, 600 s an attempt and 1,200 s in all,
-  // are sized for D20's 400 MB.
+test('both downloads try again after any failure, and the database download re-rolls a mirror below its rate floor', () => {
+  // The time limits, 600 s an attempt and 1,200 s in all, are sized for
+  // D20's 400 MB.
   assert.deepEqual(DATABASE_DOWNLOAD, {
     attempts: 5,
     delayMs: 5_000,
@@ -181,8 +182,6 @@ test('the database download re-rolls a crawling mirror the way the curl flags di
     retryForMs: 1_200_000,
     retryAll: true,
   });
-  // --retry 4 --retry-all-errors, --retry-delay 5, --connect-timeout 20,
-  // --max-time 120.
   assert.deepEqual(CLI_DOWNLOAD, { attempts: 5, delayMs: 5_000, stallMs: 20_000, timeoutMs: 120_000, retryAll: true });
 });
 

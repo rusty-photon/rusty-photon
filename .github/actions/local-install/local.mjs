@@ -1,13 +1,14 @@
 // A developer's install of a tool CI installs: the same release, from the
 // same URL, checked against the same pin, by the module the action runs.
 // `bazel run //.github/actions:install -- <tool>` starts it (index.mjs), on the
-// Node MODULE.bazel pins (ADR-022).
+// Node MODULE.bazel pins (docs/skills/ci-logic.md § A developer's install).
 //
 // It downloads on the developer's machine, from where CI downloads, and ships
 // nothing: none of these tools is bundled into a package or mirrored for
-// developers. Nor does it download from the project's private mirror
-// (ADR-018 §7): the SVBony SDK installs on Linux and macOS, and on Windows,
-// whose SDK only the mirror holds, the install says where to get it.
+// developers. Nor does it download from the project's private mirror, which
+// developers are not given: the SVBony SDK installs on Linux and macOS, and
+// on Windows, whose SDK only the mirror holds, the install says where to get
+// it.
 
 import os from 'node:os';
 import path from 'node:path';

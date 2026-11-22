@@ -3,11 +3,12 @@
 //! Four workflows send a job to the self-hosted pool with a copy of one
 //! `runs-on` expression. For each OS it holds the kill-switch variable, the
 //! trusted-event test and the pool's labels, and every falsy branch falls
-//! back to a hosted runner. ADR-020 makes the expression a security
-//! boundary. It is copied because `runs-on` is evaluated before the job
-//! exists, so neither `env` nor a job output can hold it. Two more workflows
-//! name self-hosted runners by label, and only a schedule or a maintainer's
-//! dispatch starts them.
+//! back to a hosted runner, so a fork's pull request never reaches the
+//! pool: the expression is a layer of the pool's security model
+//! ([proxmox-runner-pool.md § Security Model]). It is copied because
+//! `runs-on` is evaluated before the job exists, so neither `env` nor a job
+//! output can hold it. Two more workflows name self-hosted runners by
+//! label, and only a schedule or a maintainer's dispatch starts them.
 //!
 //! These tests hold every workflow to what is reviewed here:
 //! - each copy of the pool's expression to the reviewed clauses and
@@ -25,9 +26,20 @@
 //! They read the workflows and `.github/actionlint.yaml` with a YAML parser,
 //! and refuse a file they would read otherwise than GitHub ([`load`]). They
 //! catch a copy that drifts and a new route, in review. A route disguised
-//! on purpose gets past them, such as a label built at runtime; the plan's
-//! R6 section lists those. Against a fork's pull request, the defence
-//! remains the approval its workflows wait for (ADR-020 layer 2).
+//! on purpose gets past them:
+//! - a runner picked without `self-hosted` or one of our runners' own
+//!   labels, by the `Linux` and `X64` every self-hosted runner also carries;
+//! - a label or runner group that reaches `runs-on` through a matrix or
+//!   another value that names none of those labels;
+//! - a label built at runtime, by `format()` or `join()`, or spelled with an
+//!   escape inside an expression's string, such as JSON's inside `fromJSON`;
+//! - a runner picked by a value from outside the workflow file, such as a
+//!   variable or a script's output.
+//!
+//! Against a fork's pull request, the defence remains the approval its
+//! workflows wait for, another layer of the same model.
+//!
+//! [proxmox-runner-pool.md § Security Model]: ../../../docs/skills/proxmox-runner-pool.md#security-model--do-not-weaken
 
 use std::fmt;
 use std::fs;

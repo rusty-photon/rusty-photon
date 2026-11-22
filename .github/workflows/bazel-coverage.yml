@@ -1,9 +1,9 @@
 # Bazel-based code coverage — the per-PR coverage gate.
 #
 # This is a required check and it feeds Coveralls, the sole coverage vendor:
-# the README badge, the PR coverage comment, and (once enabled in the
-# Coveralls repo settings) the coverage status checks all come from the
-# combined report uploaded here. It is the SOLE coverage source; the Cargo
+# the README badge, the PR coverage comment, and the required
+# coverage/coveralls status all come from the combined report uploaded here
+# (docs/skills/coverage.md). It is the SOLE coverage source; the Cargo
 # nightly (test.yml) only builds + tests.
 #
 # Why a separate workflow (not a job in bazel.yml): coverage needs a different
@@ -19,8 +19,8 @@
 #  * LLVM source-based instrumentation, first-party crates only.
 #  * Runs `bazel coverage //...` over the WHOLE repo every time. Untouched
 #    targets are cache hits (local disk + remote R2 cache), so their
-#    coverage.dat is fetched, not recomputed -- every PR gets a COMPLETE report
-#    with no dependence on Codecov carryforward.
+#    coverage.dat is fetched, not recomputed -- every PR gets a COMPLETE report,
+#    with nothing carried forward from an earlier upload.
 #  * Splits the combined report per package for the `bazel-coverage-lcov`
 #    artifact (line-level truth) and uploads the combined report — minus the
 #    coverage-exempt files (tools/coverage/filter_lcov.py) — to Coveralls.
@@ -49,7 +49,7 @@ on:
   push:
     branches: [main]
   # Nightly run from main keeps the coverage action cache warm during quiet
-  # stretches (mirrors bazel.yml) and refreshes the per-service badges.
+  # stretches (mirrors bazel.yml).
   schedule:
     - cron: "33 7 * * *"
 concurrency:
@@ -59,12 +59,13 @@ name: bazel-coverage
 
 jobs:
   coverage:
-    # Venue routing (ADR-020, docs/plans/archive/proxmox-pr-routing.md): the coverage
-    # leg runs on the ephemeral self-hosted pool for push-to-main and SAME-REPO
-    # pull requests, gated on RP_POOL_LINUX — the same kill switch as bazel.yml's
-    # Linux leg, because both Linux legs share one pool and a single flip must
-    # evacuate both. Every falsy branch resolves to 'ubuntu-latest' (hosted): a
-    # fork PR, the nightly schedule, an unset variable, or a null head.repo all
+    # Venue routing (docs/skills/proxmox-runner-pool.md § Security Model): the
+    # coverage leg runs on the ephemeral self-hosted pool for push-to-main and
+    # SAME-REPO pull requests, gated on RP_POOL_LINUX — the same kill switch as
+    # bazel.yml's Linux leg, because both Linux legs share one pool and a
+    # single flip must evacuate both. Every falsy branch resolves to
+    # 'ubuntu-latest' (hosted): a fork PR, the nightly schedule, an unset
+    # variable, or a null head.repo all
     # land on the safe side. The schedule staying hosted is deliberate — it keeps
     # the CLOUD cache's coverage entries warm for fork PRs, while push-to-main
     # warms the LAN cache. Keep the trusted-event test identical to bazel.yml's:
@@ -144,10 +145,11 @@ jobs:
       # ships lld, bazelisk, OmniSim, Pebble, and both camera SDKs at the same
       # pins, plus the coverage-specific one-time `bazel coverage` warmup that
       # pre-fetches the nightly toolchain + instrumented externals into its
-      # output base (see docs/plans/archive/proxmox-pr-routing.md R5). Re-downloading
-      # any of this per ephemeral clone would defeat the pool's zero-WAN
-      # property. COUPLING: bumping a pin in any of these steps requires
-      # rebuilding the runner template — see docs/skills/proxmox-runner-pool.md.
+      # output base. Re-downloading any of this per ephemeral clone would
+      # defeat the pool's zero-WAN property. COUPLING: bumping a pin in any of
+      # these steps requires rebuilding the runner template —
+      # docs/skills/proxmox-runner-pool.md § Operational Notes has the
+      # procedure, the coverage warmup among it.
       # .bazelrc build:linux uses the lld linker.
       - name: Install lld
         if: runner.environment == 'github-hosted'
@@ -162,8 +164,9 @@ jobs:
       - name: Verify bazel version
         run: bazel --version
 
-      # rp's BDD scenarios spawn the ASCOM Alpaca simulator. OMNISIM_PATH is
-      # forwarded into test sandboxes by .bazelrc `build:ci --test_env=OMNISIM_PATH`.
+      # The BDD suites tagged resources:omnisim spawn the ASCOM Alpaca
+      # simulator. OMNISIM_PATH is forwarded into test sandboxes by .bazelrc
+      # `build:ci --test_env=OMNISIM_PATH`.
       - name: Install ASCOM OmniSim
         if: runner.environment == 'github-hosted'
         uses: ./.github/actions/install-omnisim
@@ -258,13 +261,12 @@ jobs:
           # commit, and Coveralls posts its coverage/coveralls status to the
           # commit it is told about — so report the PR head instead, or the
           # status lands on a SHA the PR checks UI (and the ruleset) never
-          # sees. Same override the retired Codecov upload needed.
+          # sees.
           git-commit: ${{ github.event.pull_request.head.sha || github.sha }}
           git-branch: ${{ github.head_ref || github.ref_name }}
           # A vendor hiccup must never fail this job. `bazel coverage` is a
           # required check, and an upload step that can redden it hands a third
-          # party the power to block every merge -- which is the failure mode
-          # this whole exercise exists to avoid.
+          # party the power to block every merge.
           fail-on-error: false
 
       # The `uncovered-diff-lines` check on the PR head, which main's ruleset

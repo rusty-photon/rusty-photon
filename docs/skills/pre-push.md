@@ -111,8 +111,8 @@ act -W .github/workflows/scheduled.yml -j beta &
 act -W .github/workflows/scheduled.yml -j update &
 wait
 act -W .github/workflows/scheduled.yml -j discover-miri -j miri  # slow
-# conformu.yml only triggers on schedule/workflow_dispatch, so act needs
-# the workflow_dispatch event explicitly:
+# conformu.yml runs on a PR only when the PR changes conformu.yml itself,
+# so act needs the workflow_dispatch event explicitly:
 act workflow_dispatch -W .github/workflows/conformu.yml -j plan -j conformu  # nightly + on-demand
 ```
 
@@ -535,8 +535,9 @@ Build such fixtures as `static` items instead.
 
 ### conformu.yml (rolling)
 
-ConformU runs on a nightly cron (05:30 UTC) and `workflow_dispatch` --
-**not on PRs or push**. Conformance regressions are real but rare, and
+ConformU runs on a nightly cron (05:30 UTC) and `workflow_dispatch`, and
+on a PR or push to `main` only when it changes `conformu.yml` itself --
+**not on other PRs or pushes**. Conformance regressions are real but rare, and
 the matrix is the most expensive workflow we have, so paying for it on
 every PR is overkill. The faster `check`/`test` workflows already gate
 the unit-level changes that would most often break conformance; the

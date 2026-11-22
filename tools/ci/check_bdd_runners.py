@@ -15,7 +15,7 @@ Neither is something a reviewer reliably notices missing from a new
 `bdd.rs`, and neither announces itself afterwards — the suite just goes on
 being green. So they are checked here instead, over every entry point at
 once. See docs/skills/testing.md sections 2.7 and 2.9 for the rules and the
-history behind them.
+reasons behind them.
 
 Runs in the `stable / clippy` job, so a new suite meets the policy on the
 same required PR gate that lints it. Also runnable locally with no

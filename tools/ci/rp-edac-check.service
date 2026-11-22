@@ -26,12 +26,11 @@ ExecStart=/usr/local/sbin/rp-edac-check.sh
 # Two of these need care rather than copying, because they can silence the
 # check instead of protecting it, which for a monitor is the worse outcome:
 # PrivateDevices= gives the unit a private /dev, and RestrictAddressFamilies=
-# governs the AF_UNIX socket `logger` writes to. Both were verified on the
-# host under this exact property set before being committed -- the journal
-# line arrives, /sys still reads, and StateDirectory stays writable under
-# ProtectSystem=strict. If this list is ever extended, re-verify rather than
-# assume: a sandbox that quietly blocks the logging leaves a check that looks
-# like it is passing.
+# governs the AF_UNIX socket `logger` writes to. Both are verified on the host
+# under this exact property set: the journal line arrives, /sys still reads,
+# and StateDirectory stays writable under ProtectSystem=strict. If this list
+# is ever extended, re-verify rather than assume: a sandbox that quietly blocks
+# the logging leaves a check that looks like it is passing.
 #
 # PrivateTmp= also means ExecStart must not live under /tmp; the unit sees its
 # own empty one and fails 203/EXEC.

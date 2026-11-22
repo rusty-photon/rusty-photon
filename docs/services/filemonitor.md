@@ -233,9 +233,9 @@ This would cause the safety monitor to evaluate to `false` (unsafe), as the roof
 The filemonitor service is designed to run natively on multiple platforms:
 
 ### Supported Platforms
-- **Linux** (x86_64, ARM64) - Primary development platform
-- **macOS** (Intel, Apple Silicon) - Full compatibility
-- **Windows** (x86_64, ARM64) - Full compatibility
+- **Linux** (x86_64, ARM64) - Primary development platform; `.deb` and `.rpm` for both
+- **macOS** (Apple Silicon) - the Homebrew formula's arm64 build
+- **Windows** (x86_64) - the suite `.msi`, which is x64 only
 
 ### Platform-Specific Considerations
 

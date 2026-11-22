@@ -7,7 +7,7 @@ lcov.info
 
 # ZWO MIT SDK blobs staged there by `cargo ci build-packages` right before
 # `cargo deb` runs; downloaded from the pinned indi-3rdparty ref, never
-# committed (ADR-013).
+# committed.
 services/zwo-camera/pkg/lib/
 services/zwo-focuser/pkg/lib/
 
@@ -16,7 +16,7 @@ services/zwo-focuser/pkg/lib/
 
 # Bazel
 # bazel-* are workspace symlinks at the repo root (bazel-bin, bazel-out, ...).
-# Anchored to root so it doesn't match e.g. docs/plans/archive/bazel-migration.md.
+# Anchored to root so it doesn't match e.g. .github/workflows/bazel-coverage.yml.
 /bazel-*
 # wrangler's local state (created by `wrangler deploy` in the tools/*-worker/ dirs).
 .wrangler/
@@ -30,6 +30,8 @@ user.bazelrc
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
 .claude/worktrees/
+
+# The package repositories' site tree, rendered by the packages/repo-site action.
 /site/
 
 # SVBony camera SDK parameter dumps: libSVBCameraSDK writes per-model
@@ -37,6 +39,8 @@ user.bazelrc
 # camera is opened (e.g. U3SM900C-AST_Cfg_A.bin for the SV605CC).
 *_Cfg_A.bin
 *_Cfg_SAVE.bin
+
+# The star layer rp-catalog's fetch_star_layer.py stages for pack_catalog.py.
 crates/rp-catalog/scripts/build/
 
 # Python bytecode from the tools/ scripts

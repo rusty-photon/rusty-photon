@@ -23,10 +23,10 @@ module(
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "platforms", version = "1.1.0")
 
-# `sh_test`, for the runner-pool harnesses under //tools/ci. Bazel 8 moved the
-# shell rules out of the builtins into this module, so they have to be loaded
-# explicitly now — a bare `sh_test()` in a BUILD file fails with "name
-# 'sh_test' is not defined".
+# `sh_test`, for the runner-pool harnesses under //tools/ci. The shell rules
+# live in this module, not among Bazel's builtins, so they are loaded
+# explicitly — a bare `sh_test()` in a BUILD file fails with "name 'sh_test'
+# is not defined".
 bazel_dep(name = "rules_shell", version = "0.6.1")
 
 # BUILD/.bzl formatter + linter, vendored so every dev machine (and CI) runs the
@@ -35,8 +35,8 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 # is always the root module — this never needs to resolve for a downstream consumer.
 bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = True)
 
-# Node.js, for the tests of the CI's JavaScript actions under .github/actions
-# (ADR-022): `node_test` in .github/actions/node_test.bzl runs them on this
+# Node.js, for the tests of the CI's JavaScript actions under .github/actions:
+# `node_test` in .github/actions/node_test.bzl runs them on this
 # toolchain. Tests only — the actions themselves run on the Node the GitHub
 # runner ships (`runs.using: node24`), so this pins the same major version.
 # rules_nodejs registers a toolchain for every platform; the root module's
@@ -52,12 +52,11 @@ node = use_extension(
 node.toolchain(node_version = "24.20.0")
 
 # Five pinned patches to rules_rust (patches 3 and 5 each span two FILES —
-# Bazel's patch applier failed a two-file unified diff with
-# CONTENT_DOES_NOT_MATCH_TARGET on whichever file section came second, while
+# Bazel's patch applier fails a two-file unified diff with
+# CONTENT_DOES_NOT_MATCH_TARGET on whichever file section comes second, while
 # each single-file diff applies cleanly, so each file gets its own .patch).
 # Bazel's applier also does no fuzz matching: on a rules_rust bump, regenerate
 # every patch against the new release rather than trusting `patch` to land it.
-# See docs/plans/archive/bazel-migration.md.
 #
 # 1. collect_coverage_extra_objects.patch — BDD rust_tests spawn the service
 #    binary as a child process; the collector merges the child's profraw but
@@ -84,10 +83,12 @@ node.toolchain(node_version = "24.20.0")
 #    `process_wrapper.exe`) as bare `..`-relative `File.short_path`s that must
 #    resolve through the test's runfiles tree — and on remote-cache-hit builds
 #    the tree entry for an exec-configuration tool can be absent or dangling
-#    on Windows (a bazelbuild/bazel#18580-class build-without-the-bytes /
-#    runfiles interplay; the runner's own `external -> ..\` symlink cannot
-#    help when the tree entry itself is missing, which is why rewriting argv
-#    through that symlink alone still failed on every cache-hit run). The
+#    on Windows (a build-without-the-bytes / runfiles interplay of the kind
+#    Bazel issue 18580 describes,
+#    https://github.com/bazelbuild/bazel/issues/18580; the runner's own
+#    `external -> ..\` symlink cannot help when the tree entry itself is
+#    missing, which is why rewriting argv through that symlink alone fails on
+#    every cache-hit run). The
 #    patch instead routes every argv element through a PowerShell resolver in
 #    the generated runner: `..`-prefixed paths are looked up in the runfiles
 #    MANIFEST and invoked via their absolute execroot targets, sidestepping
@@ -102,15 +103,16 @@ node.toolchain(node_version = "24.20.0")
 #    is for build actions (verified empirically: `--strategy_regexp` never
 #    changed the TestRunner spawn's runner from `local`, only the unscoped
 #    `--strategy=TestRunner=sandboxed` did — and that would also break BDD's
-#    port binding). No upstream issue filed for this one yet.
+#    port binding). No upstream issue is filed for this one.
 #
 #    The same resolver also rewrites `--sysroot=<dir>` (RFR, falling back to
 #    the directory index RFI derives from the manifest), which fixes a MAX_PATH
-#    failure (issue #739) that only a RUNNABLE doctest can hit: `no_run` examples
-#    are emitted as metadata and never linked, so until qhyccd-rs got doctest
-#    targets nothing under Bazel had invoked `link.exe`. rustc expands `--sysroot`
-#    into the std rlib paths it hands the linker, and spelled relative to the
-#    runfiles tree — whose prefix alone costs ~123 chars — they cross 260:
+#    failure that only a RUNNABLE doctest can hit: `no_run` examples are
+#    emitted as metadata and never linked, so only a runnable one, such as
+#    qhyccd-rs's simulated-SDK walkthrough, has rustdoc invoke `link.exe`.
+#    rustc expands `--sysroot` into the std rlib paths it hands the linker,
+#    and spelled relative to the runfiles tree — whose prefix alone costs ~123
+#    chars — they cross 260:
 #    measured on CI, `libpanic_unwind-<hash>.rlib` landed at 261 and failed
 #    `LNK1181: cannot open input file` while `libstd-<hash>.rlib` at 252 in the
 #    SAME directory resolved. The file was present, non-symlink and readable, so
@@ -121,13 +123,12 @@ node.toolchain(node_version = "24.20.0")
 #    trim the shared suffix off its target) yields the ~155-char execroot path,
 #    putting every std rlib comfortably under the limit.
 #
-#    The patch also restructures the runner itself: the generated .bat is now a
+#    The patch also restructures the runner itself: the generated .bat is a
 #    trampoline that invokes a companion .ps1 (declared by rustdoc_test.bzl as
 #    an extra output of the writer action — that rule change is the
 #    rustdoc_test_windows_companion_script.patch half) via `powershell -File`,
-#    instead of
-#    carrying the whole command as ONE `powershell.exe -c "…"` batch line. Two
-#    cmd.exe limits forced this (issue #749): cmd tracks quote state without
+#    instead of carrying the whole command as ONE `powershell.exe -c "…"`
+#    batch line. Two cmd.exe limits rule that out: cmd tracks quote state without
 #    honouring any escape — `\"` still toggles it — so an argv element with a
 #    literal `"` (`crate_features` reaches rustdoc as `feature="simulation"`)
 #    ends the -c string early, with position-dependent symptoms (an `invalid
@@ -145,8 +146,8 @@ node.toolchain(node_version = "24.20.0")
 #
 #    Finally, RF() resolves `external/`-spelled argv elements — the `--arg-file`
 #    values naming build-script `_bs.linksearchpaths` outputs — through the
-#    manifest as well (issue #752, the #587 family-2 flake): windows-latest
-#    intermittently leaves that runfiles-tree entry as a DANGLING symlink
+#    manifest as well: windows-latest intermittently leaves that runfiles-tree
+#    entry as a DANGLING symlink
 #    (file=false symlink=true len=0, parent dir real) which no amount of
 #    retrying in process_wrapper (patch 4) can outlast, while the manifest's
 #    execroot target is a real file — `build:windows
@@ -154,26 +155,26 @@ node.toolchain(node_version = "24.20.0")
 #    --enable_platform_specific_config appends platform lines last (see
 #    .bazelrc), so every output is materialized even on remote-cache hits.
 #
-#    The flake has a MAIN-REPO leg too (issue #781): when the build script
-#    belongs to a first-party path dependency (libqhyccd-sys), its
+#    The flake has a MAIN-REPO leg too: when the build script belongs to a
+#    first-party path dependency (libqhyccd-sys), its
 #    `build_script.linksearchpaths` `--arg-file` value is spelled bare
-#    workspace-relative (`crates/...`), which the resolver used to pass
-#    through untouched — and the real/sim qhyccd-rs doc-test pair, which
-#    shares that runfile, raced on the dangling tree entry whenever both
-#    executed on the same runner (exactly one lost per attempt, alternating
-#    victims). RF() therefore also looks bare relative-path argv elements up
+#    workspace-relative (`crates/...`), and passed through untouched it
+#    leaves the real/sim qhyccd-rs doc-test pair, which shares that runfile,
+#    racing on the dangling tree entry whenever both execute on the same
+#    runner (exactly one loses per attempt, alternating victims). RF()
+#    therefore also looks bare relative-path argv elements up
 #    under the workspace runfiles directory (`TEST_WORKSPACE`, `_main` under
 #    Bzlmod), which routes the crate root and first-party `--arg-file` values
 #    through the manifest's execroot targets as well; a lookup miss falls
 #    through silently, since a bare element may not be a path at all.
 #
 #    Those three spellings all describe BARE argv elements, and the rlibs
-#    rustdoc opens are not among them (issue #796): a direct dependency arrives
-#    as `--extern=<name>=<rlib>`, and the documented crate's own rlib as the
-#    `<name>=<path>` value of a bare `--extern`. Both stayed tree-relative, so
-#    every doctest's direct dependencies still rode the surface the paragraphs
-#    above exist to get off. RF therefore splits the flag off and resolves the
-#    value the same way. Reading the failure from logs alone is hard, because
+#    rustdoc opens are not among them: a direct dependency arrives as
+#    `--extern=<name>=<rlib>`, and the documented crate's own rlib as the
+#    `<name>=<path>` value of a bare `--extern`. Left tree-relative, they would
+#    put every doctest's direct dependencies back on the surface the
+#    paragraphs above exist to get off, so RF splits the flag off and resolves
+#    the value the same way. Reading the failure from logs alone is hard, because
 #    rustdoc reports a lost rlib two different ways depending on which of its
 #    two stats of the path lost: `extern location for X does not exist` when
 #    the first did, and a bare `E0463: can't find crate for X` when the first
@@ -194,8 +195,8 @@ node.toolchain(node_version = "24.20.0")
 #    because both walk up to the same repo directory while their targets live
 #    in different trees: `<output_base>/external/<repo>` holds the sources,
 #    `<output_base>/execroot/.../bazel-out/<cfg>/bin/external/<repo>` the
-#    rlibs. Rewriting them picked the source directory for whichever repos
-#    enumerated that way, which holds no rlib at all — CI-proven, via the
+#    rlibs. Rewriting them picks the source directory for whichever repos
+#    enumerate that way, which holds no rlib at all — CI-proven, via the
 #    runner's own argv trace (RUSTDOC_TEST_TRACE_ARGV; see .bazelrc):
 #    `-Ldependency=C:/b/external/rules_rust++crate+cr__owo-colors-4.3.0`.
 #    `--extern=` values carry no such ambiguity: they name a FILE, which has
@@ -242,24 +243,23 @@ node.toolchain(node_version = "24.20.0")
 # 4. process_wrapper_read_retry.patch — process_wrapper reads its `--arg-file`
 #    inputs with a single unretried `File::open`, and on windows-latest that
 #    open rarely fails with a transient ERROR_ACCESS_DENIED on a runfile that
-#    exists and reads fine moments later (issue #587 family 2: the
-#    service-lifecycle `rust_doc_test` died on a varying
-#    `_bs.linksearchpaths` file, 4 hits in one evening). Defender is ruled
-#    out — GitHub's runner images disable real-time protection and exclude
-#    `C:\` at the image level — so the residual suspect is a transient
-#    delete-pending/planting window in the same bazelbuild/bazel#18580-class
-#    family as patch 3. The patch retries the open (3 attempts, short
+#    exists and reads fine moments later (the service-lifecycle
+#    `rust_doc_test` died on a varying `_bs.linksearchpaths` file, 4 hits in
+#    one evening). Defender is ruled out — GitHub's runner images disable
+#    real-time protection and exclude `C:\` at the image level — so the
+#    residual suspect is a transient delete-pending/planting window in the
+#    same family as patch 3's. The patch retries the open (3 attempts, short
 #    backoff) on Windows os errors 5/32, prints a warning per retry so
 #    occurrences stay countable in test logs, and appends the path's
 #    filesystem state to a final failure so a persistent denial is
 #    diagnosable from the error alone. Inert on the happy path and on
-#    non-Windows. No upstream issue filed yet.
+#    non-Windows. No upstream issue is filed for it.
 #
-#    The diagnostic later proved the recurrence (issue #752) is a DANGLING
-#    runfiles-tree symlink, which retrying cannot outlast — patch 3's RF()
-#    now routes those `--arg-file` paths through the runfiles manifest to
-#    their execroot targets, so this retry remains only as the backstop for
-#    paths the manifest cannot resolve.
+#    That diagnostic shows the recurring denial is a DANGLING runfiles-tree
+#    symlink, which retrying cannot outlast: patch 3's RF() routes those
+#    `--arg-file` paths through the runfiles manifest to their execroot
+#    targets, and this retry is the backstop for paths the manifest cannot
+#    resolve.
 #
 # 5. rustdoc_test_inline_args_rustc.patch + rustdoc_test_inline_args_rustdoc.patch
 #    — rules_rust spills `rustc_flags` to a params file on every action, not
@@ -276,10 +276,13 @@ node.toolchain(node_version = "24.20.0")
 #    argument routing (Windows)" step shows it holding: each doc test should
 #    report `params file: unused`.
 #
-# Upstream has no equivalent hooks for 1-2 (collect_coverage PRs #3490/#3808
-# unmerged; still absent in 0.74.0), so these are carried until upstreamed.
-# The `rules_rust coverage patches` CI job (rules-rust-patches.yml) guards
-# that the patches still apply and are effective.
+# Upstream has no equivalent hooks for 1-2 as of 0.74.0: the collect_coverage
+# overrides proposed in rules_rust pull requests 3490
+# (https://github.com/bazelbuild/rules_rust/pull/3490) and 3808
+# (https://github.com/bazelbuild/rules_rust/pull/3808) are unmerged, so these
+# are carried until upstreamed. The `rules_rust coverage patches` CI job
+# (rules-rust-patches.yml) guards that the patches still apply and are
+# effective.
 single_version_override(
     module_name = "rules_rust",
     patch_strip = 1,
@@ -413,8 +416,7 @@ rust.toolchain(
     # `--config=coverage` which selects channel=nightly): the
     # #[cfg_attr(coverage_nightly, coverage(off))] attributes on every
     # `#[cfg(test)] mod tests` block require the nightly-only
-    # `coverage_attribute` feature -- exactly like the Cargo coverage job
-    # (.github/workflows/test.yml) which runs on nightly + cargo-llvm-cov.
+    # `coverage_attribute` feature.
     # The date is PINNED for remote-cache stability: a rolling nightly would
     # change every coverage action's cache key on each bump and bust the
     # coverage cache. Bump it if this nightly lacks the llvm-tools / rust-std /

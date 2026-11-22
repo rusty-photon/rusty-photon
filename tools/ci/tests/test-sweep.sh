@@ -7,9 +7,9 @@
 # to get pasted in while chasing a failure on the hypervisor. Do not. Volume
 # inventories and runner registrations are host state, and invented values
 # exercise the code exactly as well. Every VMID, pool and slot name below is
-# invented: the slot table moved to a host-local file, so the script no
-# longer carries real ids for a fixture to borrow, and one pasted in here
-# would be the only copy of it in this repository.
+# invented: the slot table is a host-local file, so the script carries no real
+# ids for a fixture to borrow, and one pasted in here would be the only copy
+# of it in this repository.
 #
 # The harness never needs a Proxmox host: every command that would reach one
 # (`qm`, `pvesm`, ...) is stubbed, and the config filesystem is a tmpdir

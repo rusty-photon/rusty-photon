@@ -1,5 +1,5 @@
-# Tests of the CI's local JavaScript actions (ADR-022), run by `bazel test
-# //...` on every OS leg, on the Node that MODULE.bazel pins.
+# Tests of the CI's local JavaScript actions, run by `bazel test //...` on
+# every OS leg, on the Node that MODULE.bazel pins.
 #
 # One package holds everything under .github/actions: an action's directory
 # gets no BUILD file of its own, and its tests are declared here, so that
@@ -8,7 +8,7 @@
 
 load(":node_test.bzl", "node_binary", "node_link_test", "node_test")
 
-# Every JavaScript file and action.yml here, which the tools crate's
+# Every JavaScript, YAML and Starlark file here, which the tools crate's
 # bare-reference guard reads (tools/rusty-photon-ci/src/bare_refs.rs).
 filegroup(
     name = "sources",
@@ -220,7 +220,7 @@ node_test(
     ],
 )
 
-# install-omnisim: the ASCOM Alpaca simulators rp's BDD scenarios spawn.
+# install-omnisim: the ASCOM Alpaca simulators the BDD suites spawn.
 node_test(
     name = "install_omnisim_test",
     size = "small",

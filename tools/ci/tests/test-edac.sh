@@ -111,8 +111,8 @@ fi
 # production logging path is never executed: hard-code the test tag into
 # `warn`, or drop MSG_PREFIX from it, and every case still passes while every
 # real escalation on the host lands under a tag the runbook does not grep.
-# That is this script's original bug with the arrow reversed, and it would
-# have shipped invisibly.
+# That is a fixture logging as production with the arrow reversed, and nothing
+# else here would catch it.
 #
 # Redirecting the EDAC default as well as the state one is what makes the
 # unconfigured run testable: it reads a fixture tree while believing it is
@@ -431,9 +431,9 @@ rm -rf "$PROD_SIM"
 #     check that says yes because it could not tell is the whole defect class
 #     these guards exist to close.
 #
-#     The state directory here is scratch, so under the old fallback this run
-#     would have been allowed and would have persisted. Refusing it is the
-#     cost of failing closed, and is the point of the case.
+#     The state directory here is scratch, so a text-comparison fallback would
+#     allow this run and let it persist. Refusing it is the cost of failing
+#     closed, and is the point of the case.
 n=$((n + 1))
 mkdir -p "$TMP/badbin"
 printf '#!/bin/sh\nexit 1\n' >"$TMP/badbin/realpath"
@@ -553,8 +553,8 @@ identity "redirected state dir -> test tag names the baseline" \
 # 21. A state override naming the production directory is NOT a test run. It
 #     reads this host's real counters and rewrites its real mark, however it
 #     was spelled, so calling it a test would file a genuine rising error
-#     count under the tag the runbook never greps -- the same missed fault as
-#     the bug this PR started from, arrived at from the opposite side.
+#     count under the tag the runbook never greps -- the mirror of a fixture
+#     logging as production, arrived at from the opposite side.
 identity "state dir = production dir -> production tag, no prefix" \
     rp-edac-check - "" /var/lib/rp-edac-check
 
@@ -608,12 +608,12 @@ identity "root = production tree, no state override -> production identity" \
     rp-edac-check - /sys/devices/system/edac/mc
 
 # 23c. The same by a non-canonical spelling, which is the counterpart to the
-#      state directory's `/.` case and was missing while that one existed.
-#      Every other production-root case here uses the canonical path, so a
-#      root comparison that stopped resolving -- and started matching raw
-#      names -- would keep the suite green while treating this spelling as
-#      synthetic: a real reading disclaimed as a fixture, and refused outright
-#      if the state directory happened to be production's.
+#      state directory's `/.` case. Every other production-root case here
+#      uses the canonical path, so a root comparison that stopped resolving --
+#      and started matching raw names -- would keep the suite green while
+#      treating this spelling as synthetic: a real reading disclaimed as a
+#      fixture, and refused outright if the state directory happened to be
+#      production's.
 identity "root spelled non-canonically -> still production identity" \
     rp-edac-check - /sys/devices/system/edac/mc/.
 
@@ -736,11 +736,10 @@ else
 fi
 
 # 27. The production tree named explicitly, with no state override: a
-#     production run spelled the long way, and nothing to refuse. This is the
-#     one case the guard's wording change actually loosened -- it used to be
-#     rejected for having an override present at all -- so it is asserted end
-#     to end rather than only through the identity function, which is where a
-#     guard regression would show and an identity case would not.
+#     production run spelled the long way, and nothing to refuse. A guard
+#     keyed on an override being present at all would reject it, so it is
+#     asserted end to end rather than only through the identity function: a
+#     guard regression shows here and in no identity case.
 n=$((n + 1))
 rm -rf "$PROD_SIM" "$PROD_MC"
 mkdir -p "$PROD_SIM"
@@ -762,8 +761,8 @@ fi
 
 # 28. The re-baseline, under the production identity.
 #
-#     The cases above reach `warn` and silence; `note` has only ever been
-#     watched under the test identity, so hard-coding the test tag into it
+#     The cases above reach `warn` and silence; every other case watches
+#     `note` under the test identity only, so hard-coding the test tag into it
 #     alone would pass everything else here. What that hides is specific and
 #     badly timed: the reset line is what tells a reader the counters they are
 #     looking at started over at the last boot, and the reader who needs it is
@@ -825,11 +824,11 @@ fi
 
 # 30. Real counters, scratch baseline -- the reverse pairing, end to end.
 #
-#     The runbook promises this mode stays supported, and until now only the
-#     identity function was asked about it: no case ran the guard, scanned
-#     counters and persisted a scratch mark. A regression that refused this
-#     pairing, or that wrote the real mark instead of the scratch one, would
-#     have passed while the documentation went on promising it.
+#     The runbook promises this mode stays supported, and the identity case
+#     for it neither runs the guard, nor scans counters, nor persists a
+#     scratch mark. A regression that refused this pairing, or that wrote the
+#     real mark instead of the scratch one, would pass that case while the
+#     documentation went on promising it.
 #
 #     Both halves are asserted because they fail differently: refusing it
 #     breaks a documented workflow, while writing the wrong mark corrupts
@@ -859,9 +858,8 @@ else
     FAILED=1
 fi
 
-# 31. A non-canonical production root, end to end. The state directory has had
-#     both an identity case and a full-script one for its `/.` spelling since
-#     the guard landed; the root had neither until now, and the identity case
+# 31. A non-canonical production root, end to end, beside its identity case
+#     (23c), as the state directory's `/.` spelling has both: the identity case
 #     alone would not notice a run that classified correctly and then behaved
 #     as a test anyway.
 n=$((n + 1))

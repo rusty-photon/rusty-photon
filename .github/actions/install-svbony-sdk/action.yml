@@ -1,6 +1,6 @@
 name: Install SVBony Camera SDK
 description: >-
-  Install the SVBony camera SDK (libSVBCameraSDK, no license grant, ADR-018)
+  Install the SVBony camera SDK (libSVBCameraSDK, no license grant)
   and the libusb-1.0 it needs, so that the `svbony-camera` service links.
   libsvbony-sys links the SDK even in a `--features simulation` build (it
   removes the camera, not the link); SVBONY_SKIP_NATIVE_LINK=1 is the only way
@@ -8,9 +8,9 @@ description: >-
   & build gating". Linux and macOS (Intel only: there is no build for Apple
   Silicon) take SVBony's prebuilt library as the INDI repository vendors it,
   at a pinned commit; Windows takes SVBony's own SDK from the project's
-  private mirror, against a pinned SHA-256 (ADR-018 §7). The pins, the files
-  and the install are svbony-sdk.mjs's; the download and the cache key are
-  lib/install.mjs's (plan item J6 in docs/plans/archive/ci-shell-to-code.md).
+  private mirror, against a pinned SHA-256 (docs/services/svbony-camera.md
+  "Windows"). The pins, the files and the install are svbony-sdk.mjs's; the
+  download and the cache key are lib/install.mjs's.
 
 inputs:
   sudo:
@@ -61,8 +61,8 @@ runs:
       uses: ./.github/actions/install-svbony-sdk/resolve
 
     # The INDI downloads only: the Windows SDK goes into no cache, which a
-    # fork's pull request could restore, since only the token may fetch it
-    # (ADR-018 §7). The sudo-free path stages per run, uncached.
+    # fork's pull request could restore, since only the token may fetch it.
+    # The sudo-free path stages per run, uncached.
     - name: Cache the SVBony SDK downloads
       if: runner.os != 'Windows' && (runner.os != 'Linux' || inputs.sudo == 'true')
       id: cache

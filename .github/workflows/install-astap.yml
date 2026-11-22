@@ -3,10 +3,9 @@
 # ASTAP CLI, exposes it via the ASTAP_BINARY env var, and the smoke step
 # invokes it and asserts the banner string is present.
 #
-# This is the regression target ADR-005 references: each row in this
-# matrix corresponds to one of the ADR's supported platforms — Linux
-# x64, Linux ARM64 (Raspberry Pi 5), macOS Apple Silicon, and Windows
-# x64. When a row goes red, operators following the same install
+# Each row of the matrix is one of plate-solver's supported platforms —
+# Linux x64, Linux ARM64 (Raspberry Pi 5), macOS Apple Silicon, and
+# Windows x64. When a row goes red, operators following the same install
 # recipe by hand would also see the breakage.
 #
 # Cadence: nightly cron + workflow_dispatch (manual) + paths-filtered
@@ -16,7 +15,9 @@
 # deterministic replay. The paths filter keeps PR-time verification on
 # changes that *can* affect the install (the action itself, the shared
 # modules under .github/actions/lib it runs, or this workflow), so a
-# SHA-refresh PR still runs the smoke before merge.
+# hand-made SHA refresh runs the smoke before merge. The auto-PR
+# refresh-astap-shas.yml opens does not trigger it (that workflow
+# verifies the new binaries itself).
 # The nightly cron catches upstream rotations that arrive between
 # install-touching PRs, and notify-on-failure opens a tracking issue
 # so divergence is visible without trawling scheduled-workflow logs.

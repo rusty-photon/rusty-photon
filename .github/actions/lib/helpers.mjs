@@ -1,4 +1,4 @@
-// Shared helpers for the CI's local JavaScript actions (ADR-022): the parts of
+// Shared helpers for the CI's local JavaScript actions: the parts of
 // @actions/core and @actions/http-client the actions need, written on Node's
 // built-ins so no action needs npm, a package.json or a build step. An action
 // imports this file by a relative path:

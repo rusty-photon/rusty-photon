@@ -5,10 +5,10 @@
 # firmware, which the kernel exposes through igen6_edac as ordinary EDAC
 # memory controllers running in SECDED: single-bit errors are corrected and
 # counted, double-bit errors are detected. That makes memory faults visible --
-# but only to whoever reads the counters, and nothing read them. A silent
-# correctable-error climb is exactly the shape of evidence that would have
-# settled whether a kernel memory-corruption oops came from the DIMMs, and it
-# was unavailable after the fact because the counters reset at every boot.
+# but only to whoever reads the counters, and they reset at every boot. A
+# silent correctable-error climb is exactly the shape of evidence that settles
+# whether a kernel memory-corruption oops came from the DIMMs, and after a
+# reboot it is gone unless something recorded it first.
 #
 # So this runs periodically and escalates on change rather than on state:
 # steady counters say nothing, a counter that MOVED is the signal.
@@ -78,8 +78,8 @@ ROOT_IS_PROD=$?
 # under the production tag inverts that: it manufactures exactly the evidence
 # the check exists to provide honestly, at err priority, on a host whose
 # memory is fine -- and it outlives its fixture, because the counters reset at
-# boot but the journal entry does not. The reader it fools is the one this was
-# built for: an operator grepping this tag after an unexplained reboot,
+# boot but the journal entry does not. The reader it fools is the one this
+# check serves: an operator grepping this tag after an unexplained reboot,
 # already inclined to believe a memory fault.
 #
 # So the identity is derived from the overrides rather than fixed. There are
@@ -136,7 +136,7 @@ warn() { logger -t "$TAG" -p daemon.err -- "$MSG_PREFIX$*"; }
 # and nothing else reads synthetic counters and then writes them over the real
 # mark -- correctly tagged as a test the whole time, and still destroying the
 # baseline every later run is measured against. What follows is worse than the
-# wrong line this tagging was added to prevent, because it is silent: the next
+# wrong line this tagging exists to prevent, because it is silent: the next
 # real reading sits below the synthetic mark, so it reads as a drop, and a drop
 # is a reboot, so the check quietly re-baselines and says nothing. Nothing
 # afterwards distinguishes a corrupted mark from an honest one.
@@ -180,7 +180,7 @@ fi
 #
 # Keyed on the root actually being a fixture rather than on an override having
 # been passed, because the danger is synthetic counters reaching the real mark,
-# and "an override was passed" was only ever a proxy for that. Naming the
+# and "an override was passed" is only a proxy for that. Naming the
 # production tree explicitly alongside the production state directory is an
 # ordinary production run spelled the long way, and there is nothing to refuse.
 if [ "$ROOT_IS_PROD" -ne 0 ] && [ "$STATE_IS_PROD" -eq 0 ]; then
@@ -264,9 +264,10 @@ mkdir -p "$STATE_DIR"
 
 # Each field is validated on its own, and an empty one counts as invalid.
 # Testing the two concatenated cannot tell "5 and nothing" from "5", so a
-# truncated state file passed the check and left a comparison operand empty --
-# and `[ 7 -gt "" ]` does not evaluate false, it errors, which the surrounding
-# `if` reads as false. Both the re-baseline and the escalation then go quiet.
+# truncated state file would pass that check and leave a comparison operand
+# empty -- and `[ 7 -gt "" ]` does not evaluate false, it errors, which the
+# surrounding `if` reads as false. Both the re-baseline and the escalation would
+# then go quiet.
 # A monitor that has silently stopped escalating is indistinguishable from a
 # host with healthy memory, which is the one outcome this script must never
 # produce.
@@ -295,7 +296,7 @@ elif [ "$ce" -gt "$prev_ce" ]; then
 fi
 
 # Written to a temp file and published by rename, for the reason the parsing
-# above now defends against: a half-written state file is not a slightly stale
+# above defends against: a half-written state file is not a slightly stale
 # baseline, it is the input that silences the next run. Rename within one
 # directory is atomic, so a reader sees the old mark or the new one.
 #

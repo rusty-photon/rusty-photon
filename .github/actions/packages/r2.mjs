@@ -1,7 +1,8 @@
 // nightly-packages.yml's publish job, last of the channels: the site
 // repo.mjs rendered and verify-repo.mjs installed from replaces the one in
-// the R2 bucket behind pkg.rustyphoton.space (docs/plans/archive/
-// nightly-releases.md, N5). Conventions: docs/skills/ci-logic.md.
+// the R2 bucket behind pkg.rustyphoton.space, which
+// tools/rusty-photon-packages-r2/README.md documents. Conventions:
+// docs/skills/ci-logic.md.
 //
 // Two objects of the bucket's own make the replacement safe without ever
 // listing the bucket, so that nothing removes an object put there by other
@@ -27,9 +28,9 @@
 //      place cannot be atomic in either order: a client that read the
 //      outgoing file within the moment between the two puts pairs it with
 //      the new signature and retries, where the other order would fail
-//      every client between them. Current apt reads InRelease, clearsigned
-//      in one object, and is never caught; dnf and older apt get past it on
-//      a retry;
+//      every client between them. An apt that reads InRelease, clearsigned
+//      in one object, is never caught; dnf, and an apt that predates
+//      InRelease, get past it on a retry;
 //   5. delete what manifest.txt listed that is neither in the new tree nor
 //      in the generation kept. An object with a unique name (a pool file, a
 //      by-hash index, a repodata blob) lives two publishes, so a client

@@ -2,9 +2,9 @@
 """Drop the coverage-exempt files from an LCOV report.
 
 The combined `bazel coverage` report includes every instrumented first-party
-target, which sweeps in a handful of files the coverage policy exempts: mock
-binaries, test-helper binaries, and examples — the only sanctioned
-exclusions; production code is never exempt. Coveralls computes the
+target, which sweeps in a handful of files the coverage policy exempts: test
+directories, mock binaries, test-helper binaries, and examples — the only
+sanctioned exclusions; production code is never exempt. Coveralls computes the
 published number from exactly what it is sent, so this filter applies the
 policy to the upload. The CI artifact keeps the unfiltered report as
 line-level truth.

@@ -1,4 +1,4 @@
-# Ephemeral self-hosted runner validation (runner-pool phase 2).
+# Ephemeral self-hosted runner validation.
 #
 # Security model — same binary rule as pi-nightly.yml: `workflow_dispatch`
 # ONLY. Never add `pull_request` or `push` here while this file targets
@@ -16,8 +16,10 @@
 # cache endpoint comes from the runner's own .env (RP_LAN_CACHE_URL), never
 # from this file, and is masked first thing so it cannot appear in public
 # logs. All use of the cache here is read-only: no write credential exists
-# anywhere on the runner VM (ADR-020 layer 4) — LAN cache writes happen
-# only in bazel.yml's push-to-main jobs, via a GitHub Actions secret.
+# anywhere on the runner VM (docs/skills/proxmox-runner-pool.md § Security
+# Model) — LAN cache writes happen only in push-to-main jobs (bazel.yml,
+# bazel-coverage.yml, check.yml's stable / clippy), via a GitHub Actions
+# secret.
 #
 # The test steps pass --cache_test_results=no. This workflow exists to prove
 # the guest can run the suites, and a cached result proves nothing about the
@@ -86,9 +88,9 @@ jobs:
 
       # The Windows template has to supply what GitHub's hosted image supplies,
       # and a gap in it is otherwise invisible until a real job trips over it —
-      # a missing `pwsh` cost bazel.yml's first pool Windows run, because a
-      # stock Server install ships only Windows PowerShell 5.1 and `shell: pwsh`
-      # then has nothing to run. Assert the assumptions here, before the build,
+      # a stock Server install ships only Windows PowerShell 5.1, so without
+      # `pwsh` every `shell: pwsh` step of bazel.yml has nothing to run. Assert
+      # the assumptions here, before the build,
       # so a template rebuild that drops one fails loudly on dispatch instead of
       # on someone's PR.
       - name: Verify template parity with the hosted image

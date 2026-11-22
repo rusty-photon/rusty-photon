@@ -1,4 +1,4 @@
-"""Bazel rules for the CI's JavaScript actions (ADR-022).
+"""Bazel rules for the CI's JavaScript actions.
 
 `node_test` runs `node --test` over JavaScript test files on the Node
 toolchain MODULE.bazel pins, as an ordinary Bazel test on Linux, macOS and
@@ -135,7 +135,7 @@ def node_link_test(name, src, **kwargs):
         # Each extension may match nothing; the test's own floor catches a
         # glob that matches too little. Every file but .mjs is there to be
         # refused: actions are .mjs, and Node 24 would also run TypeScript,
-        # which ADR-022 rules out.
+        # which docs/skills/ci-logic.md § Layout rules out.
         data = native.glob(
             ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.ts", "**/*.mts", "**/*.cts"],
             exclude = [src],

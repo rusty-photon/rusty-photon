@@ -16,8 +16,8 @@ fi
 # Camera packages ship a udev rule; make it effective without a reboot.
 udevadm control --reload-rules || true
 udevadm trigger || true
-# Proprietary camera firmware is never packaged (ADR-013). When the
-# package ships a firmware-install helper, point the operator at it.
+# Proprietary camera firmware is never packaged. When the package ships a
+# firmware-install helper, point the operator at it.
 fw_helper="/usr/sbin/${DPKG_MAINTSCRIPT_PACKAGE%-camera}-firmware-install"
 if [ -x "$fw_helper" ]; then
     echo "$DPKG_MAINTSCRIPT_PACKAGE: camera firmware is not bundled."

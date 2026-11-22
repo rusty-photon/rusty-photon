@@ -24,12 +24,10 @@
 # (https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow).
 #
 # Windows-ARM64 has no GitHub-hosted runner, so its SHA is refreshed
-# cross-mirror with no verification — same posture ADR-005 already
-# documents for that row.
+# cross-mirror with no verification.
 #
-# The logic is the refresh-astap action's (`.github/actions/refresh-astap`,
-# plan item J8 in docs/plans/archive/ci-shell-to-code.md). See
-# `docs/decisions/005-plate-solver.md` §"Pinned SHA-256 + refresh
+# The logic is the refresh-astap action's (`.github/actions/refresh-astap`).
+# See `docs/decisions/005-plate-solver.md` §"Pinned SHA-256 + refresh
 # procedure" for the manual procedure this workflow automates.
 
 name: refresh-astap-shas
@@ -83,10 +81,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # workflow_run defaults to the trigger workflow's head_sha
-          # (could be a PR commit if install-astap was failing on a PR).
-          # Check out main so the comparison reads the same table the
-          # auto-PR will eventually update.
+          # Main, whatever the event: a dispatch from a branch would
+          # otherwise check that branch out, and the comparison must read
+          # the table the auto-PR updates.
           ref: main
           persist-credentials: false
           sparse-checkout: |

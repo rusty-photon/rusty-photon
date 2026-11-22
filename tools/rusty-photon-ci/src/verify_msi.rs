@@ -473,8 +473,8 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
     }
 
     /// One Programs and Features entry remains after the upgrade, the new
-    /// MSI's: `RemoveExistingProducts` took the old one rather than
-    /// installing beside it.
+    /// MSI's: `RemoveExistingProducts` removes the earlier product rather
+    /// than installing the new one beside it.
     fn upgraded_in_place(&mut self, msi: &Path) -> Result<(), Error> {
         let entries: Vec<String> = self
             .powershell(ARP)?
@@ -612,7 +612,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             &format!("StartType is {start}, expected Automatic"),
         )?;
         // The flag makes a clean error exit, a serial driver's on its absent
-        // device, a failure Windows restarts after (ADR-015).
+        // device, a failure Windows restarts after (installer/README.md).
         let actions = self.sc(&["qfailure", &name])?;
         self.require(
             actions.contains("RESTART -- Delay = 5000"),
@@ -672,8 +672,9 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         )
     }
 
-    /// ui-htmx's config names rp, its one required target, and none of the
-    /// drivers it no longer keeps.
+    /// ui-htmx's config names rp, its one required target, and holds no
+    /// `drivers` map, a retired key
+    /// ([ui-htmx.md § Configuration](../../../docs/services/ui-htmx.md#configuration)).
     fn ui_config(&self) -> Result<(), Error> {
         let path = self.config("ui-htmx");
         let config = fs::read_to_string(&path)
@@ -916,7 +917,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         Ok(())
     }
 
-    /// Removing one zwo feature leaves the other whole (ADR-014).
+    /// Removing one zwo feature leaves the other whole.
     fn remove_zwo_camera(&mut self, msi: &str) -> Result<(), Error> {
         println!("== modify: REMOVE=ZwoCamera");
         let code = self.msiexec(&["/i", msi, "/qn", "/norestart", "REMOVE=ZwoCamera"])?;

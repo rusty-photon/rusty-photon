@@ -8,12 +8,11 @@
 # aim those at a guest nobody named.
 #
 # Fixtures here are SYNTHETIC BY POLICY, and more strictly than in this
-# harness's siblings. Moving the table out of the script removed the pool's
-# real VMIDs and slot names from this public repository altogether, so there
-# is no longer an in-script array whose values a test could echo harmlessly.
-# Pasting a live table in while chasing a failure on the hypervisor would put
-# host inventory back into the repo that the refactor just took out of it.
-# Invented names and VMIDs exercise the parse exactly as well.
+# harness's siblings. The table is host-local, so the script carries none of
+# the pool's real VMIDs or slot names, and there is no in-script array whose
+# values a test could echo harmlessly. Pasting a live table in while chasing a
+# failure on the hypervisor would put host inventory into this public
+# repository. Invented names and VMIDs exercise the parse exactly as well.
 #
 # The harness never needs a Proxmox host: load_slots reaches nothing but the
 # file at SLOTS_FILE, assigned to a tmpdir path directly. That works here

@@ -14,6 +14,6 @@
 AWS_LC_SYS_USE_SYSTEM = "0"
 
 [alias]
-# The workspace's developer tools (tools/rusty-photon-ci, ADR-022): `cargo ci
-# <tool>`, for example `cargo ci repin-bazel-lock`; `cargo ci help` lists them.
+# The workspace's developer tools (tools/rusty-photon-ci): `cargo ci <tool>`,
+# for example `cargo ci repin-bazel-lock`; `cargo ci help` lists them.
 ci = "run --package rusty-photon-ci --"

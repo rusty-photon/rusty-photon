@@ -6,8 +6,7 @@ description: >-
   the SHA-256 GitHub's API gives for it, and the install against its
   `--version`. Linux unpacks into RUNNER_TEMP/conformu, macOS copies
   ConformU.app there from the disk image, and Windows runs ConformU's
-  installer, which installs into Program Files. The logic is conformu.mjs's
-  (plan item R7 in docs/plans/archive/ci-shell-to-code.md).
+  installer, which installs into Program Files. The logic is conformu.mjs's.
 inputs:
   token:
     description: The token that reads ConformU's latest release from the GitHub API.

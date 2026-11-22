@@ -12,7 +12,8 @@ import { io } from '../lib/helpers.mjs';
 /** The lock's path in the repository. */
 export const LOCK = 'MODULE.bazel.lock';
 
-// Who the commit is by, as the job's push from a checkout had it.
+// The commit's author and committer, whoever owns the token: the API makes
+// the token's owner both when a commit names neither.
 const BOT = { name: 'github-actions[bot]', email: '41898282+github-actions[bot]@users.noreply.github.com' };
 
 // The writes a repeat leaves as they were, which fetchWithRetry may send again

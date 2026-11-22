@@ -8,8 +8,8 @@ import { workspaceVersion } from './plan.mjs';
 
 /**
  * The version the tag `tag` names, its leading `v` dropped, once it is known
- * to be the workspace version in `cargoToml`, read as the packaging scripts
- * read it; any other version throws.
+ * to be the workspace version in `cargoToml` (workspaceVersion); any other
+ * version throws.
  */
 export function checkTag(tag, cargoToml) {
   const version = tag.replace(/^v/, '');

@@ -9,12 +9,12 @@
 //!    cargo-deb, and cargo-generate-rpm with `--rpm`.
 //! 2. It stages the native SDKs in the cache ([`packaging::cache_dir`]):
 //!    QHYCCD's static `libqhyccd.a`, which qhy-camera links; the ZWO blob
-//!    each zwo service links, ASI's for zwo-camera and EAF's for zwo-focuser
-//!    (ADR-014), which it also copies into the service's `pkg/lib/`, the
-//!    package's payload (ADR-013), so the zwo packages share no file; and
-//!    `SVBony`'s, which svbony-camera links and its package never ships, as
-//!    `SVBony` grants no license to (ADR-018): the operator installs it on
-//!    the target with the helper the package carries. The ZWO and `SVBony`
+//!    each zwo service links, ASI's for zwo-camera and EAF's for zwo-focuser,
+//!    which it also copies into the service's `pkg/lib/`, the package's
+//!    payload, so the zwo packages share no file; and `SVBony`'s, which
+//!    svbony-camera links and its package never ships, as `SVBony` grants
+//!    no license to ship it: the operator installs it on the target with
+//!    the helper the package carries. The ZWO and `SVBony`
 //!    blobs carry no SONAME, so the binaries load them by name, through
 //!    [`RUNPATH`].
 //! 3. It release-builds the services with that one RUNPATH, harmless where
@@ -31,8 +31,12 @@ use crate::packaging::{self, io, qhy, Error};
 use crate::process::{Cmd, Runner};
 
 /// Where the packages put the ZWO blobs, and the `SVBony` helper the
-/// operator's SDK, which the binaries find through their RUNPATH. It is off
-/// ldconfig's path on purpose (ADR-013).
+/// operator's SDK, which the binaries find through their RUNPATH.
+///
+/// It is off ldconfig's path on purpose: a directory the packages own, so
+/// they install and remove its files without conflicting with the system's
+/// package manager or another package
+/// ([svbony-camera.md § Packaging](../../../docs/services/svbony-camera.md#packaging)).
 pub const RUNPATH: &str = "/usr/lib/rusty-photon";
 
 /// What the build needs from apt: libusb and libudev, which the camera SDKs
@@ -572,7 +576,7 @@ mod tests {
     }
 
     /// Each zwo package's payload is its own blob, and nothing else of
-    /// ZWO's; svbony-camera's is nothing (ADR-018).
+    /// ZWO's; svbony-camera's is nothing.
     #[test]
     fn puts_each_zwo_services_own_blob_in_its_payload_and_svbonys_in_none() {
         let fixture = fixture(&["zwo-camera", "zwo-focuser"]);

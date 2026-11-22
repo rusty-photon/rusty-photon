@@ -264,7 +264,8 @@ test('a store that does not answer in time is a miss', async (t) => {
 
   // Between the 200 ms timeout this test passes (about 0.25 s in all) and
   // the 10 s default, which nothing else here tells apart; well clear of
-  // the first, for a loaded runner (docs/skills/testing.md, on ceilings).
+  // the first, for a loaded runner (docs/skills/testing.md § 5.10, on
+  // ceilings).
   assert.ok(Date.now() - started < 8_000, 'it waited for the default timeout, not the one given');
   assert.match(stdout, /::warning::The LAN cache failed \(no answer in time\)/);
   assert.match(stdout, /: 0 from the LAN cache, 1 from crates\.io\.$/m);

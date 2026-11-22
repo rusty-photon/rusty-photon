@@ -6,7 +6,8 @@
 #   install -m 644 rp-runner-pool.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now rp-runner-pool
 # (When replacing the script under a RUNNING service, stage and `mv` instead
-# of `install` — bash reads a script lazily by offset; see the skill doc.)
+# of `install` — bash reads a script lazily by offset, and a rename leaves the
+# running instance reading the file it started on.)
 #
 # The ordering is load-bearing. zfs.target: the script's startup reconcile
 # destroys stale clones, and a destroy that runs before the ZFS pool backing

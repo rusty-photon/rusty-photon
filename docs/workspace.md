@@ -719,9 +719,8 @@ rule: `bazel test //...` fails on a `#` number in a comment of a
 workspace member's Rust, TOML or Starlark file, of the root
 `Cargo.toml`, `MODULE.bazel`, `BUILD.bazel` and `.bazelrc`, of a
 workflow, or of the local actions' JavaScript, YAML and Starlark, and
-anywhere in a feature file — unless a row of its `PENDING` table holds
-the file, the number and how often. A cleanup that clears a number
-deletes its row; a new number is reworded, never added.
+anywhere in a feature file. Its table of exceptions, `PENDING`, is
+empty: a number the guard finds is reworded, never listed.
 
 ### Lints
 
@@ -1030,7 +1029,7 @@ remain the single source of truth for dependency versions, and Bazel's
 `crate_universe` reads them. The repo root holds `MODULE.bazel` and `BUILD.bazel`;
 `bazel test //...` runs every target except those tagged `requires-cargo` or
 `conformu`, the BDD suites included. The required PR
-checks are `bazel / <os>` (build + clippy + test on Linux and Windows; the
+checks are `bazel / <os>` (build + test on Linux and Windows; the
 macOS leg runs on pushes to main and nightly, not on PRs), `bazel coverage`,
 plus the Cargo `stable / clippy` lint job, which runs `cargo fmt --check` first
 (Bazel runs neither rustfmt nor clippy). `stable / clippy` runs on the self-hosted

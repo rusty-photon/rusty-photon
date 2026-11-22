@@ -40,8 +40,8 @@ set -euo pipefail
 
 # Bump RUNNER_VERSION + refresh RUNNER_SHA256 in tandem when upgrading.
 # Find current releases at https://github.com/actions/runner/releases — the
-# release body includes a per-arch SHA-256 table. The pinned values below
-# were captured on 2026-05-14 against the v2.334.0 release.
+# release body includes a per-arch SHA-256 table, and RUNNER_SHA256 is its
+# linux-arm64 entry for RUNNER_VERSION.
 RUNNER_VERSION="${RUNNER_VERSION:-2.334.0}"
 RUNNER_SHA256="${RUNNER_SHA256:-f44255bd3e80160eb25f71bc83d06ea025f6908748807a584687b3184759f7e4}"
 RUNNER_NAME="${RUNNER_NAME:-pi5-nightly}"
@@ -88,21 +88,19 @@ sudo apt-get install -y \
   unzip \
   ca-certificates
 
-# === 1b. QHYCCD SDK — now provisioned per-run by the workflow, not here ===
+# === 1b. QHYCCD SDK — provisioned per run by the workflow, not here ===
 #
 # qhy-camera links libqhyccd-sys (static=qhyccd + libusb-1.0 + stdc++), so the
-# Pi5 arm64 nightly needs the SDK to build the full workspace. This used to be
-# pre-installed into /usr/local here, because the published install action wrote
-# to /usr/local with sudo and this runner is intentionally sudo-less. That is no
-# longer necessary: `pi-nightly.yml` now provisions the SDK per-run with
+# Pi5 arm64 nightly needs the SDK to build the full workspace. This runner is
+# intentionally sudo-less, so `pi-nightly.yml` provisions the SDK per run with
 # `ivonnyssen/qhyccd-sdk-install@v4` `install: env` — a sudo-free mode that
 # extracts the SDK under the workspace and exports QHYCCD_SDK_DIR, which
 # libqhyccd-sys's build.rs reads to find libqhyccd.a (linked statically).
-# Provisioning in the workflow (rather than at setup time) makes the runner
-# self-healing: a new native-SDK service or an SDK version bump no longer
-# requires re-running this script by hand. The build.rs fallback to
-# /usr/local/lib still works if an operator has installed the SDK there
-# manually, so nothing breaks if it is.
+# Provisioning in the workflow (rather than at setup time) keeps the runner
+# self-healing: a new native-SDK service or an SDK version bump needs no
+# re-run of this script. The build.rs fallback to /usr/local/lib still works
+# if an operator has installed the SDK there by hand, so nothing breaks if it
+# is.
 #
 # The static libqhyccd.a still pulls in a *dynamic* `-lusb-1.0`. On a sudo-less
 # runner there is no libusb-1.0-0-dev (no unversioned `libusb-1.0.so` for the
@@ -112,24 +110,24 @@ sudo apt-get install -y \
 # (libusb-1.0-0), not the -dev package: it is just the symlink target, shared
 # by both the QHYCCD and ZWO sudo-free link paths.
 
-# === 1.5. ZWO ASI/EFW SDK — now provisioned sudo-free per-run by the workflow ===
+# === 1.5. ZWO ASI/EFW SDK — provisioned sudo-free per run by the workflow ===
 #
 # zwo-camera links the MIT-licensed ZWO SDK unconditionally via
 # zwo-rs -> libzwo-sys (required even for `--features simulation`), so the
-# aarch64 Pi nightly needs it at link time to build/test the workspace. This
-# used to be pre-installed into /usr/local here (with sudo). That is no longer
-# necessary: `pi-nightly.yml` now provisions it per-run with the local
+# aarch64 Pi nightly needs it at link time to build/test the workspace.
+# `pi-nightly.yml` provisions it per run with the local
 # `./.github/actions/install-zwo-sdk` action in its sudo-free mode
 # (`sudo: "false"`) — it stages the INDI-vendored blobs under $RUNNER_TEMP,
 # symlinks the system libusb/libudev *runtime* libs to satisfy the unversioned
 # `-lusb-1.0`/`-ludev` link names (no -dev package), and exports ZWO_SDK_LIB_DIR
 # (which libzwo-sys' build.rs puts ahead of /usr/local/lib) + LD_LIBRARY_PATH.
-# Like the QHYCCD §1b move, provisioning in the workflow makes the runner
+# As with QHYCCD (§1b), provisioning in the workflow keeps the runner
 # self-healing: a ZWO SDK bump only needs REF in the action's zwo-sdk.mjs
-# updated, not a manual re-run of this script. The two prerequisites the per-run step cannot
-# install without sudo are stable host packages installed once in §1 above:
-# clang/libclang-dev (bindgen) and the libusb-1.0 runtime (the symlink target,
-# and the blob's own runtime dependency); libudev.so.1 ships with systemd.
+# updated, not a manual re-run of this script. The two prerequisites the
+# per-run step cannot install without sudo are stable host packages installed
+# once in §1 above: clang/libclang-dev (bindgen) and the libusb-1.0 runtime
+# (the symlink target, and the blob's own runtime dependency); libudev.so.1
+# ships with systemd.
 #
 # No real-device udev rule here: this runner is CI-only (it never has a
 # physical camera attached — see "No real-device udev rules" below), so
@@ -149,9 +147,9 @@ sudo apt-get install -y \
 # symlinks the system libusb-1.0 *runtime* lib to satisfy the unversioned
 # `-lusb-1.0` link name (no -dev package), and exports SVBONY_SDK_LIB_DIR
 # (which libsvbony-sys' build.rs puts ahead of /usr/local/lib) +
-# LD_LIBRARY_PATH. As with the QHYCCD/ZWO moves, provisioning in the
-# workflow makes the runner self-healing: an SVBony SDK bump only needs REF
-# in the action's svbony-sdk.mjs updated, not a manual re-run of this script. The only
+# LD_LIBRARY_PATH. As with QHYCCD/ZWO, provisioning in the workflow keeps
+# the runner self-healing: an SVBony SDK bump only needs REF in the action's
+# svbony-sdk.mjs updated, not a manual re-run of this script. The only
 # prerequisite the per-run step cannot install without sudo is the same
 # libusb-1.0 runtime package installed once in §1 above (the symlink
 # target); unlike ZWO, no clang/libclang-dev is needed — libsvbony-sys' FFI
@@ -166,9 +164,7 @@ sudo apt-get install -y \
 # (MODE=0666 / group ownership on a camera's USB VID) exist only in each
 # service's *production packaging* — see services/{qhy-camera,zwo-camera,
 # svbony-camera}/pkg/90-rusty-photon-*.rules — which is installed on real
-# observatory hosts, not this CI runner. A prior revision of this script did
-# install a ZWO-specific rule here; it was removed as dead weight once it
-# was confirmed no hardware would ever be plugged into this host to use it.
+# observatory hosts, not this CI runner.
 
 # === 1d. Memory headroom: swapfile ===
 #
@@ -219,7 +215,7 @@ RUNNER_HOME=$(getent passwd "$RUNNER_USER" | cut -d: -f6)
 # Runner-private temp dir on the SSD. On current Ubuntu releases /tmp is a
 # RAM-backed tmpfs, and every BDD harness puts its temp dirs, configs and
 # data there via TMPDIR — competing with the test processes for the same
-# 8 GB (that was the other half of the OOM). The unit drop-in in §6 points
+# 8 GB the swapfile above backs. The unit drop-in in §6 points
 # TMPDIR here; the tmpfiles rule ages out leftovers of interrupted jobs
 # (tempfile dirs are removed on drop, so only crashes leak).
 RUNNER_TMP="$RUNNER_HOME/tmp"

@@ -14,7 +14,7 @@ import { io, withoutRunnerVariables } from '../lib/helpers.mjs';
  * no execute bit, that it exists), and that what it prints when run with no
  * arguments, where ASTAP prints its banner and exits, names ASTAP. Its exit
  * status is not checked. It gets `env`, by default the step's without the
- * runner's variables, as the `run:` step this replaces gave it. Throws,
+ * runner's variables, as a `run:` step's program gets it. Throws,
  * saying which check failed.
  */
 export async function smoke(binary, { spawn = nodeSpawn, env = withoutRunnerVariables(process.env), signal } = {}) {

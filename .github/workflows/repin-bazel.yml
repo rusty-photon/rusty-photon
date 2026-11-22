@@ -5,8 +5,8 @@
 # Cargo.lock via `crate.from_cargo`) drifts stale on every cargo update
 # (see CLAUDE.md rule 10). This job runs the
 # repin on the PR branch and commits the refreshed lock back to it, through
-# the GitHub API, so the author never has to remember the manual
-# `CARGO_BAZEL_REPIN=1 bazel mod tidy` dance.
+# the GitHub API, so nobody has to run `cargo ci repin-bazel-lock` on a
+# Dependabot branch by hand.
 #
 # Scope: Dependabot cargo PRs only. Every other check on the dependabot
 # commit is red by design — `--config=ci` carries `--lockfile_mode=error`
@@ -17,7 +17,7 @@
 # the full target graph without compiling) before committing it. Two things
 # make the commit land fast, because until it lands nothing else can start:
 #
-#  * Venue. The job runs on the ephemeral Linux pool (ADR-020) under the same
+#  * Venue. The job runs on the ephemeral Linux pool under the same
 #    `runs-on` expression and RP_POOL_LINUX kill switch as bazel-coverage.yml
 #    — a dependabot branch is same-repo by construction — so it picks up on a
 #    warm clone at once instead of queueing for a hosted runner and
@@ -47,20 +47,20 @@
 #    retries nothing — this workflow fires only on pull_request changes, and
 #    nothing of the failed run's repin reached the branch. Commenting
 #    `@dependabot rebase` on the PR is the other route: a fresh push, a fresh
-#    run. ADR-020 layer 4 records why this credential is allowed on a pool job
-#    and how its reach is bounded.
+#    run. docs/skills/proxmox-runner-pool.md § Security Model says where this
+#    credential sits in the pool's contract and how its reach is bounded.
 #
 # `bazel mod tidy` alone is not sufficient to produce a complete lock: it only
 # fixes up module extensions it can find via explicit `use_repo()` calls in
 # MODULE.bazel. Extensions pulled in transitively — e.g. rules_python's `uv`
 # extension, self-registered as a host-platform toolchain by buildifier_prebuilt's
 # dependency on rules_python, with no `use_repo()` of its own anywhere in this
-# repo — are outside that scan. On x86_64 GitHub runners this reproducibly left
-# `MODULE.bazel.lock` missing the `uv` extension entry after `bazel mod tidy`,
-# even though the pre-existing (non-repinned) lock built and tested fine, so the
-# `--lockfile_mode=error` validation below failed on every dependabot PR
-# (confirmed not to be network flakiness: identical failure on rerun, only
-# the mod-tidy-produced lock was affected). The extra `--lockfile_mode=update`
+# repo — are outside that scan. On x86_64 GitHub runners `bazel mod tidy`
+# reproducibly leaves `MODULE.bazel.lock` without the `uv` extension entry,
+# though the lock it started from builds and tests fine, so without the extra
+# build the `--lockfile_mode=error` validation below fails on every dependabot
+# PR (not network flakiness: a re-run fails the same way, and only the
+# mod-tidy-produced lock is affected). The extra `--lockfile_mode=update`
 # build after `mod tidy` forces a real full target-graph analysis — the same
 # analysis `--lockfile_mode=error` performs — but in a mode that fills in any
 # gap `mod tidy` left instead of erroring on it.
@@ -90,11 +90,12 @@ jobs:
     # `--lockfile_mode=error` under `--config=ci` turns a miss that gets past
     # both into a fast red on every Bazel leg.
     if: github.actor == 'dependabot[bot]'
-    # Venue routing (ADR-020): byte-for-byte the expression in
-    # bazel-coverage.yml. Keep the copies identical — a divergence here is a
-    # security boundary moving, and tools/rusty-photon-ci/src/pool_routing.rs
-    # fails `bazel test //...` on one. Every falsy branch (fork PR, kill
-    # switch off, null head.repo) lands on the hosted runner.
+    # Venue routing (docs/skills/proxmox-runner-pool.md § Security Model):
+    # byte-for-byte the expression in bazel-coverage.yml. Keep the copies
+    # identical — a divergence here is a security boundary moving, and
+    # tools/rusty-photon-ci/src/pool_routing.rs fails `bazel test //...` on
+    # one. Every falsy branch (fork PR, kill switch off, null head.repo)
+    # lands on the hosted runner.
     runs-on: >-
       ${{ (vars.RP_POOL_LINUX == 'on'
            && (github.event_name == 'push'

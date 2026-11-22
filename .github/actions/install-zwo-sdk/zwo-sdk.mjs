@@ -1,9 +1,10 @@
 // The ZWO ASI camera, EFW filter-wheel and EAF focuser SDKs, MIT-licensed,
-// which libzwo-sys links (ADR-008, ADR-010, ADR-014): which files each runner
-// takes, and their install where libzwo-sys's build script and the loader
-// find them. libzwo-sys links the SDK even into a `simulation` build, which
-// removes the hardware, not the link, so every job that builds zwo-camera or
-// zwo-focuser installs it.
+// which libzwo-sys links: which files each runner takes, and their install
+// where libzwo-sys's build script and the loader find them. libzwo-sys links
+// the SDK even into a `simulation` build, which removes the hardware, not the
+// link, so every job that builds zwo-camera or zwo-focuser, Bazel's included,
+// installs it, or sets ZWO_SKIP_NATIVE_LINK to leave the link out
+// (docs/services/zwo-camera.md "Native dependency & build gating").
 //
 // Linux and macOS take ZWO's prebuilt libraries as the INDI repository
 // vendors them, under libasi/ at the commit REF: they have no hash of their
@@ -125,16 +126,14 @@ export function resolve({ runner, server = 'https://github.com', now }) {
 
 /**
  * The INDI repository's files, through GitHub's raw links, with retries for
- * the 429s and timeouts it gives CI's ephemeral addresses, as curl's
- * --retry 3 --retry-delay 2 had them.
+ * the 429s and timeouts it gives CI's ephemeral addresses.
  */
 export const INDI_DOWNLOAD = { attempts: 4, delayMs: 2_000 };
 
 /**
  * ZWO's CDN, which drops or black-holes connections routinely: any failure
- * tries again (retryAll, as curl's --retry-all-errors did), and a connection
- * that brings nothing for 20 s is a dead one, as curl's --connect-timeout 20
- * had it. The camera SDK is about 110 MB.
+ * tries again (retryAll), and a connection that brings nothing for 20 s is a
+ * dead one. The camera SDK is about 110 MB.
  */
 export const CDN_DOWNLOAD = { attempts: 5, delayMs: 5_000, stallMs: 20_000, timeoutMs: 300_000, retryAll: true };
 
@@ -279,9 +278,10 @@ async function installWindows({ assets, workspace, temp, cached, restored, downl
   exportVariable('LIBCLANG_PATH', llvm);
   const downloads = path.join(workspace, 'zwo-sdk');
   const downloaded = await downloadAll(assets, downloads, { cached, restored, download: { ...CDN_DOWNLOAD, ...options } });
-  // `<RUNNER_TEMP>\zwo-sdk\lib`, as the action had it before: Bazel passes
-  // ZWO_SDK_LIB_DIR to every action on Windows (.bazelrc), so the string is
-  // part of every action's cache key there.
+  // `<RUNNER_TEMP>\zwo-sdk\lib`: Bazel passes ZWO_SDK_LIB_DIR to every action
+  // on Windows (.bazelrc), so the string is part of every action's cache key
+  // there, and a new spelling of the same path would miss every one of them
+  // once.
   const lib = path.join(temp, 'zwo-sdk', 'lib');
   await stageWindows(assets, downloads, lib);
   // The DLLs load from PATH when a test runs.

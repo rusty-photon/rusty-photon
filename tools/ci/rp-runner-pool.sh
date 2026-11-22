@@ -24,9 +24,6 @@
 #   install -m 755 rp-runner-pool.sh /usr/local/sbin/
 #   write this host's slot table to /etc/rp-runner/slots BEFORE starting the
 #   unit — the script has no built-in table and refuses to start without one.
-#   Upgrading a host that predates the table: create the file first, from the
-#   SLOTS array the installed script still carries, or the restart that picks
-#   up the new script stops the pool
 #   put a fine-grained PAT in /etc/rp-runner/github-token (chmod 600); resource
 #   owner: the rusty-photon org, sole permission "Self-hosted runners: Read
 #   and write" (organization permission) — runner registration and nothing
@@ -149,9 +146,8 @@ FREE_RETRY_SLEEP=5
 #
 # Clone VMIDs must be unique and must not collide with any other VM on the
 # host. Guest OS selects the jitconfig injection path (the guests differ in
-# shell and runner directory, nothing else). Sizing note: every slot keeps one
-# clone powered on at all times, so the host must hold the sum of their
-# memory — see the capacity section of docs/plans/archive/proxmox-pr-routing.md.
+# shell and runner directory, nothing else). Every slot keeps one clone
+# powered on at all times, so the host must hold the sum of their memory.
 #
 # The name is nearly cosmetic: it names the clone VM, prefixes this slot's
 # log lines, and forms the GitHub runner name ("<name>-<epoch>"). The
@@ -161,126 +157,19 @@ FREE_RETRY_SLEEP=5
 # looks slots up by name, so a rename must be mirrored there or the renamed
 # slot silently falls back to DHCP. What must NOT change casually are the
 # labels, which workflows select on.
-# Templates live on cipool (the 4 TB NVMe), not the root mirror: clone disks
-# are the write-heavy, disposable part of the workload and the mirror collapses
-# under concurrency (see docs/skills/proxmox-runner-pool.md, storage layout).
-# 928 = Linux, 911 = Windows, both 16 GB / 6 vCPU — resized 2026-08 after the
-# oversubscription flake wave (5 slots × 12 vCPU on a 20-thread host bred
-# timing flakes across nine suites; 5 × 6 keeps worst-case load ~1.5×). The
-# guest-wide freezes behind most of that wave turned out to be storage-side
-# sync-write queueing, which relax_clone_sync below removes at the source.
-# Current templates: 928 (Linux), 911 (Windows).
 #
-# 928 is a full clone of 927 that bakes the coverage job's annotation tool:
-# python3-pip is installed, diff-cover==10.5.1 is pre-installed for the ci
-# user (the same pin the uncovered-diff-lines action installs per run, so on
-# a pool clone that command becomes an offline "already satisfied" no-op),
-# and the runner's .env gains PIP_BREAK_SYSTEM_PACKAGES=1. That variable is
-# load-bearing: Ubuntu 24.04's apt-installed pip enforces PEP 668
-# (externally-managed-environment) and fails a plain `pip install --user`
-# even when the requirement is already satisfied, so without it the baked
-# package would sit unused while the annotations go unposted. 927 is
-# retained for rollback until 928's clones are proven.
+# A template lives on cipool (the 4 TB NVMe), not the root mirror: its clones
+# inherit its storage, clone disks are the write-heavy, disposable part of the
+# workload, and the mirror collapses under concurrency. It carries firewall=1
+# on its NIC, which its clones inherit and which the per-clone policy of
+# write_clone_firewall needs to take effect. What else a template carries,
+# and how one is rebuilt and rolled forward, is in
+# docs/skills/proxmox-runner-pool.md § What This Is and § Operational Notes.
 #
-# 927 is a full clone of 926 with the guest's unattended upgrades removed:
-# `unattended-upgrades` and `needrestart` are purged and the `apt-daily` /
-# `apt-daily-upgrade` timers and services are masked. 926 shipped stock Ubuntu
-# defaults there, and `apt-daily-upgrade.timer` is `Persistent=true` with a
-# 60-minute random delay, so every fresh clone ran unattended-upgrades within
-# an hour of boot. Once the archive carried a newer libssl than the template
-# (the runner process maps libssl and libcrypto), needrestart's apt hook —
-# which Ubuntu runs in automatic-restart mode — restarted `gha-runner.service`
-# underneath whatever it was doing. A busy runner meant a killed job ("The
-# runner has received a shutdown signal"); an idle one meant a deregistered
-# runner in a VM that stayed up, which the health check reclaimed as wedged
-# ten probes later. An ephemeral clone gains nothing from patching itself:
-# it is destroyed after one job, so updates belong in the template. 927 took
-# the pending updates once, at build time, before the purge. 927 also carries
-# the in-repo tools/ci/runner-guest/one-job.sh (926's copy predated the
-# 30-minute no-config deadline) and a refreshed coverage warmup.
-#
-# 911 was cloned from the previous Windows template 910 (full clone) with the
-# current tools/ci/runner-guest/one-job.ps1 copied in — the version that empties
-# the job account's %TEMP% at logon, so a clone no longer inherits the warm-up
-# BDD debris (live rp session registries among it) that a job could restore
-# from a colliding temp path. The only on-disk differences from 910 are that
-# updated script and an emptied %TEMP%, so 911 is functionally identical to 910
-# for build/test. 910 is retained only for rollback, until 911's clones are
-# proven and 910's own clones have all recycled.
-#
-# 926 gives every clone a unique hostname and closes an ownership hole the
-# SDK installers had left. It descends from 920 through five intermediate
-# captures (921-925) that were superseded before deployment and have
-# since been destroyed; 920 remains, and is the rollback.
-#
-# The hostname half: a hostname is a DHCP identity (option 12), not just a
-# label, and 920's clones all came up as `ci-bench` — pinned by the cloud-init
-# user snippet, not by the image — so three concurrent Linux slots presented
-# one identity to the router and collided on a lease. Enlarging the subnet
-# cannot fix that, because the collision is in identity space rather than
-# address space. 926 carries an `rp-hostname.service` running
-# `rp-set-hostname`, which derives `runner-<last 6 of the NIC MAC>` from the
-# address Proxmox regenerates per clone. It is ordered ahead of
-# systemd-networkd, since a unit that runs after it is too late: the first
-# DHCP request already carried the template's name, and that is the request
-# that takes the lease. Its cloud-init snippet is a copy carrying
-# `preserve_hostname: true` rather than a pinned name, so cloud-init no longer
-# stamps the template's hostname back over it; the copy leaves 920's snippet
-# untouched so 920 stays a clean rollback.
-#
-# The ownership half: the QHY SDK installer had left /etc, /usr, /usr/sbin,
-# /usr/lib, /usr/share and their udev and firmware subdirectories owned by
-# `ci` at mode 775, and every template through 921 inherited it — 920 among
-# them, so the hazard is live until this roll lands. Directory
-# write permission governs unlink and create regardless of who owns the files
-# inside, so the unprivileged job account could swap out binaries under
-# /usr/sbin, libraries under /usr/lib, and udev rules that root executes: a
-# local escalation to root inside the clone. All are root:root 755 in 926.
-#
-# /usr/local needs the same care for a subtler reason, and blanket-excluding
-# it as "the SDK's tree" is wrong: rp-set-hostname lives in /usr/local/sbin
-# and systemd executes it as root at early boot. Its own file and directory
-# were already root-owned, but /usr/local itself was ci-writable — and write
-# permission on the parent is what governs renaming `sbin` and substituting a
-# directory, so the file's ownership did not protect it. /usr/local,
-# /usr/local/sbin and /usr/local/bin are therefore root:root 755 in 926. The
-# SDK's own subtrees below them (include, lib, testapp, udev, fx3load, doc,
-# riffa_linux_driver, cmake_modules) stay ci-owned, so jobs that write there
-# are unaffected.
-#
-# /tmp and /var/tmp are empty at capture. That buys no correctness on its own,
-# because tmpfiles.d ships `D /tmp` and systemd-tmpfiles empties /tmp on every
-# boot regardless; it saves each clone the I/O of clearing a populated
-# directory during boot. /var/tmp gets no such treatment — its tmpfiles line
-# is commented out — so anything left there would persist for the life of the
-# template.
-#
-# 920 is the Linux half of the earlier 920/910 generation,
-# which were byte-identical rebuilds of 919/909 with RP_LAN_CACHE_URL repointed
-# after the runner VLAN's renumbering to a /16 (the cache endpoint moved with
-# it; the address itself is deliberately not recorded in this public repo).
-# 911 inherits that repoint from 910 unchanged. 920 also carries the one-time
-# `bazel coverage //...` warmup
-# introduced in 918, so its Bazel output base already holds the nightly
-# toolchain + instrumented externals — that keeps the pooled `bazel coverage`
-# leg zero-WAN instead of re-fetching the nightly toolchain on every ephemeral
-# clone. (Earlier lineage: 919/909 repointed RP_LAN_CACHE_URL at the NAS-hosted cache
-# on the 25GbE fabric; 918 added the coverage warmup; 917 replaced the first
-# cipool Linux template 907, which shipped a populated /etc/machine-id and so
-# handed every clone the same DHCP identity and IP; all are built with
-# machine-id wiped.)
-# Both templates carry firewall=1 on their NIC, so clones inherit it and the
-# per-clone policy written in slot_loop takes effect (clone-to-clone isolation).
-#
-# Two Windows slots share template 911: GitHub dispatches a Windows pool job to
-# whichever clone is free, so a second slot removes the cross-branch queue that
-# a single Windows runner created. The shared-autologon-credential concern this
-# raised (both clones hold the same local admin password) is mitigated by the
-# NIC isolation below — a compromised clone cannot reach a peer's SMB/RDP/WinRM.
 # The slot table is host-local for the same reason the PAT and the pinned
 # addresses are: it is deployment state, not code. Which templates a
 # hypervisor carries, and which VMIDs it may destroy, differ per host — and
-# the pool now runs on more than one. Baking the table into this script would
+# the pool runs on more than one. Baking the table into this script would
 # mean a hand-edited fork of a tested, shellcheck-gated file on every
 # hypervisor, each drifting from what the repository says runs. One line per
 # slot, fields separated by '|' (surrounding whitespace is trimmed, so the
@@ -549,15 +438,16 @@ inject_jitconfig() {
   esac
 }
 
-# Per-clone network isolation. Every pool clone talks only to GitHub and the
-# LAN cache (both off-subnet, reached through the gateway) and never to a peer,
-# so the firewall drops all inbound and permits all outbound. `dhcp: 1` keeps
-# the clone's own lease working; established/related return traffic (the cache,
-# GitHub) is allowed automatically. The template NIC carries firewall=1 so the
-# clone inherits it — this file supplies the policy. It matters most for the
-# two Windows slots, which share one local-admin password: without it a
-# compromised clone could reach a peer's SMB/RDP/WinRM (ICMP echo is still
-# permitted by the Proxmox default and carries no such risk).
+# Per-clone network isolation. Every pool clone talks only to GitHub
+# (off-subnet, through the gateway) and the LAN cache (on-subnet, switched at
+# L2) and never to a peer, so the firewall drops all inbound and permits all
+# outbound. `dhcp: 1` keeps the clone's own lease working; established/related
+# return traffic (the cache, GitHub) is allowed automatically. The template NIC
+# carries firewall=1 so the clone inherits it — this file supplies the policy.
+# It matters most for the Windows slots, which share their template's
+# local-admin password: without it a compromised clone could reach a peer's
+# SMB/RDP/WinRM (ICMP echo is still permitted by the Proxmox default and
+# carries no such risk).
 FW_DIR=/etc/pve/firewall
 write_clone_firewall() {
   local f="$FW_DIR/$1.fw" rc
@@ -755,7 +645,7 @@ apply_static_net() {
 }
 
 # Filter: the storage tokens named by volume lines of a qm config dump on
-# stdin (a disk line reads "scsi0: cipool:base-920-disk-0/vm-9100-disk-0,..."
+# stdin (a disk line reads "scsi0: cipool:base-8200-disk-0/vm-8300-disk-0,..."
 # and names storage `cipool`).
 #
 # Deliberately NOT a device-key allowlist (scsi/ide/efidisk/...): for a
@@ -825,7 +715,7 @@ volume_ids() {
 # this VMID's own name (`vm-<vmid>-*`, the same guard destroy_clone's leak
 # sweep applies): volume_ids keys on line shape, not on a device-key
 # allowlist, so a free-text value that happens to look like a volid
-# ("description: cipool:base-920-disk-0") resolves like one — and unlike
+# ("description: cipool:base-8200-disk-0") resolves like one — and unlike
 # the destroy gate, where an unrecognised line failing *closed* is the safe
 # direction, here acting on it would relax a dataset that is not this
 # clone's, the template's included. The guard makes that impossible
@@ -879,9 +769,9 @@ relax_clone_sync() {
 # the VM's volumes — possibly none: a readable config that references no
 # volumes cannot leak anything and MUST pass, or a clone killed inside `qm
 # clone`'s config-first window (the temp config exists, no disks yet) would
-# defer forever and park its slot on a state the pre-gate script recovered
-# from. On exit 1 stdout carries the refusal reason instead; the caller logs
-# it. Reasons are specific because they need different operator responses:
+# defer forever and park its slot on a state a plain `qm destroy` clears. On
+# exit 1 stdout carries the refusal reason instead; the caller logs it.
+# Reasons are specific because they need different operator responses:
 # "cannot import" is a storage problem, "timed out" may be a faulted vdev
 # with a D-state import, "storage.cfg unreadable" is pmxcfs down.
 #
@@ -1030,7 +920,7 @@ free_leaked_volume() {
       # SIGPIPE writing the next row, and under `set -o pipefail` the pipeline
       # then reports 141 — which the enclosing `!` would read as "not found"
       # and turn a present volume into a confirmed removal. That is precisely
-      # the false success this function was written to eliminate, so it must
+      # the false success this function exists to eliminate, so it must
       # not be reintroduced by the check itself. awk consumes all input and
       # decides in one process, leaving nothing for a signal to distort.
       #
@@ -1251,8 +1141,9 @@ destroy_clone_holding_id() {
     # happened. Without this the loop is unbounded on a VM that no longer
     # exists: a `qm destroy` that removed the config and still exited non-zero
     # leaves exactly that state, needing nobody's help to reach it, and the
-    # slot would never rebuild. Same shape as the firewall-cleanup status this
-    # helper was already losing slots to, in the other direction.
+    # slot would never rebuild. Same shape as the unbounded retry a failed
+    # firewall cleanup would cause (see the end of destroy_clone), in the other
+    # direction.
     #
     # `vm_config_state` rather than `qm status`, for the reason this script
     # gives everywhere else: a transient qm failure must not read as "gone".
@@ -1282,8 +1173,8 @@ destroy_clone_holding_id() {
 # slot loop only ever clones, fails, sleeps, and clones again. Volumes get
 # stranded there by an interrupted teardown (the config is destroyed before the
 # leaked volume is freed), by a sweep that could not list its storage, and by
-# leaks from outside the gated teardown entirely -- a pre-gate deployment, or
-# `qm clone`'s own rollback on a half-imported pool.
+# leaks from outside the gated teardown entirely -- a `qm` run outside this
+# script, or `qm clone`'s own rollback on a half-imported pool.
 #
 # This frees storage, so what licenses it matters more than what triggers it.
 # Three conditions must all hold, and each closes a way of being wrong:
@@ -1501,12 +1392,11 @@ slot_loop() {
     if ! qm status "$vmid" >/dev/null 2>&1; then
       # 2>&1 >/dev/null: capture stderr (errors, and the task-warning
       # trailer a warnings-only clone emits), drop stdout (worker progress
-      # lines). Named logging matters here — before it, a failing clone
-      # spoke only through qm's anonymous stderr, and attributing the
-      # boot-race wedge to a slot meant grepping raw journal lines. A clone
-      # that succeeds with warnings used to reach the journal through that
-      # same passthrough, so re-emit what was captured instead of swallowing
-      # it on the success path.
+      # lines). Named logging matters here: it ties a failing clone (the
+      # boot-race wedge is one cause) to its slot, which qm's own stderr,
+      # reaching the journal unattributed, does not. The capture would
+      # swallow the warnings of a clone that succeeds, so the success path
+      # re-emits what was captured.
       if ! cerr=$(qm clone "$template" "$vmid" --name "$name" 2>&1 >/dev/null); then
         log "$name" "clone of template $template to $vmid failed: ${cerr//$'\n'/'; '}"
         # The commonest reason a clone of a pool VMID fails is a volume of its
@@ -1546,10 +1436,10 @@ slot_loop() {
       fi
       # Pin this slot's network identity before first boot, when the host
       # configures one (see STATIC_NET_FILE). Non-fatal for the same reason
-      # the sync relax is: a clone on DHCP serves jobs exactly as the pool
-      # always did, so a pin that does not land is reported and the clone
+      # the sync relax is: a clone on DHCP serves jobs exactly as an unpinned
+      # slot does, so a pin that does not land is reported and the clone
       # boots rather than being destroyed. Reported loudly, though — a
-      # silent DHCP fallback would resurrect the address-churn alerts the
+      # silent DHCP fallback would bring on the address-churn alerts the
       # pin exists to end, while the host's config claims otherwise.
       perr=$(apply_static_net "$name" "$vmid" "$os")
       case $? in
@@ -1706,8 +1596,8 @@ slot_loop() {
     # The GitHub runner id of whatever clone occupies this slot — the one just
     # injected above, or one inherited from before a restart of this service.
     # An empty marker (one written by an older version of this script) simply
-    # means no health check for that clone; the wait then behaves as it did
-    # before, which is the right way to degrade.
+    # means no health check for that clone; the wait then watches `qm status`
+    # alone, which is the right way to degrade.
     runner_id=$(read_marker "$STATE_DIR/$vmid.injected")
     # Complete is not the same as usable. read_marker proves the record was
     # finished being written, not that it is an id, and a corrupt-but-
@@ -1834,7 +1724,7 @@ slot_loop() {
     # spins — status reads `stopped`, the wait falls straight through, and this
     # teardown defers again, with nothing anywhere pausing between attempts.
     # That is the storage-hammering the backoff exists to prevent, arriving by
-    # the one path that had no backoff of its own.
+    # a path the reconcile's backoff never reaches.
     # Hold the id across deferrals whenever there is one. destroy_clone
     # consumes the marker and spends its single deregistration attempt on the
     # first call, so a deferral leaves a later reconcile with a marker-less VM

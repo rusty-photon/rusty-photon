@@ -1,4 +1,4 @@
-// The remote cache as this job's venue reaches it (ADR-020): the LAN
+// The remote cache as this job's venue reaches it: the LAN
 // bazel-remote on the pool, over gRPC while its Remote Asset API is on, and
 // the cloud cache on a hosted runner. `configure` writes the Bazel flags for
 // it as the `ci-remote` config, in a file .bazelrc imports, and every Bazel
@@ -9,8 +9,7 @@
 // --remote_header there would be printed in every push-to-main step. Bazel
 // asks a credential helper for it instead (helper.mjs). Bazel runs the helper
 // in each Bazel step with that step's environment, where the workflows' env
-// blocks put the credential on trusted events only. Plan item J10 in
-// docs/plans/archive/ci-shell-to-code.md.
+// blocks put the credential on trusted events only.
 
 import { chmod, writeFile } from 'node:fs/promises';
 import path from 'node:path';

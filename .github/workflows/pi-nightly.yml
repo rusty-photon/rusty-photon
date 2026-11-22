@@ -1,10 +1,12 @@
 # Nightly verification on a Raspberry Pi 5 self-hosted runner (Linux/ARM64).
 #
-# Coverage rationale: the workflows in this directory all target x86_64
-# GitHub-hosted runners (ubuntu/macos/windows). The Pi 5 is ARM64, so this
-# nightly catches arch-specific regressions (atomics, alignment, vendored C
-# deps such as cfitsio) that scheduled.yml cannot. See
-# docs/skills/raspberry-pi-runner.md for runner setup and security posture.
+# Coverage rationale: the Pi 5 is the one runner that builds and tests the
+# whole workspace on Linux ARM64. The hosted Linux suites (scheduled.yml,
+# test.yml) run on x86_64, and the hosted ARM64 jobs install tools or build
+# packages without running the suites, so this nightly catches arch-specific
+# regressions (atomics, alignment, vendored C deps such as cfitsio) that they
+# cannot. See docs/skills/raspberry-pi-runner.md for runner setup and
+# security posture.
 #
 # === Security model — DO NOT WEAKEN ===
 #
@@ -99,8 +101,8 @@ jobs:
       # docs/skills/raspberry-pi-runner.md), so it cannot system-install the SDK
       # into /usr/local. `install: env` extracts the SDK under the workspace and
       # exports QHYCCD_SDK_DIR; libqhyccd-sys's build.rs reads that var to find
-      # libqhyccd.a (linked statically). This makes the runner self-healing: a
-      # new native-SDK service or version bump no longer requires re-running
+      # libqhyccd.a (linked statically). This keeps the runner self-healing: a
+      # new native-SDK service or version bump needs no re-run of
       # setup-pi-runner.sh by hand. Keep the version in lockstep with the x86
       # jobs (scheduled.yml / native.yml / bazel*.yml all pin 26.06.04).
       - name: Install QHYCCD SDK (sudo-free)
@@ -167,7 +169,9 @@ jobs:
       - name: cargo test --test bdd
         run: cargo test --locked --all-features --test bdd -- --concurrency 8
 
-      # https://github.com/rust-lang/cargo/issues/6669
+      # Doc tests need a step of their own: nextest does not run them, and
+      # neither does `cargo test --all-targets`
+      # (https://github.com/rust-lang/cargo/issues/6669).
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
 

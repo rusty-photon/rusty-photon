@@ -75,7 +75,8 @@ const ARCHIVES = {
 
 // The formats each OS's assets come in, so each leg unpacks what it meets:
 // Linux, OmniSim's .tar.xz, Pebble's .tar.gz and ASTAP's .zip; macOS, zips
-// and .tar.gz; Windows, zips and .tar.gz.
+// and .tar.gz, and a .tar.xz besides, which its bsdtar reads too; Windows,
+// zips and .tar.gz.
 const FORMATS = {
   linux: ['.tar.gz', '.tar.xz', '.zip'],
   darwin: ['.tar.gz', '.tar.xz', '.zip'],
@@ -245,8 +246,9 @@ async function rawServer(answer) {
 }
 
 test('get hands over a body whole when the server closed before it was read', async () => {
-  // The case that crashes Node 24's fetch (nodejs/undici#5360): a body of a
-  // full stream buffer, 64 KiB, paused unread when the server's FIN comes.
+  // The case that crashes Node 24's fetch (undici issue 5360,
+  // https://github.com/nodejs/undici/issues/5360): a body of a full stream
+  // buffer, 64 KiB, paused unread when the server's FIN comes.
   const body = Buffer.alloc(64 * 1024, 0x61);
   const server = await rawServer(
     Buffer.concat([Buffer.from(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`), body]),

@@ -15,24 +15,28 @@
 #   mock for the FFI under `#[cfg(test)]`, so `cargo test` would exercise the mock.
 #
 # - **zwo-camera / zwo-focuser / zwo-rs / libzwo-sys** and **svbony-camera /
-#   svbony-rs / libsvbony-sys** take the opposite approach: the rest of CI
-#   (test/conformu/safety) builds the `simulation` path with
-#   ZWO_SKIP_NATIVE_LINK=1 / SVBONY_SKIP_NATIVE_LINK=1 and never links the SDK
-#   at all. So this is the ONLY job that links + loads the real ZWO/SVBony
-#   SDKs, and it adds runtime smokes for each (zwo: Linux; svbony: Linux +
-#   Windows). svbony-camera's Windows SDK comes from the private CI mirror
-#   (install-svbony-sdk's Windows step, ADR-018 §7 — the vendor download is
-#   captcha-gated), which hard-requires the PRIVATE_MIRROR_TOKEN secret:
-#   this workflow never runs on PR events, so the secret is always present
+#   svbony-rs / libsvbony-sys**: the rest of the Cargo CI builds them with
+#   `--all-features`, the `simulation` path — test.yml and safety.yml with
+#   ZWO_SKIP_NATIVE_LINK=1 / SVBONY_SKIP_NATIVE_LINK=1, so with no SDK at all,
+#   and conformu.yml, scheduled.yml and the Pi nightly with the real SDK
+#   linked but the FFI code compiled out. So among the Cargo workflows this
+#   is the ONLY job that builds their real FFI paths and loads the SDKs, with
+#   runtime smokes for each (zwo: Linux; svbony: Linux + Windows).
+#   svbony-camera's Windows SDK comes from the private CI mirror
+#   (install-svbony-sdk's Windows step; docs/services/svbony-camera.md
+#   § Windows — the vendor download is captcha-gated), which hard-requires
+#   the PRIVATE_MIRROR_TOKEN secret: this workflow never runs on PR events,
+#   so the secret is always present
 #   here, and a fork without it fails loudly rather than silently skipping
 #   the real link. svbony's macOS coverage is x86_64-only (indi-3rdparty
 #   ships no `mac_arm64` blob; `macos-latest` is Apple Silicon today) — the
 #   steps below are conditioned accordingly.
 #
-# (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves; the Pi
-# nightly covers linux-arm64 for qhy/zwo. svbony-camera's Bazel real binary
-# stays `tags = ["manual"]` — see services/svbony-camera/BUILD.bazel — so this
-# workflow is, for now, the only place its real SDK link is exercised at all.)
+# (Bazel's real qhyccd-rs/zwo-rs variants build-enforce the lib halves, and
+# the Pi nightly links all three SDKs on linux-arm64. svbony-camera's real
+# Bazel binary is `tags = ["manual"]` — see services/svbony-camera/BUILD.bazel
+# — so this workflow is the only place its real FFI path is compiled and
+# linked.)
 #
 # Cadence: nightly cron + workflow_dispatch, plus a paths-filtered push to main so a
 # real-link regression in either service's native code, this workflow, or an

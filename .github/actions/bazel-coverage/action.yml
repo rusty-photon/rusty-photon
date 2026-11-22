@@ -6,8 +6,7 @@ description: >-
   that Bazel writes the logs of the tests still running before the job's
   60-minute timeout. Any ending but a pass fails the step, with an annotation
   that names it from Bazel's exit code. A passing run's combined lcov report
-  is the `report` output. The logic is coverage.mjs's (S1 in
-  docs/plans/archive/ci-shell-to-code.md).
+  is the `report` output. The logic is coverage.mjs's.
 outputs:
   report:
     description: The combined lcov report's path, under Bazel's output path.

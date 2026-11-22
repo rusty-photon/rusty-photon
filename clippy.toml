@@ -1,6 +1,7 @@
 # Test code is allowed to panic where the panic is the point: a failed `Given`
 # means the fixture is broken, and failing fast with a clear message beats
-# threading a `Result` through the assertion (docs/skills/testing.md, rule 7).
+# threading a `Result` through the assertion (docs/skills/testing.md § 3.3
+# and § 6.2).
 #
 # These four switch the corresponding lints off *in test scope only* --
 # production code in the same file still gets the full deny. That is what makes
@@ -15,6 +16,12 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 
+# Product names that are neither Rust identifiers nor all-caps acronyms, so
+# `doc_markdown` would otherwise demand backticks around them in prose. The
+# trailing `..` extends clippy's built-in list rather than replacing it.
+# Vendor spelling is the test for entry here: Pegasus Astro writes "UPBv2".
+doc-valid-idents = ["UPBv2", ".."]
+
 # polar-align's `Vec3` (services/polar-align/src/math.rs) is three `f64`
 # fields; its `Add`/`Sub` impls are componentwise float arithmetic, which
 # cannot panic or wrap -- the same property that makes clippy exempt float
@@ -28,18 +35,13 @@ allow-indexing-slicing-in-tests = true
 # `math` module defines a `Vec3` with operators would inherit this; today
 # exactly one does. `[["*", "*"]]` can never match (the glob arm compares the
 # other side literally), so a wildcard row is not a usable escape hatch.
+#
 # pa-falcon-rotator's degree newtypes (services/pa-falcon-rotator/src/
 # units.rs) get the same treatment for the same reason: each impl is a
 # single-`f64` operation (`self.0 <op> rhs.0`), which cannot panic or wrap.
 # Only the three frame-conversion pairs the driver actually defines are
 # blessed — `mech + offset = sky`, `sky - offset = mech`, `sky - mech =
 # offset`; any future mixed-type operator still fires until reviewed here.
-# Product names that are neither Rust identifiers nor all-caps acronyms, so
-# `doc_markdown` would otherwise demand backticks around them in prose. The
-# trailing `..` extends clippy's built-in list rather than replacing it.
-# Vendor spelling is the test for entry here: Pegasus Astro writes "UPBv2".
-doc-valid-idents = ["UPBv2", ".."]
-
 arithmetic-side-effects-allowed-binary = [
     ["math::Vec3", "math::Vec3"],
     ["units::MechanicalDegrees", "units::SyncOffset"],

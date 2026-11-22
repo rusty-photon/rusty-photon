@@ -3,9 +3,9 @@
 #
 # The scripts themselves are not built by Bazel — they are deployed to the
 # hypervisor by hand and run there under systemd, so there is nothing to
-# compile. What Bazel provides is the thing they were missing: a place for
-# their tests to run on every change, in `bazel test //...`, rather than in an
-# operator's scratch directory.
+# compile. What Bazel provides is a place for their tests to run on every
+# change, in `bazel test //...`, rather than in an operator's scratch
+# directory.
 #
 # Each harness takes the script under test as its one argument, so nothing
 # hard-codes a path and `$(location)` keeps them working under the sandbox.

@@ -1,13 +1,6 @@
 # Bazel configuration for rusty-photon.
-# See docs/plans/archive/bazel-migration.md for migration status and rationale.
 
 # --- Core behavior ---------------------------------------------------------
-
-# bzlmod is mandatory in Bazel 9 — all WORKSPACE support was removed from the
-# binary (#26131) and --enable_bzlmod / --enable_workspace are now no-ops. We
-# therefore set no flag: there is no MODULE-vs-WORKSPACE choice to make, and no
-# WORKSPACE file exists in this repo. (Pre-9 these lines read
-# `common --enable_bzlmod` / `common --noenable_workspace`; dropped on the 9 bump.)
 
 # Enable platform-specific rc sections (for example `build:windows`) when
 # present. This does not itself change stdout/stderr encoding.
@@ -32,20 +25,19 @@ test --keep_going
 # CONFORMU_PATH is set. Both are excluded by default; run conformu with
 # `bazel test --config=conformu`, or `--test_tag_filters=''` for everything.
 #
-# `bdd` suites run BY DEFAULT since 2026-07-06: Bazel caches test results, so
-# after the first run only suites your change actually affects re-execute —
-# and BDD failures must surface locally, not first on CI. The CI workflows are
-# unaffected: bazel.yml's fast step and the coverage job pass their own
-# explicit --test_tag_filters (BDD stays a separate CI step for failure
-# attribution). Locally, the OmniSim-backed suites need OMNISIM_PATH or
-# OMNISIM_DIR set (see the forwards just below).
+# `bdd` suites run BY DEFAULT: Bazel caches test results, so after the first
+# run only suites your change actually affects re-execute — and BDD failures
+# must surface locally, not first on CI. CI sets its own: bazel.yml's fast
+# step and the coverage job pass explicit --test_tag_filters, and BDD is a
+# separate CI step for failure attribution. Locally, the OmniSim-backed suites
+# need OMNISIM_PATH or OMNISIM_DIR set (see the forwards just below).
 test --test_tag_filters=-requires-cargo,-conformu
 
 # Forward the OmniSim locators into local test sandboxes by name
 # (bdd_infra::rp_harness::OmniSimHandle::start reads OMNISIM_PATH, then
-# OMNISIM_DIR). CI forwards OMNISIM_PATH via `build:ci` below (kept there so
-# the ci flag SET stays what it was); these default-scope forwards are what
-# make the OmniSim BDD suites work in a plain local `bazel test //...`.
+# OMNISIM_DIR). CI forwards OMNISIM_PATH via `build:ci` below, for the reason
+# given there; these default-scope forwards are what make the OmniSim BDD
+# suites work in a plain local `bazel test //...`.
 test --test_env=OMNISIM_PATH
 test --test_env=OMNISIM_DIR
 
@@ -78,7 +70,7 @@ test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 # 3 unsharded suites calibrator-flats, focus-model and
 # operation-watchdog-e2e = 35); it exists only as a throttle to grab if
 # OmniSim concurrency ever turns flaky (e.g. `test:windows
-# --local_resources=omnisim=1` would re-serialize one platform —
+# --local_resources=omnisim=1` would serialize one platform —
 # --enable_platform_specific_config appends platform lines after this one,
 # so they win).
 #
@@ -94,9 +86,9 @@ test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 # this signature; nor is a failure in a step that filters `-bdd`, where no
 # OmniSim runs at all. Profile-store isolation is
 # the fork's OMNISIM_SETTINGS_DIR (release v0.5.0-467.2), which works on
-# every platform — XDG_CONFIG_HOME did not: .NET ignores it on macOS, and
-# the resulting shared store leaked session-runner's persisted telescope
-# site into rp's shards on macOS CI. The pool MUST be defined or every
+# every platform — XDG_CONFIG_HOME does not: .NET ignores it on macOS, where
+# the store it leaves shared leaks session-runner's persisted telescope site
+# into rp's shards. The pool MUST be defined or every
 # action carrying the tag fails loudly with "Resource omnisim is not being
 # tracked by the resource manager" — and since Bazel 9.2.0 that includes the
 # suites' COMPILE actions, which execute under plain `bazel build`, not just
@@ -141,7 +133,8 @@ build --@rules_rust//rust/settings:per_crate_rustc_flag=external/@-Copt-level=1
 # carries a `#[cfg(debug_assertions)]` `AtomicUsize`, so tokio's sockets are
 # interior-mutable under Cargo and plain under Bazel, and clippy's
 # `must_use_candidate` — which skips a function taking an interior-mutable
-# argument — fired under Bazel on nineteen methods Cargo's clippy passes.
+# argument — fires on nineteen methods when run over that Bazel build, all of
+# which Cargo's clippy passes.
 build --@rules_rust//rust/settings:per_crate_rustc_flag=external/@-Cdebug-assertions=on
 
 # Both lines apply in every compilation mode: .bazelrc cannot condition a
@@ -165,7 +158,7 @@ build:linux --@rules_rust//rust/settings:extra_rustc_flag=-Clink-arg=-fuse-ld=ll
 
 # Forward GITHUB_WORKSPACE to build actions on macOS/Windows so qhy-camera's
 # `libqhyccd-sys` build.rs can locate the QHYCCD SDK that the
-# `ivonnyssen/qhyccd-sdk-install@v3` action extracts INTO the workspace there
+# `ivonnyssen/qhyccd-sdk-install@v4` action extracts INTO the workspace there
 # (`$GITHUB_WORKSPACE/sdk_mac_arm_*/usr/local/lib` on macOS,
 # `$GITHUB_WORKSPACE/sdk_win64_*` on Windows). With `--incompatible_strict_action_env`
 # the var is otherwise stripped from action envs. NOT needed on Linux — the SDK
@@ -207,7 +200,7 @@ build:windows --action_env=AWS_LC_SYS_CFLAGS=/we4013
 # entropy source and perfectly safe.
 build:windows --action_env=AWS_LC_SYS_NO_JITTER_ENTROPY=1
 
-# Bazel 8 enables runfiles by default on Linux and macOS but not on
+# Bazel enables runfiles by default on Linux and macOS but not on
 # Windows. BDD cucumber tests rely on a real runfiles directory tree
 # (bdd_main! chdirs to BDD_PACKAGE_DIR which is relative to the runfiles
 # root). Enable runfiles so the source-tree layout is materialised.
@@ -247,8 +240,7 @@ build:windows --test_env=PSModuleAnalysisCachePath
 # untouched — Linux finds libclang and the SDK (ldconfig'd /usr/local/lib) on
 # default paths with no env. macOS needs LIBCLANG_PATH for bindgen (Homebrew llvm
 # is off the default search path); Windows needs ZWO_SDK_LIB_DIR for the
-# import-lib link search. (Windows test-runtime DLL discovery is validated on the
-# first shadow CI run — see services/zwo-camera/BUILD.bazel.)
+# import-lib link search.
 build:macos --action_env=LIBCLANG_PATH
 build:windows --action_env=ZWO_SDK_LIB_DIR
 
@@ -308,10 +300,9 @@ build:ci --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings
 # step, so a disk cache contributes zero hits. It isn't free either: combined
 # with the HTTP cache it routes every remote hit through the combined-cache
 # write path, a suspect in the macOS bazel-build stall where every in-flight
-# cache download freezes at once with no output (see
-# tools/ci/bazel-build-watchdog.sh). The empty value disables the global
-# --disk_cache above for every --config=ci invocation (bazel.yml,
-# bazel-coverage.yml).
+# cache download freezes at once with no output (the macOS wedge below). The
+# empty value disables the global --disk_cache above for every --config=ci
+# invocation (bazel.yml, bazel-coverage.yml).
 build:ci --disk_cache=
 
 # A stale MODULE.bazel.lock is an error in CI, not a silent re-resolve.
@@ -344,11 +335,8 @@ build:ci --disk_cache=
 common:ci --lockfile_mode=error
 
 # Windows keeps every remote-cache-hit output on disk (`all`), where Linux
-# downloads `toplevel` (above) and macOS `minimal` (below). It went in as a
-# diagnostic for a ppba-driver E0463 "can't find crate", on the theory that
-# lazily fetched intermediate rlibs were unreliable on Windows. That theory was
-# ruled out: the E0463 was the duplicate `digest` chain behind the rust-embed
-# hold (docs/workspace.md). The setting stays for two measured reasons.
+# downloads `toplevel` (above) and macOS `minimal` (below), for two measured
+# reasons.
 #
 # It is load-bearing for the Windows doc tests. Under `toplevel` or `minimal`,
 # //crates/rusty-photon-camera-core:rusty-photon-camera-core_doc_test fails to
@@ -384,8 +372,9 @@ build:macos --remote_download_outputs=minimal
 # `minimal` alone does not stop the tail: runfiles-tree creation is a local
 # action, and with --build_runfile_links (the default) every executable
 # target's tree is built at build time, forcing a download of every test and
-# service binary anyway (bazelbuild/bazel#18580, open as of Bazel 9.2 — the
-# fix that would make these flags orthogonal has not landed). Deferring tree
+# service binary anyway (Bazel issue 18580, open as of Bazel 9.2, whose fix
+# would make these flags orthogonal:
+# https://github.com/bazelbuild/bazel/issues/18580). Deferring tree
 # creation moves it to just before something actually executes the target:
 # in CI that means the test steps, only for suites whose results aren't
 # already cached, a few at a time.
@@ -405,15 +394,17 @@ build:ci --experimental_ui_max_stdouterr_bytes=10485760
 test:ci --test_output=errors
 test:ci --test_summary=terse
 
-# The qhyccd-rs real/sim doc-test pair races on Windows (issue #781): both
-# targets carry `libqhyccd-sys/build_script.linksearchpaths` in their
-# runfiles, and when the two execute concurrently on a Windows runner,
-# rules_rust's process_wrapper intermittently finds one tree's copy as a
-# dangling symlink ("Access is denied (os error 5)", file=false
-# symlink=true len=0) — exactly one of the pair fails per affected run.
-# A Bazel retry re-executes the failed test after its sibling has already
-# finished, so the race window is gone on the second attempt; scoping the
-# retry to this pair keeps every other test's failure loud on attempt one.
+# The qhyccd-rs real/sim doc-test pair races on Windows without the doc-test
+# runner's manifest resolution (MODULE.bazel, patch 3): both targets carry
+# `libqhyccd-sys/build_script.linksearchpaths` in their runfiles, and when the
+# two execute concurrently on a Windows runner, rules_rust's process_wrapper
+# intermittently finds one tree's copy as a dangling symlink ("Access is
+# denied (os error 5)", file=false symlink=true len=0) — exactly one of the
+# pair fails per affected run. This retry is the backstop for a path the
+# manifest does not resolve: it re-executes the failed test after its sibling
+# has already finished, so the race window is gone on the second attempt;
+# scoping the retry to this pair keeps every other test's failure loud on
+# attempt one.
 test:ci --flaky_test_attempts=//crates/qhyccd-rs.*doc_test@3
 
 # Tests draw from the same CPU pool as any local action (each test reserves
@@ -425,17 +416,17 @@ test:ci --flaky_test_attempts=//crates/qhyccd-rs.*doc_test@3
 # HOST_CPUS-wide tail (observed: 313-378s critical path on ubuntu, ~34 test
 # executions with rp:bdd/session-runner:bdd 8-way sharded). But the opposite
 # extreme — a fixed --local_test_jobs=8 against the 3-core macOS / 4-core
-# Linux+Windows hosted runners — oversubscribed the box ~2x and traded the
+# Linux+Windows hosted runners — oversubscribes the box ~2x and trades the
 # tail for timeout flakes in the suites that do burn CPU. Split the difference
 # at cores+1: one suite's worth of overcommit keeps the runner busy through
 # I/O waits without starving the CPU-bound suites. Bazel's resource
 # expressions offer only `-` and `*` (no `+`) and Math.round the result, so
-# *1.25 encodes cores+1 exactly across the 3-4-core runner fleet
-# (3 -> 3.75 -> 4, 4 -> 5); revisit the factor if larger runners ever join.
-# The 2x CPU pool stays as a non-binding backstop (6 on macOS, 8 elsewhere —
-# always above the job cap) so declared cpu weights never bind below it. TEST
+# *1.25 encodes cores+1 exactly on the 3- and 4-core hosted runners
+# (3 -> 3.75 -> 4, 4 -> 5), and a little more on a larger pool clone
+# (6 -> 7.5 -> 8). The CPU pool at twice the cores is a non-binding backstop,
+# always above the job cap, so declared cpu weights never bind below it. TEST
 # invocations only: `bazel build` keeps the real-core pool for compilation.
-# Like --spawn_strategy above, these are scheduling/execution-only knobs —
+# Like --spawn_strategy below, these are scheduling/execution-only knobs —
 # they don't enter action keys or the analysis cache, so build-vs-test values
 # may differ freely.
 test:ci --local_test_jobs=HOST_CPUS*1.25
@@ -443,76 +434,66 @@ test:ci --local_resources=cpu=HOST_CPUS*2
 
 # --remote_timeout is the per-RPC idle/inactivity timeout for remote-cache
 # operations, NOT a total transfer cap — healthy byte-flowing transfers survive
-# it; it only bites an RPC that has stalled with no bytes moving. Originally
-# dropped from 600s to 3s as the confirmed fix for the intermittent
-# `//services/rp:bdd` post-scenario park (PR #342 + the park experiment; see
-# docs/plans/archive/bazel-migration.md): the park was a stale pooled keep-alive cache
-# RPC that blackholed and blocked until the timeout, so a tight idle bound
-# collapses it. Raised 3 -> 15 (2026-07-04): the spurious-retry risk the 3s
-# setting accepted DID materialize — CI showed `Download of '/ac/…' timed out.
-# Received 0 bytes` on PR reads and `Upload of '/cas/…' timed out. Sent 151
-# bytes` during main-push bulk uploads (disproportionately the Windows leg;
-# a 151-byte upload timing out is a slow first byte, not bandwidth). Failed
-# main-push uploads leave holes in the cache that later PR runs miss on. 15s
-# gives cold Worker+R2 round trips real headroom while still collapsing a
-# recurred park in seconds, not the old 600 — and the park's other, independent
-# fix (test:ci --spawn_strategy=local below) remains in place. On `build:ci`,
-# so it applies to every CI invocation (build, fast test, BDD, coverage).
+# it; it only bites an RPC that has stalled with no bytes moving. A bound of
+# seconds is one of the two settings that keep away the intermittent
+# `//services/rp:bdd` post-scenario park (test:ci --spawn_strategy=local below
+# is the other): a stale pooled keep-alive cache RPC that blackholes blocks
+# until this timeout, so a tight idle bound collapses it. At 3s, CI showed
+# `Download of '/ac/…' timed out. Received 0 bytes` on PR reads and `Upload
+# of '/cas/…' timed out. Sent 151 bytes` during main-push bulk uploads
+# (disproportionately the Windows leg; a 151-byte upload timing out is a slow
+# first byte, not bandwidth), and a failed main-push upload leaves a hole in
+# the cache that later PR runs miss on. 15s gives cold Worker+R2
+# round trips real headroom while still collapsing a park in seconds. On
+# `build:ci`, so it applies to every CI invocation (build, fast test, BDD,
+# coverage).
 build:ci --remote_timeout=15
 
 # Bypass the sandbox for tests under CI. Required on macOS/Windows (darwin-sandbox
-# blocks the BDD-spawned ASCOM OmniSim from binding network ports) AND now on
-# Linux: dropping the Linux processwrapper-sandbox is the confirmed fix for the
-# `//services/rp:bdd` post-scenario park (the sandbox teardown, not the cache RPC,
-# was the residual locus; mac/win already bypassed it and never parked — see the
-# park experiment in docs/plans/archive/bazel-migration.md). On `test:ci` (inherited by
-# `bazel coverage --config=ci`), so it also covers the fast-test step, which now
-# runs unsandboxed too — acceptable, since these tests already run sandbox-free
-# under Cargo. Scheduling/execution-only: does not enter action keys, so it never
-# perturbs the remote cache.
+# blocks the BDD-spawned ASCOM OmniSim from binding network ports) AND on
+# Linux, where the processwrapper-sandbox's teardown is the likely locus of the
+# `//services/rp:bdd` post-scenario park: every scenario passes, then the
+# action sits near-idle for 20-37 minutes. The park reproduced only on Linux,
+# the one OS that ran BDD sandboxed, and stopped with this and build:ci
+# --remote_timeout above in place (the park experiment,
+# docs/plans/archive/bazel-migration.md § Coverage under Bazel). On `test:ci`
+# (inherited by `bazel coverage --config=ci`), so it also covers the fast-test
+# step, which runs unsandboxed too — acceptable, since these tests run
+# sandbox-free under Cargo. Scheduling/execution-only: does not enter action
+# keys, so it never perturbs the remote cache.
 test:ci --spawn_strategy=local
 
 # Bypass the sandbox on Windows for the plain `bazel build` step too (not just
-# `test:ci` above). It went in while chasing a ppba-driver E0463 "can't find
-# crate" that looked like rlibs missing from the sandboxed input tree; that
-# E0463 turned out to be the duplicate `digest` chain behind the rust-embed
-# hold (docs/workspace.md), not sandboxing. The bypass stays because sandboxed
-# input materialization on Windows is symlink/copy-fallback based and
-# known-fragile — see rules_rust's own acknowledged weak Windows support.
-# `build:windows` (not `build:ci`) so it isn't gated to CI and stays scoped to
-# the one platform that showed the failure; Linux/macOS keep the sandbox on
-# `bazel build`.
+# `test:ci` above): sandboxed input materialization on Windows is
+# symlink/copy-fallback based and known-fragile — see rules_rust's own
+# acknowledged weak Windows support. `build:windows` (not `build:ci`) so it
+# isn't gated to CI and stays scoped to Windows; Linux/macOS keep the sandbox
+# on `bazel build`.
 build:windows --spawn_strategy=local
 
-# --jobs on Windows: HOST_CPUS*2, where `build:ci` gives Linux a flat 64.
-# The ceiling started as a fixed 8, cut hard on the 4-vCPU GitHub-hosted
-# runner to probe an E0463 "can't find crate" thought to be a concurrency
-# race. That E0463 turned out to be a dependency-graph bug (the download-mode
-# note above), so the race no longer argues for a low ceiling. What the
-# setting does now is scale with the box: 8 on the 4-vCPU hosted fallback,
-# the value tuned there, and twice the cores on a pool clone, where the LAN
-# remote cache makes over-subscribing past the core count pay off (see
-# build:ci above).
+# --jobs on Windows: HOST_CPUS*2, where `build:ci` gives Linux a flat 64. It
+# scales with the box: 8 on the 4-vCPU hosted fallback, the value tuned
+# there, and twice the cores on a pool clone, where the LAN remote cache
+# makes over-subscribing past the core count pay off (see build:ci above).
 #
 # Memory has never been measured against this ceiling. Windows processes are
 # heavier than Linux ones: one cold build peaked at about half again Linux's
-# memory. But that was at --jobs=64 on a 16-vCPU slot that no longer exists,
-# and RAM has not been the constraint on the current slot sizes. Before
-# moving the multiplier either way, measure peak committed memory and wall
-# clock on a pool clone at both values; don't tune from that old peak.
+# memory. But that was at --jobs=64 on a 16-vCPU slot, larger than any the
+# pool runs, and RAM has not been the constraint at the sizes it does run.
+# Before moving the multiplier either way, measure peak committed memory and
+# wall clock on a pool clone at both values; don't tune from that peak.
 build:windows --jobs=HOST_CPUS*2
 
-# issue #676: the `test:ci --local_test_jobs=HOST_CPUS*1.25` cores+1
-# overcommit above was tuned against ubuntu timing data only (see that
-# comment's "observed: ... critical path on ubuntu"), then applied
-# uniformly to every OS. On windows-latest's 4 vCPUs that's 5 concurrent
-# test actions, and a large fraction of this workspace's `bdd`-tagged
-# suites are the 3-process OmniSim + rp + session-runner topology (18+ of
-# them, incl. rp:bdd and session-runner:bdd's own 8 shards each) — so
-# through most of the ~9-minute Windows BDD step, several of those heavy
-# trios run concurrently. Windows process creation/scheduling is
+# The `test:ci --local_test_jobs=HOST_CPUS*1.25` cores+1 overcommit above
+# is tuned against ubuntu timing data only (see that comment's "observed:
+# ... critical path on ubuntu"). On windows-latest's 4 vCPUs that's 5
+# concurrent test actions, and a large fraction of this workspace's
+# `bdd`-tagged suites are the 3-process OmniSim + rp + session-runner
+# topology (18+ of them, incl. rp:bdd's and session-runner:bdd's own shards)
+# — so through most of the ~9-minute Windows BDD step, several of those
+# heavy trios run concurrently. Windows process creation/scheduling is
 # materially costlier than POSIX fork/exec, so the same ratio that's
-# fine on Linux/macOS starves Windows harder: confirmed directly in a
+# fine on Linux/macOS starves Windows harder: seen directly in a
 # failing run's own Bazel status line (`(4 actions running)` /
 # `(8 actions, 5-6 running)` at the moment of failure) and in the
 # session-runner/rp tracing timestamps themselves (a slew that finished
@@ -522,9 +503,9 @@ build:windows --jobs=HOST_CPUS*2
 # step). `test:windows` (like `build:windows --jobs=HOST_CPUS*2` just above)
 # applies after `test:ci` via --enable_platform_specific_config, so it
 # overrides the cores+1 value on Windows only, leaving the Linux/macOS
-# tuning from #624 untouched. Dropping to plain HOST_CPUS removes
-# exactly the "one suite's worth of overcommit" #624 added; tighten
-# further (e.g. HOST_CPUS*0.75) if flakes persist at this level.
+# tuning untouched. Plain HOST_CPUS removes exactly that "one suite's worth
+# of overcommit"; tighten further (e.g. HOST_CPUS*0.75) if flakes persist
+# at this level.
 test:windows --local_test_jobs=HOST_CPUS
 
 # Forward OMNISIM_PATH (the install-omnisim action's pinned OmniSim binary path,
@@ -610,10 +591,8 @@ build:remote-cache-base --experimental_remote_cache_eviction_retries=30
 # on that one node no matter how many retries it gets. --keep_going lets one
 # attempt surface and invalidate every currently-broken action instead of
 # just the first, so each retry makes cumulative progress across the whole
-# graph. windows-latest already carried this (bazel.yml, for an unrelated
-# E0463 diagnostic) and was the only platform that converged instead of
-# cycling; this extends the same behavior to every platform for the reason
-# that actually matters here.
+# graph. Measured on CI: the one leg that ran with it, windows-latest,
+# converged where the legs without it cycled.
 build:remote-cache-base --keep_going
 
 # CI's remote cache for the job's venue, ci-remote: remote-cache on a hosted
@@ -687,7 +666,7 @@ build:macos --jobs=HOST_CPUS*2
 test:conformu --test_tag_filters=conformu
 test:conformu --test_env=CONFORMU_PATH
 
-# --- Browser BDD config (UI-testing plan Layer C) --------------------------
+# --- Browser BDD config ----------------------------------------------------
 
 # Run the advisory @browser scenarios (real Firefox via WebDriver) under Bazel:
 #   FIREFOX_BINARY=/path GECKODRIVER_BINARY=/path \
@@ -696,29 +675,18 @@ test:conformu --test_env=CONFORMU_PATH
 # — there is no maintained hermetic-browser path for Rust (rules_webtesting was
 # archived and never supported Rust). The @browser scenarios are themselves gated
 # inside the suite by UI_BROWSER_TESTS=1 (set below), so the default `bdd` run is
-# unaffected. This config is STANDALONE: unlike conformu it does not pigg-back on
+# unaffected. This config is STANDALONE: unlike conformu it does not piggyback on
 # --config=ci, so it must set --spawn_strategy=local itself (the sandbox blocks
 # the localhost WebDriver connection and hides the system browser) or it "works
 # in CI, fails locally".
 #
-# STATUS (2026-06-23, plan §9 Tier 0 step 5 go/no-go): the Linux Bazel browser
-# path is exercised GREEN — a local `bazel test --config=browser
-# //services/ui-htmx:bdd` (system Firefox + geckodriver) runs all four @browser
-# scenarios. They connect to a localhost WebDriver and a system Firefox — which
-# the Bazel sandbox would block — so --spawn_strategy=local took effect as
-# intended. (The run also emits a benign `cargo metadata failed ... will use
-# manifest directory as fallback`: the insta golden-path resolver's expected
-# Bazel fallback, all snapshot steps still pass.) macOS/Windows browser-under-Bazel
-# is deliberately NOT pursued — but note this is the §6/§8 single-environment
-# DESIGN, not the §3 escape hatch firing: that escape hatch (browser dropped off
-# Bazel entirely) was AVOIDED, since Bazel-Linux is green. The @browser layer runs
-# on one environment because P3 behavior is OS-invariant given P2 byte-equivalence
-# (§2): the P1/P2 server-bytes layers carry the cross-OS guarantee on every OS, the
-# orphan reaper is unix/Linux-only (§10), so a browser on every OS buys zero
-# behavioral coverage. This config stays for local runs and the future ubuntu-only
-# nightly @browser job (§8). The always-compiled `thirtyfour` dev-dep does NOT
-# enter the required gate: the default 3-OS Bazel BDD (no UI_BROWSER_TESTS) stays
-# green on ubuntu/macOS/Windows, verified by the shadow bazel.yml legs.
+# It is for local runs on Linux: the @browser layer runs on one environment by
+# design (docs/skills/testing.md § 10.4), and the nightly @browser job
+# (ui-browser-nightly.yml) runs it under Cargo. A run also prints a benign
+# `cargo metadata failed ... will use manifest directory as fallback`: the
+# insta golden-path resolver's expected Bazel fallback; every snapshot step
+# passes. The always-compiled `thirtyfour` dev-dep does not enter the required
+# gate, since the default Bazel BDD run sets no UI_BROWSER_TESTS.
 test:browser --test_tag_filters=bdd
 test:browser --spawn_strategy=local
 test:browser --test_env=UI_BROWSER_TESTS=1
@@ -757,8 +725,7 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # In CI also add --config=ci --config=ci-remote (see the bazel-coverage action,
 # .github/actions/bazel-coverage/coverage.mjs).
 #
-# Reproduces the Cargo coverage contract (.github/workflows/test.yml `coverage`)
-# under Bazel:
+# Reproduces cargo-llvm-cov's coverage contract under Bazel:
 #
 #  * channel=nightly -- the #[cfg_attr(coverage_nightly, coverage(off))] on every
 #    `#[cfg(test)] mod tests` block needs the nightly-only `coverage_attribute`
@@ -802,7 +769,7 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # `--config=coverage`, and the command line wins, so in the CI job the
 # conformu-tagged targets ARE selected — they self-skip, because that job
 # never exports CONFORMU_PATH. Either way coverage MUST include the BDD suite
-# (like the default test filter, which has run bdd since PR #452), because it
+# (as the default test filter does), because it
 # exercises the service-binary integration paths (main.rs, startup/shutdown,
 # cross-service wiring) that unit tests never reach; requires-cargo stays
 # excluded everywhere (those tests shell out to cargo). BDD needs
@@ -816,7 +783,7 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # (1) COLLECT: bdd-infra's spawn path sets a per-child
 # LLVM_PROFILE_FILE=$COVERAGE_DIR/<pkg>-%8m.profraw when COVERAGE_DIR is set
 # (child_coverage_profile_var in crates/bdd-infra/src/lib.rs; the `%8m`
-# online-merge pool — not `%p-%m` — bounds the profraw volume, see PR #342), so
+# online-merge pool — not `%p-%m` — bounds the profraw volume), so
 # each child's counters land in the merged profdata. (2) EXPORT: a pinned rules_rust patch
 # (third_party/patches/collect_coverage_extra_objects.patch) adds each spawned binary as an
 # `llvm-cov export -object` via the RUST_COVERAGE_EXTRA_OBJECTS env var set on the
@@ -827,7 +794,7 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # instrumented_files manifest. Without it Bazel's post-collector LcovMerger intersects the
 # exported report against that manifest and silently DROPS main.rs (it is reached only via
 # `data`, not `deps`). Both patches are wired in MODULE.bazel single_version_override and
-# guarded in rules-rust-patches.yml. See docs/plans/archive/bazel-migration.md.
+# guarded in rules-rust-patches.yml.
 coverage:coverage --@rules_rust//rust/toolchain/channel=nightly
 coverage:coverage --@rules_rust//rust/settings:extra_rustc_flags=--cfg=coverage_nightly
 coverage:coverage --instrumentation_filter=^//crates,^//services,^//tests,^//tools/rusty-photon-ci
@@ -845,10 +812,10 @@ coverage:coverage --combined_report=lcov
 # budget (~400s warm) while bounding a hang at minutes, not the full hour.
 # NB: the single-value form is a fleet-wide override — it caps EVERY coverage
 # test at 900s, so a future coverage target needing more must switch this to the
-# 4-value form (short,moderate,long,eternal). Both OmniSim BDD targets are 900s
-# (size=large) today. If this still doesn't kill a hang under coverage (the
-# size-derived timeout didn't), exclude the two OmniSim spawners instead — see
-# docs/plans/archive/bazel-migration.md.
+# 4-value form (short,moderate,long,eternal). Every OmniSim BDD target is
+# size=large (900s). If this does not kill a hang under coverage either (the
+# size-derived timeout does not), exclude the OmniSim-spawning suites from
+# the coverage graph instead.
 coverage:coverage --test_timeout=900
 # conformu is excluded from a local coverage run too: it drives the external
 # ConformU tool (not instrumented) and only runs when CONFORMU_PATH is set. The
@@ -856,10 +823,10 @@ coverage:coverage --test_timeout=900
 coverage:coverage --test_tag_filters=-requires-cargo,-conformu
 # Coverage keeps un-overcommitted test scheduling: instrumented BDD suites run
 # much heavier than plain ones (rp:bdd ~400s warm against the 900s cap above,
-# with a hang history under instrumentation), so the 2x CPU overcommit that
-# test:ci applies to the PR gate is reset here. The CI job's bazel-coverage
-# action passes --config=ci before --config=coverage, so these later values win.
-# Revisit once the PR gate has soak time at 8-wide.
+# with a hang history under instrumentation), so the overcommit test:ci
+# applies to the PR gate (cores+1 test jobs on a CPU pool at twice the cores)
+# is reset here. The CI job's bazel-coverage action passes --config=ci before
+# --config=coverage, so these later values win.
 coverage:coverage --local_test_jobs=auto
 coverage:coverage --local_resources=cpu=HOST_CPUS
 

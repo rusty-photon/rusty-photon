@@ -1,13 +1,12 @@
 # Advisory nightly run of the ui-htmx @browser BDD scenarios — Layer C / P3 of the
-# UI-testing model (docs/skills/testing.md §10; full rationale in the archived
-# docs/plans/archive/ui-testing.md §6/§8/§9). These drive a REAL headless
+# UI-testing model (docs/skills/testing.md §10). These drive a REAL headless
 # Firefox via geckodriver to prove the vendored htmx.min.js loads and executes the
 # declared swaps — the one thing the server-bytes layers (P1/P2) cannot. They are
 # gated behind UI_BROWSER_TESTS=1 and kept OUT of the per-PR required gate (browser
 # flake must never redden a PR); this scheduled job is where they run. Linux-only
-# by design (plan §9 step 5 go/no-go is resolved): the cross-OS guarantee rides the
-# P1/P2 server bytes that DO run per-PR on every OS, so one browser environment
-# suffices. Modeled on scheduled.yml's Miri job + notify-on-failure pattern.
+# by design (testing.md §10.4): the cross-OS guarantee rides the P1/P2 server
+# bytes that DO run per-PR on every OS, so one browser environment suffices.
+# Modeled on scheduled.yml's Miri job + notify-on-failure pattern.
 permissions:
   contents: read
 on:
@@ -46,13 +45,13 @@ jobs:
     # build+nextest+bdd combined, and this job only builds once then runs a
     # single package's bdd, so 40 min is generous headroom. It only bites a
     # hung WebDriver session or a genuine cache miss, backstopping GitHub's
-    # 360-min default (plan §8).
+    # 360-min default.
     timeout-minutes: 40
     name: nightly / ubuntu / ui-htmx @browser
     steps:
       - uses: actions/checkout@v7
       # Install a non-snap Firefox: the runner's pre-installed Firefox is a snap,
-      # which breaks geckodriver's /tmp profile (UI-testing plan §10). The action
+      # which breaks geckodriver's /tmp profile. The action
       # exposes the binary path as an output we forward as FIREFOX_BINARY.
       - name: Install Firefox (non-snap)
         id: firefox
@@ -60,8 +59,8 @@ jobs:
       # geckodriver as a system tool, added to PATH. `token` avoids anonymous
       # GitHub-API rate limits when the action fetches the release. The action
       # publishes only a moving `latest` branch (its sole tag is a stale 2021
-      # placeholder v0.0.0), so pin the immutable commit SHA that `latest`
-      # currently resolves to for reproducible nightly runs — a regression should
+      # placeholder v0.0.0), so pin the immutable commit SHA `latest` resolved
+      # to on the date beside it, for reproducible nightly runs — a regression should
       # reflect repo changes, not action drift. (The action still resolves the
       # newest geckodriver release at run time; only the action code is pinned.)
       # Bump the SHA deliberately when adopting a newer action revision.
@@ -93,14 +92,12 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       # Build the FULL workspace rather than hand-picking the packages the BDD
-      # suite spawns: bdd-infra discovers binaries in target/ and no longer
-      # compiles them on the fly (test.yml's windows-bdd pattern), and a
-      # hand-picked list silently goes stale as new suites spawn new processes
-      # (that's exactly how issue #494 broke — Phase 4/5 added scenarios that
-      # spawn rp/sentinel and this list wasn't updated). Building everything
-      # means main's Rust build health is verified here too, which is a
-      # feature: main must never be broken, and this job (like test.yml) now
-      # catches that regardless of whether the break is browser-related.
+      # suite spawns: bdd-infra discovers binaries in target/ and does not
+      # compile them on the fly, and a hand-picked list silently goes stale as
+      # new suites spawn new processes. Building everything means main's Rust
+      # build health is verified here too, which is a feature: main must never
+      # be broken, and this job, like test.yml, catches that regardless of
+      # whether the break is browser-related.
       - name: cargo build (full workspace)
         run: cargo build --locked --workspace --all-features --all-targets
       # Run the BDD suite with the browser layer enabled. UI_BROWSER_TESTS=1
@@ -118,7 +115,7 @@ jobs:
           RUST_BACKTRACE: "1"
           TMPDIR: ${{ runner.temp }}
       # The crash/orphan scenario captures a screenshot + page source before
-      # reaping (plan §9 step 4). Upload them on failure so an intermittent
+      # reaping. Upload them on failure so an intermittent
       # browser regression can be inspected rather than re-guessed (test.yml's
       # OmniSim-logs precedent). They are written every run; if-no-files-found is
       # ignored in case a build-stage failure aborted before they were captured.

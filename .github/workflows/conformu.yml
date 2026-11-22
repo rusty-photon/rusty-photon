@@ -4,14 +4,14 @@
 # Cadence: nightly cron + workflow_dispatch (manual) + paths-filtered
 # PR/push on this workflow file itself. ConformU exercises the running
 # Alpaca server end-to-end across three OSes, so it is the single most
-# expensive workflow we have. Running it on every push and PR was
+# expensive workflow we have. Running it on every push and PR would be
 # overkill: conformance regressions are real but rare, and the faster
-# `check`/`test` workflows already gate the unit-level changes that
+# `check` and `bazel` workflows already gate the unit-level changes that
 # would most often break conformance. A nightly run catches drift
 # without paying the matrix on every PR; `workflow_dispatch` covers the
 # "I just touched the Alpaca interface, run it now" case. The paths
 # filter keeps PR-time validation on edits to this workflow itself,
-# so a YAML or github-script regression is caught before merge rather
+# so a regression in this file is caught before merge rather
 # than only at the next cron fire. The `notify-on-failure` job opens
 # or updates a tracking issue so a red nightly does not sit unnoticed
 # in the Actions tab.
@@ -59,7 +59,7 @@ jobs:
       # PR base to diff against, and catching drift across the full surface
       # is the point. Services whose native SDK cannot be provisioned on a
       # given runner build against their `simulation` backend there instead
-      # of dropping out ("provision, don't exclude" — ADR-008).
+      # of dropping out ("provision, don't exclude").
       - name: Discover ConformU services
         id: discover
         uses: ./.github/actions/cargo-workspace/packages
@@ -116,14 +116,13 @@ jobs:
       # provisions it too. indi-3rdparty ships no `mac_arm64` blob (see the
       # header comment of install-svbony-sdk/svbony-sdk.mjs for the
       # byte-level verification) and `macos-latest` is Apple Silicon today,
-      # so the "provision, don't exclude" principle (ADR-008) cannot apply to
-      # that one leg the way it does for ZWO: fall back to
-      # SVBONY_SKIP_NATIVE_LINK=1 there instead (the same posture QHYCCD
-      # takes in this job everywhere), so
-      # svbony-camera's ConformU coverage on macOS is protocol-conformance-
-      # only until a verified Apple Silicon SVBony blob exists (see
-      # docs/services/svbony-camera.md "Packaging"). Linux always gets the real
-      # link; a future x86_64 macOS leg (e.g. macos-13) would too.
+      # so the "provision, don't exclude" principle cannot apply to that one
+      # leg the way it does for ZWO: fall back to SVBONY_SKIP_NATIVE_LINK=1
+      # there instead (the same posture QHYCCD takes in this job everywhere),
+      # so svbony-camera's ConformU coverage on macOS is
+      # protocol-conformance-only until a verified Apple Silicon SVBony blob
+      # exists (docs/services/svbony-camera.md § Packaging). Linux always gets
+      # the real link; an x86_64 macOS leg (e.g. macos-13) would too.
       - name: Install SVBony SDK (real link)
         if: runner.os == 'Linux' || runner.arch == 'X64'
         uses: ./.github/actions/install-svbony-sdk
@@ -157,8 +156,9 @@ jobs:
     runs-on: windows-latest
     # In env (not a secret reference in step `if:`s, where the secrets
     # context is unavailable) so the SVBony steps below can gate on its
-    # presence: this workflow only runs on schedule/dispatch, so the repo's
-    # own runs always have it — the empty case is a fork without the secret.
+    # presence: the repo's own runs have it, and the empty case is a run
+    # without the repository's secrets — a fork's own run, or a pull request
+    # from a fork or Dependabot that edits this file.
     env:
       PRIVATE_MIRROR_TOKEN: ${{ secrets.PRIVATE_MIRROR_TOKEN }}
     strategy:
@@ -201,9 +201,10 @@ jobs:
       # svbony-camera's `--features conformu` build resolves to the simulation
       # backend (no camera needed) but still links the real SDK, matching the
       # Linux/macOS job above. Windows provisioning comes from the private CI
-      # mirror (ADR-018 §7); a fork without the PRIVATE_MIRROR_TOKEN secret
-      # falls back to SVBONY_SKIP_NATIVE_LINK=1, which drops only the real
-      # link — the conformance run itself needs no SDK.
+      # mirror (docs/services/svbony-camera.md § Windows); a run without the
+      # PRIVATE_MIRROR_TOKEN secret falls back to SVBONY_SKIP_NATIVE_LINK=1,
+      # which drops only the real link — the conformance run itself needs no
+      # SDK.
       - name: Install SVBony SDK (real link)
         if: matrix.service.name == 'svbony-camera' && env.PRIVATE_MIRROR_TOKEN != ''
         uses: ./.github/actions/install-svbony-sdk
