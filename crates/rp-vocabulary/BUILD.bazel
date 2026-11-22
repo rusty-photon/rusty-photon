@@ -7,8 +7,8 @@ exports_files(
 )
 
 # `rp` activates the `schema` feature (`services/rp/Cargo.toml`:
-# `rp-vocabulary = { features = ["schema"] }`), so after the repin
-# crate_universe resolves schemars into this target's "normal" bucket
+# `rp-vocabulary = { features = ["schema"] }`), so crate_universe
+# resolves schemars into this target's "normal" bucket
 # (`all_crate_deps(normal = True)` picks it up). Unlike Cargo, Bazel does
 # NOT infer a first-party crate's feature activation from a consumer's
 # Cargo.toml, so `crate_features = ["schema"]` is set explicitly below to

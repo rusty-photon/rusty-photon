@@ -82,11 +82,10 @@ impl ErfarsEphemeris {
 ///
 /// This is the central defense against panics inside the erfars
 /// wrappers: their `unexpected_val_err!` macro turns into `panic!()`
-/// for any ERFA return code outside the wrapper's known set (today,
-/// nothing actually triggers it, but we don't control the upstream
-/// crate). Wrapping each [`Ephemeris`] trait method's body here means
-/// any future inconsistency surfaces as NaN/None rather than a service
-/// crash.
+/// for any ERFA return code outside the wrapper's known set. No known
+/// input triggers it, but the upstream crate is not ours to control.
+/// Wrapping each [`Ephemeris`] trait method's body here means any such
+/// inconsistency surfaces as NaN/None rather than a service crash.
 fn run_with_guard<R, F>(method: &'static str, fallback: R, f: F) -> R
 where
     F: FnOnce() -> R + UnwindSafe,
@@ -125,7 +124,7 @@ static ERFA_LEAP_SECONDS_INIT: Once = Once::new();
 /// method reaches `eraDat` through [`time_jds`] (UTC→TAI), so warming it
 /// there under a [`Once`] serializes that first call; afterwards `NDAT`
 /// is positive forever and concurrent callers only ever read it. See
-/// `docs/crates/rp-ephemeris.md` § "Thread safety".
+/// [rp-ephemeris.md § Thread Safety](../../../docs/crates/rp-ephemeris.md#thread-safety).
 fn ensure_erfa_leap_seconds_initialized() {
     ERFA_LEAP_SECONDS_INIT.call_once(|| {
         // Touch `eraDat` once via the raw erfars calls — deliberately NOT
@@ -358,11 +357,11 @@ pub fn icrs_conditions_at(
 /// position (BCRS ≈ ICRS to milliarcsec).
 ///
 /// The underlying ERFA `eraEpv00` only ever returns 0 or +1, so the
-/// erfars wrapper never produces `Err` today. We still match on
-/// `Err` defensively — returning NaN coords rather than `.expect`-ing
-/// — so production code stays panic-free if the upstream contract
-/// ever changes. The handler lives in `epv00_heliocentric` so it's
-/// directly unit-testable.
+/// erfars wrapper never produces `Err`. We still match on `Err`
+/// defensively — returning NaN coords rather than `.expect`-ing — so
+/// production code stays panic-free should the upstream contract
+/// change. The handler lives in `epv00_heliocentric` so it's directly
+/// unit-testable.
 pub fn sun_icrs(jds: &TimeJds) -> IcrsCoord {
     let Some(pvh) = epv00_heliocentric(Epv00(jds.tt1, jds.tt2), jds) else {
         return nan_icrs();
@@ -873,25 +872,21 @@ mod tests {
         assert_eq!(epv00_heliocentric(Ok(((pvh, pvb), 0)), &jds), Some(pvh));
     }
 
-    /// `Epv00` Err → None. Structurally unreachable today (eraEpv00
-    /// only ever returns 0 or +1), so the helper exists so that
-    /// production code can stay panic-free even if the upstream
-    /// invariant ever changes.
+    /// `Epv00` Err → None. Structurally unreachable (eraEpv00 only
+    /// ever returns 0 or +1); the helper exists so that production
+    /// code stays panic-free should the upstream invariant change.
     #[test]
     fn epv00_heliocentric_returns_none_on_err() {
         let jds = nan_time_jds();
         assert!(epv00_heliocentric(Err(-1), &jds).is_none());
     }
 
-    /// Verify the production wiring: feeding `sun_icrs` a `TimeJds`
-    /// whose `tt` pair would force Epv00 to return Err (it can't
-    /// today, but we cover the defensive arm via the inner helper
-    /// above and trust this wiring path).
+    /// The production wiring of `sun_icrs` through `epv00_heliocentric`:
+    /// at J2000 the Sun comes back finite. No input makes `Epv00` return
+    /// `Err`, so the NaN arm is covered through the helper itself
+    /// (`epv00_heliocentric_returns_none_on_err`).
     #[test]
-    fn sun_icrs_returns_nan_when_helper_yields_none() {
-        // Drive sun_icrs with finite (but absurd) tt values to confirm
-        // the happy path returns finite coords. The Err arm coverage
-        // is provided by `epv00_heliocentric_returns_none_on_err`.
+    fn sun_icrs_returns_finite_coords_at_j2000() {
         let jds = TimeJds {
             utc1: 2_451_545.0,
             utc2: 0.0,

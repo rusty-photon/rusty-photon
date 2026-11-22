@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 /// The schema version this build writes for a fresh store.
 ///
 /// Additive record changes need no bump (new fields `#[serde(default)]`);
-/// a breaking re-shape adds a migration step in [`open_and_init`] and
+/// a breaking re-shape adds a migration step in `open_and_init` and
 /// bumps this.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
@@ -327,7 +327,7 @@ fn open_and_init(path: &Path) -> Result<Database, StoreError> {
             }
             Some(found) => {
                 // found < CURRENT_SCHEMA_VERSION would run ordered
-                // migration steps here; none exist yet.
+                // migration steps here; there are none.
                 if found < CURRENT_SCHEMA_VERSION {
                     meta.insert(
                         SCHEMA_VERSION_KEY,

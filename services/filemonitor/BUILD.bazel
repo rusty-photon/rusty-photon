@@ -69,8 +69,7 @@ rust_test(
     ),
 )
 
-# test_integration combines the former test_server, test_reload, and test_cli
-# binaries into one. The CLI tests spawn the filemonitor binary via
+# The CLI tests in test_integration spawn the filemonitor binary via
 # bdd_infra::run_once, which uppercases the package name into
 # FILEMONITOR_BINARY for binary discovery — wire that env var to the rootpath
 # of the :filemonitor binary so the test runs hermetically under the Bazel

@@ -101,7 +101,7 @@ pub fn transit(site: &Site, target: IcrsCoord, date: NaiveDate) -> Option<DateTi
 
 /// Rise/set times above `min_alt_deg`.
 pub fn rise_set(
-    _eph: &impl crate::Ephemeris, // unused for v1; reserved for future
+    _eph: &impl crate::Ephemeris, // unused: altitude comes from `alt_az_at`
     site: &Site,
     target: IcrsCoord,
     date: NaiveDate,
@@ -137,7 +137,7 @@ pub fn rise_set(
 }
 
 /// Time until the target next reaches the meridian (HA = 0). Side of
-/// pier is ignored in v1 — the convenience tool's caller treats the
+/// pier plays no part — the convenience tool's caller treats the
 /// returned duration as "time until a flip might be required".
 pub fn meridian_flip(site: &Site, target: IcrsCoord, time: DateTime<Utc>) -> Option<Duration> {
     let lst = lst_hours(site, &time_jds(time));
@@ -195,9 +195,7 @@ pub fn twilight(
     };
 
     // Sun altitude relative to threshold, as a sign-changing function
-    // of time. We rely on the trait method so derived twilight is
-    // testable against a hand-rolled mock Ephemeris in the planner
-    // crate.
+    // of time, read through the trait's `sun_position`.
     let f = |t: DateTime<Utc>| eph.sun_position(site, t).alt_az.altitude_degrees - threshold;
 
     let begin_utc = bisect_dt(f, solar_noon, midnight, 1);

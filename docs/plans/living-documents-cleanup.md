@@ -454,5 +454,6 @@ for every batch.
 | B6 — cameras and SDK crates | Merged: the design docs on 2026-11-14, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1779), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1783) |
 | B7 — guiding, solving, sentinel, lifecycle, TLS | Merged: the docs on 2026-11-18, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1823), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1827) |
 | B8 — catalog, planner, focus | Merged: the design docs on 2026-11-12, then the code comments and the guard rows | [design docs](https://github.com/rusty-photon/rusty-photon/pull/1758), [code comments](https://github.com/rusty-photon/rusty-photon/pull/1759) |
-| B9 — build, CI, runners; the empty table | Under way: the docs first, then the code comments and the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1859) |
+| B9 — build, CI, runners; the empty table | Under way: the docs merged on 2026-11-21; the code comments follow in two slices, the second with the guard rows | [docs](https://github.com/rusty-photon/rusty-photon/pull/1859) |
+| B9 — the code of the services and crates no other batch names, a slice | Merged | [code comments](https://github.com/rusty-photon/rusty-photon/pull/1860) |
 | B9 — the root `Cargo.toml`, a trial slice of the method | Merged 2026-11-11 | [trial slice](https://github.com/rusty-photon/rusty-photon/pull/1744) |

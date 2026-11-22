@@ -95,10 +95,9 @@ pub trait Ephemeris {
         min_alt_deg: f64,
     ) -> Option<RiseSet>;
 
-    /// Time until the target next crosses the meridian (HA = 0). Side
-    /// of pier is read but not currently consulted — the v1
-    /// implementation returns the next meridian crossing in the
-    /// future regardless of the mount's current pier side.
+    /// Time until the target next crosses the meridian (HA = 0). `side`
+    /// is not consulted: the method returns the next meridian crossing
+    /// in the future whatever the mount's current pier side.
     fn meridian_flip(
         &self,
         site: &Site,

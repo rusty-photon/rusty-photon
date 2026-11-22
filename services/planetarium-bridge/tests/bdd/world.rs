@@ -37,11 +37,12 @@ use crate::stub_rp::StubRp;
 /// rather than to a multiple of anything.
 ///
 /// The slowest leg is `safety.yml`'s nightly sanitizer job, not the
-/// coverage leg: there the suite's 69 scenarios put ~68 ASan-instrumented
-/// bridges through startup at once on a 4-vCPU runner. Measured spawn to
-/// device-registered, one uncontended instance takes 0.8 s, the herd
-/// medians 27 s, and on a noisy runner it medians 46 s with a 74 s tail —
-/// against 15 s for the same herd on the leak leg.
+/// coverage leg: there the scenarios put dozens of ASan-instrumented
+/// bridges through startup at once on a 4-vCPU runner. Measured with 69
+/// scenarios starting ~68 bridges, spawn to device-registered takes 0.8 s
+/// for one uncontended instance, the herd medians 27 s, and on a noisy
+/// runner it medians 46 s with a 74 s tail — against 15 s for the same
+/// herd on the leak leg.
 ///
 /// Do not anchor this to the allowance the harness gives a service just to
 /// print its bound port: `ServiceHandle::start`, the call this suite
@@ -50,9 +51,9 @@ use crate::stub_rp::StubRp;
 /// nothing here uses.
 ///
 /// Cucumber runs the scenarios concurrently, so a systemic hang costs the
-/// suite this once rather than once per scenario: a healthy sanitizer run
-/// of the whole suite is ~35 s wall, so even a hang stays far inside the
-/// `size = "large"` target it runs under.
+/// suite this once rather than once per scenario: the healthy sanitizer
+/// run measured above took ~35 s wall for the whole suite, so even a hang
+/// stays far inside the `size = "large"` target it runs under.
 pub const WAIT_BUDGET: Duration = Duration::from_secs(120);
 
 /// Gap between polls inside a wait — short enough that the elapsed time a
@@ -130,9 +131,9 @@ pub struct BridgeWorld {
     pub site_latitude_deg: Option<f64>,
     pub site_longitude_deg: Option<f64>,
     /// rp MCP URL for the bridge config; set by the stub-rp /
-    /// rp-unreachable Givens. When still `None` at start, an unreachable
-    /// reserved-band URL is used, so scenarios that never look at imports
-    /// need no stub (their Aligns spool into the scenario temp dir).
+    /// rp-unreachable Givens. When still `None` at start, [`dead_rp_url`]
+    /// is used, so scenarios that never look at imports need no stub (their
+    /// Aligns spool into the scenario temp dir).
     pub rp_url: Option<String>,
     /// The `rp.service_auth` credential (username, password) the bridge
     /// presents to rp, when a Given sets one.

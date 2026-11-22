@@ -1,12 +1,11 @@
-//! Reference-value tests: compare `ErfarsEphemeris` against canonical
-//! Astropy-computed values committed under `refvals/*.json`.
+//! Reference-value test: compare `ErfarsEphemeris`'s `alt_az` against
+//! Astropy's values in `refvals/*.json`, within 1e-4°.
 //!
-//! The JSON files are produced by hand via `refvals/gen.py` (see the
-//! README in that directory). If no JSON files are present (e.g. on a
-//! fresh checkout where the contributor has not yet run the script),
-//! the test is a no-op — the unit tests in the crate cover correctness;
-//! these tests cover *cross-validation* against an independent
-//! implementation.
+//! `refvals/gen.py`, run by hand, writes those files (see the README in
+//! that directory). None is committed, so the test finds no file and
+//! passes without checking anything. With the files present it
+//! cross-validates the crate against an independent implementation, which
+//! the unit tests do not.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -95,11 +94,8 @@ fn alt_az_matches_astropy_within_tight_tolerance() {
     };
 
     if entries.is_empty() {
-        // Treat empty refvals/ as a soft skip. The README documents the
-        // gen.py workflow; CI relying solely on this assertion would
-        // hide refvals erosion. An audit gate that fails if entries==0
-        // for *too long* belongs in the project plan tracking, not in
-        // a unit test.
+        // No JSON is committed (refvals/README.md), so an empty directory
+        // passes with a note rather than failing every run.
         eprintln!("no refvals/*.json present at {dir:?} — run refvals/gen.py to populate");
         return;
     }

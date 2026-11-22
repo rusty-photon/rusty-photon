@@ -2,13 +2,13 @@
 //! microformat (see `docs/services/doctor.md` §The derived catalog).
 //!
 //! The format is deliberately a strict TOML subset — `#` comments, blank
-//! lines, and exactly the keys below — parsed with std only, so the 17
+//! lines, and exactly the keys below — parsed with std only, so the
 //! per-service parity tests and doctor's embedded catalog share one parser
 //! without pulling a TOML crate into every service's dev-dependencies.
 //! Anything outside the subset is a loud error, never a guess.
 //!
 //! ```toml
-//! class = "alpaca"  # "alpaca" | "core"
+//! class = "alpaca"  # "alpaca" | "core" | "advertising"
 //! port = 11113
 //! # Optional: the unit hard-requires an operator-written config and never
 //! # self-creates one (docs/packaging.md's "config-gated" services, e.g.
@@ -33,12 +33,12 @@
 /// Which shared server shape a service's `server` block uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerClass {
-    /// [`crate::AlpacaServerConfig`] — the 11 Alpaca drivers.
+    /// [`crate::AlpacaServerConfig`] — the Alpaca drivers.
     Alpaca,
     /// [`crate::ServerConfig`] — the plain-HTTP services.
     Core,
     /// [`crate::AdvertisingServerConfig`] — a plain-HTTP service that also
-    /// advertises its own URL to another process. rp alone today.
+    /// advertises its own URL to another process (rp).
     Advertising,
 }
 

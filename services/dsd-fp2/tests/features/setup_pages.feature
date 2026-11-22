@@ -10,8 +10,7 @@ Feature: Setup pages
   persisted. No password hash reaches a page. A POST that does not come
   from the page itself is refused with 403 and the file is untouched. With
   auth configured the pages answer 401 without a credential and render with
-  one. The config.get, config.apply and config.schema actions are gone:
-  SupportedActions is empty.
+  one. No action is offered: SupportedActions is empty.
 
   Scenario: The server page shows the current configuration and links to the device page
     Given a running FP2 service
@@ -84,7 +83,7 @@ Feature: Setup pages
     And the page shows an empty password input named "auth.password"
     And the page does not contain the stored password hash
 
-  Scenario: The configuration actions are gone
+  Scenario: No action is offered
     Given a running FP2 service
     When the supported actions are queried
     Then the supported actions are empty

@@ -3,12 +3,12 @@
 //! `qhy-camera`, `zwo-camera` and `svbony-camera` drive three unrelated vendor
 //! SDKs but present one ASCOM surface, so the rules that turn a client's
 //! `StartX`/`NumX`/`BinX` into a frame the sensor can actually deliver are the
-//! same rules written three times. They stayed the same rules until one copy
-//! drifted: a sub-pixel ROI clamped to one pixel in `qhy-camera` and truncated
-//! to zero in the other two, so a bin change could hand `StartExposure` a zero
-//! the driver had invented and then blame the client for it. Neither the code
-//! nor the tests showed it, because each driver curated its own case list — the
-//! missing behaviour and its missing test hid each other.
+//! same rules, written once here. Three copies drift: one that clamps a
+//! sub-pixel ROI to one pixel beside two that truncate it to zero lets a bin
+//! change hand `StartExposure` a zero the driver invented and then blame the
+//! client for it. Neither the code nor the tests would show it, because with
+//! each driver curating its own case list the missing behaviour and its missing
+//! test hide each other.
 //!
 //! # What belongs here
 //!
@@ -302,7 +302,7 @@ impl core::error::Error for GeometryError {}
 impl From<GeometryError> for ASCOMError {
     /// Every geometry failure is the client having asked for a frame the sensor
     /// cannot deliver, so they share one ASCOM code. Choosing it here rather
-    /// than at each driver's call site is the point: three `map_err`s were
+    /// than at each driver's call site is the point: three `map_err`s would be
     /// three chances to disagree about what a bad ROI is.
     fn from(error: GeometryError) -> Self {
         Self::invalid_value(error)
@@ -313,7 +313,7 @@ impl From<GeometryError> for ASCOMError {
 /// alignment rule.
 ///
 /// `sensor_w`/`sensor_h` are the *reported* full-frame extent — for a driver
-/// that aligns what it reports (see [`aligned_sensor_extent`]) that is the
+/// that aligns what it reports (see [`aligned_sensor`]) that is the
 /// aligned value, not the raw sensor, so the bound and the alignment rule
 /// agree with each other.
 ///
@@ -388,11 +388,11 @@ pub fn check(
 /// `ConformU`, and clients generally, take a full frame at each bin via
 /// `NumX = CameraXSize / bin`. Reporting the raw sensor size makes those binned
 /// full frames unachievable wherever `raw / bin` misses the alignment rule, and
-/// this was found by `ConformU` on real hardware twice: an ASI2600's 6248 / 2 is
-/// 3124, not a multiple of 8, and an SV605CC's 3008 / 3 is 1002, likewise. So a
-/// driver reports the largest multiple of `lcm(unit · bin)` that fits, giving up
-/// a few edge columns at full resolution to make every binned full frame exactly
-/// achievable.
+/// `ConformU` on real hardware fails a driver that reports it: an ASI2600's
+/// 6248 / 2 is 3124, not a multiple of 8, and an SV605CC's 3008 / 3 is 1002,
+/// likewise. So a driver reports the largest multiple of `lcm(unit · bin)` that
+/// fits, giving up a few edge columns at full resolution to make every binned
+/// full frame exactly achievable.
 ///
 /// Degenerate inputs return `max` unchanged rather than reducing it: an empty
 /// bin list, a bin list of zeroes, or a step that already exceeds the sensor.
@@ -424,10 +424,10 @@ fn aligned_sensor_extent(max: u32, supported_bins: &[u32], unit: u32) -> u32 {
 /// construction, and the width and height multiples cannot be swapped between
 /// the axes on the way in. Reporting a sensor sized for one rule while checking
 /// ROIs against another makes the binned full frame unachievable, which is the
-/// exact failure `ConformU` caught on hardware.
+/// failure `ConformU` reports on hardware.
 ///
 /// `None` is no rule, so there is nothing to align to and both extents pass
-/// through. No driver in this workspace passes it today — every sensor here
+/// through. No driver in this workspace passes it — every sensor here
 /// aligns its sub-frames to something — but a `None` that silently aligned
 /// anyway would be a validator disagreeing with what it reports.
 ///
@@ -549,8 +549,7 @@ impl PixelDepth {
 /// Why a downloaded frame could not become an [`ImageArray`].
 ///
 /// The `Display` text carries no format name: the driver knows which of its
-/// own formats it asked for and prefixes it, so the message reads the same as
-/// when each driver owned the whole unpack.
+/// own formats it asked for and prefixes it.
 #[derive(Debug)]
 pub enum FrameError {
     /// The buffer holds fewer bytes than `width × height × depth`.
@@ -646,12 +645,13 @@ pub fn to_image_array(
 /// Whether a downloaded frame is blank: every byte zero, or no bytes at all.
 ///
 /// A blank frame is treated as a failed readout, whatever status the SDK
-/// returned with it. The case that made it one was measured on Windows: a QHY
-/// readout in flight when the camera stopped answering blocked for about 85 s,
-/// then `GetQHYCCDSingleFrame` returned success with an all-zero frame — which
-/// a driver that trusts the status would publish as `ImageReady`. So a readout
-/// that comes back blank asks the driver's presence question, as any SDK
-/// failure does. If the camera has left the bus, the frame is discarded and
+/// returned with it. On Windows, a QHY readout in flight when the camera stops
+/// answering blocks for about 85 s, then `GetQHYCCDSingleFrame` returns success
+/// with an all-zero frame
+/// (`docs/validation/2026-10-06-qhy-camera-qhy178m-cfw-windows-departure/`) —
+/// which a driver that trusts the status would publish as `ImageReady`. So a
+/// readout that comes back blank asks the driver's presence question, as any
+/// SDK failure does. If the camera has left the bus, the frame is discarded and
 /// the capture fails; if it is still there, the frame is published as it is.
 ///
 /// An empty buffer is blank too: an empty frame is a failed readout as surely
@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn alignment_makes_every_binned_full_frame_valid_on_the_asi2600() {
         // 6248 reduces to 6240 so 6240/{1,2,3,4} are all multiples of 8; 4176
-        // is already aligned. Found by ConformU on real hardware.
+        // is already aligned. ConformU on real hardware fails the raw 6248.
         assert_eq!(aligned_sensor_extent(6248, &[1, 2, 3, 4], 8), 6240);
         assert_eq!(aligned_sensor_extent(4176, &[1, 2, 3, 4], 2), 4176);
         for bin in [1_u32, 2, 3, 4] {
@@ -938,9 +938,9 @@ mod tests {
 
     #[test]
     fn alignment_makes_every_binned_full_frame_valid_on_the_sv605cc() {
-        // Width step lcm(8,16,24,32) = 96, height step lcm(2,4,6,8) = 24. Also
-        // found by ConformU on real hardware — the same lesson, a second time,
-        // which is why it is one function now.
+        // Width step lcm(8,16,24,32) = 96, height step lcm(2,4,6,8) = 24.
+        // ConformU on real hardware fails the raw 3008 too, on a second
+        // vendor's sensor: the one function serves both.
         assert_eq!(aligned_sensor_extent(3008, &[1, 2, 3, 4], 8), 2976);
         assert_eq!(aligned_sensor_extent(3008, &[1, 2, 3, 4], 2), 3000);
         for bin in [1_u32, 2, 3, 4] {
@@ -954,7 +954,8 @@ mod tests {
         // The SV605CC is square, so the pair is only right if each axis used its
         // own multiple: 3008 aligns to 2976 under the width rule and to 3000
         // under the height rule. Passing the units by hand is where those could
-        // be swapped; there is no longer a way to.
+        // be swapped, and `aligned_sensor` takes the whole `Alignment` so they
+        // cannot be.
         assert_eq!(aligned_sensor(3008, 3008, &[1, 2, 3, 4], ASI), (2976, 3000));
         // No rule, nothing to align to.
         assert_eq!(
@@ -1034,9 +1035,8 @@ mod tests {
         assert_eq!(array[(0, 0, 0)], 0x1234_i32);
     }
 
-    /// The 8-bit path reads one byte per pixel. Before the drivers grew this
-    /// arm, an 8-bit frame was rejected as "buffer too small" because the
-    /// transform assumed 16-bit throughout.
+    /// The 8-bit path reads one byte per pixel. A transform that assumed
+    /// 16-bit throughout would reject an 8-bit frame as "buffer too small".
     #[test]
     fn eight_bit_pixels_are_one_byte_each() {
         let bytes: Vec<u8> = (0..64 * 48)

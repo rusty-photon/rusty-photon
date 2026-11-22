@@ -1,9 +1,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 //! Workspace-shared Fluent loader, locale resolver, and clap-derive companion.
 //!
-//! See [`docs/plans/i18n.md`](../../../docs/plans/i18n.md) for the strategy
-//! and [`docs/plans/archive/i18n-cli-spike.md`](../../../docs/plans/archive/i18n-cli-spike.md)
-//! for the spike that introduces this crate.
+//! See [`docs/plans/i18n.md`](../../../docs/plans/i18n.md) for the strategy.
 //!
 //! ## Typical use
 //!

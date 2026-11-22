@@ -121,7 +121,7 @@ impl Progress for NoProgress {
 
 /// The two views of one connection a tool body works with: `active`,
 /// whose calls the caller's cancellation reaches, and `cleanup`, whose
-/// calls it cannot (plan D9).
+/// calls it cannot.
 #[derive(Clone, Copy)]
 pub struct Rig<'a> {
     pub active: &'a dyn FlatsRig,
@@ -343,7 +343,8 @@ fn target_adu(max_adu: u32) -> Result<u32> {
 
 /// The proportional step: `current * (target / median)`, doubling when
 /// the median is zero. Unclamped — the caller applies the floor and the
-/// ceiling, because a step *below* the floor is information (plan D8).
+/// ceiling, because a step *below* the floor is information: it ends
+/// the pass as over-bright.
 fn proposed_duration(current: Duration, target_adu: u32, last_median: u32) -> Duration {
     if last_median == 0 {
         return current.saturating_mul(2);
@@ -905,7 +906,7 @@ async fn take_body(
         }
 
         let mut out_of_range = Vec::new();
-        // Frame n's statistics run while frame n + 1 exposes (plan D7).
+        // Frame n's statistics run while frame n + 1 exposes.
         let mut pending: Option<CaptureResult> = None;
         for index in 1..=count {
             debug!(filter = %label, frame = index, total = count, "capturing flat");
@@ -963,7 +964,7 @@ async fn take_body(
     Ok((filters, warnings))
 }
 
-/// Judge one captured flat (plan D7): a median outside the band is a
+/// Judge one captured flat: a median outside the band is a
 /// warning and an `out_of_range` entry; a failed measurement is a
 /// warning alone (there is no median to report). Neither is a failure.
 fn verify_frame(

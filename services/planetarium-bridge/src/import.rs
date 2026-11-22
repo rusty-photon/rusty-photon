@@ -4,10 +4,10 @@
 //! Every accepted Align produces one [`ImportRequest`] — bare ICRS
 //! coordinates plus provenance, never a name — submitted to rp's
 //! `add_target` MCP tool through `rp-mcp-client`. Delivery failures append
-//! the request to the on-disk [`Spool`](crate::spool::Spool); tool failures
+//! the request to the on-disk [`Spool`]; tool failures
 //! (rp actively rejected the call) are logged and dropped, because they
 //! would fail identically on replay. A single worker task owns the client
-//! session and the spool, which serializes deliveries and keeps replay
+//! and the spool, which serializes deliveries and keeps replay
 //! strictly FIFO.
 
 use std::path::PathBuf;
@@ -181,7 +181,7 @@ enum Delivery {
 }
 
 impl ImportWorker {
-    /// Run until cancelled. Owns the only rp session and the spool.
+    /// Run until cancelled. Owns the only rp client and the spool.
     pub async fn run(mut self) {
         self.run_inner().await;
         // Aligns still queued in the channel must survive the restart:
@@ -207,10 +207,10 @@ impl ImportWorker {
                 // Idle: drop the client. Clients live only across a
                 // delivery burst — a standing idle client holds an open
                 // stream into rp that stalls rp's own graceful shutdown
-                // (MSI verify: rp failed to stop, Error 1921, while an
-                // idle bridge sat connected). The transport is
-                // session-less (ADR-021), so that is the only reason
-                // left; every burst reconnects explicitly.
+                // (with an idle bridge connected, rp fails to stop: Error
+                // 1921 under verify-msi). The transport is session-less
+                // (docs/services/rp.md § MCP Server), so dropping the client
+                // loses nothing else; every burst reconnects explicitly.
                 if client.take().is_some() {
                     debug!("import queue idle; dropping the rp client");
                 }
@@ -421,22 +421,21 @@ async fn deliver(
             Delivery::Delivered
         }
         Err(McpCallError::Request(message)) => {
-            // The session is unusable; reconnect on the next attempt.
+            // The client is unusable; reconnect on the next attempt.
             *client = None;
             Delivery::Unreachable(message)
         }
-        // Malformed means the session is alive but the response violated
-        // the result convention — retrying would send the same request
+        // Malformed means rp answered but the response violated the
+        // result convention — retrying would send the same request
         // into the same handler, so treat it as a rejection rather than
         // spooling.
         Err(McpCallError::Tool(message) | McpCallError::Malformed(message)) => {
             Delivery::ToolRejected(message)
         }
         // rp refused the call for safety: `add_target` is ungated by
-        // default, so this only happens under an operator override. The
-        // session is alive and the align is still wanted once conditions
-        // clear, so it spools like an outage — without dropping the
-        // session.
+        // default, so this only happens under an operator override. rp
+        // answered and the align is still wanted once conditions clear,
+        // so it spools like an outage — without dropping the client.
         Err(refusal @ McpCallError::SafetyStopped { .. }) => {
             Delivery::Unreachable(refusal.to_string())
         }

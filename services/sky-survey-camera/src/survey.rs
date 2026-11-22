@@ -1,9 +1,10 @@
-//! NASA `SkyView` HTTP backend + thin disk cache for the v0 simulator.
+//! NASA `SkyView` HTTP backend + thin disk cache.
 //!
 //! The cache key is a `DefaultHasher`-derived hex string over the
 //! `SurveyRequest` fields; that is non-cryptographic and not stable
 //! across Rust versions, but the cache is local-only and operators
-//! clear `cache_dir` manually (see Behavioral Contract S3).
+//! clear `cache_dir` manually
+//! ([§ Caching](../../../docs/services/sky-survey-camera.md#caching)).
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

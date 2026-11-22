@@ -11,8 +11,7 @@
 //! with ASCII spaces to the next 2880-byte boundary; the data array
 //! is big-endian, then zero-padded to the next 2880-byte boundary.
 //!
-//! Floating-point and i64 BITPIX writes are out of scope per
-//! ADR-001 Amendment A.
+//! Floating-point and i64 BITPIX writes are out of scope.
 
 use std::io::Write;
 
@@ -255,7 +254,7 @@ pub fn write_i32_image<W: Write + ?Sized>(
 /// Internal: shared header+data serializer parameterized by per-pixel
 /// big-endian emit. `managed_pre_user` are reserved keyword cards we
 /// emit ourselves between the mandatory block and user-supplied cards
-/// (currently only BSCALE/BZERO for the u16 path).
+/// (BSCALE/BZERO, for the u16 path).
 fn serialize_image<T, F>(
     bitpix: i8,
     managed_pre_user: &[Card],
@@ -381,10 +380,9 @@ fn pad_key(key: &str) -> [u8; 8] {
 /// Emit one 80-byte card to `out`.
 ///
 /// Returns [`FitsError::InvalidKeyword`] if the value (or value +
-/// comment) cannot fit in a single 80-byte card. The previous version
-/// silently truncated overlong cards via `Vec::resize`, which could
-/// produce malformed FITS headers (e.g. a string value missing its
-/// closing quote) without surfacing any error.
+/// comment) cannot fit in a single 80-byte card. Truncating an overlong
+/// card instead would produce a malformed FITS header (e.g. a string
+/// value missing its closing quote) without surfacing any error.
 fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
     let start = out.len();
     out.extend_from_slice(&card.key);
@@ -397,8 +395,8 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
         }
         KeywordValue::Int(n) => {
             let s = format!("{n}");
-            // i64 fits comfortably in 20 chars (i64::MIN is 20 chars).
-            // Defensive check anyway in case a future numeric type lands.
+            // i64 fits in 20 chars (i64::MIN is 20 chars); the check is
+            // defensive.
             if s.len() > 20 {
                 return Err(card_overflow(card.key, "integer", s.len()));
             }
@@ -454,9 +452,9 @@ fn write_card(out: &mut Vec<u8>, card: &Card) -> Result<(), FitsError> {
     }
     let written = out.len().saturating_sub(start);
     if written > CARD_SIZE {
-        // Should be unreachable given the per-variant guards above;
-        // defensive net so a future code path can't slip an overflow
-        // past via the resize-truncate gap.
+        // Unreachable given the per-variant guards above. Without this
+        // net, a card longer than 80 bytes would be cut short silently by
+        // the `resize` below.
         return Err(card_overflow(card.key, "card", written));
     }
     // Right-pad the card with spaces to 80 bytes.

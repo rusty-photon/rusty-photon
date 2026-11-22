@@ -1,7 +1,7 @@
 //! Operator labels for ASCOM switch names.
 //!
-//! A Pegasus powerbox names its ports by number — `12V Output 1`, `USB Port
-//! 5`. *What is plugged into port 1* is a fact the operator knows and the
+//! A powerbox names its ports by position — `12V Output 1`, `USB Port 5`,
+//! `DC1`. *What is plugged into port 1* is a fact the operator knows and the
 //! driver cannot learn, so without somewhere to record it every Alpaca client
 //! shows the port number and nothing else. [`SwitchLabels`] is that place: a
 //! map in the service config that replaces the built-in name of a switch
@@ -26,7 +26,7 @@
 //!    with another label *or* with an unlabelled switch is caught here.
 //!
 //! Each driver parameterises the type with its own [`SwitchTable`], so the
-//! two Pegasus drivers share one implementation of the rules while keeping
+//! powerbox drivers share one implementation of the rules while keeping
 //! their own tables.
 
 use std::borrow::Cow;
@@ -269,7 +269,7 @@ mod tests {
     use super::*;
 
     /// Two connectors and one telemetry row that follows the first of them,
-    /// which is the shape both Pegasus drivers' tables reduce to here.
+    /// which is the shape every powerbox driver's table reduces to here.
     struct TestTable;
 
     const PORT_ONE: &str = "Output 1";

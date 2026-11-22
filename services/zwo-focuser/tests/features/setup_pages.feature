@@ -11,8 +11,8 @@ Feature: Setup pages
   an EAF that is not connected is left as the file has it. The overrides
   are edited on the EAF pages alone, never on the server page. With no EAF
   connected the server page is still served. A field the command line pins
-  is shown pinned and never persisted. The config.get, config.apply and
-  config.schema actions are gone.
+  is shown pinned and never persisted. The focuser offers no action, and
+  config.get, like any action name, answers that it is not implemented.
 
   The simulation backend presents one EAF-Simulated focuser, serial
   2a3b4c5d6e7f8091.
@@ -64,7 +64,7 @@ Feature: Setup pages
     Then the page reports the configuration was saved and nothing changed
     And the configuration file holds 0 at "/server/port"
 
-  Scenario: The config actions are gone
+  Scenario: No action is offered and config.get is not implemented
     Given a running zwo-focuser service with the simulation backend
     When the supported actions are queried on focuser device 0
     Then the supported actions are empty

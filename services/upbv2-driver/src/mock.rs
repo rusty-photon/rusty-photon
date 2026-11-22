@@ -240,7 +240,7 @@ fn joined<T: std::fmt::Display>(values: &[T]) -> String {
         .join(":")
 }
 
-/// Split a `P3:128` / `U5:1` command into its 1-based channel number and
+/// Split a `P5:128` / `U5:1` command into its 1-based channel number and
 /// its value. Returns `None` for anything that isn't `<family><n>:<value>`.
 fn split_indexed(command: &str, family: char) -> Option<(u8, &str)> {
     let (number, value) = command.strip_prefix(family)?.split_once(':')?;

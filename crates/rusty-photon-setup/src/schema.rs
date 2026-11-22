@@ -388,7 +388,7 @@ fn pointer_matches(pattern: &str, pointer: &str) -> bool {
 /// A node with no `$ref` is returned as-is. (Sibling keys like
 /// `default`/`description` on a `$ref` node are irrelevant to leaf
 /// classification, so they are dropped; a leaf reads its `default` off the
-/// node before resolving it, [`default_of`].)
+/// node before resolving it, in `default_of`.)
 #[must_use]
 pub fn resolve<'a>(node: &'a Value, root: &'a Value) -> &'a Value {
     if let Some(reference) = node.get("$ref").and_then(Value::as_str) {

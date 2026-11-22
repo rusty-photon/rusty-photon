@@ -13,7 +13,8 @@ default = []
 # Enables the staged USB inventory: a JSON document replaces the host scan so a
 # simulation build can exercise USB-port device claims with no hardware present.
 # Same convention as doctor's own `mock` feature, and absent from release builds
-# for the same reason. See docs/services/doctor.md "USB inventory".
+# for the same reason. See docs/services/doctor.md § The hardware gatherer,
+# "USB inventory".
 mock = []
 
 [lints]
@@ -31,8 +32,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 
 # The Windows COM-port listing reads the serial-port registry key in-process
-# (docs/services/doctor.md "Serial ports"). Crate-local: no other workspace
-# member reads the registry.
+# (docs/services/doctor.md § The hardware gatherer, "Serial ports").
+# Crate-local: no other workspace member reads the registry.
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.100.0"
 

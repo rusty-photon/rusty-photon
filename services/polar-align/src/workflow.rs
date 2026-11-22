@@ -597,8 +597,8 @@ async fn measure_sweep(
 }
 
 /// Axis: primary per mode, the alternate method as a best-effort
-/// cross-check (plan D9). The cross-check is `None` when the alternate
-/// method has no usable inputs.
+/// cross-check. The cross-check is `None` when the alternate method
+/// has no usable inputs.
 fn resolve_axis(
     mode: MeasurementMode,
     eph: &EphemerisCtx,
@@ -1038,7 +1038,8 @@ mod tests {
     }
 
     /// A matrix that exists but is degenerate must fail the same way
-    /// as a missing one: naming the point, current-position only.
+    /// as a missing one: an error naming the point in an
+    /// attitude-based mode, no cross-check in near-pole.
     #[test]
     fn test_measurement_attitude_degenerate_matrix_names_the_point() {
         let solve: SolveResult = serde_json::from_str(

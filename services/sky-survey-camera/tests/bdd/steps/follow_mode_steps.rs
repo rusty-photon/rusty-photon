@@ -1,5 +1,5 @@
-//! Step definitions for `follow_mode.feature` (contracts F1, F2, F5,
-//! F6, F8).
+//! Step definitions for `follow_mode.feature` (contracts F1, F2 and
+//! F4–F8).
 
 use crate::world::{MountStubBehavior, RotatorStubBehavior, SkySurveyCameraWorld};
 use cucumber::{given, then};

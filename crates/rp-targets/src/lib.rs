@@ -52,7 +52,7 @@ pub use model::{
     TargetSlugError, WriteStamp, OPERATOR_WRITER,
 };
 pub use redb_store::RedbTargetStore;
-// The plan value types live in `rp-vocabulary` (ADR-019); re-export the ones
+// The plan value types live in `rp-vocabulary`; re-export the ones
 // this store's public API is built from so consumers can name them as
 // `rp_targets::{Binning, IcrsCoord}` without a direct vocab dependency.
 pub use rp_vocabulary::{Binning, IcrsCoord};

@@ -81,7 +81,7 @@ async fn post_position(
     // light `StartExposure` consumes — letting test harnesses inject
     // "the camera saw something different from where the mount thinks
     // it is" without requiring the mount itself to lie about its
-    // position. The static-mode write path is unchanged.
+    // position. In static mode, POST writes the pointing directly.
     match &state.pointing_source {
         PointingSource::Static(p) => match p.update(req.ra, req.dec, req.rotation).await {
             Ok(_) => StatusCode::NO_CONTENT.into_response(),

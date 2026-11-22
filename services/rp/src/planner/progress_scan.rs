@@ -118,8 +118,8 @@ pub fn effective_thresholds(
 
 /// The grading metrics `rp` reads from a frame's sidecar
 /// `sections.grading`. Every field is optional and unknown keys are
-/// ignored: the section belongs to the grading plugin, and `rp` only
-/// picks out the four metrics its thresholds judge.
+/// ignored: the section belongs to whatever grades the frame, which is
+/// not `rp`, and `rp` only picks out the four metrics its thresholds judge.
 #[derive(Debug, Default, serde::Deserialize)]
 struct GradingMetrics {
     #[serde(default)]

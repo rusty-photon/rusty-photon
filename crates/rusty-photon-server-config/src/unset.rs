@@ -47,11 +47,10 @@ use serde_json::Value;
 /// back in **overall is not a guarantee this crate makes**: object members
 /// are visited in `serde_json::Map` iteration order, which is insertion
 /// order under `preserve_order` and sorted key order without it. That
-/// feature is on today only because an unrelated transitive dependency
-/// enables it and cargo unifies features — nothing here asks for it — so
-/// treat the result as a set and sort it if order matters. Callers that
-/// only ask "is it empty?" (the `persisted_config_shape` guards) are
-/// unaffected either way.
+/// feature is on only where something else in the build enables it —
+/// nothing here asks for it — so treat the result as a set and sort it if
+/// order matters. Callers that only ask "is it empty?" (the
+/// `persisted_config_shape` guards) are unaffected either way.
 #[must_use]
 pub fn explicit_nulls(value: &Value) -> Vec<String> {
     let mut found = Vec::new();

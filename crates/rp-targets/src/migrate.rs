@@ -17,9 +17,8 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 /// Checks a database's on-disk `schema_version` against
 /// [`CURRENT_SCHEMA_VERSION`].
 ///
-/// No migration steps exist yet (this is the first shipped version), so
-/// there is nothing to run *between* versions today — this function only
-/// classifies `found` against `CURRENT_SCHEMA_VERSION`. The first breaking
+/// `CURRENT_SCHEMA_VERSION` is the only version, so no migration step
+/// exists and this function only classifies `found` against it. A breaking
 /// `Target` re-shape adds an ordered step here, run inside the caller's
 /// single write transaction before the version key is bumped.
 ///
@@ -34,8 +33,8 @@ pub const fn check_schema_version(found: u32) -> Result<(), TargetStoreError> {
             supported: CURRENT_SCHEMA_VERSION,
         });
     }
-    // found < CURRENT_SCHEMA_VERSION would run ordered migration steps here;
-    // none exist yet since CURRENT_SCHEMA_VERSION is the first version.
+    // found < CURRENT_SCHEMA_VERSION runs the ordered migration steps here;
+    // with one version there are none.
     Ok(())
 }
 
@@ -49,7 +48,7 @@ mod tests {
     }
 
     #[test]
-    fn older_version_passes_pending_future_migration_steps() {
+    fn older_version_passes_with_no_migration_step_to_run() {
         check_schema_version(0).unwrap();
     }
 

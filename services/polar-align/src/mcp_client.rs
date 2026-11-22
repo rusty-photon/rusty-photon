@@ -1,6 +1,6 @@
 //! MCP client for calling rp's built-in tools, built on the standard
-//! `rp-mcp-client` crate (ADR-017): CA-pinned TLS and the observatory
-//! credential over verified HTTPS only.
+//! `rp-mcp-client` crate: CA-pinned TLS and the observatory credential
+//! over verified HTTPS only.
 //!
 //! Unit traps this wrapper normalizes for its callers: rp's `slew`
 //! takes RA in decimal hours while `plate_solve` returns and hints in
@@ -18,7 +18,7 @@ use tracing::debug;
 use crate::error::{PolarAlignError, Result};
 use crate::math::WcsMatrix;
 
-/// MCP client for one `rp` session.
+/// MCP client for one run's connection to `rp`.
 pub struct McpClient {
     inner: RpMcpClient,
 }
@@ -126,7 +126,7 @@ pub struct DetectedStars {
 
 impl McpClient {
     /// Connect to an MCP server at the given URL, presenting
-    /// `service_auth` per the ADR-017 credential policy.
+    /// `service_auth` only over verified HTTPS.
     ///
     /// # Errors
     ///

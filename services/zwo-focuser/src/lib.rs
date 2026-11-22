@@ -17,19 +17,18 @@
 //! `zwo-camera`, not the serial `rusty-photon-shared-transport` pattern
 //! `qhy-focuser`/`pa-scops-oag` use.
 //!
-//! See `docs/services/zwo-focuser.md` for the full design and
-//! `docs/plans/zwo-driver.md` for the decision record.
+//! See `docs/services/zwo-focuser.md` for the full design.
 //!
 //! ## Native dependency
 //!
-//! `zwo-rs` is built with only its `focuser` feature (ADR-014), so this binary
+//! `zwo-rs` is built with only its `focuser` feature, so this binary
 //! links exactly `libEAFFocuser` (+ `libudev` on Linux) — machines compiling
 //! this package need that SDK installed, even with the `simulation` feature,
 //! which removes the *focuser*, not the *link*. The libudev link is
 //! deliberate: the EAF blob references `udev_*` symbols without declaring
 //! libudev in its own `DT_NEEDED`, so this binary must carry the dependency
 //! for the loader to resolve them at startup — `libudev-dev`/`systemd-devel`
-//! at build time, `libudev1` at runtime (see ADR-014).
+//! at build time, `libudev1` at runtime.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -407,7 +406,8 @@ impl BoundServer {
 /// `EAFGetSerialNumber` requires an *open* focuser, so each is opened briefly
 /// to read its serial and then closed (the per-device connect handshake
 /// happens later on `set_connected(true)`). The EAF SDK is blocking C FFI, so
-/// every SDK call funnels through [`tokio::task::spawn_blocking`] (design doc
+/// every SDK call funnels through [`tokio::task::spawn_blocking`]
+/// ([§ Architecture](../../../docs/services/zwo-focuser.md#architecture),
 /// "Concurrency").
 async fn enumerate_focusers(sdk: zwo_rs::Sdk) -> Result<Vec<EnumeratedFocuser>, ZwoFocuserError> {
     let focusers =

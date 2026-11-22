@@ -2,7 +2,8 @@
 //!
 //! These tests spawn `OmniSim`, rp, and polar-align (plus an in-process
 //! plate-solver stub) and drive the polar-alignment workflow
-//! end-to-end via rp's REST API and the plugin's /status endpoint.
+//! end-to-end through polar-align's own REST endpoints (`POST /runs`,
+//! `/status` and the operator routes).
 
 #![allow(
     clippy::arithmetic_side_effects,

@@ -76,8 +76,7 @@ The division of labour with the consumer:
 ```
 
 The crate is testable in isolation (no filesystem, no clock, no
-network), and a mock `TargetStore` lets `rp`'s planner be tested without
-a real database.
+network).
 
 ## Data Model
 
@@ -177,9 +176,9 @@ pub struct SchedulingConstraints {
     pub meridian_window_hours: Option<f64>,
 }
 
-/// Per-target grading thresholds. The grading plugin owns the *meaning*
-/// of these; this crate only stores the overriding values. Each `None`
-/// falls back to the rp-config global default.
+/// Per-target grading thresholds. Each `None` falls back to the rp-config
+/// global default. *Stored here; rp's progress derivation applies them to
+/// the metrics in each frame's sidecar (§ Progress derivation).*
 pub struct GradingThresholds {
     pub max_hfr_pixels: Option<f64>,
     pub min_star_count: Option<u32>,
@@ -803,10 +802,11 @@ Crate-root attributes match the sibling crates:
   [testing.md](../skills/testing.md), which the workspace `clippy.toml`
   allows in test scope.
 - **Test doubles:** `InMemoryTargetStore` (a `BTreeMap<String, Target>`
-  behind the same trait) gives `rp`'s planner deterministic, clock-free
-  unit tests without a temp database. `MockTargetStore`
-  (`mockall::automock`) serves tests that want call-assertions; both
-  are behind `cfg(any(test, feature = "mock"))`.
+  behind the same trait) is a working store for a test that wants one
+  without a temp database, and `MockTargetStore` (`mockall::automock`)
+  serves tests that want call-assertions. Both are behind
+  `cfg(any(test, feature = "mock"))`, which no consumer enables: `rp`'s
+  tests use `RedbTargetStore` over a temporary directory.
 - **BDD (rp-side):** target CRUD via MCP; progress derivation
   over a fixture `data_directory` (total from filenames, good/rejected
   from fixture sidecars + thresholds); naming-pattern validation

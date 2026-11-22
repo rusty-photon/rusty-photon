@@ -17,8 +17,8 @@ use crate::tools::FlatsHandler;
 /// Build the router. `mcp_extra_allowed_hosts` extends rmcp's loopback
 /// `Host` allowlist (see [`crate::additional_allowed_hosts`]).
 pub fn build_router(handler: FlatsHandler, mcp_extra_allowed_hosts: Vec<String>) -> Router {
-    // Session-less, like rp's own transport (ADR-021): every request is
-    // served statelessly, which is what rp's client speaks.
+    // Session-less, like rp's own transport: every request is served
+    // statelessly, which is what rp's client speaks.
     let mut mcp_config = StreamableHttpServerConfig::default();
     mcp_config.legacy_session_mode = false;
     // A `tools/call` answers as plain JSON unless the body emits a
@@ -84,8 +84,8 @@ mod tests {
         assert_eq!(body, "calibrator-flats healthy");
     }
 
-    /// The provider answers `tools/list` with no rp in sight (plan D10):
-    /// rp dials it at startup and there is no cycle.
+    /// The provider answers `tools/list` with no rp in sight: rp dials it
+    /// at startup and there is no cycle.
     #[tokio::test]
     async fn tools_list_answers_without_rp() {
         let (addr, _dir) = serve().await;
