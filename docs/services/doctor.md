@@ -779,7 +779,10 @@ every `equipment.<kind>[].alpaca_url` entry including the singular
 `equipment.mount.alpaca_url`, the URL of each plugin
 registration rp dials — an event plugin's `plugins[].webhook_url`
 and a tool provider's `plugins[].mcp_server_url` — sentinel's
-`operation_watchdog.rp_url` and each Alpaca `monitors[]` entry —
+`operation_watchdog.rp_url` and each Alpaca `monitors[]` entry, and the
+MCP clients' URLs of rp — planetarium-bridge's `rp.mcp_server_url`, the
+`mcp_server_url` of session-runner, calibrator-flats, focus-model and
+polar-align, and session-runner's `events_url` when set —
 against the *target's* `server.tls`/`server.auth`: whether the URL's
 scheme, the client's CA trust and its credential match what the target
 serves. Without the join, a provisioning pass that turns a target TLS-on
@@ -807,8 +810,8 @@ reaches the join exactly as the config spells it.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `joins.client-transport` | fail | Any of: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; the target's certificate **is** the ACME wildcard while the client's host is loopback — the wildcard's only SAN is `*.<domain>`, so hostname verification fails no matter the scheme; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`) — the TLS handshake fails validation. All grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
-| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's — only targets with their own credential field (ui-htmx's `rp` block, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth`, every `equipment.<kind>[].auth` / `equipment.mount.auth`, and each `plugins[].auth`) are judged here. |
+| `joins.client-transport` | fail | Any of: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; the target's certificate **is** the ACME wildcard while the client's host is loopback — the wildcard's only SAN is `*.<domain>`, so hostname verification fails no matter the scheme; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`; each MCP client's `ca_cert` beside its `service_auth` pair) — the TLS handshake fails validation. All grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
+| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's, and no check judges an MCP client's `service_auth` pair against rp's `server.auth` — only targets with their own credential field (ui-htmx's `rp` block, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth`, every `equipment.<kind>[].auth` / `equipment.mount.auth`, and each `plugins[].auth`) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp` block carries
 `base_url` + `auth` + `ca_cert_path`, so both checks are fully
@@ -869,6 +872,22 @@ client's CA field is absent, regardless of whether doctor's own
 `pki/ca.pem` exists locally yet — only the *fix* is gated on that file's
 presence, so a from-scratch config dir (TLS provisioned before the CA leg
 ever ran) still surfaces the gap instead of silently skipping it.
+
+The MCP clients carry their URL of rp beside the shared
+`service_auth`/`ca_cert` pair the provisioning pass writes, so their
+registry entries come from that pass's `CLIENT_WIRING` table: the
+CA-trust field this join fixes is the `ca_cert` that `plan_client_wiring`
+writes (`/rp/ca_cert` for planetarium-bridge, `/ca_cert` for the rest),
+and the two cannot name different fields. `joins.client-transport` is
+fully fix-eligible for them: the scheme is rewritten in place and the
+`ca_cert` written from the resolved pki tree. The scheme rewrite is what
+puts the pair to use — `rp-mcp-client` sends the credential only over
+`https://`, verified against that `ca_cert` on a self-signed install and
+against the platform roots on an ACME one, where no `ca_cert` is written
+([ADR-027](../decisions/027-mcp-credentials-ride-https-verified-by-pin-or-platform-roots.md)),
+and a TLS-only rp refuses the plain-HTTP connection anyway.
+They carry no per-target credential, so `joins.client-auth` files
+nothing for them; an absent pair is the provisioning pass's to write.
 
 On an ACME install the hostname-verification leg's fix rewrites the
 loopback host onto the target's public name `<svc>.<domain>`. For
@@ -1794,7 +1813,9 @@ unattended — not configuration of doctor's own behavior.)
   (including rp's shared top-level `ca_cert`), absent-vs-wrong credential
   handling, rp's plate-solver/guider `joins.client-auth` fix-eligible path
   (writing the observatory credential to `plate_solver.auth` /
-  `equipment.mount.guiding.auth`), a non-loopback host resolving to
+  `equipment.mount.guiding.auth`), each MCP client's URL of rp joined at
+  its `CLIENT_WIRING` pointer with no `joins.client-auth` beside it, a
+  non-loopback host resolving to
   nothing, and that the scheme- and host-rewrite helpers never introduce
   the trailing slash a URL-parser round trip would. For the ACME name join
   and host rewrite: the resolver joins exactly `<svc>.<domain>` for the

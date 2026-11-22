@@ -625,15 +625,18 @@ mod tests {
     }
 
     #[test]
-    fn test_a_buildable_client_keeps_the_credential_for_the_policy_check() {
-        // No CA configured: the default client builds fine and the
-        // credential passes through — `basic_authorization` downstream
-        // still refuses to emit a header without a CA.
+    fn test_an_unpinned_client_presents_the_credential_over_https() {
+        // No CA configured: the default client verifies against the
+        // platform roots — an ACME install's trust — and the credential
+        // rides it.
         let connection = authed_connection(None);
         let (_client, auth) = event_client(&connection);
         assert!(auth.is_some());
         let header =
             rp_mcp_client::basic_authorization("https://localhost:1/x", auth, None).unwrap();
-        assert!(header.is_none(), "no CA, no header");
+        assert!(
+            header.is_some(),
+            "https with platform roots carries the header"
+        );
     }
 }

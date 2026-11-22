@@ -162,9 +162,9 @@ impl Default for RpConfig {
         Self {
             // rp's default port on the same host, over plain HTTP, which a
             // fresh rp serves until doctor provisions TLS. Doctor's client
-            // wiring writes `service_auth` and `ca_cert` beside this URL and
-            // leaves the URL as it is, and `rp-mcp-client` sends the
-            // credential only over https: the operator moves the URL to https.
+            // wiring writes `service_auth` and `ca_cert` beside this URL, and
+            // its `joins.client-transport` fix moves the URL to https once rp
+            // serves TLS: `rp-mcp-client` sends the credential only over https.
             mcp_server_url: McpServerUrl("http://127.0.0.1:11115/mcp".to_owned()),
             service_auth: None,
             ca_cert: None,

@@ -1065,8 +1065,8 @@ rejected — it names the blackboard file.
 | `server` | object | `{ "port": 11171 }` | The HTTP server for `/runs`, `/validate`, `/health` |
 | `workflows_dir` | path | required | Directory of workflow documents; first-party documents ship in the package |
 | `state_dir` | path | required | Blackboard + run-manifest persistence directory |
-| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint — every `POST /runs` run and standalone `/validate` use it (a run cannot start without it) |
-| `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe` |
+| `mcp_server_url` | string or null | null | `rp`'s MCP endpoint — every `POST /runs` run and standalone `/validate` use it (a run cannot start without it). Doctor `--fix` moves it to `https://` once `rp` serves TLS ([doctor.md](doctor.md) §Client-target joins) |
+| `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe`. When set, doctor judges and fixes it as it does `mcp_server_url` |
 | `rp_outage_grace` | duration | `"10m"` | How long a paused run keeps reconnecting after `rp` becomes unreachable before it fails (§ Safety Behavior). Startup self-resume waits unbounded |
 | `safety_poll_interval` | duration | `"10s"` | `get_safety_status` cadence while a run waits for safe conditions; a `safety_changed` event ends the wait sooner |
 | `resume_on_start` | bool | `true` | Resume every run manifest in `state_dir` on startup (§ Runs → Self-resume on startup) |
@@ -1083,9 +1083,15 @@ plain, unauthenticated HTTP.
 derived events subscription. The MCP client is
 built through the shared `rp-mcp-client` crate, which
 enforces the credentials-only-over-verified-HTTPS policy: `service_auth`
-without `ca_cert` (or on a non-HTTPS URL) is **not sent** — the client
-connects unauthenticated and logs a loud warning, so plaintext
-credentials never travel over cleartext.
+rides an `https://` URL verified against `ca_cert` when it is set and
+against the platform roots when it is not — an ACME install's trust,
+where no `ca_cert` is written
+([ADR-027](../decisions/027-mcp-credentials-ride-https-verified-by-pin-or-platform-roots.md)).
+On a non-HTTPS URL it is **not sent** — the client connects
+unauthenticated and logs a loud warning, so plaintext credentials never
+travel over cleartext. A `ca_cert` that cannot be loaded withholds the
+credential from the events subscription, which falls back to default
+trust.
 
 Unknown configuration keys are rejected at load — a misspelled field must
 not silently fall back to a default. CLI: `--config <path>` (default: the

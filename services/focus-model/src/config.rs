@@ -302,8 +302,9 @@ pub struct Config {
     /// observatory credential; doctor `--fix` wires it.
     #[serde(default)]
     pub service_auth: Option<rp_mcp_client::ClientAuthConfig>,
-    /// PEM CA path used to trust a TLS-enabled `rp`. `service_auth` is
-    /// only sent when this is set and the URL is https.
+    /// PEM CA path used to trust a TLS-enabled `rp` with a self-signed
+    /// certificate; unset, `rp` is verified against the platform roots.
+    /// `service_auth` is only sent when the URL is https.
     #[serde(default)]
     pub ca_cert: Option<String>,
     #[serde(default)]

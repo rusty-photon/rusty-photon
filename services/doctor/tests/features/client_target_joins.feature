@@ -4,14 +4,20 @@ Feature: Client-target joins
   rp equipment.<kind>[].alpaca_url entry including the singular
   equipment.mount.alpaca_url, the plugin registrations rp dials (an
   event plugin's webhook_url, a tool provider's mcp_server_url),
-  sentinel's Alpaca monitors, and sentinel's operation-watchdog rp_url.
+  sentinel's Alpaca monitors, sentinel's operation-watchdog rp_url, and
+  the MCP clients' URLs of rp (planetarium-bridge's rp.mcp_server_url,
+  the mcp_server_url of session-runner, calibrator-flats, focus-model
+  and polar-align, session-runner's events_url when set).
   These checks join that URL against the *named* service's own
   server.tls/server.auth: a scheme mismatch, or a self-signed target the
   client has no CA-trust field for — ui-htmx's per-target ca_cert_path,
-  rp's and sentinel's single top-level ca_cert — breaks every request
+  rp's and sentinel's single top-level ca_cert, the ca_cert beside an
+  MCP client's service_auth pair — breaks every request
   (joins.client-transport, fail); a target that requires auth while the
-  client carries no working credential 401s every request
-  (joins.client-auth, warn). The join only resolves for a loopback host —
+  client carries no working per-target credential 401s every request
+  (joins.client-auth, warn). An MCP client's shared service_auth pair is
+  no per-target credential, so it files no joins.client-auth.
+  The join only resolves for a loopback host —
   doctor diagnoses one config directory, so a different host names a
   service in a config file doctor cannot see. On an ACME install the
   target's public name <svc>.<domain> joins too, a target serving the
@@ -223,6 +229,44 @@ Feature: Client-target joins
     When I run doctor with --fix and --json
     Then the config file "sentinel.json" has the string "https://localhost:11115" at "/operation_watchdog/rp_url"
     And the report has no checks named "joins.client-auth"
+
+  Scenario Outline: An MCP client's plain-HTTP URL of a TLS-on rp is flagged, with no client-auth check beside it
+    Given a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115, "tls": { "cert": "/pki/acme-cert.pem", "key": "/pki/acme-key.pem" },
+                    "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      """
+    And a config file "<client>.json" containing:
+      """
+      { "<field>": "http://127.0.0.1:11115<path>" }
+      """
+    When I run doctor with --json
+    Then the report contains a "fail" check named "joins.client-transport" for service "<client>"
+    And that check's detail mentions "<field> uses http"
+    And the report has no checks named "joins.client-auth"
+
+    Examples:
+      | client           | field          | path                  |
+      | session-runner   | mcp_server_url | /mcp                  |
+      | session-runner   | events_url     | /api/events/subscribe |
+      | calibrator-flats | mcp_server_url | /mcp                  |
+      | focus-model      | mcp_server_url | /mcp                  |
+      | polar-align      | mcp_server_url | /mcp                  |
+
+  Scenario: --fix moves the bridge's rp URL to https and wires its pair once rp is provisioned
+    Given a config file "rp.json" containing:
+      """
+      { "server": { "port": 11115 } }
+      """
+    And a config file "planetarium-bridge.json" containing:
+      """
+      { "server": { "port": 11126 },
+        "rp": { "mcp_server_url": "http://127.0.0.1:11115/mcp" } }
+      """
+    When I run doctor with --fix and --json
+    Then the config file "planetarium-bridge.json" has the string "https://127.0.0.1:11115/mcp" at "/rp/mcp_server_url"
+    And the config file "planetarium-bridge.json" has "/rp/ca_cert" pointing at the pki file "ca.pem"
+    And the config file "planetarium-bridge.json" has the string "observatory" at "/rp/service_auth/username"
 
   Scenario: An ACME target behind a loopback client URL fails hostname verification and is flagged
     Given an acme.json for the domain "pier1.example.com"

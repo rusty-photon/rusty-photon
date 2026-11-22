@@ -536,8 +536,9 @@ combined with the subcommand (the mixed form would silently ignore them).
   browser.
 - **The MCP leg follows `rp-mcp-client`'s credential policy.** The targets inbox's
   `rp-mcp-client` presents `rp.auth` as HTTP Basic **only over verified
-  HTTPS** (a configured `ca_cert_path` and an `https` base URL); any other
-  combination connects unauthenticated with a loud warning — plaintext
+  HTTPS**: an `https` base URL, verified against `ca_cert_path` when it is
+  set and against the platform roots when it is not. A plain `http` base
+  URL connects unauthenticated with a loud warning — plaintext
   credentials never travel over cleartext. On the single-box plain-HTTP
   default this matches rp's own unauthenticated default.
 - **BFF-side TLS/auth is the shared server shape.** `server.tls` serves the UI

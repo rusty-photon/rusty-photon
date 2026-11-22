@@ -74,7 +74,7 @@ async fn session_runner_configured_authed(world: &mut SessionRunnerWorld) {
     start_session_runner_service_with(world, extra).await;
 }
 
-#[given("session-runner is configured with service_auth for rp but no ca_cert")]
+#[given("session-runner is configured with service_auth for rp over plain HTTP")]
 async fn session_runner_configured_auth_no_ca(world: &mut SessionRunnerWorld) {
     let mcp_url = format!("http://127.0.0.1:{}/mcp", rp_port(world));
     let fixture = pki(world);
@@ -123,7 +123,7 @@ async fn validation_reports_skipped(world: &mut SessionRunnerWorld) {
         .expect("catalog_validation is a string");
     assert!(
         catalog.starts_with("skipped: rp unreachable"),
-        "expected the catalog fetch to be rejected (credential must not be \
-         sent without a CA), got: {catalog}"
+        "expected the catalog fetch to be rejected (a credential is never \
+         sent over plain HTTP), got: {catalog}"
     );
 }

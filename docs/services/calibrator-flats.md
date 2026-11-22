@@ -421,8 +421,9 @@ tool argument, the filters come from the wheel, the fraction is fixed.
 
 `calibrator-flats doctor [--config <file>] [--json]` diagnoses the config
 read-only through the same load path — [doctor.md § Per-service
-doctors](doctor.md). Doctor `--fix` wires `service_auth` and `ca_cert`
-like every other MCP client of `rp`.
+doctors](doctor.md). Doctor `--fix` wires `service_auth` and `ca_cert`,
+and moves `mcp_server_url` to `https://` once `rp` serves TLS, like
+every other MCP client of `rp`.
 
 ### Registration in `rp`
 
