@@ -671,11 +671,12 @@ lock for `control.dec.reversal_frames` consecutive frames. Reversing
 Dec takes up the backlash each time, so the controller reverses only
 for an error that stays. The frames are counted from the last
 correction, by the side of the lock the error lies on, whatever its
-size, and a frame back on the side of the last correction or a
-star-lost frame starts the count again. The first Dec correction of a
-run goes either way. `control.dec.mode` selects `"auto"` (both
-directions), `"north"` or `"south"` (corrections in that direction
-only) or `"off"` (no Dec corrections).
+size. A frame back on the side of the last correction, a star-lost
+frame, a pause, a dither, a dither's abort and a new selection start
+the count again. The first Dec correction of a run goes either way.
+`control.dec.mode` selects `"auto"` (both directions), `"north"` or
+`"south"` (corrections in that direction only) or `"off"` (no Dec
+corrections).
 
 **The minimum move.** An axis whose error is smaller than
 `control.min_move_px` gets no correction in that frame. With `null` the
@@ -692,14 +693,20 @@ the error. The duration is then held to the
 `mount.max_pulse`.
 
 **Runaway.** On either axis, when `control.runaway.frames` consecutive
-frames each sent a correction in the same direction, and the error at
-the last of them is at least `control.runaway.min_error_px` and no
-smaller than at the first, the run stops with the reason `runaway`. The
-mount is not following the pulses, and more of them would not help.
-The step whose correction would be the last of them sends nothing. A
-star-lost frame sends no correction, so it ends the frames in a row,
-and the count starts again after a pause, a dither, a dither's abort or
-a new selection.
+frames each sent a correction in the same direction, the error at each
+of them is at least `control.runaway.min_error_px`, and the error at
+the last is no smaller than at the first, the run stops with the reason
+`runaway`. The mount is not following the pulses, and more of them
+would not help. Every frame's error counts, not only the first and the
+last: under a steady drift every correction goes the same way, and a
+gust that moves the stars for one frame must not stop a run whose mount
+follows. The step whose correction would be the last of them sends
+nothing. A star-lost frame sends no correction, so it ends the frames
+in a row, and the count starts again after a pause, a dither, a
+dither's abort or a new selection. A mount that moves the stars the
+wrong way doubles the error at each frame, and can carry the stars out
+of the search region before the count is full: the run then stays in
+`star_lost`, where it sends no pulse.
 
 ### Dither, settle and abort
 

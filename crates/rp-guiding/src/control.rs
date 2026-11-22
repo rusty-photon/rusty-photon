@@ -464,8 +464,8 @@ struct RunawayWatch {
 
 impl RunawayWatch {
     /// Notes this step's pulse on the axis and its error. True when it is
-    /// the last of `frames` in one direction, with the error at least
-    /// `min_error` and no smaller than at the first of them.
+    /// the last of `frames` in one direction, with the error of each of
+    /// them at least `min_error`, and the last no smaller than the first.
     fn note(&mut self, pulse: Option<Pulse>, error: f64, frames: u32, min_error: f64) -> bool {
         let Some(pulse) = pulse else {
             self.clear();
@@ -482,7 +482,7 @@ impl RunawayWatch {
         }
         match (self.errors.front(), self.errors.back()) {
             (Some(first), Some(last)) if self.errors.len() == frames => {
-                *last >= min_error && last >= first
+                last >= first && self.errors.iter().all(|error| *error >= min_error)
             }
             _ => false,
         }
@@ -519,7 +519,7 @@ mod tests {
     use crate::test_support::{calibrate_on, close, expose, select, send, setup, simulator};
     use guide_simulator::{
         Cloud, DecBacklash, DecSense, Drift, PeriodicTerm, PulseDelivery, SensorPoint, SimConfig,
-        Simulator,
+        Simulator, SkyOffset,
     };
     use rand::rngs::Xoshiro256PlusPlus;
     use rand::{SeedableRng, TryRng};
@@ -904,6 +904,11 @@ mod tests {
             run_away(&mut controller(runaway_params()), &level),
             Some((2, GuideAxis::Ra))
         );
+        let at_the_minimum = [along(3.0, 0.0), along(3.0, 0.0), along(3.0, 0.0)];
+        assert_eq!(
+            run_away(&mut controller(runaway_params()), &at_the_minimum),
+            Some((2, GuideAxis::Ra))
+        );
     }
 
     #[test]
@@ -915,6 +920,14 @@ mod tests {
         );
         let small = [along(1.0, 0.0), along(2.0, 0.0), along(2.9, 0.0)];
         assert_eq!(run_away(&mut controller(runaway_params()), &small), None);
+    }
+
+    #[test]
+    fn one_large_error_or_one_below_the_minimum_error_is_no_runaway() {
+        let lone = [along(1.0, 0.0), along(1.0, 0.0), along(4.0, 0.0)];
+        assert_eq!(run_away(&mut controller(runaway_params()), &lone), None);
+        let dip = [along(4.0, 0.0), along(2.5, 0.0), along(5.0, 0.0)];
+        assert_eq!(run_away(&mut controller(runaway_params()), &dip), None);
     }
 
     #[test]
@@ -1296,8 +1309,8 @@ mod tests {
             },
             ControlParams::default(),
         );
-        // The cloud leaves fifteen corrections East in the runaway count,
-        // and the stars come back far from the lock.
+        // Before the cloud every correction goes East, and the stars come
+        // back far from the lock.
         let guided = run.frames(100).unwrap();
         let last_lost = guided
             .iter()
@@ -1314,6 +1327,54 @@ mod tests {
             "{rms} px over {} frames after the cloud",
             after.len()
         );
+    }
+
+    #[test]
+    fn a_gust_under_a_fast_drift_does_not_run_away() {
+        let mut run = Run::start(
+            |config| {
+                config.mount.drift = Drift {
+                    east_arcsec_per_min: 30.0,
+                    north_arcsec_per_min: 0.0,
+                };
+            },
+            ControlParams::default(),
+        );
+        // At 30″ a minute the corrections soon all go one way, against the
+        // drift: guide until the last fifteen frames each sent one.
+        let mut run_of = (None, 0);
+        for _ in 0..300 {
+            let sent = run.frame().unwrap().step.and_then(|step| step.ra);
+            run_of = match (sent, run_of) {
+                (Some(pulse), (Some(direction), count)) if pulse.direction == direction => {
+                    (Some(direction), count + 1)
+                }
+                (Some(pulse), _) => (Some(pulse.direction), 1),
+                (None, _) => (None, 0),
+            };
+            if run_of.1 >= 15 {
+                break;
+            }
+        }
+        assert!(run_of.1 >= 15, "the corrections never all went one way");
+        // A gust moves the field 7″ the drift's way for one frame.
+        let side = run.sim.mount().side_of_pier();
+        let gust = |sim: &mut Simulator, east: f64| {
+            sim.mount_mut()
+                .slew(SkyOffset::new(east, 0.0), Duration::ZERO, side)
+                .unwrap();
+        };
+        gust(&mut run.sim, 7.0);
+        let hit = run.frame().unwrap();
+        gust(&mut run.sim, -7.0);
+        assert!(
+            hit.off_px > 3.0,
+            "the gust moved the field {} px",
+            hit.off_px
+        );
+        let after = run.frames(30).unwrap();
+        let rms = rms(&after[10..]);
+        assert!(rms < 1.0, "{rms} px after the gust");
     }
 
     #[test]
@@ -1368,12 +1429,28 @@ mod tests {
     }
 
     #[test]
-    fn a_mount_that_moves_the_wrong_way_runs_away() {
+    fn a_mount_that_moves_ra_the_wrong_way_runs_away() {
+        let mut run = Run::start(drifting, ControlParams::default());
+        run.frames(20).unwrap();
+        run.sim.mount_mut().set_rate_factors(-1.0, 1.0).unwrap();
+        let error = (0..100).find_map(|_| run.frame().err()).unwrap();
+        assert_eq!(
+            error,
+            ControlError::Runaway {
+                axis: GuideAxis::Ra
+            }
+        );
+    }
+
+    #[test]
+    fn a_mount_reversed_on_both_axes_loses_its_stars_and_pulses_no_more() {
         let mut run = Run::start(drifting, ControlParams::default());
         run.frames(20).unwrap();
         run.sim.mount_mut().set_rate_factors(-1.0, -1.0).unwrap();
-        let error = (0..100).find_map(|_| run.frame().err()).unwrap();
-        assert!(matches!(error, ControlError::Runaway { .. }), "{error:?}");
+        // The error doubles each frame and carries the stars out of the
+        // search region before fifteen errors reach the minimum.
+        let guided = run.frames(100).unwrap();
+        assert!(guided[80..].iter().all(|frame| frame.step.is_none()));
     }
 
     #[test]
