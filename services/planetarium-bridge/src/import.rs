@@ -425,18 +425,17 @@ async fn deliver(
             *client = None;
             Delivery::Unreachable(message)
         }
-        // Malformed means the session is alive but the response violated
-        // the result convention — retrying would send the same request
+        // Malformed means rp answered but the response violated the
+        // result convention — retrying would send the same request
         // into the same handler, so treat it as a rejection rather than
         // spooling.
         Err(McpCallError::Tool(message) | McpCallError::Malformed(message)) => {
             Delivery::ToolRejected(message)
         }
         // rp refused the call for safety: `add_target` is ungated by
-        // default, so this only happens under an operator override. The
-        // session is alive and the align is still wanted once conditions
-        // clear, so it spools like an outage — without dropping the
-        // session.
+        // default, so this only happens under an operator override. rp
+        // answered and the align is still wanted once conditions clear,
+        // so it spools like an outage — without dropping the client.
         Err(refusal @ McpCallError::SafetyStopped { .. }) => {
             Delivery::Unreachable(refusal.to_string())
         }

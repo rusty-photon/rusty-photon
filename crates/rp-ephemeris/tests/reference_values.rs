@@ -2,10 +2,10 @@
 //! Astropy's values in `refvals/*.json`, within 1e-4°.
 //!
 //! `refvals/gen.py`, run by hand, writes those files (see the README in
-//! that directory). None is committed, so the test finds no file, prints
-//! a note to stderr and passes without checking anything. With the files
-//! present it cross-validates the crate against an independent
-//! implementation, which the unit tests do not.
+//! that directory). None is committed, so the test finds no file and
+//! passes without checking anything. With the files present it
+//! cross-validates the crate against an independent implementation, which
+//! the unit tests do not.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
