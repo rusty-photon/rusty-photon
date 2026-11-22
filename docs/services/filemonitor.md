@@ -69,10 +69,10 @@ Configuration sections:
 - **file**: Path to monitor and polling interval (humantime string, e.g. `"60s"`)
 - **parsing**: Multiple rule types (contains, regex) with safe/unsafe outcomes
 - **server**: ASCOM Alpaca server configuration (port, bind address, optional TLS/auth)
-- **server.auth**: Optional HTTP Basic Auth credentials (username, Argon2id password_hash). See [ADR-003](../decisions/003-authentication-for-device-access.md).
+- **server.auth**: Optional HTTP Basic Auth credentials (username, Argon2id password_hash).
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -264,8 +264,7 @@ sudo apt-get install ./rusty-photon-filemonitor_*.deb
 `apt-get install ./<file>`, not `dpkg -i`, so that the package's runtime
 dependencies resolve. This installs the binary to `/usr/bin/rusty-photon-filemonitor`, enables and
 starts the `rusty-photon-filemonitor` systemd unit, and creates the shared
-`rusty-photon` system user (see
-[ADR-012](../decisions/012-service-packaging-architecture.md)). The package
+`rusty-photon` system user. The package
 ships **no config file**: the service self-creates its config with defaults
 on first start at `/var/lib/rusty-photon/.config/rusty-photon/filemonitor.json`
 (also reachable via the `/etc/rusty-photon` symlink). Edit it to point at
@@ -297,7 +296,7 @@ The formula's `service do` block makes it a launchd service; see
 
 #### Windows — suite `.msi` installer
 filemonitor ships as a feature of the family-wide
-`rusty-photon-<version>-x64.msi` (ADR-015) — select it under **Drivers** in
+`rusty-photon-<version>-x64.msi` — select it under **Drivers** in
 the installer UI, or silently with
 `msiexec /qn /i rusty-photon-<version>-x64.msi ADDLOCAL=Core,Filemonitor`.
 It installs as the auto-start Windows service `rusty-photon-filemonitor`
@@ -315,7 +314,7 @@ cargo build --release -p filemonitor
 
 #### Linux (systemd)
 A hardened systemd unit is provided at `pkg/rusty-photon-filemonitor.service`
-(network-only service class per ADR-012). The `.deb` package enables and
+(the network-only service class). The `.deb` package enables and
 starts the unit on install; the `.rpm` package enables it, and it starts at
 the next boot or with `systemctl start`. Manual setup:
 

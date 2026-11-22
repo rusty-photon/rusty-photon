@@ -6888,9 +6888,9 @@ Semantics that differ from an operator add:
   pending target is created beside it with a suffixed slug (the
   protection is enforced in rp, not left to the bridge's courtesy).
   No match creates.
-- **The `catalog_ref`-match branch of slug allocation is never
-  consulted**: two imports 15′ apart that both resolve to "NGC 7000"
-  are two targets (mosaic panels), not one. An import never takes over
+- **A shared catalog name does not make the same target**: two imports
+  15′ apart that both resolve to "NGC 7000" are two targets (mosaic
+  panels), not one. An import never takes over
   an existing slug — a base-slug collision always suffix-allocates.
 - **Naming by reverse cone-search** (`rp_catalog::nearest`, one query
   over the one logical catalog): entries carry a class, each class has

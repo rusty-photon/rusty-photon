@@ -2,7 +2,7 @@
 //! §5.6).
 //!
 //! Each `@pebble` scenario runs a private Pebble (Let's Encrypt's official
-//! ACME test server) on dynamic ports, its HTTPS endpoint served with a
+//! ACME test server) on reserved test ports, its HTTPS endpoint served with a
 //! `rusty_photon_tls::test_cert`-minted certificate, and points Pebble's
 //! validating resolver at the challtestsrv DNS sidecar. Doctor reaches it
 //! through the production knobs an internal ACME directory would use:
@@ -326,9 +326,11 @@ impl PebbleHandle {
     /// Spawn the pair, with Pebble issuing certificates valid for
     /// `validity_seconds`, and wait until every endpoint is proven this
     /// start's own. Neither child can bind port 0 and report the port it
-    /// got, so the ports are picked bind-and-drop, and a concurrent process
-    /// can take one before the children claim it — a start that cannot
-    /// prove its endpoints is retried on fresh ports.
+    /// got, so the ports come from the reserved test band, below the
+    /// ephemeral range every `bind(0)` and outgoing connection on the host
+    /// draws from. Another process using the band can still take one before
+    /// the children claim it, so a start that cannot prove its endpoints is
+    /// retried on fresh ports.
     pub async fn start(validity_seconds: u64) -> Self {
         let mut last_error = String::new();
         for attempt in 1..=3 {
@@ -344,8 +346,16 @@ impl PebbleHandle {
     }
 
     async fn try_start(validity_seconds: u64) -> Result<Self, String> {
+        // The three probes run at once: each waits for a refused connect,
+        // which takes about 2 s on the Windows CI runner.
+        let ports: [u16; 3] = tokio::join!(
+            bdd_infra::reserved_test_port_async(),
+            bdd_infra::reserved_test_port_async(),
+            bdd_infra::reserved_test_port_async(),
+        )
+        .into();
         let (mut handle, sidecar) =
-            bdd_infra::off_loop(move || Self::spawn_pair(validity_seconds)).await;
+            bdd_infra::off_loop(move || Self::spawn_pair(validity_seconds, ports)).await;
         match handle.wait_ready(sidecar).await {
             Ok(()) => Ok(handle),
             Err(e) => Err(format!("{e}; children output:\n{}", handle.child_logs())),
@@ -354,9 +364,10 @@ impl PebbleHandle {
 
     /// The synchronous half of a start, run off the poll loop every
     /// scenario shares (docs/skills/testing.md §5.7): mint the endpoint
-    /// certificate, pick the ports, write Pebble's config and spawn both
-    /// children. Returns the handle and what identifies its sidecar.
-    fn spawn_pair(validity_seconds: u64) -> (Self, Sidecar) {
+    /// certificate, write Pebble's config and spawn both children on
+    /// `ports`, the ACME, management and DNS ports in that order. Returns
+    /// the handle and what identifies its sidecar.
+    fn spawn_pair(validity_seconds: u64, ports: [u16; 3]) -> (Self, Sidecar) {
         let (pebble_path, challtestsrv_path) =
             env_paths().expect("@pebble scenario ran without PEBBLE_PATH/PEBBLE_CHALLTESTSRV_PATH");
         let dir = tempfile::tempdir().expect("pebble scratch dir");
@@ -376,7 +387,7 @@ impl PebbleHandle {
         )
         .expect("pebble endpoint cert");
 
-        let [acme_port, chall_mgmt_port, dns_port] = bdd_infra::ephemeral_ports::<3>();
+        let [acme_port, chall_mgmt_port, dns_port] = ports;
         // The address the sidecar answers every A query with, minted for
         // this start so a DNS answer carrying it can only come from this
         // start's challtestsrv. Never in 127.0.x.x, so never the sidecar's
@@ -490,10 +501,10 @@ impl PebbleHandle {
     /// own; bail out early when either child has already exited (a stolen
     /// port kills Pebble at bind time).
     ///
-    /// Any of the ports can be held by another process instead, another
-    /// scenario's pair among them, and a check that asks only "does
-    /// something answer?" adopts it. So each check asks for something only
-    /// this start's children have:
+    /// Any of the ports can be held by another process that draws from the
+    /// same band, and a check that asks only "does something answer?"
+    /// adopts its server. So each check asks for something only this
+    /// start's children have:
     ///
     /// - the ACME directory answers through a client that trusts only the
     ///   CA minted for this start;

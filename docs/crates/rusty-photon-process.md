@@ -162,11 +162,12 @@ group of the caller's session that reaches for the terminal — `ssh` asking
 for a passphrase or to confirm a host key, `sudo` for a password — is stopped
 by `SIGTTIN`/`SIGTTOU` and sits silent until its deadline. A new session has
 no controlling terminal, so the same child fails at once, with an error of
-its own on stderr for the caller to report. Unattended runs never had a
-terminal to prompt on; an interactive one no longer pretends to.
+its own on stderr for the caller to report. An unattended run has no
+terminal to prompt on in any case, and an interactive run's child is not
+handed the caller's.
 
-**What a tree of its own costs.** Cleanup that works by process group no
-longer reaches the child:
+**What a tree of its own costs.** Cleanup that works by process group does
+not reach the child:
 
 - A terminal's Ctrl+C goes to the foreground process group, so it reaches
   the caller but not the child. A caller killed outright — Ctrl+C on an
@@ -181,7 +182,9 @@ longer reaches the child:
   reaches the first child's tree, not the second's, which is in a tree of its
   own. The inner deadline is enforced by the first child, so it dies with
   it: the inner child then runs on until it next writes to its closed pipe,
-  or to its end if it never does. No caller nests runs today.
+  or to its end if it never does. Doctor's aggregation nests runs on macOS
+  and Windows, where the `doctor --json` of `qhy-camera`, `zwo-camera` and
+  `svbony-camera` takes its USB inventory as a run of its own.
 
 systemd is unaffected: it stops a unit's whole cgroup, children included.
 
@@ -261,7 +264,7 @@ and below anything that would stall what waits on it:
 | `plate-solver` ASTAP | the request's `timeout` | stderr `Tail` | Per request, see [plate-solver.md](../services/plate-solver.md#subprocess-supervision). |
 | `sentinel` discovery listings | 10 s, zero grace | stdout `Full`, stderr `Tail` | Listings are small and the tools quick. |
 | `sentinel` restart commands and recovery checks | their share of the restart budget, zero grace, finish if abandoned | stderr `Tail` | The budget is the caller's whole allowance for a restart and its recovery, so nothing runs past it while sentinel runs; see [sentinel.md](../services/sentinel.md#service-health-supervision) for a shutdown mid-restart. |
-| `bdd-infra` ConformU runner, per mode | 30 min | stdout line callback, stderr `Inherit` | The `conformu.yml` step's own limit: no run is allowed longer anywhere CI runs it, and a local `cargo test` against a wedged ConformU now fails with the mode named instead of hanging. |
+| `bdd-infra` ConformU runner, per mode | 30 min | stdout line callback, stderr `Inherit` | The `conformu.yml` step's own limit: no run is allowed longer anywhere CI runs it, and a local `cargo test` against a wedged ConformU fails with the mode named rather than hanging. |
 
 ## Errors
 

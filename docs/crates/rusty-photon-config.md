@@ -15,7 +15,9 @@ and this document does not.
 
 - Resolve the config path: `--config` if given, else the platform default
   (`~/.config/rusty-photon/<service>.json` on Linux,
-  `%PROGRAMDATA%\rusty-photon\<service>.json` on Windows — ADR-015).
+  `%PROGRAMDATA%\rusty-photon\<service>.json` on Windows, machine-wide
+  because the services run under service accounts whose own profiles are
+  buried under `systemprofile`).
 - The startup bootstrap (`resolve_and_init`): mint each device's ASCOM
   `UniqueID` into the file, and materialize the default file on first start.
 - Load the file as the service's configuration type (`load_file`), with errors
@@ -27,11 +29,12 @@ and this document does not.
 Each service's top-level configuration type implements `ConfigFile`. It is a
 `serde` type, plus an optional `check()` for rules a parse cannot express — a
 rule that spans several blocks, for example. Most services have none and
-implement the trait with an empty body. Three services do have such rules:
+implement the trait with an empty body. Seven services do have such rules:
 `star-adventurer-gti`'s auto-flip offset rule, `sky-survey-camera`'s follow-mode
-rules, and `rp`'s field validation (the rules its setup page's save applies). In
-each, the loader and `check()` share one implementation, so the bootstrap and
-the load cannot disagree about them.
+rules, and the field rules that the setup pages of `rp`, `filemonitor`,
+`ppba-driver`, `upbv2-driver` and `gemini-powerbox-adv3-driver` also apply on
+save. In each, the loader and `check()` share one implementation, so the
+bootstrap and the load cannot disagree about them.
 
 A file "loads" when it is valid JSON, deserializes as the type, and passes
 `check()`. Both the loader and the bootstrap use this one definition, so they

@@ -4,8 +4,7 @@ Plans live in [`docs/plans/`](../plans/) while their work is in flight and
 move to [`docs/plans/archive/`](../plans/archive/) once delivered. Archiving
 is a deliberate step: it keeps the active `docs/plans/` directory a true
 to-do list, and it preserves the plan as a historical record (rationale,
-hardware-validation notes, design decisions) that code and design docs link
-back to.
+hardware-validation notes, design decisions).
 
 ## When to archive
 

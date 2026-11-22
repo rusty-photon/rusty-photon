@@ -437,20 +437,6 @@ mod reserved_port_tests {
         assert_eq!(with_spawn_lock(|| 7), 7);
     }
 
-    #[test]
-    fn ephemeral_ports_are_distinct_and_bindable() {
-        let ports = ephemeral_ports::<3>();
-        assert!(ports.iter().all(|&port| port != 0), "{ports:?}");
-        assert!(
-            ports[0] != ports[1] && ports[1] != ports[2] && ports[0] != ports[2],
-            "{ports:?}"
-        );
-        for port in ports {
-            std::net::TcpListener::bind(("127.0.0.1", port))
-                .unwrap_or_else(|e| panic!("port {port} was not released: {e}"));
-        }
-    }
-
     /// The async form waits for the lock without blocking the loop: on a
     /// single-threaded runtime, a closure under the synchronous form on a
     /// pool thread holds the lock while the loop keeps ticking, and the
@@ -1040,8 +1026,7 @@ pub async fn off_loop<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 }
 
 /// The lock that orders process creation in this test process against
-/// other process creation, and against the probes that bind a port only to
-/// hand it to a child ([`ephemeral_ports`]).
+/// other process creation.
 ///
 /// [`off_loop`] runs spawns in parallel on blocking-pool threads, not one
 /// at a time on the single poll loop. On targets without
@@ -1049,25 +1034,22 @@ pub async fn off_loop<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 /// two steps, creating it and only then marking it close-on-exec, for a
 /// child's stdio pipes and for every socket alike. A fork that lands
 /// between the two steps inherits the descriptor: a stray copy of a pipe's
-/// write end keeps a child's stdout from ever reaching EOF, and a stray
-/// copy of a probe's listener keeps its port bound after the probe let it
-/// go. Spawns and those probes all take this lock, so none of them forks
-/// or makes its descriptors while another holds it.
+/// write end keeps a child's stdout from ever reaching EOF. Spawns all take
+/// this lock, so none of them forks while another makes its pipes.
 ///
-/// That is all it orders. A socket made anywhere else at the instant of a
-/// fork (a step's stub listener, a reqwest connection, on the poll loop or
-/// a runtime worker) can still be inherited on macOS: std's `Command` does
-/// not expose `posix_spawn`'s close-every-other-descriptor default, so no
-/// lock in this crate closes that window.
+/// That is all it orders. A socket made at the instant of a fork (a step's
+/// stub listener, a reqwest connection, on the poll loop or a runtime
+/// worker) can still be inherited on macOS: std's `Command` does not expose
+/// `posix_spawn`'s close-every-other-descriptor default, so no lock in this
+/// crate closes that window.
 ///
-/// It covers the spawn or the probe alone: never a child's life, a wait or
-/// a binary lookup. It is tokio's mutex, so code on the poll loop waits for
-/// it without blocking the loop ([`with_spawn_lock_async`]), and a panic
-/// while it is held releases it like any other unwind.
+/// It covers the spawn alone: never a child's life, a wait or a binary
+/// lookup. It is tokio's mutex, so code on the poll loop waits for it
+/// without blocking the loop ([`with_spawn_lock_async`]), and a panic while
+/// it is held releases it like any other unwind.
 static SPAWN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Run `spawn`, one process creation or one listener probe, holding the
-/// process-wide spawn lock.
+/// Run `spawn`, one process creation, holding the process-wide spawn lock.
 ///
 /// For synchronous code: a closure under [`off_loop`], or a plain
 /// `#[test]`. The lock's reasons are on `SPAWN_LOCK`, below this crate's
@@ -1092,54 +1074,6 @@ pub fn with_spawn_lock<T>(spawn: impl FnOnce() -> T) -> T {
 pub async fn with_spawn_lock_async<T>(spawn: impl FnOnce() -> T) -> T {
     let _held = SPAWN_LOCK.lock().await;
     spawn()
-}
-
-/// `N` distinct ephemeral loopback ports, for children that must be told
-/// their port because they cannot bind port 0 and print the one they got.
-///
-/// Binds `127.0.0.1:0` `N` times, holds every listener until all `N` ports
-/// are read so no two collide, then lets them go for the children to claim.
-/// The ports come from the OS's ephemeral range, so another process can
-/// bind one before its child does, and that process can be a server of the
-/// child's own kind, which a readiness check asking only "does something
-/// answer?" adopts as the child. A caller therefore proves that what
-/// answers on each port is its own child, and starts again on fresh ports
-/// when it cannot. A child that binds port 0 and prints its port needs
-/// none of this ([`follow_bound_port`], [`parse_port_after`]), and
-/// [`reserved_test_port_async`] is the other shape, a band below the
-/// ephemeral floor probed by connecting, for a port a test must know
-/// before the child starts.
-///
-/// The probe runs under the spawn lock: on some targets a socket is made in
-/// two steps, and a fork landing between them would keep a copy of a
-/// listener, and so its port, bound after the probe let it go.
-///
-/// # Panics
-///
-/// Panics if a listener cannot be bound or read back, or, as
-/// [`with_spawn_lock`] does, when called from within an async context,
-/// where it runs under [`off_loop`] instead.
-#[must_use]
-pub fn ephemeral_ports<const N: usize>() -> [u16; N] {
-    with_spawn_lock(bind_ephemeral_ports::<N>)
-}
-
-fn bind_ephemeral_ports<const N: usize>() -> [u16; N] {
-    let listeners: Vec<std::net::TcpListener> = (0..N)
-        .map(|_| {
-            std::net::TcpListener::bind("127.0.0.1:0")
-                .unwrap_or_else(|e| panic!("bind an ephemeral loopback port: {e}"))
-        })
-        .collect();
-    let mut ports = [0u16; N];
-    for (port, listener) in ports.iter_mut().zip(&listeners) {
-        *port = listener
-            .local_addr()
-            .unwrap_or_else(|e| panic!("read back an ephemeral port: {e}"))
-            .port();
-    }
-    debug!(?ports, "probed ephemeral ports");
-    ports
 }
 
 /// Spawn `binary`, feed it `stdin_data`, and reap its `Output`.

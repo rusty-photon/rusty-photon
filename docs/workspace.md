@@ -133,26 +133,36 @@ retelling them. Everything else a record holds is reached through
 | [docs/skills/hardware-validation.md](skills/hardware-validation.md) | Skill: validating a driver against real hardware — the ConformU version gate, the run, and the `docs/validation/` record |
 | [docs/skills/bazel-remote-cache.md](skills/bazel-remote-cache.md) | Skill: using the self-hosted Bazel remote cache |
 | [docs/skills/raspberry-pi-runner.md](skills/raspberry-pi-runner.md) | Skill: the Pi 5 self-hosted ARM64 nightly runner |
+| [docs/skills/proxmox-runner-pool.md](skills/proxmox-runner-pool.md) | Skill: the ephemeral x86_64 Linux runner pool on Proxmox — the VM template, the pool script, and the routing of PR checks to it |
+| [docs/skills/rig-development.md](skills/rig-development.md) | Skill: a near-real-time dev loop between a dev machine and the field rig's Raspberry Pi |
+| [docs/skills/babysitting-prs.md](skills/babysitting-prs.md) | Skill: shepherding an open pull request through CI and code review to merge readiness |
+| [docs/skills/code-review.md](skills/code-review.md) | Skill: reviewing a pull request and triaging its findings — what to look for, the rating step, the record |
 | **Crate design docs** (substantial workspace libraries — see [docs/crates/](crates/)) | |
 | [docs/crates/guide-simulator.md](crates/guide-simulator.md) | `guide-simulator` — the mount model and the star renderer the guider's tests close the loop through: what makes up the pointing, how a mount delivers a pulse and the Star Adventurer GTi's preset, seeing and clouds, the renderer, and the truth each frame carries |
 | [docs/crates/rp-focus-curve.md](crates/rp-focus-curve.md) | `rp-focus-curve` — the hyperbolic V-curve a star traces through focus and its weighted fit, shared by the focus-model provider's sweep and `rp`'s guide-train sweep: the model, the starts and the refinement, what three samples fit, the clamped R², and what stays the sweeps' own |
 | [docs/crates/rp-catalog.md](crates/rp-catalog.md) | `rp-catalog` — the embedded sky catalog: what it holds and from which sources, name resolution, the class-tiered nearest-neighbor query that names a coordinate, the packed blob and why it is packed, and how the data is regenerated |
 | [docs/crates/rp-ephemeris.md](crates/rp-ephemeris.md) | `rp-ephemeris` — `Ephemeris` trait, ERFA wrapping, panic-safety + NaN-degradation, derived helpers, time-scale treatment |
-| [docs/crates/rp-targets.md](crates/rp-targets.md) | `rp-targets` — `redb`-backed imaging-plan store: targets, acquisition goals, per-target grading-threshold + scheduling-constraint overrides; `TargetStore` trait. Design stage; crate not yet built. |
+| [docs/crates/rp-targets.md](crates/rp-targets.md) | `rp-targets` — `redb`-backed imaging-plan store: targets, acquisition goals, per-target grading-threshold + scheduling-constraint overrides; `TargetStore` trait. |
+| [docs/crates/rp-vocabulary.md](crates/rp-vocabulary.md) | `rp-vocabulary` — the plan-data value types (`IcrsCoord`, `Binning`, `FrameType`) and the validation every surface shares |
 | [docs/crates/rusty-photon-config.md](crates/rusty-photon-config.md) | `rusty-photon-config` — the startup bootstrap (UniqueID minting, a left-out device section filled from the defaults, a write only when the result loads), the `ConfigFile` trait, and `load_file`'s JSON-versus-configuration errors |
 | [docs/crates/rusty-photon-process.md](crates/rusty-photon-process.md) | `rusty-photon-process` — running a command to completion under a deadline: why the deadline is on draining output and not on exit, the graceful → force stop that reaches the child's whole tree, dropping a run stops it, and sync and async from one runtime-free implementation |
 | [docs/crates/rusty-photon-rolling-stats.md](crates/rusty-photon-rolling-stats.md) | `rusty-photon-rolling-stats` — rolling statistics: why the caller hands in every instant, why the window is applied on read, what `sample_count` counts, how a sample dated before the newest or after `now` is answered, the `AveragePeriod` and empty-name `TimeSinceLastUpdate` policy the three `ObservingConditions` drivers share, and `SquareSums`, the never-reset sum of squares a caller subtracts into the RMS over its own interval |
 | [docs/crates/rusty-photon-service-lifecycle.md](crates/rusty-photon-service-lifecycle.md) | `rusty-photon-service-lifecycle` — unified tokio runtime + signal handlers + optional Windows SCM, exposing a single `Shutdown` handle across the workspace |
 | [docs/crates/rusty-photon-setup.md](crates/rusty-photon-setup.md) | `rusty-photon-setup` — the setup pages a service serves for its own configuration: what each page holds, the field table the walker renders from, the save and the reload wait, the credential rules, and the cross-site check |
+| [docs/crates/rusty-photon-shared-transport.md](crates/rusty-photon-shared-transport.md) | `rusty-photon-shared-transport` — one link to a device shared by a driver's devices and its poll task: the lifecycles, the hooks, the command lock, reconnect, stamped values |
 | **References** | |
 | [docs/references/ascom-alpaca.md](references/ascom-alpaca.md) | ASCOM Alpaca protocol reference |
 | [docs/references/skywatcher-motor-controller-command-set.md](references/skywatcher-motor-controller-command-set.md) | Sky-Watcher motor-controller wire protocol (USB + UDP/11880) — used by `star-adventurer-gti` |
 | [docs/references/omnisim.md](references/omnisim.md) | OmniSim (ASCOM Alpaca Simulators) reference — used by BDD/integration tests |
 | [docs/references/qhyccd-sdk-manual.md](references/qhyccd-sdk-manual.md) | QHYCCD SDK manual (unofficial English translation, V2.1) — used by `qhy-camera` |
 | [docs/references/workflow-documents.md](references/workflow-documents.md) | Authoring guide for `session-runner` workflow documents: the format, the expression grammar, the re-entrancy contract, worked examples |
+| **Packaging and installation** | |
+| [docs/packaging.md](packaging.md) | The `.deb` / `.rpm` packages: building, installing and operating them on an observatory machine |
+| [docs/packaging-windows.md](packaging-windows.md) | The Windows MSI suite: installing, configuring and operating it on an imaging box |
+| [docs/packaging-macos.md](packaging-macos.md) | macOS: the Homebrew formulas and `brew services` |
+| [docs/svbony-camera-windows-install.md](svbony-camera-windows-install.md) | Operator guide: installing `svbony-camera` on Windows from source (vendor driver + SDK staging + MSVC build); the MSI does not install it |
 | **Validation records** (real-hardware ConformU proof trail — see [docs/validation/](validation/)) | |
 | [docs/validation/README.md](validation/README.md) | Index of successful real-hardware ConformU runs: per run, the exact commit tested, platform, device identity, and the unmodified ConformU output |
-| [docs/svbony-camera-windows-install.md](svbony-camera-windows-install.md) | Operator guide: installing `svbony-camera` on Windows from source (vendor driver + SDK staging + MSVC build); the MSI does not install it |
 | **Decisions** (Architecture Decision Records — see [docs/decisions/](decisions/)) | |
 | [ADR-001](decisions/001-fits-file-support.md) | FITS file support |
 | [ADR-002](decisions/002-tls-for-inter-service-communication.md) | TLS for inter-service communication |
@@ -170,7 +180,11 @@ retelling them. Everything else a record holds is reached through
 | [ADR-014](decisions/014-zwo-per-device-services-and-link-features.md) | One service per ZWO device (EFW = future `zwo-filterwheel`); per-device SDK link features in `libzwo-sys`/`zwo-rs`; each zwo package ships only its own blob |
 | [ADR-015](decisions/015-windows-packaging-architecture.md) | Windows packaging — one MSI suite, per-service Windows services; config/state are platform-dependent defaults in code, not installer artifacts |
 | [ADR-016](decisions/016-service-config-ownership-and-doctor.md) | Service config ownership — installers place bytes, a standalone `rusty-photon-doctor` wires the configs; service facts only (device usage stays in `rp`); hardware checks split at the SDK line per ADR-014 |
+| [ADR-017](decisions/017-standard-mcp-client-construction.md) | Standard MCP client construction — every first-party MCP client of `rp` is built through `rp-mcp-client`; superseded in part by ADR-021 |
 | [ADR-018](decisions/018-svbony-sdk-no-license-payload-policy.md) | SVBony SDK payload policy — a third ADR-013 bucket for SDKs with no license grant at all: never redistribute, download-on-target like QHY |
+| [ADR-019](decisions/019-plan-data-vocabulary-and-validation.md) | The `rp-vocabulary` crate — plan-data value types and validation shared across surfaces |
+| [ADR-020](decisions/020-ephemeral-self-hosted-runners-for-pr-checks.md) | Ephemeral self-hosted runners may serve `pull_request` checks under a layered contract; persistent runners never do |
+| [ADR-021](decisions/021-session-less-mcp-and-the-safety-contract.md) | Session-less MCP and the safety contract — `rp` serves `/mcp` without sessions, and its clients tell a safety refusal from a failure |
 | [ADR-022](decisions/022-ci-logic-in-javascript-actions-and-a-rust-tools-crate.md) | CI logic lives in local JavaScript actions (Node built-ins only, tested under Bazel) or one Rust tools crate, not in shell; a one-command step stays YAML; host provisioning, Python and git hooks are out of scope |
 | [ADR-023](decisions/023-services-configure-themselves-on-their-own-setup-pages.md) | Services configure themselves on their own setup pages — the Alpaca specification's `/setup` and per-device pages, served behind the service's own TLS and Basic Auth and generated by `rusty-photon-setup`; custom actions carry device features and runtime protocols only |
 | [ADR-024](decisions/024-native-guider-as-a-standalone-alpaca-client-service.md) | rusty-photon guides with its own guider — a guiding core in a standalone service that is an Alpaca client of one Camera and one Telescope, not an Alpaca device and not an `rp` plugin; PHD2 is dropped with no second backend; the sorting rule gains the case of a first-party control loop that must keep running while `rp` restarts. Its guide-camera lease is superseded by ADR-026 |
@@ -180,7 +194,7 @@ retelling them. Everything else a record holds is reached through
 | [daily-power-cycle.md](plans/daily-power-cycle.md) | Devices powered off whenever nothing needs them and back on when a session does. The services start with every device powered, and a device is disconnected through rp before its power is cut and connected afresh once it is back; the plan adds a power-cut survey of every device, quiet logging while a device is off, services that restart at dusk after their device was off, rp tools that disconnect and connect a device and switch a power-box output, the dusk and dawn `session-runner` documents, and doctor's reading of a device off by design. Decisions settled; QHY probed on Linux, in a Windows guest and on bare-metal Windows. **Not started:** P0 survey for the other devices, then P1–P5 |
 | [focus-model.md](plans/focus-model.md) | A tool provider that is the expert at focusing a train ([`focus-model`](services/focus-model.md), port 11173): `rp` keeps the physics — backlash-compensated moves, star measurement, the train's optical facts, the focus events — and the provider sizes the sweep from the optics, predicts the start from what it remembers of the train, retries without widening, puts the focuser back on failure, and records every run. S1–S6 merged — the `rp` layer, the provider itself, filter offsets and temperature calibration — and S8–S11 from the open-items review: obstruction as a train fact, the hyperbolic fit, the guiding train, a stand-in temperature probe. S7 merged in three slices: the design, `session-runner` switching to `focus_train`, and the capture-based `auto_focus` / `refocus_train` retiring. **Remaining:** the two checks of S7's gate rig2 could not run, the `shared: true` walk and the temperature rule, on pier1. S10, the guiding train, is done as the device-claims plan's C7, its reconciliation with S7 settled: its provider half, the training run on a guiding train under `rp`'s train lease, is C7d, merged; C7e, which focuses a focuser an imaging train holds through the imaging camera alone (O4 rules 2, 4 and 8), merged |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: per-surface scope, four Rust i18n stacks (recommendation: Fluent) and an i18n recipe per candidate UX stack. **Options only** — §§6–7's rollout phasing is deliberately uncommitted. [`rusty-photon-i18n`](../crates/rusty-photon-i18n/) exists from the CLI spike, with `ppba-driver` as its consumer ([`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md)) |
-| [living-documents-cleanup.md](plans/living-documents-cleanup.md) | The cleanup behind AGENTS.md rule 16: the comments, design docs, skills, references and READMEs still narrate history and name issues by bare number — at the plan's census of 2026-11-02, 286 occurrences in the guard's `PENDING` table, 286 more in living Markdown, 11 in code files the guard does not read — plus the dated phase tables, banners and probe logs that are records inside living documents. Nine batches by subsystem, each asking of every comment and passage what it answers that a reader would otherwise get wrong and deleting the rest, rewriting the design doc first and the code second, moving each record out whole into `docs/plans/archive/`, and deleting the `PENDING` rows it clears; B9 ends with the empty table. **Census taken; the method's trial slice (the root `Cargo.toml`) merged; no decision open; batches B8 (catalog, planner, focus), B1 (Star Adventurer GTi), B6 (cameras and SDK crates), B4 (BDD infrastructure and OmniSim), B2 (doctor, ui-htmx, the installer), B5 (the shared transport and the serial drivers) and B7 (guiding, solving, sentinel, lifecycle, TLS) and B3 (rp and its client crates) merged; the other batches not started** |
+| [living-documents-cleanup.md](plans/living-documents-cleanup.md) | The cleanup behind AGENTS.md rule 16: the comments, design docs, skills, references and READMEs still narrate history and name issues by bare number — at the plan's census of 2026-11-02, 286 occurrences in the guard's `PENDING` table, 286 more in living Markdown, 11 in code files the guard does not read — plus the dated phase tables, banners and probe logs that are records inside living documents. Nine batches by subsystem, each asking of every comment and passage what it answers that a reader would otherwise get wrong and deleting the rest, rewriting the design doc first and the code second, moving each record out whole into `docs/plans/archive/`, and deleting the `PENDING` rows it clears; B9 ends with the empty table. **Census taken; the method's trial slice (the root `Cargo.toml`) merged; no decision open; batches B8 (catalog, planner, focus), B1 (Star Adventurer GTi), B6 (cameras and SDK crates), B4 (BDD infrastructure and OmniSim), B2 (doctor, ui-htmx, the installer), B5 (the shared transport and the serial drivers), B7 (guiding, solving, sentinel, lifecycle, TLS) and B3 (rp and its client crates) merged; B9 (build, CI, runners; the empty table), the last, under way** |
 | [native-guider.md](plans/native-guider.md) | Guiding without PHD2: what guiding through a desktop application costs the stack, what a guider does, what the Alpaca ecosystem offers one, and ten option areas (engine, placement, ecosystem surface, measurement, calibration, control, frame path, guide-camera focus, testing, port or clean implementation), each with a recommendation. Decided on 2026-11-12 ([ADR-024](decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)): a native Rust guider as a standalone service that is an Alpaca client of one Camera and one Telescope ([`guider`](services/guider.md), port 11129), and PHD2 dropped. Stages G0–G7 order the work: G0 records how each rig guides today, G6 comes next and takes PHD2's pieces out of the tree while `rp` moves to the new contract, and the guider is then built and taken on sky, pier1 first and rig2 last. The guider is accepted on the stars in the main camera's subs, not against PHD2. **Remaining: G1–G7** |
 | [optical-trains.md](plans/optical-trains.md) | Group devices by light path and derive the coupling: the `optical_trains` config and derived model, train-addressed `auto_focus` / rotator tools, the mount motion gate, the rotate×guide ladder, and DSL train addressing. T0–T5 merged. **Remaining: T6** — the roster grouped by train, with membership editing; written for a `ui-htmx` `/equipment` page that `ui-htmx` does not serve, so it needs re-scoping onto `rp`'s `/setup` |
 | [polar-align.md](plans/polar-align.md) | Plate-solving polar alignment ([`polar-align`](services/polar-align.md), port 11172): three solved RA-axis positions fix the axis, the error is reported in observed alt/az, and an adjustment loop draws target circles while the operator turns the bolts. The service, the axis/attitude math, plate-solver `wcs_matrix`, manual-rotation mode and the PNG preview are done. **Remaining: Phase 5** (`ui-htmx` polar-alignment page) and **Phase 7** (GTi rig validation + README recipe) |
@@ -204,10 +218,12 @@ here.
 | [guide-simulator](../crates/guide-simulator/) | `crates/guide-simulator` | A guide camera's view through a mount, in simulated time. The mount model holds drift, periodic error, tracking, Dec backlash, slews, parking and the pier side, and takes guide pulses as a mount delivers them, with a preset for the Star Adventurer GTi's coarse short pulses. The renderer draws a monochrome or RGGB frame with seeing, clouds, hot pixels and sensor noise, and each frame carries its truth. One seed sets every random draw. A dev-dependency, `testonly` in Bazel, for the guiding core's closed-loop tests as [`guider.md`](services/guider.md) § Testing designs them; `rp-guiding`'s tests use it. See [`docs/crates/guide-simulator.md`](crates/guide-simulator.md). |
 | [rusty-photon-tls](../crates/rusty-photon-tls/) | `crates/rusty-photon-tls` | Opt-in TLS serving for inter-service communication: dual-stack TCP binding, TLS/plain serving, client CA trust, and the shared `TlsConfig` type. Certificate *provisioning* (self-signed issuance, ACME, DNS-01) lives in `services/doctor` (`doctor tls issue`; see [doctor.md](services/doctor.md)). See [ADR-002](decisions/002-tls-for-inter-service-communication.md). |
 | [rp-auth](../crates/rp-auth/) | `crates/rp-auth` | Opt-in HTTP Basic Auth: Argon2id credential hashing/verification, axum tower middleware, and config types. The middleware memoises verdicts under a per-instance keyed BLAKE2b tag and runs the Argon2id KDF off the worker threads behind a one-permit gate, so a repeat presentation costs microseconds and at most one KDF is in flight per service. See [ADR-003](decisions/003-authentication-for-device-access.md). |
-| [rp-ephemeris](../crates/rp-ephemeris/) | `crates/rp-ephemeris` | Astronomical math: `Ephemeris` trait + `ErfarsEphemeris` impl wrapping the `erfars` ERFA bindings (BSD-licensed clean-room derivative of IAU SOFA). Pure functions for sidereal time, alt/az, transit, rise/set, twilight, sun + moon position. See [`docs/crates/rp-ephemeris.md`](crates/rp-ephemeris.md) for the crate design (panic safety, NaN-degradation, time scales); [`rp-planning-tools.md`](plans/archive/rp-planning-tools.md) for the original implementation plan. |
+| [rp-ephemeris](../crates/rp-ephemeris/) | `crates/rp-ephemeris` | Astronomical math: `Ephemeris` trait + `ErfarsEphemeris` impl wrapping the `erfars` ERFA bindings (BSD-licensed clean-room derivative of IAU SOFA). Pure functions for sidereal time, alt/az, transit, rise/set, twilight, sun + moon position. See [`docs/crates/rp-ephemeris.md`](crates/rp-ephemeris.md) for the crate design (panic safety, NaN-degradation, time scales). |
 | [rp-catalog](../crates/rp-catalog/) | `crates/rp-catalog` | Embedded sky catalog: ~19k deep-sky objects (Messier, NGC, IC and the astrophoto catalogs) and ~354k HD stars, packed into one blob read in place. `Catalog::resolve(name)` looks a name up, insensitive to case, whitespace and dashes, with aliases; `Catalog::nearest(coord, tolerances)` names a coordinate, a deep-sky object outranking a star. See [`rp-catalog.md`](crates/rp-catalog.md). |
+| [rp-targets](../crates/rp-targets/) | `crates/rp-targets` | The `redb`-backed store of `rp`'s imaging plan: targets, per-sub-spec acquisition goals, and per-target grading-threshold and scheduling-constraint overrides, behind the mockable `TargetStore` trait. Storage only: `rp` derives the actuals from the frames on disk and owns the policy. Used by `rp`. See [`rp-targets.md`](crates/rp-targets.md). |
+| [rp-vocabulary](../crates/rp-vocabulary/) | `crates/rp-vocabulary` | The validated value types of `rp`'s imaging plan — `IcrsCoord`, `Binning`, `FrameType` — each valid by construction, with a `JsonSchema` behind the `schema` feature. A leaf with no first-party dependency, used by `rp`, `rp-targets`, `rp-catalog` and `rp-ephemeris`. See [`rp-vocabulary.md`](crates/rp-vocabulary.md) and [ADR-019](decisions/019-plan-data-vocabulary-and-validation.md). |
 | [skywatcher-motor-protocol](../crates/skywatcher-motor-protocol/) | `crates/skywatcher-motor-protocol` | Pure codec for the Sky-Watcher motor-controller wire protocol (USB + UDP/11880). Transport-agnostic; isolates the 24-bit low-byte-first hex encoding and the `+0x800000` position bias. Used by `star-adventurer-gti`. See [`docs/references/skywatcher-motor-controller-command-set.md`](references/skywatcher-motor-controller-command-set.md). |
-| [rusty-photon-i18n](../crates/rusty-photon-i18n/) | `crates/rusty-photon-i18n` | Fluent loader + locale resolver shared across services. Reads `RP_LOCALE` / `LC_ALL` / `LC_MESSAGES` / `LANG` / OS, negotiates against the locales each consumer embeds, falls back to `en`. Owns `LocalizedParser` trait, `init` lifecycle, and an `ACTIVE_LOADER` thread-local for `value_parser` callbacks. First consumer: `ppba-driver` (CLI help + errors). See [`i18n.md`](plans/i18n.md) and [`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md). |
+| [rusty-photon-i18n](../crates/rusty-photon-i18n/) | `crates/rusty-photon-i18n` | Fluent loader + locale resolver shared across services. Reads `RP_LOCALE` / `LC_ALL` / `LC_MESSAGES` / `LANG` / OS, negotiates against the locales each consumer embeds, falls back to `en`. Owns `LocalizedParser` trait, `init` lifecycle, and an `ACTIVE_LOADER` thread-local for `value_parser` callbacks. Used by `ppba-driver`, `upbv2-driver` and `gemini-powerbox-adv3-driver` for their CLI help and errors. See [`i18n.md`](plans/i18n.md). |
 | [rusty-photon-i18n-derive](../crates/rusty-photon-i18n-derive/) | `crates/rusty-photon-i18n-derive` | Companion proc-macro crate. `#[derive(LocalizedParser)]` reads `#[localized(about = "key")]` / `#[localized(help = "key")]` attributes alongside `#[derive(Parser)]` and emits a `parse_localized(loader)` impl that mutates the clap `Command` before parse. Re-exported via `rusty_photon_i18n::LocalizedParser`. |
 | [rusty-photon-shared-transport](../crates/rusty-photon-shared-transport/) | `crates/rusty-photon-shared-transport` | One duplex link to a device, serial or UDP, shared by a driver's ASCOM devices and its poll task: `SharedTransport<Codec>` with its two lifecycles and its hooks, the `TransportFactory` and `Codec` traits, one exchange on the wire at a time, run to its reply, the no-client state asserted at start and replayed across a reconnect, the reconnect supervisor, `open_serial_port`, `Stamped<T>` and `WireTiming`. Every serial and UDP driver is built on it. See [`docs/crates/rusty-photon-shared-transport.md`](crates/rusty-photon-shared-transport.md). |
 | [rusty-photon-camera-core](../crates/rusty-photon-camera-core/) | `crates/rusty-photon-camera-core` | The vendor-neutral half of the three ASCOM camera drivers: ROI validation and its rule order (R2/R3), the unbinned ROI and the binned views ASCOM's members are read through (B3), binned-full-frame sensor alignment (R4), `BayerOffsetX/Y` from a canonical mosaic (ST1), the single-plane `ImageArray` unpack, `PercentCompleted`'s cap, and the camera-only rule for a camera that has left the bus: a blank readout (`is_blank_frame`: all zero, or empty) counts as an SDK failure and asks the driver's presence question. (What a `Connected` write then does is not camera-specific, so it lives in `rusty-photon-driver`.) Two tests decide what belongs here, both about the *driver* half rather than about dependencies: nothing there implements ASCOM's `Camera`/`Device` traits or holds device state, and no vendor SDK type appears in a signature. ASCOM Alpaca is the workspace's lingua franca, so the crate speaks it (`ImageArray`, `ASCOMError`) rather than handing each driver a private dialect to translate — which is why each driver still maps its own SDK's Bayer spelling and readout formats onto the shared vocabulary. Used by `qhy-camera`, `zwo-camera`, `svbony-camera`. |
@@ -215,11 +231,14 @@ here.
 | [rusty-photon-process](../crates/rusty-photon-process/) | `crates/rusty-photon-process` | Bounded subprocess execution: `Bounded` runs a command to completion under a deadline, drains each output stream while it runs (whole up to a limit, its head or tail, not at all, or passed through, plus an optional line callback), and on expiry sends the graceful signal, waits a grace period and force-kills the child's whole tree — its own session's process group on Unix, its job object on Windows — then reaps it. Also owns `shell`, the one `sh -c` / `cmd /C` builder. Blocking (`run`) or awaitable (`spawn()?.await`) from one runtime-free implementation, so the synchronous `rusty-photon-doctor-checks` uses it without tokio. Long-lived supervised children (`ServiceHandle`, OmniSim) are out of scope. Used by `rusty-photon-doctor-checks`, `doctor`, `plate-solver`, `sentinel`, and `bdd-infra`'s `conformu` feature. See [`docs/crates/rusty-photon-process.md`](crates/rusty-photon-process.md). |
 | [rusty-photon-rolling-stats](../crates/rusty-photon-rolling-stats/) | `crates/rusty-photon-rolling-stats` | Time-windowed rolling statistics over timestamped samples: `SensorMean`, the sliding-window mean an `ObservingConditions` device serves its readings from. Dependency-free `std`-only by design — a rolling mean is wanted anywhere something is sampled on a cadence, so no consumer should inherit `ascom-alpaca` to get one. The window is applied on *read*, so a sampler that stops reads as "no value" rather than as an aged-out average. Its `observing_conditions` module holds the policy the three drivers share: `AveragePeriod` onto a window (zero, and any period shorter than three poll intervals, becomes the instantaneous window) and the empty-name `TimeSinceLastUpdate` over several means. `SquareSums` is the cumulative counterpart: a count and sum of squares never reset, read at both ends of an interval and subtracted into its RMS. Used by `ppba-driver`, `upbv2-driver` and `gemini-powerbox-adv3-driver` (the means), and `rp` (the guide error's running totals). See [`docs/crates/rusty-photon-rolling-stats.md`](crates/rusty-photon-rolling-stats.md). |
 | [rusty-photon-config](../crates/rusty-photon-config/) | `crates/rusty-photon-config` | Shared config-path resolution, first-run `UniqueID` materialization, loading a config file as the service's `ConfigFile` type, and the per-service half of the setup pages (`driver`: the `ConfigurableDriver` trait, `FieldError`, `DeviceSection`, `SaveDisposition`). See [`docs/crates/rusty-photon-config.md`](crates/rusty-photon-config.md) for the bootstrap and loading, [`docs/crates/rusty-photon-setup.md`](crates/rusty-photon-setup.md) for the pages. |
+| [rusty-photon-server-config](../crates/rusty-photon-server-config/) | `crates/rusty-photon-server-config` | The `server` block of every service's config, in three `deny_unknown_fields` shapes: `ServerConfig` for a plain HTTP API, `AlpacaServerConfig` for an Alpaca driver (adding the discovery responder's port) and `AdvertisingServerConfig` for a service that advertises its own URL (adding `advertised_url`; `rp`). Every service and `doctor` take the block from here, so the shape a service accepts is the shape doctor checks. |
 | [rusty-photon-service-lifecycle](../crates/rusty-photon-service-lifecycle/) | `crates/rusty-photon-service-lifecycle` | Unified service lifecycle: tokio runtime + signal handlers + optional Windows SCM, exposing a single `Shutdown` handle across the workspace. See [`docs/crates/rusty-photon-service-lifecycle.md`](crates/rusty-photon-service-lifecycle.md). |
 | [rusty-photon-setup](../crates/rusty-photon-setup/) | `crates/rusty-photon-setup` | The HTML setup pages a service serves for its own configuration — the two the Alpaca Management API defines, `/setup` and `/setup/v1/{type}/{n}/setup`: the schema walker (out of `ui-htmx`) and the form coercion, the renderer with its inline stylesheet, the save (the submission overlaid on the page's section of the *file*, typed, validated, persisted, the reload fired after the response), the cross-site check every `POST` passes, and the Security section that turns a username and password into `server.auth` with an Argon2id hash. Depends on neither `ascom-alpaca` nor any service: a driver reaches it through `rusty-photon-driver`'s glue (`device_setup_request`, `ServerPages`). First served by `dsd-fp2`; every Alpaca driver, `rp` and `ui-htmx` serve their own pages on it. See [`docs/crates/rusty-photon-setup.md`](crates/rusty-photon-setup.md). |
+| [rusty-photon-doctor-checks](../crates/rusty-photon-doctor-checks/) | `crates/rusty-photon-doctor-checks` | What central `doctor` and the per-service `doctor` subcommands share: the SDK-free hardware facts and predicates behind the `hardware.*` checks, the report schema, the text renderer, and the runner every service binary's `doctor` subcommand calls. See [doctor.md](services/doctor.md). |
 | [rp-focus-curve](../crates/rp-focus-curve/) | `crates/rp-focus-curve` | The hyperbolic V-curve `a·√(1 + ((x − x₀)/b)²)` — the defocus curve of a star, a cone with a seeing floor — and its weighted least-squares fit: a closed-form start from the squared values and the best of a scan of centres, each refined in the values themselves, with the weighted R² clamped to `[0, 1]`. The sweep's own rules (the gate, the bound on the centre, a threshold, the confirmation) stay with each caller. Used by `focus-model` (the capture sweep) and `rp` (the guide-train sweep). See [`docs/crates/rp-focus-curve.md`](crates/rp-focus-curve.md). |
 | [rp-fits](../crates/rp-fits/) | `crates/rp-fits` | FITS reader/writer wrapper (pure-Rust `fitsrs`) for Rusty Photon services. See [ADR-001](decisions/001-fits-file-support.md). |
 | [rp-plate-solver](../crates/rp-plate-solver/) | `crates/rp-plate-solver` | HTTP client for the `plate-solver` rp-managed service, used by `rp`'s `plate_solve` MCP tool. See [ADR-005](decisions/005-plate-solver.md). |
+| [rp-mcp-client](../crates/rp-mcp-client/) | `crates/rp-mcp-client` | The MCP client of `rp`'s `/mcp` endpoint that every first-party consumer builds through: rmcp's streamable HTTP over a `rusty-photon-tls` client, the observatory credential sent only over verified HTTPS, `rp`'s result convention with request failures, tool failures and the safety refusal kept apart, and a pinned protocol revision. Used by `calibrator-flats`, `focus-model`, `planetarium-bridge`, `polar-align`, `session-runner`, `ui-htmx` and `rp`. See [ADR-017](decisions/017-standard-mcp-client-construction.md). |
 | [rp-image-analysis](../crates/rp-image-analysis/) | `crates/rp-image-analysis` | The image kernels `rp` and the guider share, pure and generic over the pixel type (`u16`, `i32`) of an `ArrayView2`: the sigma-clipped background, star detection and centroids, the half-flux radius, aperture measurement at detected or listed positions, the 2-D Gaussian fit, the saturation level, per-star and median signal-to-noise ratio, and frame statistics. Used by `rp`'s measuring tools and by the guider's core, `rp-guiding`. `cargo run --release -p rp-image-analysis --example kernel_timing` times them on synthetic guide frames. |
 | [rp-guider](../crates/rp-guider/) | `crates/rp-guider` | The types and HTTP client of the guider's contract ([`guider.md`](services/guider.md) § HTTP API), used by `rp`'s guiding MCP tools, its guide run watch, its guide camera guard and the safety enforcer's stop-guiding-on-unsafe step. |
 | [rp-guiding](../crates/rp-guiding/) | `crates/rp-guiding` | The guider's core, without I/O ([`guider.md`](services/guider.md) § Pieces). It holds the frame a guider measures (a camera's frame read for its sensor type, an RGGB mosaic summed 2 × 2, its full-scale pixels marked, its background from a sample of at least 50,000 pixels), the selection of up to `stars.max` guide stars, and their measurement in each frame after it: which are usable by the signal-to-noise and flux tests, and the frame's offset, the median of theirs. It holds the calibration too: its legs of pulses, each axis's angle and rate, the cross-checks, and when a record serves a run. Control, dither, settling and the state machine are designed in `guider.md` and not yet built. The `guider` service is to use it. |
@@ -264,7 +283,7 @@ Service feature selections:
 - `rp`: `features = ["server", "macros", "transport-streamable-http-server", "schemars"]`
 - `calibrator-flats`, `focus-model`: `features = ["server", "macros", "transport-streamable-http-server", "schemars"]`
   for the tools they serve; the client half comes through `rp-mcp-client`
-- `rp-mcp-client` (every first-party MCP client of `rp`, ADR-017):
+- `rp-mcp-client` (every first-party MCP client of `rp`):
   `features = ["client", "transport-streamable-http-client-reqwest"]`
 
 `schemars` 1.0 is also a workspace dependency — rmcp's `#[tool]` macro
@@ -283,11 +302,11 @@ The aliases move; the structs do not. rmcp 3.4 deprecated `ServerInfo`
 and `ClientInfo` (the names collide with the protocol's own `serverInfo`
 / `clientInfo` fields, which carry only the `Implementation` identity)
 and introduced `ServerConfig` / `ClientConfig` in their place — so a
-crate that names the old pair fails the nightly rolling job's
-`RUSTFLAGS: -D deprecated` leg the day the new rmcp lands, while one
-that names the new pair fails to build against every rmcp before 3.4,
-which the workspace's `rmcp = "3.0"` requirement still allows. The
-struct names are the one spelling valid across the whole range.
+crate that names the aliases fails the nightly rolling job's
+`RUSTFLAGS: -D deprecated` leg against every rmcp from 3.4 on, while one
+that names their replacements fails to build against every rmcp before
+3.4, which the workspace's `rmcp = "3.0"` requirement allows. The struct
+names are the one spelling valid across the whole range.
 
 ## Shared Architecture Patterns
 
@@ -455,8 +474,12 @@ sentinel/src/
   notifier.rs      — Notifier trait
   state.rs         — Shared monitor status + notification history
   engine.rs        — Orchestrates monitors, transitions, notifiers
-  watchdog.rs      — Operation watchdog (predictive-deadlines Phase 4)
-  corrective.rs    — Corrective-action ladder (predictive-deadlines Phase 5)
+  watchdog.rs      — Operation watchdog: deadlines from rp's events
+  corrective.rs    — Corrective-action ladder
+  discovery.rs     — Service registry from the platform service manager
+  health.rs        — Health probes and autonomous restart
+  restart.rs       — Service Restart API engine
+  doctor.rs        — `doctor` subcommand: diagnosis of sentinel's own config
   dashboard.rs     — Axum routes for JSON API + dashboard HTML
   lib.rs / main.rs — Server bootstrap and entry point
 ```
@@ -515,10 +538,8 @@ reference them with `dep.workspace = true`.
 
 ### Dual-homed crates inherit shared deps too
 
-The dual-homed members (`zwo-rs` + `libzwo-sys`, `qhyccd-rs` + `libqhyccd-sys` —
-ADR-009/010 — and `svbony-rs` + `libsvbony-sys`, per
-[docs/plans/archive/svbony-camera.md](plans/archive/svbony-camera.md)) follow the
-same rule: their **shared** third-party dependencies (e.g. `thiserror`,
+The dual-homed members (`zwo-rs` + `libzwo-sys`, `qhyccd-rs` + `libqhyccd-sys`
+and `svbony-rs` + `libsvbony-sys`) follow the same rule: their **shared** third-party dependencies (e.g. `thiserror`,
 `tracing`, and the simulation-only `rand`, shared by all three camera crates)
 inherit from `[workspace.dependencies]` with `dep.workspace = true`. This is
 safe for their independent crates.io releases because `cargo publish`
@@ -526,8 +547,7 @@ safe for their independent crates.io releases because `cargo publish`
 version in the packaged manifest (verified by dry-run). What stays explicit on
 these members is their **package identity metadata** (`version` / `edition` /
 `license` / `authors` / `description` / `keywords` / `categories`) — *not*
-`*.workspace = true` — so they release on their own cadence (the carve-out
-recorded in ADR-009/010). A dep is left crate-local only when it is genuinely
+`*.workspace = true` — so they release on their own cadence. A dep is left crate-local only when it is genuinely
 single-consumer (e.g. `libzwo-sys`'s `bindgen` build-dep) or when the workspace
 pin would force an unwanted feature.
 
@@ -590,8 +610,8 @@ on Windows it invalidates the Bazel cache for everything above those crates, so
 `bazel / ubuntu-latest` is fully cached. A `windows-sys` entry in
 `[workspace.dependencies]` does not stop it (it constrains only the naming
 member's own edge — see below); only removing the older version from the graph
-does. `rtoolbox` 0.0.6 dropped `windows-sys` 0.59; `serialport` (still `^0.52`
-as of 4.10.1) and `ring` are the remaining 0.52 holders.
+does. `serialport` and `ring` hold 0.52, and a `serialport` bump does not
+drop it: 4.10.1 requires `^0.52` too.
 
 ### Holding a transitive dependency back
 
@@ -600,23 +620,21 @@ a workspace member names directly. To hold a **transitive** crate, pin it in
 `Cargo.lock`:
 
 ```sh
-# Order matters: rust-embed-impl 8.12 requires rust-embed-utils ^8.12, so
-# pinning utils first aborts with a resolver error. Pin impl, then utils.
-cargo update -p rust-embed-impl  --precise 8.11.0
-cargo update -p rust-embed-utils --precise 8.11.0
+cargo update -p <crate> --precise <version>
 ```
 
-Pinning only one of a lockstep pair is not enough either: with `impl` alone held,
-`utils` stays on 8.12 and still drags the `digest 0.11` chain in. Verify with
-`cargo tree --workspace --target all -i digest` showing a single version.
+Crates released in lockstep, such as a derive crate and the runtime crate it
+requires at its own version, are held together and in order: the dependent
+first, then the crate it requires. Pinning the required crate first, below the
+dependent's requirement, aborts with a resolver error, and holding only one of
+the pair holds nothing, since the other stays on the newer release and keeps
+whatever that release pulls in. Verify a hold with
+`cargo tree --workspace --target all -i <crate>` showing the one version.
 
 A plain `cargo update` undoes all of it, so re-apply the pins (and re-run the
-Bazel repin from CLAUDE.md rule 10) whenever the lock is refreshed. Current
-holds:
-
-| Crate | Held at | Why |
-|---|---|---|
-| `rust-embed`, `rust-embed-impl`, `rust-embed-utils` | 8.11.0 | `rust-embed` embeds the Fluent translation assets into ppba-driver's binary. From 8.12, `rust-embed-utils` pulls `sha2`/`digest 0.11` in beside the `digest 0.10` chain `argon2`/`blake2` already bring. ppba-driver is the only service with a direct `rust-embed` dependency, so it is the only package that gets the duplicate — and its two largest test targets then fail `rustc` E0463 "can't find crate" under `bazel / windows-latest`, deterministically. The duplicate graph is the confirmed cause: bumping `rust-embed` to 8.12 together with `argon2` 0.6 / `blake2` 0.11, which puts the whole graph on `digest 0.11`, builds and tests green on Windows. **Lift the hold when `argon2` 0.6 and `blake2` 0.11 go stable** — both are release-candidate only today — and bump all three together. `blake2` 0.10 is also a direct workspace dependency since rp-auth's verification memo keys its tags with it, so that bump moves the workspace pin as well as argon2's edge. |
+Bazel repin from CLAUDE.md rule 10) whenever the lock is refreshed. The
+workspace holds no transitive crate back; a hold, when one is taken, is listed
+here with its reason.
 
 ### Pre-commit hooks
 
@@ -713,9 +731,7 @@ an otherwise-recoverable situation aborts the process — `unwrap_used`,
 `panic_in_result_fn`, `unchecked_time_subtraction`, `string_slice`. A driver
 that panics at 2am ends the night's imaging (tenet 2). On top of the per-lint
 denies, the `pedantic` and `nursery` groups are denied wholesale (at
-`priority = -1`, so per-lint entries outrank the group level), zeroed
-rung by rung by the L6b ladder before the flip
-([docs/plans/archive/workspace-lints.md](plans/archive/workspace-lints.md)). Members opt in with
+`priority = -1`, so per-lint entries outrank the group level). Members opt in with
 `[lints] workspace = true`, the dual-homed FFI crates (`qhyccd-rs`, `zwo-rs`,
 `svbony-rs` and their `-sys` shims) included: `cargo package` inlines the
 inherited table into the published manifest, and registry dependencies build
@@ -755,8 +771,7 @@ You still need a scoped attribute in three cases:
 Before deleting an `#[allow]`, resolve its **scope** — a per-file assumption is
 wrong. An inner `#![allow]` in a file's header region covers the whole package,
 and an outer `#[allow]` on a `mod name;` declaration covers that module's file
-subtree. [docs/plans/archive/workspace-lints.md](plans/archive/workspace-lints.md)
-records the ladder that widened this set.
+subtree.
 
 **Stable gates, beta reports.** `check.yml` runs clippy on both channels with
 deliberately different policies: `stable / clippy` is the required PR gate at
@@ -977,7 +992,7 @@ green-PR/red-nightly gap at no cost: `display` adds only
     outstanding at once collapse to one entry and the first to finish reports
     `Connecting == false` on behalf of the rest. The fork counts them instead.
     Offered upstream as
-    [RReverser/ascom-alpaca-rs#23](https://github.com/RReverser/ascom-alpaca-rs/pull/23).
+    [ascom-alpaca-rs pull request 23](https://github.com/RReverser/ascom-alpaca-rs/pull/23).
   - **The setup pages where the specification puts them.** Upstream serves the
     device setup page at `/api/v1/{type}/{n}/setup`, a path no specification
     defines, answers 404 on the Management API's
@@ -987,12 +1002,11 @@ green-PR/red-nightly gap at no cost: `display` adds only
     method name in the path). The
     fork routes `/setup` and the device path for `GET` and `POST` through
     request-taking hooks — `Device::setup_request` and `Server::setup` — with
-    defaults that keep every implementor working, redirects the old path
+    defaults that keep every implementor working, redirects upstream's path
     (308), answers 403 for an unknown device on the setup path and 400 on the
-    action route, and has the client fetch the specification's path
-    ([driver-setup-pages.md](plans/archive/driver-setup-pages.md) D10). Not offered
-    upstream yet; when it is, it goes as the two pull requests D10
-    describes (the paths and statuses; the hooks).
+    action route, and has the client fetch the specification's path. Not
+    offered upstream yet; when it is, it goes as two pull requests, one for
+    the paths and statuses and one for the hooks.
   - **The client matches a listed `DeviceType` without regard to case.**
     Upstream's client accepts only the PascalCase variant names in
     `configureddevices`, so a third-party server that lists the lower-case

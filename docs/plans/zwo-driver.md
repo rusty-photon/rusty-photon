@@ -22,7 +22,7 @@ position, is-moving, halt, live temperature), config actions, serial-derived
 identity, 25 unit + 26 BDD scenarios green, ConformU harness wired, full local
 quality gate green workspace-wide (including no regression in `zwo-camera`
 from the shared `zwo-rs` changes). Validated against a real EAF on 2026-07-14
-([`docs/services/zwo-focuser.md`](../services/zwo-focuser.md)).
+([`docs/plans/archive/zwo-focuser-hardware-run-2026-07.md`](archive/zwo-focuser-hardware-run-2026-07.md)).
 The `zwo-rs` + `libzwo-sys` FFI crates are now **vendored first-party** at
 `crates/zwo-rs/` (ADR-010 / [vendor-zwo-rs.md](vendor-zwo-rs.md); the standalone
 [github.com/ivonnyssen/zwo-rs](https://github.com/ivonnyssen/zwo-rs) repo,

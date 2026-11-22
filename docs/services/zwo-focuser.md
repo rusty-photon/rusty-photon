@@ -1,34 +1,20 @@
 # ZWO EAF Focuser Service Design
 
-> **Status: v0 validated on real hardware (2026-07-09 implemented, 2026-07-14
-> hardware-validated).** The full `Device` + `Focuser` surface is built over a
-> `zwo_rs::Focuser` FFI handle (the `libEAFFocuser` link directive, previously
-> deliberately omitted, lands alongside it). Validated end-to-end against a
-> physical EAF with temperature probe: enumeration, serial-derived identity,
-> connect/move/halt/settle, temperature, range rejection — and **ConformU
-> passes with zero errors, warnings or issues against the real device**.
-> Hardware validation surfaced two fixes now baked in: `MaxStep` comes from
-> `EAFGetMaxStep` (the firmware's working travel limit), not
-> `EAF_INFO::MaxStep` (see *Hardware Constraints*), and the EAF is a USB HID
-> device whose `/dev/hidraw*` node needs a udev rule that actually reaches
-> hidraw (see *Packaging*). 25 unit tests + 27 BDD scenarios (3 feature
-> files) are green against the `zwo-rs` simulation backend, whose movement
-> model now mirrors the measured hardware behavior (multi-poll IsMoving,
-> live position ramp, halt-freezes-mid-travel).
->
-> **An EAF that leaves the bus reads disconnected (C5, 2026-10-07).** What
-> the EAF SDK answers when an open EAF leaves was measured on the field rig
-> first, and the contract follows the camera drivers' departure design. The
-> measurements are in
-> [`docs/validation/2026-10-07-zwo-focuser-departure-linux/`](../validation/2026-10-07-zwo-focuser-departure-linux/README.md).
+> **Status:** `services/zwo-focuser` serves the full ASCOM `Device` +
+> `Focuser` surface for every connected EAF over the `zwo-rs` SDK seam, with
+> serial-derived identity and the setup pages, and an EAF that leaves the bus
+> reads disconnected (C5). Both ConformU suites pass with no errors, warnings
+> or issues against a physical EAF
+> ([record](../validation/2026-10-07-zwo-focuser-departure-linux/README.md));
+> *Real-hardware validation* lists what else has run on the hardware.
 
 ## Overview
 
 The `zwo-focuser` service is an ASCOM Alpaca **Focuser** driver for the ZWO EAF
 (Electronic Auto Focuser). It talks to the hardware over native ZWO SDK FFI
 (`libEAFFocuser`) via the vendored [`zwo-rs`](../../crates/zwo-rs) crate — the
-same crate `zwo-camera` uses for its ASI camera / EFW filter-wheel devices, now
-extended with an EAF `Focuser` handle.
+same crate `zwo-camera` uses for the ASI cameras, built here with its
+`focuser` feature, which carries the EAF `Focuser` handle.
 
 It is the direct analogue of [`qhy-focuser`](qhy-focuser.md) and
 [`pa-scops-oag`](pa-scops-oag.md) at the ASCOM `Focuser` interface level, but its
@@ -37,13 +23,6 @@ device**, not a USB-CDC/FTDI serial device, so `zwo-focuser` is built on
 `zwo-rs`'s FFI seam (mirroring `zwo-camera`), **not** on
 `rusty-photon-shared-transport` (the serial pattern `qhy-focuser`/`pa-scops-oag`
 use).
-
-**Provenance.** This closes out the scope `docs/plans/zwo-driver.md` sequenced
-from the start — **Camera → EFW filter wheel → EAF focuser** — using the EAF SDK
-header (`EAF_focuser.h`) already vendored alongside the ASI/EFW headers in
-`crates/zwo-rs/libzwo-sys/`. See [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md)
-(native SDK FFI decision) and [ADR-010](../decisions/010-vendor-zwo-rs.md)
-(vendoring `zwo-rs`); no new ADR is needed — both already cover this addition.
 
 **Not cross-platform by default.** Like `zwo-camera`, this service links a
 **native vendor SDK** (`libEAFFocuser`, MIT-licensed) at compile time. See
@@ -55,34 +34,31 @@ Identical posture to `zwo-camera` (see `docs/services/zwo-camera.md` "Native
 dependency & build gating" for the full rationale) — summarized here:
 
 - The chain is `zwo-focuser → zwo-rs → libzwo-sys →` the ZWO SDK
-  (`libEAFFocuser`).
-- `libzwo-sys`'s `build.rs` links per device feature
-  ([ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md));
-  this service builds `zwo-rs` with `focuser` only, so its link is exactly
-  `EAFFocuser` (+ the C++ runtime and `libudev`, whose `udev_*` symbols the
-  EAF blob references without declaring) — machines compiling this package
-  need that SDK installed and discoverable. (The shared Bazel `zwo-rs`
-  targets build the union of device features, so Bazel actions still
-  provision all the blobs.)
+  (`libEAFFocuser`). `libzwo-sys` generates its bindings from the EAF SDK
+  header (`EAF_focuser.h`), vendored with the ASI and EFW headers in
+  `crates/zwo-rs/libzwo-sys/sdk/include/`.
+- `libzwo-sys`'s `build.rs` links per device feature; this service builds
+  `zwo-rs` with `focuser` only, so its link is exactly `EAFFocuser` (+ the
+  C++ runtime and `libudev`, whose `udev_*` symbols the EAF blob references
+  without declaring) — machines compiling this package need that SDK
+  installed and discoverable. (The shared Bazel `zwo-rs` targets build the
+  union of device features, so Bazel actions still provision all the
+  blobs.)
 - The `simulation` feature makes the build **hardware-free, not SDK-free**: it
   fabricates a fake EAF (position/moving/temperature) at runtime; the native SDK
   is still required at link time. `ZWO_SKIP_NATIVE_LINK=1` omits the link
   directives entirely for sanitizer/simulation-only CI jobs, exactly as it does
   for `zwo-camera`.
-- **CI provisioning:** `.github/actions/install-zwo-sdk` already downloaded and
-  staged `libEAFFocuser` on all three OSes in anticipation of this service, but
-  tolerated a missing/failed blob (`|| true` on Linux/macOS, an optional
-  download on Windows) since nothing linked it unconditionally yet. Landing
-  this service made that link real, so the action was tightened to fail fast
-  instead of deferring to a later, less actionable link/runtime error — and a
-  macOS-only gap surfaced by CI was fixed alongside it: the `install_name_tool
-  -id` rewrite that makes the SDK's dylibs resolvable to Bazel's `rust_test`
-  binaries (no `@rpath` entries) covered `ASICamera2`/`EFWFilter` but not the
-  newly-required `EAFFocuser`.
-- **Bazel:** `zwo-rs`/`zwo-rs_sim` already exist as a real/sim two-variant build
-  (ADR-010); `focuser.rs` becomes part of both targets' existing
-  `glob(["src/**/*.rs"])` with no `BUILD.bazel` change in `crates/zwo-rs`.
-  `zwo-focuser` gets its own `BUILD.bazel`, structurally identical to
+- **CI provisioning:** `.github/actions/install-zwo-sdk` stages
+  `libEAFFocuser` with the camera and EFW SDKs on all three OSes, and fails
+  the job when it cannot, rather than leave the failure to a later, less
+  actionable link or load error. On macOS it gives each library its own path
+  as its install name (`install_name_tool -id`), `EAFFocuser` included, so
+  that Bazel's `rust_test` binaries, which carry no `@rpath` entry for the
+  SDK's prefix, still load it.
+- **Bazel:** `crates/zwo-rs` builds a real and a simulated variant
+  (`zwo-rs`, `zwo-rs_sim`), each from `glob(["src/**/*.rs"])`, so
+  `focuser.rs` is in both. `zwo-focuser`'s own `BUILD.bazel` is structurally
   `zwo-camera`'s (see *Testing*).
 
 ## Architecture
@@ -155,9 +131,11 @@ there is no in-flight-task cancellation/invalidation machinery to build.
   user-settable `EAFGetMaxStep` working limit (factory default 60000).
   `EAFMove` validates against the *ceiling*: a target past the working limit
   but within the ceiling is **accepted, and the motor silently stops at the
-  limit** (observed on real hardware; ConformU flags it as a Move issue if the
-  driver advertises the ceiling). The driver therefore reports and validates
-  against `EAFGetMaxStep`, read during enumeration's brief open.
+  limit** (observed on a physical EAF,
+  [the run of 2026-07-14](../plans/archive/zwo-focuser-hardware-run-2026-07.md);
+  ConformU flags it as a Move issue if the driver advertises the ceiling).
+  The driver therefore reports and validates against `EAFGetMaxStep`, read
+  during enumeration's brief open.
 - **Movement timing**: the validated EAF travels ≈ 640 steps per second
   (≈ 64-65 steps observed per 100 ms poll); `EAFIsMoving` stays true across
   many polls for a real move (a 1000-step move settles in ≈ 1.7 s) and
@@ -177,7 +155,7 @@ there is no in-flight-task cancellation/invalidation machinery to build.
 - **`EAFIsMoving`** is a dedicated call with two out-parameters (`pbVal`,
   `pbHandControl`) — cleaner than EFW's `-1`-while-moving sentinel on
   `EFWGetPosition`. `pbHandControl` (whether the physical hand-paddle is driving
-  the move) has no ASCOM `Focuser` mapping and is discarded in v0 (see *MVP
+  the move) has no ASCOM `Focuser` mapping and is discarded (see *MVP
   scope*).
 - **`EAFGetPosition`** has no moving sentinel — it always returns the live
   (ramping) step count, whether or not the focuser is currently moving.
@@ -189,9 +167,10 @@ there is no in-flight-task cancellation/invalidation machinery to build.
   Rust cannot catch. Whoever first creates `/tmp/zwo` on a shared `/tmp` owns
   it, writable by nobody else under the usual umask, so any other user that
   loads the SDK there would die (measured on the field rig, 2026-10-07, with a
-  directory a root run had left). The packaged unit runs with `PrivateTmp=yes`
-  and never sees another user's `/tmp/zwo`; a hand-run service or the doctor
-  subcommand does.
+  directory a root run had left:
+  [record](../validation/2026-10-07-zwo-focuser-departure-linux/README.md)).
+  The packaged unit runs with `PrivateTmp=yes` and never sees another user's
+  `/tmp/zwo`; a hand-run service or the doctor subcommand does.
 
   So on Linux `zwo-rs` checks, before the first EAF SDK call in a process,
   that the directory takes a file. It makes whatever part of the directory is
@@ -268,7 +247,7 @@ the port.
 ```
 
 The `server` block is the shared `AlpacaServerConfig` from
-`crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
+`crates/rusty-photon-server-config`: `port`, `bind_address`
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
@@ -277,23 +256,22 @@ Sections:
 - **devices** — Optional per-device override map keyed by **SDK serial** (the
   16-hex `EAFGetSerialNumber` value, or `noserial-{index}` when unsupported).
   Any device without an entry uses SDK-derived defaults.
-- **server.port** — Listening port (**11124**, next free in the 1112x family;
-  11123 is `pa-scops-oag`). Editable on the server page, which names the new
-  address after the save; `--port` pins it.
+- **server.port** — Listening port (**11124**). Editable on the server
+  page, which names the new address after the save; `--port` pins it.
 
-**Deferred** (see *MVP scope*): `EAFSetMaxStep` as a live, config-editable
-knob — v0 reads the `EAFGetMaxStep` working limit once, during enumeration's
-brief open, and never writes it.
+The working travel limit is not a config knob (see *MVP scope*): the
+service reads `EAFGetMaxStep` once, during enumeration's brief open, and
+never calls `EAFSetMaxStep`.
 
 ### Setup pages
 
 The service configures itself on the two HTML pages the Alpaca Management
-API defines, served on its own listener behind its own TLS and Basic Auth
-([driver-setup-pages.md](../plans/archive/driver-setup-pages.md)): `/setup` for the
-whole server and `/setup/v1/focuser/{n}/setup` for each EAF it serves. The
-pages are the shared [`rusty-photon-setup`](../crates/rusty-photon-setup.md)
-crate's — the render, the save, the cross-site check, the Security section
-and the reload wait, which [`dsd-fp2.md`](dsd-fp2.md) "Setup Pages"
+API defines, served on its own listener behind its own TLS and Basic Auth:
+`/setup` for the whole server and `/setup/v1/focuser/{n}/setup` for each
+EAF it serves. The pages are the shared
+[`rusty-photon-setup`](../crates/rusty-photon-setup.md) crate's — the
+render, the save, the cross-site check, the Security section and the
+reload wait, which [`dsd-fp2.md`](dsd-fp2.md) "Setup Pages"
 describes in full. The EAF pages are `rusty-photon-driver`'s `overrides`
 module, fed the EAFs the build registered; `setup.rs` supplies the rest
 (`ConfigurableDriver for ZwoFocuserDriver`): the `Config`, the secret
@@ -334,6 +312,9 @@ cameras — but with a **simpler fallback chain**, since the EAF SDK exposes no
    enumeration slot and stable across reconnects for the common single-focuser
    case.
 
+The `UniqueID` is `ZWO:<model>:<serial>`, the model's spaces written as
+dashes: `ZWO:EAF:<16-hex-serial>` on a physical EAF.
+
 Consequences (same as `zwo-camera`): **no `unique_id` field in config**, an
 **empty identity-pointer list** passed to `resolve_and_init` (no minting; the
 bootstrap still materializes the default config file on first start), and **no
@@ -342,7 +323,7 @@ edits only its override's name and description.
 
 ## MVP scope
 
-**In scope (v0)**
+**In scope**
 
 - ASCOM Focuser `IFocuserV4` for **every enumerated EAF** (each registered as a
   device on the one port).
@@ -357,8 +338,8 @@ edits only its override's name and description.
 
 **Deferred (Future Work)**
 
-- `EAFSetMaxStep` as a live, config-editable knob (v0 reads the working limit
-  at enumeration only and never writes it).
+- `EAFSetMaxStep` as a live, config-editable knob (the service reads the
+  working limit at enumeration only and never writes it).
 - Backlash get/set (`EAFGetBacklash`/`EAFSetBacklash`).
 - Beep/buzzer control (`EAFGetBeep`/`EAFSetBeep`).
 - Battery info, BLE pairing/scan/connect, LED control (none have an ASCOM
@@ -408,12 +389,12 @@ working limit but within the ceiling is accepted and stops at the limit.
   EAF does not affect others enumerated on the same service.
 - **C5.** **An EAF that has left the bus reads disconnected.** An EAF that
   loses its cable or its power while connected keeps its open SDK handle, and
-  `Connected` is this driver's own record of that handle: a connect sets it, a
-  disconnect clears it, and nothing else used to change it. A departed EAF
-  therefore answered `Connected == true` for as long as the service ran, its
-  `Position`, `IsMoving`, `Temperature`, `Halt` and `Move` failed as
+  `Connected` is this driver's own record of that handle: a connect sets it
+  and a disconnect clears it. Were nothing else to change it, a departed EAF
+  would answer `Connected == true` for as long as the service ran, its
+  `Position`, `IsMoving`, `Temperature`, `Halt` and `Move` would fail as
   `INVALID_OPERATION`, and rp's reconnect supervisor, which takes
-  `Connected == true` as healthy, never re-established it.
+  `Connected == true` as healthy, would never re-establish it.
 
   **What the SDK does when an EAF leaves (measured).** On the field rig
   (Raspberry Pi 5, Raspberry Pi OS aarch64, EAF SDK 1.7.7, firmware 3.8.1),
@@ -457,7 +438,7 @@ working limit but within the ceiling is accepted and stops at the limit.
   `Connected == true`, and `MaxStep` still answers from cache, until a client's
   next call reaches the SDK. A client polling `Position` or `IsMoving`, as rp
   does through a move, finds out on its next poll. The camera drivers follow
-  the same rule (zwo-camera C6, decided 2026-10-06).
+  the same rule (zwo-camera C6).
 
   **What a lost session answers.** `Connected == false`, and every member that
   takes the connected check answers `NOT_CONNECTED` (M14), `MaxStep` and
@@ -526,8 +507,8 @@ working limit but within the ceiling is accepted and stops at the limit.
   move completes.
 - **M7.** `Position` reflects the target position once the move completes;
   while the move is in progress it reports live intermediate values.
-- **M8.** A second `Move` while already moving is rejected (SDK error mapped to
-  `INVALID_OPERATION`).
+- **M8.** A second `Move` while already moving is rejected (the SDK's
+  `EAF_ERROR_MOVING`, mapped to `INVALID_OPERATION`).
 - **M9.** `Halt` stops an in-progress move (`EAFStop`), freezing the position
   mid-travel (not at the original target).
 - **M10.** `Halt` on an idle focuser succeeds as a no-op.
@@ -543,11 +524,14 @@ working limit but within the ceiling is accepted and stops at the limit.
 
 ## Service lifecycle (`main.rs`)
 
-Standard shape per [`service-lifecycle.md`](../skills/service-lifecycle.md),
-structurally identical to `zwo-camera`'s (see that design doc's "Service
-lifecycle" section) — swap `Camera` for `Focuser` throughout, `zwo-camera` for
-`zwo-focuser`, and drop the `simulation_empty` / `--filterwheel` specifics that
-don't apply here.
+Standard shape per [`service-lifecycle.md`](../skills/service-lifecycle.md):
+`main` runs the `doctor` subcommand and exits when one is given, starts
+tracing, bootstraps the config with an empty identity-pointer list (*Device
+identity*), and runs under
+`ServiceRunner::new("zwo-focuser").with_reload().run_with_reload(...)`. Each
+pass of the loop reads the effective config, builds the server (enumerating
+the EAFs, C0) and serves until a shutdown or a reload; a reload starts the
+next pass.
 
 **Restart on request.** The service serves `POST /service/v1/restart`
 and `GET /service/v1/instance` beside the Alpaca API, behind the same
@@ -576,10 +560,9 @@ structure:
   departure on, `INVALID_ID` once a rescan has run while it was gone, and an
   open finds the EAF only while it is on the bus and the last rescan listed
   it. It does not model a blink no call observed, nor a returned EAF's new ID.
-- **Hardware** — C5's SDK behaviour was measured with a `ctypes` probe of
-  `libEAFFocuser` on the field rig before the contract was written, and the
-  service was then run end to end against the same EAF (see the record linked
-  from C5).
+- **Hardware** — C5 rests on a `ctypes` probe of `libEAFFocuser` on the field
+  rig and a run of the service end to end against the same EAF (the record
+  linked from C5); *Real-hardware validation* lists the runs.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu`
   feature) — launches the production binary with `--features conformu` and runs
   `bdd_infra::run_conformu("focuser", …)`. Skipped when `CONFORMU_PATH` is unset.
@@ -600,49 +583,25 @@ cargo run -p zwo-focuser --features simulation
 
 ## Real-hardware validation
 
-**Performed 2026-07-14** against a physical EAF with the plug-in temperature
-probe attached, on a Linux dev box (`cargo run -p zwo-focuser`, real build, no
-`--features simulation`), driven over the Alpaca HTTP API and by ConformU
-4.3.0. Results, in the order the original checklist posed them:
+The evidence trail is [`docs/validation/`](../validation/README.md). This
+service's record:
 
-- **Linking and enumeration**: `libEAFFocuser` resolves; the unit enumerates
-  and registers as device 0 with UniqueID `ZWO:EAF:<16-hex-serial>` —
-  `EAFGetSerialNumber` works on this firmware, so the `noserial-0` fallback
-  stayed unexercised.
-- **Device access is the real prerequisite**: the EAF is a USB **HID** device;
-  with `/dev/hidraw*` inaccessible, startup fails at `EAFOpen` with
-  `EAF_ERROR_REMOVED` even though USB enumeration works. See *Hardware
-  Constraints* and *Packaging*.
-- **MaxStep**: the unit reports an `EAF_INFO::MaxStep` ceiling of **600000**
-  but a firmware working limit (`EAFGetMaxStep`) of **60000** — and the motor
-  silently stops at the working limit when commanded past it (ConformU caught
-  this as a Move issue against the original `EAF_INFO`-based implementation).
-  The driver now reports/validates the working limit; ConformU passes with
-  zero errors, warnings or issues.
-- **Movement timing**: ≈ 640 steps per second (≈ 64-65 steps per 100 ms
-  poll); `IsMoving` stays true across many polls (1000 steps ≈ 1.7 s) with
-  `Position` ramping live in between.
-  The simulation's original settle-after-one-poll / jump-to-target model was
-  materially wrong and now mirrors the measured behavior (see *Behavioral
-  contracts*).
-- **Halt**: `EAFStop` halts a real in-progress move, freezing the position
-  mid-travel; a second `Move` while moving is rejected by the firmware
-  (`EAF_ERROR_MOVING` → `INVALID_OPERATION`).
-- **Temperature**: 20.5 °C on the bench — ambient-plausible (probe reading).
-- **Position persistence**: the step counter survives power cycles (stored in
-  the focuser, not the host).
+- [2026-10-07 — an EAF that leaves the bus, on the field rig](../validation/2026-10-07-zwo-focuser-departure-linux/README.md)
+  (Raspberry Pi 5, aarch64, EAF SDK 1.7.7, firmware 3.8.1): a `ctypes` probe
+  of the SDK, five departure phases through the service (C5), and ConformU
+  4.5.0 `alpacaprotocol` and `conformance`, both clean.
 
-**Performed 2026-10-07** on the field rig (Raspberry Pi 5, aarch64) for C5, an
-EAF that leaves the bus: a `ctypes` probe of EAF SDK 1.7.7, five departure
-phases through the service, and ConformU 4.5.0 `alpacaprotocol` and
-`conformance`, both clean. Record:
-[`docs/validation/2026-10-07-zwo-focuser-departure-linux/`](../validation/2026-10-07-zwo-focuser-departure-linux/README.md).
+The first run against a physical EAF, on a Linux dev box with ConformU
+4.3.0, has no record there. What it settled is stated where the design
+rests on it — the two `MaxStep` values and the silent stop at the working
+limit, the movement timing, the halt, the temperature probe and the
+persisted position under *Hardware Constraints*, the hidraw access under
+*Packaging* — and its dated account is in
+[the record of that run](../plans/archive/zwo-focuser-hardware-run-2026-07.md).
 
 ## Packaging
 
-Packaged as `rusty-photon-zwo-focuser` (`.deb`/`.rpm`) per
-[ADR-012](../decisions/012-service-packaging-architecture.md) /
-[ADR-013](../decisions/013-native-sdk-payload-policy.md), mirroring
+Packaged as `rusty-photon-zwo-focuser` (`.deb`/`.rpm`), mirroring
 `zwo-camera`'s packaging: binary at `/usr/bin/rusty-photon-zwo-focuser`, hardened
 `rusty-photon-zwo-focuser.service`, and a **uniquely-named** udev rule
 (`90-rusty-photon-zwo-focuser.rules`, same VID `03c3` content as `zwo-camera`'s —
@@ -675,10 +634,8 @@ package) silently does nothing — use a resolvable group or ZWO's
 world-writable rules there.
 
 The MIT-licensed `libEAFFocuser.so` — **exactly the one SDK this binary links**
-(zwo-rs `focuser` feature,
-[ADR-014](../decisions/014-zwo-per-device-services-and-link-features.md)) —
-ships **inside the package**, staged at build time by
-`cargo ci build-packages` from the same pinned indi-3rdparty ref
+(zwo-rs `focuser` feature) — ships **inside the package**, staged at build
+time by `cargo ci build-packages` from the same pinned indi-3rdparty ref
 `.github/actions/install-zwo-sdk` uses, alongside the SDK license. Because
 each zwo package owns only its own blob, this package co-installs cleanly
 with `rusty-photon-zwo-camera` (which ships `libASICamera2.so`). ZWO EAFs
@@ -694,9 +651,6 @@ keep their firmware in onboard flash, so there is no firmware-install helper.
 
 ## References
 
-- Decision record: [`docs/plans/zwo-driver.md`](../plans/zwo-driver.md) ·
-  [ADR-008](../decisions/008-zwo-camera-native-sdk-ffi.md) ·
-  [ADR-010](../decisions/010-vendor-zwo-rs.md)
 - Same-vendor-class precedent: [`zwo-camera.md`](zwo-camera.md) (native-SDK
   architecture, build gating, Bazel real/sim pattern)
 - Same-interface precedent: [`qhy-focuser.md`](qhy-focuser.md) ·
