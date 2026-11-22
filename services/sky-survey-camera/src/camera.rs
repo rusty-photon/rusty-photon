@@ -226,8 +226,8 @@ impl SkySurveyCamera {
     }
 
     /// Construct from a fully-prepared [`PointingSource`]. Used by
-    /// `build_device` in `src/lib.rs` for either pointing mode, by
-    /// [`Self::new_static`], and by tests that inject a mock `MountReader`.
+    /// `build_device` in `src/lib.rs` for either pointing mode and by
+    /// [`Self::new_static`].
     pub fn from_parts(
         config: Config,
         survey_client: Arc<dyn SurveyClient>,

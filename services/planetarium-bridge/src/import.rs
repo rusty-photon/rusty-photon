@@ -7,7 +7,7 @@
 //! the request to the on-disk [`Spool`]; tool failures
 //! (rp actively rejected the call) are logged and dropped, because they
 //! would fail identically on replay. A single worker task owns the client
-//! session and the spool, which serializes deliveries and keeps replay
+//! and the spool, which serializes deliveries and keeps replay
 //! strictly FIFO.
 
 use std::path::PathBuf;
@@ -181,7 +181,7 @@ enum Delivery {
 }
 
 impl ImportWorker {
-    /// Run until cancelled. Owns the only rp session and the spool.
+    /// Run until cancelled. Owns the only rp client and the spool.
     pub async fn run(mut self) {
         self.run_inner().await;
         // Aligns still queued in the channel must survive the restart:
@@ -421,7 +421,7 @@ async fn deliver(
             Delivery::Delivered
         }
         Err(McpCallError::Request(message)) => {
-            // The session is unusable; reconnect on the next attempt.
+            // The client is unusable; reconnect on the next attempt.
             *client = None;
             Delivery::Unreachable(message)
         }

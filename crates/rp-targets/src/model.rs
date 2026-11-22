@@ -159,9 +159,12 @@ pub struct AcquisitionGoal {
     pub desired_count: u32,
 }
 
-/// Per-target scheduling constraints. Each `None` field falls back to the
-/// rp-config global default. Storage only — evaluated by rp's planner via
-/// `rp-ephemeris`.
+/// Per-target scheduling constraints.
+///
+/// Each `None` field falls back to the rp-config global default. Storage
+/// only: rp's planner gates selection on `min_altitude_degrees` (through
+/// `rp-ephemeris`); the other three are stored and validated, and no
+/// selection reads them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct SchedulingConstraints {
     /// Minimum altitude, in degrees, the target must be above to be
@@ -181,8 +184,10 @@ pub struct SchedulingConstraints {
     pub meridian_window_hours: Option<f64>,
 }
 
-/// Per-target grading thresholds. The grading plugin owns the *meaning* of
-/// these; this crate only stores the overriding values. Each `None` falls
+/// Per-target grading thresholds.
+///
+/// rp's progress derivation applies them to the metrics in each frame's
+/// sidecar; this crate only stores the overriding values. Each `None` falls
 /// back to the rp-config global default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct GradingThresholds {
