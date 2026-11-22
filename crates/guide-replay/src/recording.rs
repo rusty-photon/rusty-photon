@@ -38,6 +38,15 @@ pub enum RecordingError {
     /// `camera.json` names no sensor type the guider reads.
     #[error("sensor type {0:?} is neither monochrome (0) nor RGGB (2)")]
     Sensor(Option<i64>),
+    /// An RGGB camera was recorded binned: its frames are no mosaic the
+    /// guider can sum.
+    #[error("frame {frame} of an RGGB camera is binned {bin} × {bin}; the guider reads an RGGB frame unbinned")]
+    BinnedMosaic {
+        /// The first binned frame.
+        frame: u32,
+        /// Its binning.
+        bin: u32,
+    },
     /// `frames.csv` has a row that cannot be read.
     #[error("{path}: {source}")]
     Csv {
@@ -71,6 +80,7 @@ struct Row {
     frame: u32,
     file: String,
     start_utc: String,
+    bin: u32,
     error: String,
 }
 
@@ -112,6 +122,14 @@ impl Recording {
             .deserialize()
             .collect::<Result<Vec<Row>, _>>()
             .map_err(csv_error)?;
+        if camera.sensor == SensorType::Rggb {
+            if let Some(row) = rows.iter().find(|row| row.bin != 1) {
+                return Err(RecordingError::BinnedMosaic {
+                    frame: row.frame,
+                    bin: row.bin,
+                });
+            }
+        }
         Ok(Self {
             dir: dir.to_path_buf(),
             camera,
@@ -222,7 +240,7 @@ mod tests {
         write_camera(dir.path(), r#"{"sensortype": 2}"#);
         fs::write(
             dir.path().join("frames.csv"),
-            "frame,file,start_utc,error\n",
+            "frame,file,start_utc,bin,error\n",
         )
         .unwrap();
         let recording = Recording::open(dir.path()).unwrap();
@@ -269,7 +287,7 @@ mod tests {
 
         fs::write(
             dir.path().join("frames.csv"),
-            "frame,file,start_utc,error\nx,,,\n",
+            "frame,file,start_utc,bin,error\nx,,,1,\n",
         )
         .unwrap();
         let error = Recording::open(dir.path()).unwrap_err();
@@ -289,5 +307,21 @@ mod tests {
         fs::remove_file(&file).unwrap();
         let error = recording.frames().next().unwrap().unwrap_err();
         assert!(matches!(&error, RecordingError::Io { path, .. } if *path == file));
+    }
+
+    #[test]
+    fn a_binned_rggb_recording_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        write_camera(dir.path(), r#"{"sensortype": 2}"#);
+        fs::write(
+            dir.path().join("frames.csv"),
+            "frame,file,start_utc,bin,error\n1,,2026-11-23T03:00:00.000Z,1,\n2,,,2,\n",
+        )
+        .unwrap();
+        let error = Recording::open(dir.path()).unwrap_err();
+        assert!(
+            matches!(error, RecordingError::BinnedMosaic { frame: 2, bin: 2 }),
+            "{error}"
+        );
     }
 }

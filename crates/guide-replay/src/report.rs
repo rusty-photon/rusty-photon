@@ -9,6 +9,8 @@ use serde::Serialize;
 /// measured frame.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Tolerance {
+    /// The fewest guide stars the selection must keep.
+    pub min_guide_stars: usize,
     /// The largest standard deviation a guide star's deviation from its
     /// frame's offset may have about the star's own mean, on each axis.
     pub scatter_px: f64,
@@ -17,8 +19,8 @@ pub struct Tolerance {
     pub outlier_px: f64,
     /// The largest share of deviations that may be outliers.
     pub outlier_fraction: f64,
-    /// The smallest share of the frames that are not star-lost in which
-    /// each guide star must be usable.
+    /// The smallest share of the frames that are not star-lost and in
+    /// which a guide star is there in which it must be usable.
     pub min_usable_fraction: f64,
     /// The fewest frames that are not star-lost.
     pub min_clear_frames: usize,
@@ -28,6 +30,7 @@ impl Default for Tolerance {
     /// Stage G3's tolerance for an hour on rig2.
     fn default() -> Self {
         Self {
+            min_guide_stars: 4,
             scatter_px: 0.5,
             outlier_px: 2.0,
             outlier_fraction: 0.001,
@@ -54,6 +57,9 @@ pub struct StarReport {
     pub faint: usize,
     /// The frames among them in which its flux changed too far.
     pub flux_changed: usize,
+    /// The frames among them in which it is there and not usable: a fresh
+    /// star at its last place with its last flux.
+    pub dropped: usize,
     /// The mean of its deviation from its frame's offset, on each axis:
     /// where it sat, in the selection's frame, apart from where the
     /// others did.
@@ -66,13 +72,15 @@ pub struct StarReport {
 }
 
 impl StarReport {
-    /// The share of the frames that are not star-lost in which it is
-    /// usable.
+    /// The share of the frames that are not star-lost and in which it is
+    /// there in which it is usable.
     #[must_use]
     pub fn usable_fraction(&self) -> Option<f64> {
-        let clear = u32::try_from(self.clear).ok().filter(|clear| *clear > 0)?;
+        let there = u32::try_from(self.usable.saturating_add(self.dropped))
+            .ok()
+            .filter(|there| *there > 0)?;
         let usable = u32::try_from(self.usable).ok()?;
-        Some(f64::from(usable) / f64::from(clear))
+        Some(f64::from(usable) / f64::from(there))
     }
 }
 
@@ -80,6 +88,11 @@ impl StarReport {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "failure", rename_all = "snake_case")]
 pub enum Failure {
+    /// No frame yielded the fewest guide stars the tolerance asks for.
+    TooFewStars {
+        /// How many it asks for.
+        min: usize,
+    },
     /// Frames were star-lost though a fresh selection finds stars in them:
     /// the measurement lost stars that were there.
     Lost {
@@ -94,7 +107,7 @@ pub enum Failure {
         min: usize,
     },
     /// A guide star was usable in too few of the frames that are not
-    /// star-lost.
+    /// star-lost and in which it is there.
     SeldomUsable {
         /// The star.
         star: usize,
@@ -126,9 +139,12 @@ pub enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::TooFewStars { min } => {
+                write!(f, "no frame yields the {min} guide stars the tolerance asks for")
+            }
             Self::Lost { frames } => write!(
                 f,
-                "{frames} star-lost frames hold stars a fresh selection finds"
+                "{frames} star-lost frames hold guide stars that are there, or a jump of the field"
             ),
             Self::TooFewClear { frames, min } => {
                 write!(f, "{frames} frames are not star-lost, fewer than {min}")
@@ -139,7 +155,7 @@ impl fmt::Display for Failure {
                 min,
             } => write!(
                 f,
-                "star {star} is usable in {:.1} % of the clear frames, fewer than {:.1} %",
+                "star {star} is usable in {:.1} % of the clear frames it is there in, fewer than {:.1} %",
                 fraction * 100.0,
                 min * 100.0
             ),
@@ -177,10 +193,11 @@ pub struct Report {
     pub measured: usize,
     /// The measured frames that are not star-lost.
     pub clear: usize,
-    /// The star-lost frames in which a fresh selection finds no stars
-    /// either: clouds.
+    /// The star-lost frames in which no guide star is there and the field
+    /// did not jump: clouds.
     pub clouded: usize,
-    /// The star-lost frames in which a fresh selection finds stars.
+    /// The star-lost frames in which a guide star is there, or the field
+    /// jumped.
     pub lost: usize,
     /// Each guide star.
     pub stars: Vec<StarReport>,
@@ -207,6 +224,11 @@ impl Report {
     pub fn judge(&mut self) {
         let tolerance = self.tolerance;
         let mut failures = Vec::new();
+        if self.stars.len() < tolerance.min_guide_stars {
+            failures.push(Failure::TooFewStars {
+                min: tolerance.min_guide_stars,
+            });
+        }
         if self.lost > 0 {
             failures.push(Failure::Lost { frames: self.lost });
         }
@@ -300,15 +322,18 @@ fn to_f64(count: usize) -> f64 {
 mod tests {
     use super::*;
 
-    fn star(index: usize, clear: usize, usable: usize, scatter: Option<[f64; 2]>) -> StarReport {
+    /// A star usable in `usable` frames and dropped in `dropped` more,
+    /// out of 1,200 that are not star-lost.
+    fn star(index: usize, usable: usize, dropped: usize, scatter: Option<[f64; 2]>) -> StarReport {
         StarReport {
             star: index,
             selected_at: Some([10.0, 20.0]),
-            clear,
+            clear: 1_200,
             usable,
-            not_found: clear - usable,
+            not_found: 1_200 - usable,
             faint: 0,
             flux_changed: 0,
+            dropped,
             mean_deviation_px: scatter.map(|_| [0.1, -0.2]),
             scatter_px: scatter,
             largest_deviation_px: scatter.map(|[x, y]| 3.0 * x.max(y)),
@@ -325,10 +350,12 @@ mod tests {
             clouded: 0,
             lost: 0,
             stars: vec![
-                star(0, 1_200, 1_200, Some([0.2, 0.3])),
-                star(1, 1_200, 1_100, Some([0.4, 0.5])),
+                star(0, 1_200, 0, Some([0.2, 0.3])),
+                star(1, 1_100, 100, Some([0.4, 0.5])),
+                star(2, 600, 0, Some([0.3, 0.3])),
+                star(3, 1_200, 0, Some([0.25, 0.2])),
             ],
-            deviations: 2_300,
+            deviations: 4_100,
             outliers: 2,
             tolerance: Tolerance::default(),
             failures: Vec::new(),
@@ -343,6 +370,12 @@ mod tests {
         let report = report(|_| {});
         assert_eq!(report.failures, []);
         assert!(report.passes());
+    }
+
+    #[test]
+    fn a_replay_with_fewer_guide_stars_than_the_tolerance_asks_for_fails() {
+        let report = report(|report| report.stars.truncate(3));
+        assert_eq!(report.failures, [Failure::TooFewStars { min: 4 }]);
     }
 
     #[test]
@@ -367,8 +400,8 @@ mod tests {
     #[test]
     fn a_star_usable_in_too_few_frames_fails() {
         let report = report(|report| {
-            report.stars[1] = star(1, 1_000, 899, Some([0.1, 0.1]));
-            report.stars.push(star(2, 0, 0, None));
+            report.stars[1] = star(1, 899, 101, Some([0.1, 0.1]));
+            report.stars[2] = star(2, 0, 0, None);
         });
         assert_eq!(
             report.failures,
@@ -404,13 +437,13 @@ mod tests {
 
     #[test]
     fn more_outliers_than_one_in_a_thousand_fail() {
-        assert!(report(|report| report.outliers = 2).passes());
-        let report = report(|report| report.outliers = 3);
+        assert!(report(|report| report.outliers = 4).passes());
+        let report = report(|report| report.outliers = 5);
         assert_eq!(
             report.failures,
             [Failure::Outliers {
-                outliers: 3,
-                deviations: 2_300,
+                outliers: 5,
+                deviations: 4_100,
                 max_fraction: 0.001
             }]
         );
@@ -419,6 +452,7 @@ mod tests {
     #[test]
     fn each_failure_says_what_missed() {
         let lines: Vec<String> = [
+            Failure::TooFewStars { min: 4 },
             Failure::Lost { frames: 2 },
             Failure::TooFewClear {
                 frames: 10,
@@ -446,9 +480,10 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "2 star-lost frames hold stars a fresh selection finds",
+                "no frame yields the 4 guide stars the tolerance asks for",
+                "2 star-lost frames hold guide stars that are there, or a jump of the field",
                 "10 frames are not star-lost, fewer than 1000",
-                "star 3 is usable in 50.0 % of the clear frames, fewer than 90.0 %",
+                "star 3 is usable in 50.0 % of the clear frames it is there in, fewer than 90.0 %",
                 "star 1 scatters by 0.600 px in x and 0.250 px in y, more than 0.5 px",
                 "5 of 1000 deviations are outliers, more than 0.10 %",
             ]
@@ -463,14 +498,16 @@ mod tests {
             passing.to_string(),
             "1200 frames: 0 failed, 0 before the selection, 1200 measured\n\
              measured: 1200 not star-lost, 0 clouded, 0 lost\n\
-             2300 deviations, 2 of them 2 px or more from their star's mean\n\
+             4100 deviations, 2 of them 2 px or more from their star's mean\n\
              star 0: usable in 1200 of 1200, scatter 0.200 px in x and 0.300 px in y\n\
              star 1: usable in 1100 of 1200\n\
+             star 2: usable in 600 of 1200, scatter 0.300 px in x and 0.300 px in y\n\
+             star 3: usable in 1200 of 1200, scatter 0.250 px in x and 0.200 px in y\n\
              within the tolerance\n"
         );
         let failing = report(|report| report.lost = 3);
-        assert!(failing
-            .to_string()
-            .ends_with("FAILS: 3 star-lost frames hold stars a fresh selection finds\n"));
+        assert!(failing.to_string().ends_with(
+            "FAILS: 3 star-lost frames hold guide stars that are there, or a jump of the field\n"
+        ));
     }
 }

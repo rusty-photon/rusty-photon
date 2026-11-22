@@ -37,12 +37,13 @@
 //!
 //! [`Recording`] reads what `record.ps1` writes on the rig: the camera's
 //! properties and each frame as the camera sent it. [`replay`] selects
-//! guide stars on the first frame that has them, measures every frame
+//! guide stars on the first frame that has enough of them, measures every frame
 //! after it as the guider does, and holds what it finds to a
 //! [`Tolerance`]: whether the measurement keeps its stars, and whether
 //! they agree with one another. See `docs/crates/guide-replay.md`.
 
 mod imagebytes;
+mod presence;
 mod recording;
 mod replay;
 mod report;

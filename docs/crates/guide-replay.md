@@ -79,6 +79,9 @@ not depend on an ssh session.
 - **The sensor:** `sensortype` 0 is read as monochrome and 2 as an RGGB
   mosaic. The guider reads no other kind, and a recording of one is
   refused.
+- **An RGGB camera is recorded unbinned**, as the guider reads it: its
+  frames are summed 2 × 2 as a mosaic. A recording of one with a frame
+  at another `bin` is refused.
 
 ## Decoding a frame
 
@@ -102,23 +105,37 @@ three dimensions.
 ## The replay
 
 - **Selection** is `rp-guiding`'s, with the guider's star defaults, on
-  the first frame that has enough stars to select. The frames before it
-  are counted and not measured.
+  the first frame in which it keeps at least the tolerance's fewest
+  guide stars. The frames before it are counted and not measured.
 - **Every frame after it is measured** as the guider measures a frame:
   each guide star where it was last usable.
 - **A failed frame** is counted and skipped.
-- **A star-lost frame is clouded or lost:**
-  - It is *clouded* when the measurement saw its stars dimmed: each
-    guide star that is not usable is faint, or found with less flux than
-    its reference.
-  - It is also clouded when a fresh selection finds no stars in it
-    either: thick cloud hides them.
-  - Otherwise it is *lost*: the stars are there, and the measurement did
-    not hold them.
+- **Whether a guide star is there.** A guide star the measurement did
+  not use, not found or faint, is *there* when a fresh selection finds a
+  star within the search region of where it was last usable, with a flux
+  within `stars.mass_change` of its flux there. The fresh selection keeps
+  every star the guider's tests pass, with no cut to `stars.max` and an
+  edge margin of the search region alone. A star whose flux the
+  measurement found too far from its reference was seen, and its light
+  changed. It is never there.
+- **A star-lost frame is lost or clouded:**
+  - It is *lost* when a guide star is there: the measurement failed a
+    star that sat in its place as bright as it was.
+  - It is also lost when the field jumped beyond the search region: the
+    brightest guide stars, up to three, are all found with their flux,
+    moved by one offset to within 2 px.
+  - Otherwise it is *clouded*. Its stars are gone, faint, or dimmed or
+    brightened past the flux test, because the sky changed their light.
+    That covers a thin cloud that hides the faint stars and dims the
+    bright ones, and a cloud that clears after the flux reference
+    followed the stars down.
+- **A dropped star** is a guide star that is there and not used, in a
+  frame that is not star-lost.
 - **A star's deviation** in a frame that is not star-lost is its offset
   less the frame's offset, the median of the usable stars' offsets.
 - **`replay.csv`** has a row for each guide star in each measured frame:
-  - the star's reading, position, offset and deviation;
+  - the star's reading, whether it is there when it is not found or
+    faint, its position, offset and deviation;
   - its signal-to-noise ratio, half-flux diameter and flux, where the
     reading has them;
   - the frame's offset, its usable stars, whether it is star-lost, and
@@ -131,7 +148,7 @@ measured, not star-lost, clouded and lost. For each guide star it gives:
 
 - where it was selected;
 - in how many of the frames that are not star-lost it is usable, not
-  found, faint or dimmed;
+  found, faint, off its flux reference, or dropped;
 - the mean of its deviation;
 - the scatter of its deviation about that mean;
 - the largest distance of a deviation from that mean.
@@ -147,9 +164,10 @@ frame. The replay passes when all of these hold:
 
 | Rule | Limit |
 |---|---|
+| Guide stars selected | At least 4 |
 | Lost frames | None |
 | Frames that are not star-lost | At least 1,000 |
-| Each guide star usable | In at least 90 % of the frames that are not star-lost |
+| Each guide star usable | In at least 90 % of the frames that are not star-lost and in which it is there |
 | Each guide star's scatter, on each axis | At most 0.5 px |
 | Deviations 2 px or more from their star's mean | At most 1 in 1,000 |
 
@@ -173,8 +191,17 @@ frame. The replay passes when all of these hold:
   scatters by 0.5 px, where seeing alone puts about one deviation in
   3,000. A star the measurement takes for a hot pixel or a neighbour
   puts it there frame after frame.
+- **Four guide stars at least.** A star's deviation is taken from the
+  stars' median, so with few stars it reads small. In draws of
+  independent motion it reads 0.71 of a star's own motion with two
+  stars, 0.88 with four and 0.96 with eight, and nothing with one.
+  Four keep the scatter limit within a tenth of what it means with
+  eight.
 - **1,000 frames that are not star-lost** are about 40 minutes at
   rig2's 2.5 s cadence.
+- **The usable share counts the frames a star is there in.** Cloud that
+  hides a faint star does not count against it; the measurement
+  dropping a star that is there does.
 
 A tolerance with a different count of frames serves a shorter
 recording, such as the cropped frames the tests replay.
@@ -201,10 +228,19 @@ The unit tests write recordings the way the recorder does:
 
 They replay them and hold the replay to what each case shows:
 - a tracked field that keeps its stars, within the tolerance;
-- frames before any star, and failed frames;
-- a cloud whose frames are clouded;
-- stars the measurement loses to a jump of the field, and stars that
-  all brighten past the flux test, which are lost;
+- frames before any star or before enough stars, failed frames, and a
+  recording with too few stars to select;
+- clouds whose star-lost frames are clouded: a cloud that hides every
+  star, a thin cloud that hides the faint stars and dims the bright
+  ones, a cloud that clears after the flux reference followed it down,
+  and stars that all brighten past the flux test;
+- stars the measurement loses to a jump of the field, which are lost;
 - a star whose light is moved off its place, for half the recording or
-  for two frames, which scatters or makes outliers;
+  for two frames, which scatters or makes outliers.
+
+Unit tests on readings written by hand hold the rule itself:
+- when a star is there;
+- when stars moved together are a jump;
+- a dropped star;
+- lost and clouded frames;
 - a star's scatter and outliers, measured about its own mean.

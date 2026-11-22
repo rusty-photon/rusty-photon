@@ -4,10 +4,11 @@
 use std::io::Write;
 
 use rp_guiding::{
-    Frame, FrameError, FrameMeasurement, GuideStars, Offset, StarParams, StarReading,
+    Frame, FrameError, FrameMeasurement, GuideStars, Offset, StarParams, StarReading, Usable,
 };
 use serde::Serialize;
 
+use crate::presence::{self, Last};
 use crate::recording::{Recording, RecordingError};
 use crate::report::{Report, StarReport, Tolerance};
 
@@ -52,6 +53,9 @@ pub struct StarRow {
     pub star: usize,
     /// What became of it.
     pub reading: Reading,
+    /// When it is not found or faint, whether it is there: a fresh star at
+    /// its last place with its last flux.
+    pub there: Option<bool>,
     /// Its position, when usable.
     pub x: Option<f64>,
     /// Its position, when usable.
@@ -98,9 +102,14 @@ pub struct Replay {
 #[derive(Debug, Clone, Default)]
 struct Tally {
     selected_at: Option<[f64; 2]>,
+    /// Where it was last usable, and its flux there.
+    last: Option<Last>,
     not_found: usize,
     faint: usize,
     flux_changed: usize,
+    /// The frames that are not star-lost in which it is there and not
+    /// usable.
+    dropped: usize,
     /// Its deviation in each frame it is usable in that is not
     /// star-lost.
     deviations: Vec<[f64; 2]>,
@@ -129,6 +138,7 @@ impl Tally {
             not_found: self.not_found,
             faint: self.faint,
             flux_changed: self.flux_changed,
+            dropped: self.dropped,
             mean_deviation_px,
             scatter_px,
             largest_deviation_px,
@@ -163,8 +173,8 @@ fn spread(deviations: &[[f64; 2]]) -> Option<([f64; 2], [f64; 2])> {
 }
 
 /// Replays `recording`: selects guide stars with `params` on the first
-/// frame that has enough of them, measures every frame after it, and
-/// holds what it finds to `tolerance`.
+/// frame that yields the tolerance's fewest guide stars, measures every
+/// frame after it, and holds what it finds to `tolerance`.
 ///
 /// # Errors
 ///
@@ -207,7 +217,10 @@ pub fn replay(
             })?;
         let measurement = if let Some(stars) = stars.as_mut() {
             stars.measure(&frame)
-        } else if let Ok((selected, measurement)) = GuideStars::select(&frame, params) {
+        } else if let Some((selected, measurement)) = GuideStars::select(&frame, params)
+            .ok()
+            .filter(|(_, measurement)| measurement.stars.len() >= tolerance.min_guide_stars)
+        {
             stars = Some(selected);
             tallies = measurement
                 .stars
@@ -223,20 +236,17 @@ pub fn replay(
             continue;
         };
         report.measured = report.measured.saturating_add(1);
-        let clouded = measurement
-            .star_lost
-            .then(|| dimmed(&measurement) || GuideStars::select(&frame, params).is_err());
-        match clouded {
-            Some(true) => report.clouded = report.clouded.saturating_add(1),
-            Some(false) => report.lost = report.lost.saturating_add(1),
-            None => report.clear = report.clear.saturating_add(1),
-        }
-        tally_frame(&measurement, &mut tallies);
+        let fresh = if needs_fresh(&measurement) {
+            presence::fresh_stars(&frame, params)
+        } else {
+            Vec::new()
+        };
+        let verdict = account(&measurement, &fresh, &mut tallies, &mut report, params);
         rows.extend(rows_of(
             recorded.frame,
             &recorded.start_utc,
             &measurement,
-            clouded,
+            &verdict,
         ));
     }
     for (star, tally) in tallies.iter().enumerate() {
@@ -249,41 +259,91 @@ pub fn replay(
     Ok(Replay { rows, report })
 }
 
-/// Whether a star-lost frame's stars were seen and dimmed: each guide
-/// star that is not usable is faint, or found with less flux than its
-/// reference.
-fn dimmed(measurement: &FrameMeasurement) -> bool {
-    measurement.stars.iter().all(|reading| match reading {
-        StarReading::Usable(_) | StarReading::Faint { .. } => true,
-        StarReading::FluxChanged { flux, reference } => flux < reference,
-        StarReading::NotFound => false,
-    })
+/// Whether a frame needs a fresh selection: it is star-lost, or a guide
+/// star in it is not found or faint and may be there.
+fn needs_fresh(measurement: &FrameMeasurement) -> bool {
+    measurement.star_lost
+        || measurement
+            .stars
+            .iter()
+            .any(|reading| matches!(reading, StarReading::NotFound | StarReading::Faint { .. }))
 }
 
-/// Adds a frame that is not star-lost to its stars' tallies.
-fn tally_frame(measurement: &FrameMeasurement, tallies: &mut [Tally]) {
-    let Some(frame_offset) = measurement.offset else {
-        return;
-    };
-    for (reading, tally) in measurement.stars.iter().zip(tallies.iter_mut()) {
-        match reading {
-            StarReading::Usable(star) => {
-                tally.deviations.push(deviation(star.offset, frame_offset));
+/// What a measured frame shows beyond its readings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Verdict {
+    /// For each guide star, whether it is not found or faint while it is
+    /// there.
+    there: Vec<bool>,
+    /// For a star-lost frame, whether it is clouded rather than lost.
+    clouded: Option<bool>,
+}
+
+/// Accounts for a measured frame: which of its unused guide stars are
+/// there among `fresh`, whether a star-lost frame is clouded or lost, and
+/// each star's tally.
+///
+/// A star-lost frame is lost when a guide star is there, or when the
+/// field jumped beyond the search region, and clouded otherwise: its
+/// stars are gone, faint, or dimmed or brightened past the flux test,
+/// because the sky changed their light.
+fn account(
+    measurement: &FrameMeasurement,
+    fresh: &[Usable],
+    tallies: &mut [Tally],
+    report: &mut Report,
+    params: StarParams,
+) -> Verdict {
+    let last: Vec<Option<Last>> = tallies.iter().map(|tally| tally.last).collect();
+    let there: Vec<bool> = measurement
+        .stars
+        .iter()
+        .zip(&last)
+        .map(|(reading, last)| {
+            matches!(reading, StarReading::NotFound | StarReading::Faint { .. })
+                && presence::there(*last, fresh, params)
+        })
+        .collect();
+    let clouded = measurement
+        .star_lost
+        .then(|| !(there.contains(&true) || presence::jumped(&last, fresh, params)));
+    match clouded {
+        Some(true) => report.clouded = report.clouded.saturating_add(1),
+        Some(false) => report.lost = report.lost.saturating_add(1),
+        None => report.clear = report.clear.saturating_add(1),
+    }
+    if let Some(frame_offset) = measurement.offset {
+        for ((reading, tally), there) in
+            measurement.stars.iter().zip(tallies.iter_mut()).zip(&there)
+        {
+            match reading {
+                StarReading::Usable(star) => {
+                    tally.deviations.push(deviation(star.offset, frame_offset));
+                }
+                StarReading::NotFound => tally.not_found = tally.not_found.saturating_add(1),
+                StarReading::Faint { .. } => tally.faint = tally.faint.saturating_add(1),
+                StarReading::FluxChanged { .. } => {
+                    tally.flux_changed = tally.flux_changed.saturating_add(1);
+                }
             }
-            StarReading::NotFound => tally.not_found = tally.not_found.saturating_add(1),
-            StarReading::Faint { .. } => tally.faint = tally.faint.saturating_add(1),
-            StarReading::FluxChanged { .. } => {
-                tally.flux_changed = tally.flux_changed.saturating_add(1);
+            if *there {
+                tally.dropped = tally.dropped.saturating_add(1);
             }
         }
     }
+    for (reading, tally) in measurement.stars.iter().zip(tallies.iter_mut()) {
+        if let StarReading::Usable(star) = reading {
+            tally.last = Some(Last::of(star));
+        }
+    }
+    Verdict { there, clouded }
 }
 
 fn rows_of<'a>(
     frame: u32,
     start_utc: &'a str,
     measurement: &'a FrameMeasurement,
-    clouded: Option<bool>,
+    verdict: &'a Verdict,
 ) -> impl Iterator<Item = StarRow> + 'a {
     let frame_offset = measurement.offset;
     measurement
@@ -305,6 +365,8 @@ fn rows_of<'a>(
                     StarReading::Faint { .. } => Reading::Faint,
                     StarReading::FluxChanged { .. } => Reading::FluxChanged,
                 },
+                there: matches!(reading, StarReading::NotFound | StarReading::Faint { .. })
+                    .then(|| verdict.there.get(star).copied().unwrap_or(false)),
                 x: found.map(|found| found.position.x),
                 y: found.map(|found| found.position.y),
                 offset_x: found.map(|found| found.offset.x),
@@ -326,7 +388,7 @@ fn rows_of<'a>(
                 frame_offset_y: frame_offset.map(|offset| offset.y),
                 usable: measurement.usable,
                 star_lost: measurement.star_lost,
-                clouded,
+                clouded: verdict.clouded,
             }
         })
 }
@@ -361,7 +423,7 @@ pub fn write_csv(rows: &[StarRow], out: impl Write) -> csv::Result<()> {
 mod tests {
     use std::time::Duration;
 
-    use guide_simulator::{Cloud, FrameTruth, PierSide, SkyOffset};
+    use guide_simulator::{Cloud, FrameTruth, PierSide, SkyOffset, StarField};
     use ndarray::{s, Array2};
 
     use super::*;
@@ -583,7 +645,10 @@ mod tests {
         assert_eq!(replay.report.stars, []);
         assert_eq!(
             replay.report.failures,
-            [Failure::TooFewClear { frames: 0, min: 1 }]
+            [
+                Failure::TooFewStars { min: 4 },
+                Failure::TooFewClear { frames: 0, min: 1 }
+            ]
         );
     }
 
@@ -616,7 +681,7 @@ mod tests {
         let mut lines = text.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "frame,start_utc,star,reading,x,y,offset_x,offset_y,deviation_x,deviation_y,\
+            "frame,start_utc,star,reading,there,x,y,offset_x,offset_y,deviation_x,deviation_y,\
              snr,hfd,flux,frame_offset_x,frame_offset_y,usable,star_lost,clouded"
         );
         let first = lines.next().unwrap();
@@ -647,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_whose_stars_all_brighten_past_the_flux_test_is_lost() {
+    fn a_frame_whose_stars_all_brighten_past_the_flux_test_is_clouded() {
         let dir = tempfile::tempdir().unwrap();
         record(dir.path(), &mut sky(|_| {}), 20, |n, pixels, _| {
             if n == 15 {
@@ -662,7 +727,262 @@ mod tests {
         assert_eq!(lost.len(), 8);
         assert!(lost
             .iter()
-            .all(|row| row.reading == Reading::FluxChanged && row.clouded == Some(false)));
-        assert_eq!((replay.report.lost, replay.report.clouded), (1, 0));
+            .all(|row| row.reading == Reading::FluxChanged && row.clouded == Some(true)));
+        assert_eq!((replay.report.lost, replay.report.clouded), (0, 1));
+    }
+
+    #[test]
+    fn a_thin_cloud_that_dims_the_bright_stars_and_hides_the_faint_is_clouded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sim = sky(|config| {
+            if let StarField::Listed(stars) = &mut config.sky.stars {
+                for star in stars.iter_mut().skip(4) {
+                    star.e_per_s *= 0.03;
+                }
+            }
+            config.sky.clouds = vec![Cloud {
+                start: Duration::from_secs(20),
+                duration: Duration::from_secs(20),
+                ramp: Duration::from_secs(2),
+                transmission: 0.02,
+            }];
+        });
+        record(dir.path(), &mut sim, 30, |_, _, _| {});
+        let replay = replay_of(dir.path(), 20);
+        let mixed = replay.rows.iter().any(|row| {
+            row.star_lost
+                && row.reading == Reading::NotFound
+                && replay
+                    .rows
+                    .iter()
+                    .any(|other| other.frame == row.frame && other.reading == Reading::FluxChanged)
+        });
+        assert!(mixed, "no star-lost frame mixes dimmed and missing stars");
+        assert_eq!(replay.report.lost, 0, "{:?}", replay.report);
+        assert!(replay.report.clouded >= 4, "{:?}", replay.report);
+    }
+
+    #[test]
+    fn a_cloud_that_clears_after_the_flux_reference_followed_it_down_is_clouded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sim = sky(|config| {
+            config.sky.clouds = vec![Cloud {
+                start: Duration::from_secs(20),
+                duration: Duration::from_secs(60),
+                ramp: Duration::from_secs(2),
+                transmission: 0.4,
+            }];
+        });
+        record(dir.path(), &mut sim, 45, |_, _, _| {});
+        let replay = replay_of(dir.path(), 20);
+        let brightened = replay
+            .rows
+            .iter()
+            .any(|row| row.star_lost && row.reading == Reading::FluxChanged && row.frame > 32);
+        assert!(brightened, "the clearing never tripped the flux test");
+        assert_eq!(replay.report.lost, 0, "{:?}", replay.report);
+    }
+
+    /// Leaves only the brightest star's square of `pixels` and the floor
+    /// elsewhere.
+    fn keep_brightest(pixels: &mut Array2<u16>, truth: &FrameTruth) {
+        let star = &truth.stars[0];
+        let (x, y) = (
+            star.position.x.round() as usize,
+            star.position.y.round() as usize,
+        );
+        let window = pixels.slice(s![y - 8..y + 8, x - 8..x + 8]).to_owned();
+        let floor = *pixels.iter().min().unwrap();
+        pixels.fill(floor + 20);
+        pixels
+            .slice_mut(s![y - 8..y + 8, x - 8..x + 8])
+            .assign(&window);
+    }
+
+    #[test]
+    fn the_selection_waits_for_a_frame_with_enough_guide_stars() {
+        let dir = tempfile::tempdir().unwrap();
+        record(dir.path(), &mut sky(|_| {}), 6, |n, pixels, truth| {
+            if n <= 2 {
+                keep_brightest(pixels, truth);
+            }
+        });
+        let report = replay_of(dir.path(), 4).report;
+        assert_eq!((report.before_selection, report.measured), (2, 4));
+        assert_eq!(report.stars.len(), 8);
+        assert_eq!(report.failures, []);
+    }
+
+    #[test]
+    fn a_recording_with_too_few_stars_to_select_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        record(dir.path(), &mut sky(|_| {}), 3, |_, pixels, truth| {
+            keep_brightest(pixels, truth);
+        });
+        let report = replay_of(dir.path(), 1).report;
+        assert_eq!((report.before_selection, report.measured), (3, 0));
+        assert!(report.failures.contains(&Failure::TooFewStars { min: 4 }));
+    }
+
+    fn usable_at(x: f64, y: f64, flux: f64, offset: Offset) -> Usable {
+        Usable {
+            position: rp_guiding::Position { x, y },
+            offset,
+            hfd: 3.0,
+            snr: 50.0,
+            flux,
+        }
+    }
+
+    fn frame_of(stars: Vec<StarReading>, offset: Option<Offset>) -> FrameMeasurement {
+        let usable = stars
+            .iter()
+            .filter(|reading| matches!(reading, StarReading::Usable(_)))
+            .count();
+        FrameMeasurement {
+            offset,
+            usable,
+            star_lost: usable == 0,
+            stars,
+            median_hfd: None,
+            median_snr: None,
+            median_flux: None,
+        }
+    }
+
+    fn tallies_at(stars: &[(f64, f64, f64)]) -> Vec<Tally> {
+        stars
+            .iter()
+            .map(|(x, y, flux)| Tally {
+                last: Some(Last::of(&usable_at(*x, *y, *flux, Offset::default()))),
+                ..Tally::default()
+            })
+            .collect()
+    }
+
+    fn empty_report() -> Report {
+        Report {
+            frames: 0,
+            failed: 0,
+            before_selection: 0,
+            measured: 0,
+            clear: 0,
+            clouded: 0,
+            lost: 0,
+            stars: Vec::new(),
+            deviations: 0,
+            outliers: 0,
+            tolerance: Tolerance::default(),
+            failures: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_star_missing_in_a_clear_frame_while_it_is_there_is_dropped() {
+        let params = StarParams::default();
+        let mut tallies = tallies_at(&[(100.0, 100.0, 9_000.0), (300.0, 150.0, 6_000.0)]);
+        let mut report = empty_report();
+        let frame = frame_of(
+            vec![
+                StarReading::Usable(usable_at(101.0, 100.5, 9_100.0, Offset { x: 1.0, y: 0.5 })),
+                StarReading::NotFound,
+            ],
+            Some(Offset { x: 1.0, y: 0.5 }),
+        );
+        let fresh = [usable_at(301.0, 150.0, 6_100.0, Offset::default())];
+        let verdict = account(&frame, &fresh, &mut tallies, &mut report, params);
+        assert_eq!(
+            verdict,
+            Verdict {
+                there: vec![false, true],
+                clouded: None
+            }
+        );
+        assert_eq!((tallies[1].not_found, tallies[1].dropped), (1, 1));
+        assert_eq!(tallies[0].deviations, [[0.0, 0.0]]);
+        assert_eq!(tallies[0].last.unwrap().position.x, 101.0);
+        assert_eq!(tallies[1].last.unwrap().position.x, 300.0);
+        assert_eq!(report.clear, 1);
+    }
+
+    #[test]
+    fn a_star_lost_frame_is_lost_while_a_guide_star_is_there_and_clouded_when_none_is() {
+        let params = StarParams::default();
+        let cases: [(StarReading, f64, Option<bool>); 4] = [
+            (StarReading::NotFound, 6_000.0, Some(false)),
+            (StarReading::Faint { snr: 2.0 }, 6_000.0, Some(false)),
+            (StarReading::NotFound, 2_000.0, Some(true)),
+            (
+                StarReading::FluxChanged {
+                    flux: 2_000.0,
+                    reference: 6_000.0,
+                },
+                6_000.0,
+                Some(true),
+            ),
+        ];
+        for (reading, fresh_flux, clouded) in cases {
+            let mut tallies = tallies_at(&[(100.0, 100.0, 9_000.0), (300.0, 150.0, 6_000.0)]);
+            let mut report = empty_report();
+            let frame = frame_of(vec![StarReading::NotFound, reading], None);
+            let fresh = [usable_at(302.0, 151.0, fresh_flux, Offset::default())];
+            let verdict = account(&frame, &fresh, &mut tallies, &mut report, params);
+            assert_eq!(verdict.clouded, clouded, "{reading:?} with {fresh_flux}");
+            assert_eq!(
+                (report.lost, report.clouded),
+                if clouded == Some(true) {
+                    (0, 1)
+                } else {
+                    (1, 0)
+                }
+            );
+            assert_eq!(tallies[1].dropped, 0, "a star-lost frame drops nothing");
+        }
+    }
+
+    #[test]
+    fn a_star_lost_frame_whose_field_jumped_is_lost() {
+        let params = StarParams::default();
+        let mut tallies = tallies_at(&[
+            (100.0, 100.0, 9_000.0),
+            (300.0, 150.0, 6_000.0),
+            (200.0, 250.0, 4_000.0),
+        ]);
+        let mut report = empty_report();
+        let frame = frame_of(vec![StarReading::NotFound; 3], None);
+        let fresh = [
+            usable_at(140.0, 130.0, 9_000.0, Offset::default()),
+            usable_at(340.0, 180.0, 6_000.0, Offset::default()),
+            usable_at(240.0, 280.0, 4_000.0, Offset::default()),
+        ];
+        let verdict = account(&frame, &fresh, &mut tallies, &mut report, params);
+        assert_eq!(
+            verdict,
+            Verdict {
+                there: vec![false; 3],
+                clouded: Some(false)
+            }
+        );
+    }
+
+    #[test]
+    fn a_fresh_selection_runs_for_a_star_lost_frame_or_an_unused_star() {
+        let usable = StarReading::Usable(usable_at(1.0, 1.0, 1.0, Offset::default()));
+        let changed = StarReading::FluxChanged {
+            flux: 1.0,
+            reference: 3.0,
+        };
+        let some = Some(Offset::default());
+        assert!(!needs_fresh(&frame_of(vec![usable, usable], some)));
+        assert!(!needs_fresh(&frame_of(vec![usable, changed], some)));
+        assert!(needs_fresh(&frame_of(
+            vec![usable, StarReading::NotFound],
+            some
+        )));
+        assert!(needs_fresh(&frame_of(
+            vec![usable, StarReading::Faint { snr: 2.0 }],
+            some
+        )));
+        assert!(needs_fresh(&frame_of(vec![changed, changed], None)));
     }
 }

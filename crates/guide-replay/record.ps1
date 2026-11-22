@@ -128,9 +128,14 @@ function ImageBytes-Error($r, [byte[]]$body, [int]$nx, [int]$ny) {
   ''
 }
 
+# A recording already in -Out is left as it is, its log included.
+if (Test-Path (Join-Path $Out 'frames.csv')) {
+  [Console]::Error.WriteLine("$Out already holds a recording")
+  exit 1
+}
+
 $W = 0; $H = 0; $connecting = $false; $timer = $false; $failed = $false
 try {
-  if (Test-Path (Join-Path $Out 'frames.csv')) { throw "$Out already holds a recording" }
   Say "recorder starts: $UniqueId at $Base, ${Exposure} s exposures at bin $Bin for $Minutes min"
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
   [Net.ServicePointManager]::Expect100Continue = $false

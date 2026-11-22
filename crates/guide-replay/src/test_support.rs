@@ -75,6 +75,8 @@ pub fn write_recording(dir: &Path, sensortype: i64, frames: &[Option<Array2<u16>
             (tenths / 10) % 60,
             tenths % 10
         );
+        // An RGGB camera is recorded unbinned, as the guider reads it.
+        let bin = if sensortype == 2 { 1 } else { 2 };
         index.push(match frame {
             Some(pixels) => {
                 let file = format!("frame-{n:05}.imagebytes");
@@ -82,11 +84,11 @@ pub fn write_recording(dir: &Path, sensortype: i64, frames: &[Option<Array2<u16>
                 let (rows, columns) = pixels.dim();
                 fs::write(dir.join(&file), &body).unwrap();
                 format!(
-                    "{n},{file},{start},2,2,{columns},{rows},{},20.0,",
+                    "{n},{file},{start},2,{bin},{columns},{rows},{},20.0,",
                     body.len()
                 )
             }
-            None => format!("{n},,{start},2,2,,,0,,imagearray HTTP 500"),
+            None => format!("{n},,{start},2,{bin},,,0,,imagearray HTTP 500"),
         });
     }
     index.push(String::new());
