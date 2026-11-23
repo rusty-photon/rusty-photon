@@ -465,12 +465,14 @@ mod tests {
     }
 
     /// Whether, in `frames`, a guide star is usable with its flux outside
-    /// the flux band of its flux in the first frame: a change of
-    /// brightness the star stayed usable through. The tests that call it
-    /// fail with the position rule off, which shows the rule is what kept
-    /// the star at the change's onset, before its reference followed it.
-    fn usable_through_a_change(replay: &Replay, frames: std::ops::RangeInclusive<u32>) -> bool {
-        let params = StarParams::default();
+    /// `params`' flux band of its flux in the first frame. Over the first
+    /// frames of a change, before a star's reference can follow it, only
+    /// the position rule keeps such a star usable.
+    fn usable_through_a_change(
+        replay: &Replay,
+        params: StarParams,
+        frames: std::ops::RangeInclusive<u32>,
+    ) -> bool {
         let first_frame = replay.rows.first().map(|row| row.frame);
         let first: Vec<Option<f64>> = replay
             .rows
@@ -860,7 +862,8 @@ mod tests {
 
     /// Replays 45 frames of the test sky with a 60 s cloud of
     /// `transmission` from 20 s, its stars from the fifth on scaled by
-    /// `faint`: frames 10 to 31 lie wholly inside the cloud.
+    /// `faint`: frames 10 to 31 lie wholly inside the cloud, and 10 to 13
+    /// are its first, before a star's reference can follow it.
     fn cloud_over_field(transmission: f64, faint: f64) -> Replay {
         let dir = tempfile::tempdir().unwrap();
         let mut sim = sky(|config| {
@@ -886,7 +889,7 @@ mod tests {
         let report = &replay.report;
         assert_eq!((report.clear, report.clouded, report.lost), (45, 0, 0));
         assert!(
-            usable_through_a_change(&replay, 12..=30),
+            usable_through_a_change(&replay, StarParams::default(), 10..=13),
             "no star stayed usable through the cloud's dimming"
         );
     }
@@ -902,7 +905,7 @@ mod tests {
         });
         assert!(hidden, "the cloud hid no faint star");
         assert!(
-            usable_through_a_change(&replay, 12..=30),
+            usable_through_a_change(&replay, StarParams::default(), 10..=13),
             "no star stayed usable through the cloud's dimming"
         );
     }
@@ -919,7 +922,7 @@ mod tests {
         let report = &replay.report;
         assert_eq!((report.clear, report.clouded, report.lost), (20, 0, 0));
         assert!(
-            usable_through_a_change(&replay, 15..=15),
+            usable_through_a_change(&replay, StarParams::default(), 15..=15),
             "no star stayed usable through frame 15's brightening"
         );
     }

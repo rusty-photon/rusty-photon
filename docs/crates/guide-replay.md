@@ -131,6 +131,7 @@ three dimensions.
     followed the stars down.
   - The measurement keeps a star usable through a change of brightness
     while the other stars place it, which takes at least three found
+    with a signal-to-noise ratio of at least `stars.min_snr`
     ([guider.md § Star selection and measurement](../services/guider.md#star-selection-and-measurement)).
     So a frame star-lost for its stars' brightness alone comes from a
     field with fewer than three found, or from stars the others do not
