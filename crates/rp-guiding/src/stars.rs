@@ -399,7 +399,11 @@ impl GuideStar {
             // frames that showed it, this one among them.
             self.fluxes = self.flux_failures.drain(..).collect();
             let restarted = self.reference_flux();
-            return if placed || within(star.flux, restarted, params.mass_change) {
+            if within(star.flux, restarted, params.mass_change) {
+                return self.usable(&star, snr);
+            }
+            return if placed {
+                self.log_placed(&star, restarted);
                 self.usable(&star, snr)
             } else {
                 StarReading::FluxChanged {
@@ -409,6 +413,7 @@ impl GuideStar {
             };
         }
         if placed {
+            self.log_placed(&star, reference);
             self.join_reference(star.flux);
             return self.usable(&star, snr);
         }
@@ -416,6 +421,20 @@ impl GuideStar {
             flux: star.flux,
             reference,
         }
+    }
+
+    /// Logs the star kept usable, found as `found` outside the flux band
+    /// of `reference`, where the other stars place it.
+    fn log_placed(&self, found: &MeasuredStar, reference: f64) {
+        debug!(
+            selected_x = self.reference.x,
+            selected_y = self.reference.y,
+            x = found.x,
+            y = found.y,
+            flux = found.flux,
+            reference,
+            "a guide star outside the flux band is usable where the other stars place it"
+        );
     }
 
     /// Adds a usable frame's flux to the star's reference.

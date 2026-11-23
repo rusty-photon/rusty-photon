@@ -439,13 +439,66 @@ mod tests {
     }
 
     fn replay_of(dir: &std::path::Path, min_clear_frames: usize) -> Replay {
+        replay_with(dir, tolerance(min_clear_frames))
+    }
+
+    fn replay_with(dir: &std::path::Path, tolerance: Tolerance) -> Replay {
         let recording = Recording::open(dir).unwrap();
-        replay(
-            &recording,
-            StarParams::default(),
-            tolerance(min_clear_frames),
+        replay(&recording, StarParams::default(), tolerance).unwrap()
+    }
+
+    /// The sky's two brightest stars alone: too few for the measurement to
+    /// place a star by the others, so its flux test judges them, as it does
+    /// a field with fewer than three stars found.
+    fn pair(config: &mut guide_simulator::SimConfig) {
+        if let StarField::Listed(stars) = &mut config.sky.stars {
+            stars.truncate(2);
+        }
+    }
+
+    /// Triples the signal of every pixel above the test sky's background.
+    fn brighten(pixels: &mut Array2<u16>) {
+        pixels.mapv_inplace(|value| {
+            let above = f64::from(value) - 520.0;
+            (520.0 + 3.0 * above.max(0.0)).min(65_535.0) as u16
+        });
+    }
+
+    /// Whether, in `frames`, a guide star is usable with its flux outside
+    /// `params`' flux band of its flux in the first frame. Over the first
+    /// frames of a change, before a star's reference can follow it, only
+    /// the position rule keeps such a star usable.
+    fn usable_through_a_change(
+        replay: &Replay,
+        params: StarParams,
+        frames: std::ops::RangeInclusive<u32>,
+    ) -> bool {
+        let first_frame = replay.rows.first().map(|row| row.frame);
+        let first: Vec<Option<f64>> = replay
+            .rows
+            .iter()
+            .filter(|row| Some(row.frame) == first_frame)
+            .map(|row| row.flux)
+            .collect();
+        replay.rows.iter().any(|row| {
+            frames.contains(&row.frame)
+                && row.reading == Reading::Usable
+                && row
+                    .flux
+                    .zip(first.get(row.star).copied().flatten())
+                    .is_some_and(|(flux, first)| (flux - first).abs() > params.mass_change * first)
+        })
+    }
+
+    /// Replays `dir`, selected on two guide stars.
+    fn replay_of_pair(dir: &std::path::Path, min_clear_frames: usize) -> Replay {
+        replay_with(
+            dir,
+            Tolerance {
+                min_guide_stars: 2,
+                ..tolerance(min_clear_frames)
+            },
         )
-        .unwrap()
     }
 
     #[test]
@@ -714,17 +767,14 @@ mod tests {
     #[test]
     fn a_frame_whose_stars_all_brighten_past_the_flux_test_is_clouded() {
         let dir = tempfile::tempdir().unwrap();
-        record(dir.path(), &mut sky(|_| {}), 20, |n, pixels, _| {
+        record(dir.path(), &mut sky(pair), 20, |n, pixels, _| {
             if n == 15 {
-                pixels.mapv_inplace(|value| {
-                    let above = f64::from(value) - 520.0;
-                    (520.0 + 3.0 * above.max(0.0)).min(65_535.0) as u16
-                });
+                brighten(pixels);
             }
         });
-        let replay = replay_of(dir.path(), 19);
+        let replay = replay_of_pair(dir.path(), 19);
         let lost: Vec<&StarRow> = replay.rows.iter().filter(|row| row.star_lost).collect();
-        assert_eq!(lost.len(), 8);
+        assert_eq!(lost.len(), 2);
         assert!(lost
             .iter()
             .all(|row| row.reading == Reading::FluxChanged && row.clouded == Some(true)));
@@ -734,10 +784,15 @@ mod tests {
     #[test]
     fn a_thin_cloud_that_dims_the_bright_stars_and_hides_the_faint_is_clouded() {
         let dir = tempfile::tempdir().unwrap();
+        // Two bright stars and two faint: under the cloud only the bright
+        // two are found, too few to place each other. The faint pair, at
+        // 450 and 375 electrons a second, pass selection in clear sky and
+        // fall to a few electrons a second under the cloud.
         let mut sim = sky(|config| {
             if let StarField::Listed(stars) = &mut config.sky.stars {
-                for star in stars.iter_mut().skip(4) {
-                    star.e_per_s *= 0.03;
+                stars.truncate(4);
+                for star in stars.iter_mut().skip(2) {
+                    star.e_per_s *= 0.015;
                 }
             }
             config.sky.clouds = vec![Cloud {
@@ -749,6 +804,11 @@ mod tests {
         });
         record(dir.path(), &mut sim, 30, |_, _, _| {});
         let replay = replay_of(dir.path(), 20);
+        assert_eq!(
+            replay.report.stars.len(),
+            4,
+            "the four stars were not all selected"
+        );
         let mixed = replay.rows.iter().any(|row| {
             row.star_lost
                 && row.reading == Reading::NotFound
@@ -766,6 +826,7 @@ mod tests {
     fn a_cloud_that_clears_after_the_flux_reference_followed_it_down_is_clouded() {
         let dir = tempfile::tempdir().unwrap();
         let mut sim = sky(|config| {
+            pair(config);
             config.sky.clouds = vec![Cloud {
                 start: Duration::from_secs(20),
                 duration: Duration::from_secs(60),
@@ -774,7 +835,7 @@ mod tests {
             }];
         });
         record(dir.path(), &mut sim, 45, |_, _, _| {});
-        let replay = replay_of(dir.path(), 20);
+        let replay = replay_of_pair(dir.path(), 20);
         let brightened = replay
             .rows
             .iter()
@@ -797,6 +858,73 @@ mod tests {
         pixels
             .slice_mut(s![y - 8..y + 8, x - 8..x + 8])
             .assign(&window);
+    }
+
+    /// Replays 45 frames of the test sky with a 60 s cloud of
+    /// `transmission` from 20 s, its stars from the fifth on scaled by
+    /// `faint`: frames 10 to 31 lie wholly inside the cloud, and 10 to 13
+    /// are its first, before a star's reference can follow it.
+    fn cloud_over_field(transmission: f64, faint: f64) -> Replay {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sim = sky(|config| {
+            if let StarField::Listed(stars) = &mut config.sky.stars {
+                for star in stars.iter_mut().skip(4) {
+                    star.e_per_s *= faint;
+                }
+            }
+            config.sky.clouds = vec![Cloud {
+                start: Duration::from_secs(20),
+                duration: Duration::from_secs(60),
+                ramp: Duration::from_secs(2),
+                transmission,
+            }];
+        });
+        record(dir.path(), &mut sim, 45, |_, _, _| {});
+        replay_of(dir.path(), 45)
+    }
+
+    #[test]
+    fn a_thin_cloud_over_a_field_of_stars_that_place_each_other_costs_no_frame() {
+        let replay = cloud_over_field(0.3, 1.0);
+        let report = &replay.report;
+        assert_eq!((report.clear, report.clouded, report.lost), (45, 0, 0));
+        assert!(
+            usable_through_a_change(&replay, StarParams::default(), 10..=13),
+            "no star stayed usable through the cloud's dimming"
+        );
+    }
+
+    #[test]
+    fn a_cloud_that_hides_the_faint_half_while_the_bright_place_each_other_costs_no_frame() {
+        let replay = cloud_over_field(0.02, 0.03);
+        let report = &replay.report;
+        assert_eq!((report.clear, report.clouded, report.lost), (45, 0, 0));
+        let hidden = replay.rows.iter().any(|row| {
+            (12..=30).contains(&row.frame)
+                && (row.reading == Reading::NotFound || row.reading == Reading::Faint)
+        });
+        assert!(hidden, "the cloud hid no faint star");
+        assert!(
+            usable_through_a_change(&replay, StarParams::default(), 10..=13),
+            "no star stayed usable through the cloud's dimming"
+        );
+    }
+
+    #[test]
+    fn a_frame_whose_stars_all_brighten_in_a_field_that_places_them_stays_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        record(dir.path(), &mut sky(|_| {}), 20, |n, pixels, _| {
+            if n == 15 {
+                brighten(pixels);
+            }
+        });
+        let replay = replay_of(dir.path(), 20);
+        let report = &replay.report;
+        assert_eq!((report.clear, report.clouded, report.lost), (20, 0, 0));
+        assert!(
+            usable_through_a_change(&replay, StarParams::default(), 15..=15),
+            "no star stayed usable through frame 15's brightening"
+        );
     }
 
     #[test]
