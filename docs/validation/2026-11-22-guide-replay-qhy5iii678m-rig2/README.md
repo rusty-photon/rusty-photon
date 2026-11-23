@@ -47,8 +47,9 @@ recorder as it ran, its output frame by frame, and the replay's.
    - The focuser stepped from 29,230 to 29,830 in steps of 60, each
      position approached from below, with one 2 s frame from the 678M
      at each.
-   - Lines fitted to the two sides of the V meet at about 29,437, and
-     the focuser went to **29,440** from below. It had been at 29,530.
+   - Lines through the two positions nearest focus on each side of the
+     V, 29,350 and 29,410 below and 29,470 and 29,530 above, meet at
+     29,437, and the focuser went to **29,440** from below. It had been at 29,530.
      Two frames there measured 3.4 px, by the same measure that gives
      7.8 px at 29,530.
 
@@ -60,8 +61,11 @@ recorder as it ran, its output frame by frame, and the replay's.
    3,601 s, at 2.50 s a frame, and none failed. Each frame is the body
    of `imagearray` as the camera sent it, 4,203,084 bytes. The camera
    was disconnected at the end.
-6. **The replay.** The hour, 5.7 GB, was copied to a workstation, and
-   `guide-replay replay` ran over it in 6 s.
+6. **The replay.** The hour, 6.1 GB, was copied to a workstation, and
+   `guide-replay` at `9ba3f51b`, given the hour's directory as its one
+   argument, ran over it in 6 s. `guide-replay replay` at the commit
+   that adds this record gives the same `report.json` and
+   `replay.csv`, byte for byte.
 
 ## The replay
 
@@ -122,9 +126,9 @@ recorder as it ran, its output frame by frame, and the replay's.
 - [focus-sweep.py](focus-sweep.py) and [focus-sweep.csv](focus-sweep.csv):
   the focuser positions and the median half-flux diameter at each.
 
-The hour itself stays out of the repository: 1,441 frames, 5.7 GB.
+The hour itself stays out of the repository: 1,441 frames, 6.1 GB.
 Twenty-one frames cropped from it are replayed in CI, in
 `crates/guide-replay/tests/fixtures/rig2-2026-11-22/`:
 - one every 72 frames;
 - each 400 × 300 px from (1100, 200);
-- cut by `guide-replay crop`.
+- cut by `guide-replay crop` as of the commit that adds them.

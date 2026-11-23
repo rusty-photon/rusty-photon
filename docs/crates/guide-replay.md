@@ -226,9 +226,10 @@ A crop is a recording of its own, read as any other:
 - a frame the recorder did not get is left out;
 - each frame keeps its number, its `start_utc` and its binning.
 
-A region that does not lie inside a frame is refused, and so is a
-directory that already holds files, so that a crop never writes over a
-recording or an earlier crop. FITS is the format the workspace's other
+A region that does not lie inside a frame is refused and writes
+nothing. So is a directory that already holds files, so that a crop
+never writes over a recording or an earlier crop, and so is a
+recording with no frame for the crop to take. FITS is the format the workspace's other
 image fixtures use, and any astronomy viewer opens it.
 
 ## The command
@@ -274,9 +275,10 @@ They replay them and hold the replay to what each case shows:
 A test replays the frames cropped from rig2's hour of 2026-11-22
 (`tests/fixtures/rig2-2026-11-22/`, its
 [record](../validation/2026-11-22-guide-replay-qhy5iii678m-rig2/README.md)):
-21 frames, one every 72, each 400 × 300 px. It holds them to the
-tolerance with a count of 21 frames, and requires all eight guide stars
-usable in every frame.
+21 frames, one every 72, each 400 × 300 px. None of the hour's eight
+guide stars lies in that region, so the replay selects eight of its own
+there. The test holds the replay to the tolerance with a count of 21
+frames, and requires each of those eight usable in every frame.
 
 Unit tests on readings written by hand hold the rule itself:
 - when a star is there;

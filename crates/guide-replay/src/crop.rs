@@ -47,6 +47,9 @@ pub enum CropError {
         /// The directory.
         path: PathBuf,
     },
+    /// No frame the crop would take came from the recorder.
+    #[error("the recording has no frame for the crop to take")]
+    Empty,
     /// Every frame but none is asked for.
     #[error("a crop takes every frame or every Nth, and N is 0")]
     NoFrames,
@@ -74,8 +77,8 @@ pub enum CropError {
 /// The crop has its own `frames.csv`, `camera.json` copied, and
 /// `frame-NNNNN.fits` under each frame's number. A frame the recorder
 /// did not get is left out. `to` must be new or empty, so that a crop
-/// never writes over a recording or an earlier crop. Returns how many
-/// frames were written.
+/// never writes over a recording or an earlier crop, and a refused
+/// region writes nothing. Returns how many frames were written.
 ///
 /// # Errors
 ///
@@ -95,9 +98,9 @@ pub fn crop(from: &Path, to: &Path, region: Region, every: u32) -> Result<usize,
         let path = path.to_path_buf();
         move |source| CropError::Io { path, source }
     };
-    fs::create_dir_all(to).map_err(io(to))?;
-    let camera = to.join("camera.json");
-    fs::copy(from.join("camera.json"), &camera).map_err(io(&camera))?;
+    // Nothing is written until the first frame to take fits the region,
+    // so a refused region leaves `to` as it was.
+    let mut started = false;
     let mut index = vec!["frame,file,start_utc,bin,numx,numy,error".to_owned()];
     for recorded in recording.frames() {
         let recorded = recorded?;
@@ -111,11 +114,11 @@ pub fn crop(from: &Path, to: &Path, region: Region, every: u32) -> Result<usize,
         let end_x = region
             .x
             .checked_add(region.width)
-            .filter(|end| *end <= columns);
+            .filter(|end| region.width > 0 && *end <= columns);
         let end_y = region
             .y
             .checked_add(region.height)
-            .filter(|end| *end <= rows);
+            .filter(|end| region.height > 0 && *end <= rows);
         let (Some(end_x), Some(end_y)) = (end_x, end_y) else {
             return Err(CropError::Outside {
                 frame: recorded.frame,
@@ -123,12 +126,11 @@ pub fn crop(from: &Path, to: &Path, region: Region, every: u32) -> Result<usize,
                 height: rows,
             });
         };
-        if region.width == 0 || region.height == 0 {
-            return Err(CropError::Outside {
-                frame: recorded.frame,
-                width: columns,
-                height: rows,
-            });
+        if !started {
+            fs::create_dir_all(to).map_err(io(to))?;
+            let camera = to.join("camera.json");
+            fs::copy(from.join("camera.json"), &camera).map_err(io(&camera))?;
+            started = true;
         }
         let cut: Vec<u16> = pixels
             .slice(s![region.y..end_y, region.x..end_x])
@@ -163,6 +165,9 @@ pub fn crop(from: &Path, to: &Path, region: Region, every: u32) -> Result<usize,
             "{},{file},{},{},{},{},",
             recorded.frame, recorded.start_utc, recorded.bin, region.width, region.height
         ));
+    }
+    if !started {
+        return Err(CropError::Empty);
     }
     let written = index.len().saturating_sub(1);
     index.push(String::new());
@@ -271,6 +276,10 @@ mod tests {
                 ),
                 "{region:?}: {error}"
             );
+            assert!(
+                fs::read_dir(to.path()).unwrap().next().is_none(),
+                "{region:?} left files behind"
+            );
         }
         let to = tempfile::tempdir().unwrap();
         let region = Region {
@@ -348,5 +357,23 @@ mod tests {
             "{header}"
         );
         assert!(header.contains("ROWORDER= 'TOP-DOWN'"), "{header}");
+    }
+
+    #[test]
+    fn a_recording_with_no_frame_to_take_is_refused_and_writes_nothing() {
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        write_recording(from.path(), 0, &[None, Some(frame(2))]);
+        let region = Region {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        assert!(matches!(
+            crop(from.path(), to.path(), region, 2),
+            Err(CropError::Empty)
+        ));
+        assert!(fs::read_dir(to.path()).unwrap().next().is_none());
     }
 }
