@@ -72,7 +72,7 @@ not depend on an ssh session.
 | File | What it holds |
 |---|---|
 | `camera.json` | The camera's properties, read before the first frame: `sensortype` and `maxadu` among them, as Alpaca gives them |
-| `frames.csv` | One row a frame, failed frames included: `frame`, `file`, `start_utc`, `exposure_s`, `bin`, `numx`, `numy`, `bytes`, `download_ms`, `error` |
+| `frames.csv` | One row a frame, failed frames included: `frame`, `file`, `start_utc`, `exposure_s`, `bin`, `numx`, `numy`, `bytes`, `download_ms`, `error`. A crop's has a row for each frame it took, with `frame`, `file`, `start_utc`, `bin`, `numx`, `numy` and `error` |
 | `frame-NNNNN.imagebytes` | The body of `imagearray` asked for as `application/imagebytes`, byte for byte |
 | `frame-NNNNN.fits` | In a crop's recording, in place of the body: the frame as a 16-bit FITS image, top row first (`ROWORDER = 'TOP-DOWN'`), its `DATE-OBS` the frame's `start_utc` in FITS form, without the zone suffix |
 | `status.txt` | The recorder's log: its start, a line a minute, each failure, its end |

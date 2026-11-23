@@ -88,10 +88,23 @@ pub fn crop(from: &Path, to: &Path, region: Region, every: u32) -> Result<usize,
     if every == 0 {
         return Err(CropError::NoFrames);
     }
-    if fs::read_dir(to).is_ok_and(|mut entries| entries.next().is_some()) {
-        return Err(CropError::Occupied {
-            path: to.to_path_buf(),
-        });
+    // Only a directory that is not there counts as new: one that cannot
+    // be listed may hold a recording.
+    match fs::read_dir(to) {
+        Ok(mut entries) => {
+            if entries.next().is_some() {
+                return Err(CropError::Occupied {
+                    path: to.to_path_buf(),
+                });
+            }
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(CropError::Io {
+                path: to.to_path_buf(),
+                source,
+            })
+        }
     }
     let recording = Recording::open(from)?;
     let io = |path: &Path| {
@@ -375,5 +388,27 @@ mod tests {
             Err(CropError::Empty)
         ));
         assert!(fs::read_dir(to.path()).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_cannot_be_listed_is_never_written_into() {
+        use std::os::unix::fs::PermissionsExt;
+        let from = tempfile::tempdir().unwrap();
+        write_recording(from.path(), 0, &[Some(frame(1))]);
+        let to = tempfile::tempdir().unwrap();
+        let held = to.path().join("camera.json");
+        fs::write(&held, "a recording's camera").unwrap();
+        fs::set_permissions(to.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let region = Region {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let result = crop(from.path(), to.path(), region, 1);
+        fs::set_permissions(to.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err(), "the crop went ahead");
+        assert_eq!(fs::read_to_string(&held).unwrap(), "a recording's camera");
     }
 }
