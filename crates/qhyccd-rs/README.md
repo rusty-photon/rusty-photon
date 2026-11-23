@@ -125,6 +125,12 @@ CFW is plugged in, and closes it again. It never sends `InitQHYCCD`, the call
 that may home a wheel. `Sdk::filter_wheels()` is empty until the probe has run,
 so name only the cameras your program owns.
 
+`Sdk::rescan()` scans the bus again and adds the cameras the `Sdk` does not
+list yet, leaving the listed ones as they are. A camera can come onto the bus
+after `Sdk::new()`'s scan: on macOS the SDK's first initialisation in a process
+loads each cold camera's firmware, and the camera then comes back under its
+own product id.
+
 ## One `Sdk` at a Time
 
 The SDK's resource belongs to the process, so one `Sdk` lives in a process at a

@@ -900,6 +900,28 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   Camera devices, logged at `warn!`; a later restart re-enumerates, and on
   Linux a reload does too (on Windows, see C9).
 
+  **On macOS the SDK starts before the USB scan.** A cold QHY camera — one
+  whose firmware has not been loaded since it last powered up — is on the bus
+  as its firmware loader, a product id the join places no camera on (U2),
+  until something loads its firmware. On Linux that is udev and `fxload`, and
+  on Windows QHY's driver, both outside this process and before it asks. On
+  macOS it is the SDK: its first `InitQHYCCDResource` in a process loads the
+  firmware of each cold camera on the bus, from images the mac SDK carries in
+  its library, waits about a second and scans. For the rest of the process its
+  libusb hot-plug thread loads a cold camera plugged in later, and every later
+  initialisation returns at once: its release keeps the resource under its
+  default `force_release = false`. That is SDK 26.06.04 as its code reads; no
+  cold camera has yet been plugged into a Mac. So on macOS a build opens the
+  SDK first, takes the USB scan, then has the SDK scan again
+  (`Sdk::rescan`), so that a camera the USB scan saw back from its loader is
+  one the SDK lists too. A second scan that fails leaves the cameras the SDK
+  listed when it opened, logged at `warn!`. A camera still on its loader when
+  the USB scan runs is served from the next reload, which finds it under its
+  own product id; one plugged in cold later is too, as on Linux (on Windows
+  a reload finds no camera that arrived after the process started, C9). On
+  Linux and Windows a build takes the scan first, and opens the SDK only once
+  the scan has run (U6).
+
   **Enumerating opens nothing; finding the CFW opens each camera, but never
   initialises one.** The enumeration is `ScanQHYCCD` and `GetQHYCCDId` per
   camera, which reads every id without an open. Without a list, each camera
@@ -1432,13 +1454,15 @@ replaces with the declaration.
   list, `build()` takes the host's USB scan (the passive collector of
   [doctor.md](doctor.md), "USB inventory" — sysfs, PnP properties or
   `system_profiler`, nothing opened, claimed or reset), enumerates the SDK
-  (`ScanQHYCCD`, then `GetQHYCCDId` and `GetQHYCCDModel` per camera, pre-open),
-  places each SDK camera on a port (U2), and registers the list (U4, U10). No
+  (`ScanQHYCCD`, then `GetQHYCCDId` and `GetQHYCCDModel` per camera, pre-open)
+  — on macOS opening the SDK before the scan and having it scan again after
+  (C0) — places each SDK camera on a port (U2), and registers the list (U4,
+  U10). No
   camera is opened, listed or not: a listed camera is first opened by a client's
   connect, and a camera on an unlisted port never is, so another application's
   camera is never touched — where without a list every camera is opened for the
   CFW probe (C0). An empty list makes neither the scan nor the enumeration, and
-  a failed scan stops before the enumeration (U6).
+  a failed scan places nothing and keeps no SDK (U6).
 
   **Placement holds from one start or reload to the next; it is not watched.**
   A registered camera's connect opens its camera by SDK id (`OpenQHYCCD(id)`,
@@ -1537,8 +1561,8 @@ replaces with the declaration.
      QHY one the SDK does not report: *"`<port>` holds `<product>`
      (`<vid>:<pid>`), which the QHY SDK does not report as a camera"*. A QHY
      camera whose firmware never loaded is one: it enumerates under its
-     loader's product id until `fxload` (Linux) or QHY's driver (Windows) loads
-     it. Every power-up passes through that state — the dev box's QHY178M
+     loader's product id until `fxload` (Linux), QHY's driver (Windows) or the
+     SDK's first initialisation in this service (macOS, C0) loads it. Every power-up passes through that state — the dev box's QHY178M
      enumerates as `1618:c178` on the hub's USB 2.0 half, then about a second
      later as `1618:c179` at SuperSpeed (2026-10-11) — and once it stayed there,
      after a replug following a wedge, until the cable was re-seated. When the
@@ -1616,8 +1640,11 @@ replaces with the declaration.
   `system_profiler` erroring or outrunning its 10 s deadline, output the query
   cannot have produced — has no opinion about what is on the bus, so nothing is
   placed: every listed number is a placeholder naming the collector's error,
-  every declared wheel a placeholder FilterWheel naming it too (U10), the SDK is
-  not opened or enumerated, and the error is logged at `error!`. It is never a
+  every declared wheel a placeholder FilterWheel naming it too (U10), no SDK is
+  kept — on macOS the one opened before the scan is dropped (C0) — and the
+  error is logged at `error!`. On macOS an SDK that cannot be opened fails the
+  start before any scan, as one that cannot enumerate after a scan does
+  elsewhere (U1). It is never a
   startup failure — the service starts and serves its placeholders — so the
   service manager's restart-on-failure would never retry it, and one slow
   `powershell.exe` at boot would otherwise cost the night. (Like the SDK
@@ -1761,6 +1788,11 @@ replaces with the declaration.
   than one camera is listed, the unplug procedure: unplug one, re-run, and the
   port that disappears is the one just unplugged. Look-alikes are said plainly
   to stay unservable while both are connected.
+
+  On macOS `--devices` takes its USB scan before its SDK starts, and that
+  start loads the firmware of any cold camera on the bus (C0). A camera cold
+  when it runs is therefore listed as its loader's record — `1618:c178` for a
+  QHY178M — and as itself by the next run.
 
   Exit codes follow the shared doctor contract: `0`; `1` when the config cannot
   be read, the scan failed, or the SDK could not enumerate; `2` when the config
@@ -3400,7 +3432,11 @@ Layered per [`testing.md`](../skills/testing.md).
   window between a connect's `open()` and its caches (C6, reached by holding the
   mock's `init` open) — against an
   in-crate trait seam over the SDK (mockall doubles), so unit tests need **neither
-  hardware nor the SDK linked** where possible.
+  hardware nor the SDK linked** where possible. The order a build takes its USB
+  scan and its SDK in (C0) is tested on every platform: both orders on a
+  stand-in SDK that logs each step and its drop, and the macOS order end to
+  end on the simulated SDK, whose `add_simulated_camera_on_rescan` stands in
+  for a camera back from its loader after the SDK's first scan.
 - **The double's close window** — `MockCameraHandle::close` clears its connected
   flag where `SharedCameraConnection::disconnect` clears the real one: *before*
   the SDK close, and left clear when that call fails. This matters because the
@@ -3632,7 +3668,10 @@ the camera firmware (`/lib/firmware/qhy`), the SDK's firmware-upload udev
 rules, and QHYCCD's FX2/FX3-capable `fxload` (`/usr/local/sbin`) — on
 Linux a cold-plugged camera receives firmware via udev + fxload as root,
 not in-process, so all three pieces are required for a factory-fresh
-camera to enumerate.
+camera to enumerate. On macOS nothing is installed for the firmware: the
+mac SDK, linked statically, carries the images in its library, and its
+first initialisation in the service's process loads them into each cold
+camera on the bus (C0).
 
 ## References
 

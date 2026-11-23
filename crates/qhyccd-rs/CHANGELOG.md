@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Sdk::rescan()`: `ScanQHYCCD` and `GetQHYCCDId` again, adding each camera
+  the `Sdk` does not list yet after the ones it does. A listed camera stays
+  listed as it is, its handle open or not, whether or not the scan finds it
+  again. For a camera that comes onto the bus after `Sdk::new()`'s scan, as a
+  cold camera does on macOS once the SDK's first initialisation has loaded its
+  firmware.
+- `Sdk::add_simulated_camera_on_rescan(config)`: a simulated camera that
+  `Sdk::cameras()` lists from the next `Sdk::rescan()`, not before.
+  Simulation only.
 - `Sdk::try_new()`, which answers the new `QHYError::SdkInUse` while another
   `Sdk` lives in this process instead of waiting for it (see *Changed*).
 - `Sdk::probe_filter_wheels(&ids)`, the second stage after `Sdk::new()`'s

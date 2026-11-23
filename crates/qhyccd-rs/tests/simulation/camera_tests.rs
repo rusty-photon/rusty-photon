@@ -521,6 +521,44 @@ fn probe_leaves_the_camera_closed() {
     assert!(!camera.is_open().unwrap());
 }
 
+fn camera_ids(sdk: &Sdk) -> Vec<String> {
+    sdk.cameras()
+        .map(|camera| camera.id().to_string())
+        .collect()
+}
+
+#[test]
+fn rescan_lists_a_camera_that_came_onto_the_bus_after_the_scan() {
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(SimulatedCameraConfig::default().with_id("FIRST"));
+    sdk.add_simulated_camera_on_rescan(SimulatedCameraConfig::default().with_id("LATE"));
+    assert_eq!(camera_ids(&sdk), ["FIRST"]);
+
+    sdk.rescan().unwrap();
+
+    assert_eq!(camera_ids(&sdk), ["FIRST", "LATE"]);
+}
+
+#[test]
+fn rescan_keeps_a_listed_camera_as_it_is() {
+    // The scan finds the listed camera again: a rescan that took the found
+    // one in its place would list a closed camera, or list it twice.
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(SimulatedCameraConfig::default().with_id("CAM"));
+    sdk.add_simulated_camera_on_rescan(SimulatedCameraConfig::default().with_id("CAM"));
+    let camera = sdk.cameras().next().unwrap().clone();
+    camera.open().unwrap();
+
+    sdk.rescan().unwrap();
+
+    assert_eq!(camera_ids(&sdk), ["CAM"]);
+    assert!(
+        sdk.cameras().next().unwrap().is_open().unwrap(),
+        "the rescan replaced the open camera"
+    );
+    camera.close().unwrap();
+}
+
 #[test]
 fn probe_opens_only_the_cameras_it_is_given() {
     // The unnamed camera cannot close: a probe that opened it would leave it
