@@ -41,6 +41,12 @@ pub enum CropError {
         /// Its height.
         height: usize,
     },
+    /// The directory the crop goes to already holds files.
+    #[error("{path} already holds files; a crop goes to a new or empty directory")]
+    Occupied {
+        /// The directory.
+        path: PathBuf,
+    },
     /// Every frame but none is asked for.
     #[error("a crop takes every frame or every Nth, and N is 0")]
     NoFrames,
@@ -67,7 +73,9 @@ pub enum CropError {
 ///
 /// The crop has its own `frames.csv`, `camera.json` copied, and
 /// `frame-NNNNN.fits` under each frame's number. A frame the recorder
-/// did not get is left out. Returns how many frames were written.
+/// did not get is left out. `to` must be new or empty, so that a crop
+/// never writes over a recording or an earlier crop. Returns how many
+/// frames were written.
 ///
 /// # Errors
 ///
@@ -76,6 +84,11 @@ pub enum CropError {
 pub fn crop(from: &Path, to: &Path, region: Region, every: u32) -> Result<usize, CropError> {
     if every == 0 {
         return Err(CropError::NoFrames);
+    }
+    if fs::read_dir(to).is_ok_and(|mut entries| entries.next().is_some()) {
+        return Err(CropError::Occupied {
+            path: to.to_path_buf(),
+        });
     }
     let recording = Recording::open(from)?;
     let io = |path: &Path| {
@@ -128,10 +141,23 @@ pub fn crop(from: &Path, to: &Path, region: Region, every: u32) -> Result<usize,
             path: path.clone(),
             source,
         };
-        let date = Keyword::new("DATE-OBS", KeywordValue::Str(recorded.start_utc.clone()))
-            .map_err(fits)?;
+        // FITS writes a UTC time without a zone suffix.
+        let date = Keyword::new(
+            "DATE-OBS",
+            KeywordValue::Str(recorded.start_utc.trim_end_matches('Z').to_owned()),
+        )
+        .map_err(fits)?;
+        let row_order =
+            Keyword::new("ROWORDER", KeywordValue::Str("TOP-DOWN".to_owned())).map_err(fits)?;
         let mut out = BufWriter::new(File::create(&path).map_err(io(&path))?);
-        write_u16_image(&mut out, &cut, region.width, region.height, &[date]).map_err(fits)?;
+        write_u16_image(
+            &mut out,
+            &cut,
+            region.width,
+            region.height,
+            &[date, row_order],
+        )
+        .map_err(fits)?;
         out.flush().map_err(io(&path))?;
         index.push(format!(
             "{},{file},{},{},{},{},",
@@ -281,5 +307,46 @@ mod tests {
             crop(from.path(), &blocked, region, 1),
             Err(CropError::Io { .. })
         ));
+    }
+
+    #[test]
+    fn a_crop_never_writes_into_a_directory_that_holds_files() {
+        let from = tempfile::tempdir().unwrap();
+        write_recording(from.path(), 0, &[Some(frame(1))]);
+        let camera = fs::read(from.path().join("camera.json")).unwrap();
+        let region = Region {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let error = crop(from.path(), from.path(), region, 1).unwrap_err();
+        assert!(
+            matches!(&error, CropError::Occupied { path } if path == from.path()),
+            "{error}"
+        );
+        assert_eq!(fs::read(from.path().join("camera.json")).unwrap(), camera);
+        assert_eq!(Recording::open(from.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_crop_s_frames_carry_their_time_without_a_zone_and_their_row_order() {
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        write_recording(from.path(), 0, &[Some(frame(1))]);
+        let region = Region {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        crop(from.path(), to.path(), region, 1).unwrap();
+        let header = fs::read(to.path().join("frame-00001.fits")).unwrap();
+        let header = String::from_utf8_lossy(&header[..2880]);
+        assert!(
+            header.contains("DATE-OBS= '2026-11-23T03:00:00.000'"),
+            "{header}"
+        );
+        assert!(header.contains("ROWORDER= 'TOP-DOWN'"), "{header}");
     }
 }

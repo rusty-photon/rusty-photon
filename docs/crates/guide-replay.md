@@ -74,7 +74,7 @@ not depend on an ssh session.
 | `camera.json` | The camera's properties, read before the first frame: `sensortype` and `maxadu` among them, as Alpaca gives them |
 | `frames.csv` | One row a frame, failed frames included: `frame`, `file`, `start_utc`, `exposure_s`, `bin`, `numx`, `numy`, `bytes`, `download_ms`, `error` |
 | `frame-NNNNN.imagebytes` | The body of `imagearray` asked for as `application/imagebytes`, byte for byte |
-| `frame-NNNNN.fits` | In a crop's recording, in place of the body: the frame as a 16-bit FITS image, its `DATE-OBS` the frame's `start_utc` |
+| `frame-NNNNN.fits` | In a crop's recording, in place of the body: the frame as a 16-bit FITS image, top row first (`ROWORDER = 'TOP-DOWN'`), its `DATE-OBS` the frame's `start_utc` in FITS form, without the zone suffix |
 | `status.txt` | The recorder's log: its start, a line a minute, each failure, its end |
 
 - **`start_utc`** is when the frame's exposure was asked for, in UTC.
@@ -226,9 +226,10 @@ A crop is a recording of its own, read as any other:
 - a frame the recorder did not get is left out;
 - each frame keeps its number, its `start_utc` and its binning.
 
-A region that does not lie inside a frame is refused. FITS is the
-format the workspace's other image fixtures use, and any astronomy
-viewer opens it.
+A region that does not lie inside a frame is refused, and so is a
+directory that already holds files, so that a crop never writes over a
+recording or an earlier crop. FITS is the format the workspace's other
+image fixtures use, and any astronomy viewer opens it.
 
 ## The command
 

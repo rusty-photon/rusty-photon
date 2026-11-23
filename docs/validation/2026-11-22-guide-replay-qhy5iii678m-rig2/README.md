@@ -49,12 +49,13 @@ recorder as it ran, its output frame by frame, and the replay's.
      at each.
    - Lines fitted to the two sides of the V meet at about 29,437, and
      the focuser went to **29,440** from below. It had been at 29,530.
-     Two frames there measured 3.75 px, by the same measure that gave
-     6.99 px at 29,530.
+     Two frames there measured 3.4 px, by the same measure that gives
+     7.8 px at 29,530.
 
-   The sweep's figures are in [focus-sweep.csv](focus-sweep.csv). That
-   measure is a plain half-flux diameter over a 22 px aperture with the
-   background from an annulus; the replay measures smaller.
+   [focus-sweep.py](focus-sweep.py) measured the sweep, and its figures
+   are in [focus-sweep.csv](focus-sweep.csv). Its measure is a plain
+   half-flux diameter over a 22 px aperture with the background from an
+   annulus; the replay measures smaller.
 5. **The hour.** `record.ps1 -Minutes 60` recorded 1,441 frames in
    3,601 s, at 2.50 s a frame, and none failed. Each frame is the body
    of `imagearray` as the camera sent it, 4,203,084 bytes. The camera
@@ -93,10 +94,13 @@ recorder as it ran, its output frame by frame, and the replay's.
   0.22 px high. That is the field turning slowly about its centre, as
   an error in polar alignment turns it. The scatter includes that
   trend.
-- **Star size.** The median half-flux diameter grew from 2.6 to 3.0 px
-  across the hour (4.0″ to 4.7″), as focus followed the falling
-  temperature. The median signal-to-noise ratio was 274, and the
-  lowest 155.
+- **Star size.** Each frame's median half-flux diameter was 2.31 px on
+  the first frame and 2.87 px on the last. Over the first third of the
+  hour its median was 2.6 px, and over the last third 3.0 px (4.0″ to
+  4.6″), as focus followed the falling temperature.
+- **Signal.** Each frame's median signal-to-noise ratio had a median of
+  277 over the hour, and was never below 239. The faintest reading of
+  any guide star was 155.
 
 ## Files
 
@@ -106,11 +110,17 @@ recorder as it ran, its output frame by frame, and the replay's.
   - [frames.csv](recording/frames.csv), a row for each frame.
 - `replay/`:
   - [report.json](replay/report.json), the replay's report;
-  - [frames.csv](replay/frames.csv), a row for each frame. It holds
-    the usable stars, the frame's offset, the median half-flux diameter
-    and signal-to-noise ratio, and the largest deviation on either axis.
-- [focus-sweep.csv](focus-sweep.csv): the focuser positions and the
-  median half-flux diameter at each.
+  - [frames.csv](replay/frames.csv), a row for each frame, which
+    [summarize.py](replay/summarize.py) derives from the replay's
+    per-star `replay.csv` (3 MB, kept with the hour). Each row gives the
+    usable stars and whether the frame is star-lost, the frame's offset,
+    the median half-flux diameter and signal-to-noise ratio of its usable
+    stars, the lowest signal-to-noise ratio among them, and the largest
+    deviation of any of them from the frame's offset on either axis.
+    That deviation is not taken from each star's mean, as the report's
+    is, so it reaches 0.51 px where the report's largest is 0.38 px.
+- [focus-sweep.py](focus-sweep.py) and [focus-sweep.csv](focus-sweep.csv):
+  the focuser positions and the median half-flux diameter at each.
 
 The hour itself stays out of the repository: 1,441 frames, 5.7 GB.
 Twenty-one frames cropped from it are replayed in CI, in
