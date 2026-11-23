@@ -1,0 +1,68 @@
+2026-11-23T01:34:36.9937012Z recorder starts: QHY5III678M-4a94be45b27d3aa79 at https://127.0.0.1:11121, 2 s exposures at bin 2 for 60 min
+2026-11-23T01:34:37.1335314Z camera QHY5III678M-4a94be45b27d3aa79 is camera 1
+2026-11-23T01:34:38.8042862Z camera: {"unique_id":"QHY5III678M-4a94be45b27d3aa79","device_number":1,"name":"QHY5III678M","description":"QHY5III678M mono guide camera","driverinfo":"rusty-photon qhy-camera","driverversion":"0.1.0","interfaceversion":4,"sensorname":"QHY5III678M","sensortype":0,"cameraxsize":3856,"cameraysize":2180,"maxbinx":2,"maxbiny":2,"pixelsizex":2.0,"pixelsizey":2.0,"gain":30,"gainmin":0,"gainmax":240,"offset":30,"offsetmin":0,"offsetmax":1023,"readoutmode":0,"readoutmodes":"STANDARD MODE","exposuremin":1E-06,"maxadu":65535,"canasymmetricbin":false,"binx":1,"biny":1,"startx":0,"starty":0,"numx":3856,"numy":2180,"host_os":"Microsoft Windows NT 10.0.26200.0"}
+2026-11-23T01:34:38.8248114Z frame reads back binx=2 biny=2 startx=0 starty=0 numx=1928 numy=1090
+2026-11-23T01:34:38.8458221Z recording begins
+2026-11-23T01:35:41.2374731Z 25 frames, 0 failed
+2026-11-23T01:36:41.1666024Z 49 frames, 0 failed
+2026-11-23T01:37:41.0398006Z 73 frames, 0 failed
+2026-11-23T01:38:41.1360504Z 97 frames, 0 failed
+2026-11-23T01:39:41.1830322Z 121 frames, 0 failed
+2026-11-23T01:40:41.1330125Z 145 frames, 0 failed
+2026-11-23T01:41:41.0460306Z 169 frames, 0 failed
+2026-11-23T01:42:41.0174658Z 193 frames, 0 failed
+2026-11-23T01:43:40.9908711Z 217 frames, 0 failed
+2026-11-23T01:44:41.0020395Z 241 frames, 0 failed
+2026-11-23T01:45:41.0038299Z 265 frames, 0 failed
+2026-11-23T01:46:40.9832219Z 289 frames, 0 failed
+2026-11-23T01:47:41.0190587Z 313 frames, 0 failed
+2026-11-23T01:48:41.0270974Z 337 frames, 0 failed
+2026-11-23T01:49:41.0425776Z 361 frames, 0 failed
+2026-11-23T01:50:41.0586152Z 385 frames, 0 failed
+2026-11-23T01:51:41.0272720Z 409 frames, 0 failed
+2026-11-23T01:52:41.0226652Z 433 frames, 0 failed
+2026-11-23T01:53:40.8676388Z 457 frames, 0 failed
+2026-11-23T01:54:40.8568765Z 481 frames, 0 failed
+2026-11-23T01:55:40.7600572Z 505 frames, 0 failed
+2026-11-23T01:56:40.7311961Z 529 frames, 0 failed
+2026-11-23T01:57:40.7006745Z 553 frames, 0 failed
+2026-11-23T01:58:40.6979364Z 577 frames, 0 failed
+2026-11-23T01:59:40.7929012Z 601 frames, 0 failed
+2026-11-23T02:00:40.7836172Z 625 frames, 0 failed
+2026-11-23T02:01:40.8086504Z 649 frames, 0 failed
+2026-11-23T02:02:40.6796583Z 673 frames, 0 failed
+2026-11-23T02:03:40.6653377Z 697 frames, 0 failed
+2026-11-23T02:04:40.7041835Z 721 frames, 0 failed
+2026-11-23T02:05:40.7710897Z 745 frames, 0 failed
+2026-11-23T02:06:40.8345893Z 769 frames, 0 failed
+2026-11-23T02:07:40.7754135Z 793 frames, 0 failed
+2026-11-23T02:08:40.5864108Z 817 frames, 0 failed
+2026-11-23T02:09:40.5128650Z 841 frames, 0 failed
+2026-11-23T02:10:40.6060224Z 865 frames, 0 failed
+2026-11-23T02:11:40.6120063Z 889 frames, 0 failed
+2026-11-23T02:12:40.6732831Z 913 frames, 0 failed
+2026-11-23T02:13:40.5315192Z 937 frames, 0 failed
+2026-11-23T02:14:40.5867101Z 961 frames, 0 failed
+2026-11-23T02:15:40.5269578Z 985 frames, 0 failed
+2026-11-23T02:16:40.5275681Z 1009 frames, 0 failed
+2026-11-23T02:17:40.4471920Z 1033 frames, 0 failed
+2026-11-23T02:18:40.4399909Z 1057 frames, 0 failed
+2026-11-23T02:19:40.4355396Z 1081 frames, 0 failed
+2026-11-23T02:20:40.5093484Z 1105 frames, 0 failed
+2026-11-23T02:21:40.4859146Z 1129 frames, 0 failed
+2026-11-23T02:22:40.4494128Z 1153 frames, 0 failed
+2026-11-23T02:23:40.5057990Z 1177 frames, 0 failed
+2026-11-23T02:24:40.4650750Z 1201 frames, 0 failed
+2026-11-23T02:25:40.5485168Z 1225 frames, 0 failed
+2026-11-23T02:26:40.4255053Z 1249 frames, 0 failed
+2026-11-23T02:27:40.3530411Z 1273 frames, 0 failed
+2026-11-23T02:28:40.3123933Z 1297 frames, 0 failed
+2026-11-23T02:29:40.2130997Z 1321 frames, 0 failed
+2026-11-23T02:30:40.1394074Z 1345 frames, 0 failed
+2026-11-23T02:31:40.0508973Z 1369 frames, 0 failed
+2026-11-23T02:32:39.9733321Z 1393 frames, 0 failed
+2026-11-23T02:33:39.9595429Z 1417 frames, 0 failed
+2026-11-23T02:34:40.0244329Z 1441 frames, 0 failed
+2026-11-23T02:34:40.0314240Z recording ends after 1441 frames, 0 failed, 3601.2 s
+2026-11-23T02:34:41.0122750Z camera disconnected
+2026-11-23T02:34:41.0162934Z DONE

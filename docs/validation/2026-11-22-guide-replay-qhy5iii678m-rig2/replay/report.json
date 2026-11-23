@@ -1,0 +1,198 @@
+{
+  "frames": 1441,
+  "failed": 0,
+  "before_selection": 0,
+  "measured": 1441,
+  "clear": 1441,
+  "clouded": 0,
+  "lost": 0,
+  "stars": [
+    {
+      "star": 0,
+      "selected_at": [
+        1032.6662709363704,
+        938.5476240858922
+      ],
+      "clear": 1441,
+      "usable": 1441,
+      "not_found": 0,
+      "faint": 0,
+      "flux_changed": 0,
+      "dropped": 0,
+      "mean_deviation_px": [
+        -0.002959943315501641,
+        0.061202682304928716
+      ],
+      "scatter_px": [
+        0.06248239347661113,
+        0.06358829486837837
+      ],
+      "largest_deviation_px": 0.26550542441370734
+    },
+    {
+      "star": 1,
+      "selected_at": [
+        1566.8102532712016,
+        932.4229975690886
+      ],
+      "clear": 1441,
+      "usable": 1441,
+      "not_found": 0,
+      "faint": 0,
+      "flux_changed": 0,
+      "dropped": 0,
+      "mean_deviation_px": [
+        -0.03517894346518305,
+        0.21660295210274041
+      ],
+      "scatter_px": [
+        0.07232290445281889,
+        0.09862425485306389
+      ],
+      "largest_deviation_px": 0.2915183204794781
+    },
+    {
+      "star": 2,
+      "selected_at": [
+        1725.9332167205248,
+        406.62506960158896
+      ],
+      "clear": 1441,
+      "usable": 1441,
+      "not_found": 0,
+      "faint": 0,
+      "flux_changed": 0,
+      "dropped": 0,
+      "mean_deviation_px": [
+        0.0019075486844477442,
+        0.04024699757950969
+      ],
+      "scatter_px": [
+        0.0733018759290952,
+        0.04909279405057083
+      ],
+      "largest_deviation_px": 0.2664386474107238
+    },
+    {
+      "star": 3,
+      "selected_at": [
+        259.76890042584085,
+        704.6681426343529
+      ],
+      "clear": 1441,
+      "usable": 1441,
+      "not_found": 0,
+      "faint": 0,
+      "flux_changed": 0,
+      "dropped": 0,
+      "mean_deviation_px": [
+        -0.07442027588000577,
+        -0.07132216477141999
+      ],
+      "scatter_px": [
+        0.09972759960631414,
+        0.06427638116174943
+      ],
+      "largest_deviation_px": 0.37518516280233755
+    },
+    {
+      "star": 4,
+      "selected_at": [
+        1648.705580631504,
+        886.9714088073855
+      ],
+      "clear": 1441,
+      "usable": 1441,
+      "not_found": 0,
+      "faint": 0,
+      "flux_changed": 0,
+      "dropped": 0,
+      "mean_deviation_px": [
+        0.05292715723768178,
+        0.23537288159716926
+      ],
+      "scatter_px": [
+        0.06690235062753713,
+        0.10768134329520324
+      ],
+      "largest_deviation_px": 0.33858774399536223
+    },
+    {
+      "star": 5,
+      "selected_at": [
+        272.2047412002093,
+        410.1924440294306
+      ],
+      "clear": 1441,
+      "usable": 1441,
+      "not_found": 0,
+      "faint": 0,
+      "flux_changed": 0,
+      "dropped": 0,
+      "mean_deviation_px": [
+        -0.04092435794062034,
+        -0.22218054992457492
+      ],
+      "scatter_px": [
+        0.07687851597226567,
+        0.09845316515718752
+      ],
+      "largest_deviation_px": 0.3338976113492107
+    },
+    {
+      "star": 6,
+      "selected_at": [
+        818.6360591488949,
+        294.9797782008111
+      ],
+      "clear": 1441,
+      "usable": 1441,
+      "not_found": 0,
+      "faint": 0,
+      "flux_changed": 0,
+      "dropped": 0,
+      "mean_deviation_px": [
+        -0.016520115763426584,
+        -0.07097170030165778
+      ],
+      "scatter_px": [
+        0.06823331960061296,
+        0.065231423642996
+      ],
+      "largest_deviation_px": 0.2605753936371557
+    },
+    {
+      "star": 7,
+      "selected_at": [
+        1391.9957706484347,
+        163.18507626875916
+      ],
+      "clear": 1441,
+      "usable": 1441,
+      "not_found": 0,
+      "faint": 0,
+      "flux_changed": 0,
+      "dropped": 0,
+      "mean_deviation_px": [
+        0.09783329256991245,
+        -0.05577011816891707
+      ],
+      "scatter_px": [
+        0.06313783439800548,
+        0.04799543739091823
+      ],
+      "largest_deviation_px": 0.2131480791461223
+    }
+  ],
+  "deviations": 11528,
+  "outliers": 0,
+  "tolerance": {
+    "min_guide_stars": 4,
+    "scatter_px": 0.5,
+    "outlier_px": 2.0,
+    "outlier_fraction": 0.001,
+    "min_usable_fraction": 0.9,
+    "min_clear_frames": 1000
+  },
+  "failures": []
+}

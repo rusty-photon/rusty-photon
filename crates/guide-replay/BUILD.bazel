@@ -7,6 +7,7 @@ exports_files(
 )
 
 _INTRA_WORKSPACE_DEPS = [
+    "//crates/rp-fits:rp-fits",
     "//crates/rp-guiding:rp-guiding",
 ]
 
@@ -56,6 +57,30 @@ rust_test(
         proc_macro_dev = True,
     ),
     deps = _INTRA_WORKSPACE_DEV_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
+# Replays the frames cropped from rig2's hour of 2026-11-22.
+rust_test(
+    name = "rig2_night",
+    size = "small",
+    srcs = ["tests/rig2_night.rs"],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    data = glob(["tests/fixtures/rig2-2026-11-22/**"]),
+    edition = "2021",
+    env = {
+        "CARGO_MANIFEST_DIR": "crates/guide-replay",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":guide-replay"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

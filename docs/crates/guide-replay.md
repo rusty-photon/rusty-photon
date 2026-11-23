@@ -24,6 +24,8 @@ This is test infrastructure: `testonly` in Bazel, a library and the
 - **The replay:** star selection and measurement over the recording, a
   row for each guide star in each frame.
 - **The report:** what the replay found, held to a tolerance.
+- **Crops:** a sample of a recording's frames cut to a region and
+  written as FITS, a recording small enough to check in.
 
 Out of scope:
 
@@ -72,6 +74,7 @@ not depend on an ssh session.
 | `camera.json` | The camera's properties, read before the first frame: `sensortype` and `maxadu` among them, as Alpaca gives them |
 | `frames.csv` | One row a frame, failed frames included: `frame`, `file`, `start_utc`, `exposure_s`, `bin`, `numx`, `numy`, `bytes`, `download_ms`, `error` |
 | `frame-NNNNN.imagebytes` | The body of `imagearray` asked for as `application/imagebytes`, byte for byte |
+| `frame-NNNNN.fits` | In a crop's recording, in place of the body: the frame as a 16-bit FITS image, its `DATE-OBS` the frame's `start_utc` |
 | `status.txt` | The recorder's log: its start, a line a minute, each failure, its end |
 
 - **`start_utc`** is when the frame's exposure was asked for, in UTC.
@@ -213,9 +216,23 @@ frame. The replay passes when all of these hold:
 A tolerance with a different count of frames serves a shorter
 recording, such as the cropped frames the tests replay.
 
+## Crops
+
+A crop is a recording of its own, read as any other:
+- every `--every`th frame of a recording, the first among them;
+- each cut to one region of the sensor;
+- written as FITS, with the recording's `camera.json` and a
+  `frames.csv` of its own;
+- a frame the recorder did not get is left out;
+- each frame keeps its number, its `start_utc` and its binning.
+
+A region that does not lie inside a frame is refused. FITS is the
+format the workspace's other image fixtures use, and any astronomy
+viewer opens it.
+
 ## The command
 
-`guide-replay <recording> [--out <dir>]`:
+`guide-replay replay <recording> [--out <dir>]`:
 
 - replays the recording with the guider's star defaults and stage G3's
   tolerance;
@@ -225,6 +242,10 @@ recording, such as the cropped frames the tests replay.
 
 It exits 0 when the replay is within the tolerance, 1 when it is not,
 and 2 when the recording cannot be read or measured.
+
+`guide-replay crop <recording> --out <dir> --x <col> --y <row> --width
+<px> --height <px> [--every <n>]` writes a crop. It exits 0 when it is
+written and 2 when it cannot be.
 
 ## Testing
 
@@ -248,6 +269,13 @@ They replay them and hold the replay to what each case shows:
 - stars the measurement loses to a jump of the field, which are lost;
 - a star whose light is moved off its place, for half the recording or
   for two frames, which scatters or makes outliers.
+
+A test replays the frames cropped from rig2's hour of 2026-11-22
+(`tests/fixtures/rig2-2026-11-22/`, its
+[record](../validation/2026-11-22-guide-replay-qhy5iii678m-rig2/README.md)):
+21 frames, one every 72, each 400 × 300 px. It holds them to the
+tolerance with a count of 21 frames, and requires all eight guide stars
+usable in every frame.
 
 Unit tests on readings written by hand hold the rule itself:
 - when a star is there;
