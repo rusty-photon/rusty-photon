@@ -465,21 +465,25 @@ mod tests {
     }
 
     /// Whether, in `frames`, a guide star is usable with its flux outside
-    /// the flux band of its flux in the first frame: kept by where the
-    /// other stars place it.
-    fn kept_by_position(replay: &Replay, frames: std::ops::RangeInclusive<u32>) -> bool {
+    /// the flux band of its flux in the first frame: a change of
+    /// brightness the star stayed usable through. The tests that call it
+    /// fail with the position rule off, which shows the rule is what kept
+    /// the star at the change's onset, before its reference followed it.
+    fn usable_through_a_change(replay: &Replay, frames: std::ops::RangeInclusive<u32>) -> bool {
         let params = StarParams::default();
+        let first_frame = replay.rows.first().map(|row| row.frame);
+        let first: Vec<Option<f64>> = replay
+            .rows
+            .iter()
+            .filter(|row| Some(row.frame) == first_frame)
+            .map(|row| row.flux)
+            .collect();
         replay.rows.iter().any(|row| {
-            let first = replay
-                .rows
-                .iter()
-                .find(|first| first.star == row.star)
-                .and_then(|first| first.flux);
             frames.contains(&row.frame)
                 && row.reading == Reading::Usable
                 && row
                     .flux
-                    .zip(first)
+                    .zip(first.get(row.star).copied().flatten())
                     .is_some_and(|(flux, first)| (flux - first).abs() > params.mass_change * first)
         })
     }
@@ -882,8 +886,8 @@ mod tests {
         let report = &replay.report;
         assert_eq!((report.clear, report.clouded, report.lost), (45, 0, 0));
         assert!(
-            kept_by_position(&replay, 12..=30),
-            "the cloud tripped no flux band"
+            usable_through_a_change(&replay, 12..=30),
+            "no star stayed usable through the cloud's dimming"
         );
     }
 
@@ -898,8 +902,8 @@ mod tests {
         });
         assert!(hidden, "the cloud hid no faint star");
         assert!(
-            kept_by_position(&replay, 12..=30),
-            "the cloud tripped no flux band"
+            usable_through_a_change(&replay, 12..=30),
+            "no star stayed usable through the cloud's dimming"
         );
     }
 
@@ -915,8 +919,8 @@ mod tests {
         let report = &replay.report;
         assert_eq!((report.clear, report.clouded, report.lost), (20, 0, 0));
         assert!(
-            kept_by_position(&replay, 15..=15),
-            "frame 15 tripped no flux band"
+            usable_through_a_change(&replay, 15..=15),
+            "no star stayed usable through frame 15's brightening"
         );
     }
 
