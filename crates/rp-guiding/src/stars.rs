@@ -403,7 +403,7 @@ impl GuideStar {
                 return self.usable(&star, snr);
             }
             return if placed {
-                self.log_placed(star.flux, restarted);
+                self.log_placed(&star, restarted);
                 self.usable(&star, snr)
             } else {
                 StarReading::FluxChanged {
@@ -413,7 +413,7 @@ impl GuideStar {
             };
         }
         if placed {
-            self.log_placed(star.flux, reference);
+            self.log_placed(&star, reference);
             self.join_reference(star.flux);
             return self.usable(&star, snr);
         }
@@ -423,13 +423,15 @@ impl GuideStar {
         }
     }
 
-    /// Logs the star kept usable, outside the flux band, where the other
-    /// stars place it.
-    fn log_placed(&self, flux: f64, reference: f64) {
+    /// Logs the star kept usable, found as `found` outside the flux band
+    /// of `reference`, where the other stars place it.
+    fn log_placed(&self, found: &MeasuredStar, reference: f64) {
         debug!(
-            x = self.reference.x,
-            y = self.reference.y,
-            flux,
+            selected_x = self.reference.x,
+            selected_y = self.reference.y,
+            x = found.x,
+            y = found.y,
+            flux = found.flux,
             reference,
             "a guide star outside the flux band is usable where the other stars place it"
         );

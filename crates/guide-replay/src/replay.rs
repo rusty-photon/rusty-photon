@@ -456,6 +456,34 @@ mod tests {
         }
     }
 
+    /// Triples the signal of every pixel above the test sky's background.
+    fn brighten(pixels: &mut Array2<u16>) {
+        pixels.mapv_inplace(|value| {
+            let above = f64::from(value) - 520.0;
+            (520.0 + 3.0 * above.max(0.0)).min(65_535.0) as u16
+        });
+    }
+
+    /// Whether, in `frames`, a guide star is usable with its flux outside
+    /// the flux band of its flux in the first frame: kept by where the
+    /// other stars place it.
+    fn kept_by_position(replay: &Replay, frames: std::ops::RangeInclusive<u32>) -> bool {
+        let params = StarParams::default();
+        replay.rows.iter().any(|row| {
+            let first = replay
+                .rows
+                .iter()
+                .find(|first| first.star == row.star)
+                .and_then(|first| first.flux);
+            frames.contains(&row.frame)
+                && row.reading == Reading::Usable
+                && row
+                    .flux
+                    .zip(first)
+                    .is_some_and(|(flux, first)| (flux - first).abs() > params.mass_change * first)
+        })
+    }
+
     /// Replays `dir`, selected on two guide stars.
     fn replay_of_pair(dir: &std::path::Path, min_clear_frames: usize) -> Replay {
         replay_with(
@@ -735,10 +763,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         record(dir.path(), &mut sky(pair), 20, |n, pixels, _| {
             if n == 15 {
-                pixels.mapv_inplace(|value| {
-                    let above = f64::from(value) - 520.0;
-                    (520.0 + 3.0 * above.max(0.0)).min(65_535.0) as u16
-                });
+                brighten(pixels);
             }
         });
         let replay = replay_of_pair(dir.path(), 19);
@@ -754,7 +779,9 @@ mod tests {
     fn a_thin_cloud_that_dims_the_bright_stars_and_hides_the_faint_is_clouded() {
         let dir = tempfile::tempdir().unwrap();
         // Two bright stars and two faint: under the cloud only the bright
-        // two are found, too few to place each other.
+        // two are found, too few to place each other. The faint pair, at
+        // 450 and 375 electrons a second, pass selection in clear sky and
+        // fall to a few electrons a second under the cloud.
         let mut sim = sky(|config| {
             if let StarField::Listed(stars) = &mut config.sky.stars {
                 stars.truncate(4);
@@ -771,6 +798,11 @@ mod tests {
         });
         record(dir.path(), &mut sim, 30, |_, _, _| {});
         let replay = replay_of(dir.path(), 20);
+        assert_eq!(
+            replay.report.stars.len(),
+            4,
+            "the four stars were not all selected"
+        );
         let mixed = replay.rows.iter().any(|row| {
             row.star_lost
                 && row.reading == Reading::NotFound
@@ -822,41 +854,53 @@ mod tests {
             .assign(&window);
     }
 
-    #[test]
-    fn a_cloud_over_a_field_of_stars_that_place_each_other_costs_no_frame() {
-        // A thin cloud, and one thick enough to hide the faint half of the
-        // field while the bright four place each other.
-        for (transmission, faint) in [(0.3, 1.0), (0.02, 0.03)] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut sim = sky(|config| {
-                if let StarField::Listed(stars) = &mut config.sky.stars {
-                    for star in stars.iter_mut().skip(4) {
-                        star.e_per_s *= faint;
-                    }
+    /// Replays 45 frames of the test sky with a 60 s cloud of
+    /// `transmission` from 20 s, its stars from the fifth on scaled by
+    /// `faint`: frames 10 to 31 lie wholly inside the cloud.
+    fn cloud_over_field(transmission: f64, faint: f64) -> Replay {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sim = sky(|config| {
+            if let StarField::Listed(stars) = &mut config.sky.stars {
+                for star in stars.iter_mut().skip(4) {
+                    star.e_per_s *= faint;
                 }
-                config.sky.clouds = vec![Cloud {
-                    start: Duration::from_secs(20),
-                    duration: Duration::from_secs(60),
-                    ramp: Duration::from_secs(2),
-                    transmission,
-                }];
-            });
-            record(dir.path(), &mut sim, 45, |_, _, _| {});
-            let replay = replay_of(dir.path(), 45);
-            let report = &replay.report;
-            assert_eq!(
-                (report.clear, report.clouded, report.lost),
-                (45, 0, 0),
-                "transmission {transmission}"
-            );
-            if faint < 1.0 {
-                let hidden = replay
-                    .rows
-                    .iter()
-                    .any(|row| row.reading == Reading::NotFound || row.reading == Reading::Faint);
-                assert!(hidden, "the cloud hid no faint star");
             }
-        }
+            config.sky.clouds = vec![Cloud {
+                start: Duration::from_secs(20),
+                duration: Duration::from_secs(60),
+                ramp: Duration::from_secs(2),
+                transmission,
+            }];
+        });
+        record(dir.path(), &mut sim, 45, |_, _, _| {});
+        replay_of(dir.path(), 45)
+    }
+
+    #[test]
+    fn a_thin_cloud_over_a_field_of_stars_that_place_each_other_costs_no_frame() {
+        let replay = cloud_over_field(0.3, 1.0);
+        let report = &replay.report;
+        assert_eq!((report.clear, report.clouded, report.lost), (45, 0, 0));
+        assert!(
+            kept_by_position(&replay, 12..=30),
+            "the cloud tripped no flux band"
+        );
+    }
+
+    #[test]
+    fn a_cloud_that_hides_the_faint_half_while_the_bright_place_each_other_costs_no_frame() {
+        let replay = cloud_over_field(0.02, 0.03);
+        let report = &replay.report;
+        assert_eq!((report.clear, report.clouded, report.lost), (45, 0, 0));
+        let hidden = replay.rows.iter().any(|row| {
+            (12..=30).contains(&row.frame)
+                && (row.reading == Reading::NotFound || row.reading == Reading::Faint)
+        });
+        assert!(hidden, "the cloud hid no faint star");
+        assert!(
+            kept_by_position(&replay, 12..=30),
+            "the cloud tripped no flux band"
+        );
     }
 
     #[test]
@@ -864,14 +908,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         record(dir.path(), &mut sky(|_| {}), 20, |n, pixels, _| {
             if n == 15 {
-                pixels.mapv_inplace(|value| {
-                    let above = f64::from(value) - 520.0;
-                    (520.0 + 3.0 * above.max(0.0)).min(65_535.0) as u16
-                });
+                brighten(pixels);
             }
         });
-        let report = replay_of(dir.path(), 20).report;
+        let replay = replay_of(dir.path(), 20);
+        let report = &replay.report;
         assert_eq!((report.clear, report.clouded, report.lost), (20, 0, 0));
+        assert!(
+            kept_by_position(&replay, 15..=15),
+            "frame 15 tripped no flux band"
+        );
     }
 
     #[test]
