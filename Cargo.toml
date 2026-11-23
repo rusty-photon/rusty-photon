@@ -179,7 +179,7 @@ parking_lot = "0.13.0"
 # file-format generation — a redb-major bump needs a one-time
 # `Database::upgrade()` step, distinct from each store's own `schema_version`
 # (docs/crates/rp-targets.md "Schema migration").
-redb = "4"
+redb = "5"
 if-addrs = "0.15"
 tokio-serial = "5.4.5"
 # 0.10.1, not 0.10: rand 0.10.0's feature table references `rand/getrandom` as a
