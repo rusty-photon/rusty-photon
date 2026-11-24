@@ -1081,7 +1081,13 @@ with no civil darkness that night) is skipped with a `warn!`.
    state.
 7. **After dawn**, the schedule checks every output dawn left on each
    5 minutes until the next dusk, and cuts each once its reason has
-   cleared, through `power_down` with that output.
+   cleared, through `power_down` with that output. A check of an output
+   the mount holds calls `park` again first while the mount does not read
+   parked, three times in all at most, since a park that failed at dawn
+   (the mount briefly unreachable, a park that timed out) otherwise holds
+   the mount's output, and every device on it, until dusk. After the
+   third failed park the schedule logs at `warn!` that the mount stays
+   unparked, and leaves its output on until dusk.
 
 The schedule learns the daily outputs and the devices on them from
 `get_power_map`.
@@ -1129,8 +1135,9 @@ mount cut away from its power-up pose comes back with its position lost.
 The schedule keeps its place in `<state_dir>/night.json`, written with
 the workspace atomic-write pattern at every change: the night's date,
 dusk and dawn, its phase (`day`, `dusk`, `power_up`, `camera_check`,
-`runs`, `dawn`, `after_dawn`), the index of the run it started last, the
-cameras it gave up and the outputs dawn left on. A start reads it and
+`runs`, `dawn`, `after_dawn`), the outputs dusk's `power_up` switched
+on, the index of the run it started last, the cameras it gave up, the
+time of dawn's `start_warmup`, and the outputs dawn left on. A start reads it and
 carries on, at any time of day. A configured night is the operator's
 standing decision to run every night, power, cooling, runs and dawn
 alike, which
@@ -1157,7 +1164,9 @@ matches decides:
 5. **`power_up` or `camera_check`:** `power_up` again from the top, then
    the camera check of every camera not already given up. A second round
    of service restarts at dusk costs seconds, and leaves no service on an
-   SDK that saw its device go.
+   SDK that saw its device go. The outputs the first `power_up` switched
+   on stay recorded, so a wedge retry still treats them as switched on
+   this dusk.
 6. **`runs`:** the schedule waits for the run the self-resume picks up
    ([Self-resume on startup](#self-resume-on-startup)), then goes on with
    the next. With `resume_on_start: false` nothing is picked up, the
