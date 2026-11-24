@@ -26,10 +26,11 @@ runtime, does no I/O and reads no clock.
 Out of scope:
 
 - **The Alpaca devices.** The Alpaca Camera and Telescope that put the
-  simulator behind the guider's own clients come with the `guider`
-  service, the first piece that talks to them.
-- **Hardware binning and subframes.** The guider reads full frames, and a
-  test that wants binned pixels sets a coarser pixel scale.
+  simulator behind the guider's own clients, on the wall clock, are
+  [`guide-simulator-alpaca`](guide-simulator-alpaca.md)'s.
+- **Hardware binning and subframes.** `guide-simulator-alpaca`'s camera
+  bins and cuts regions from the rendered frame; a test of the core alone
+  that wants binned pixels sets a coarser pixel scale.
 - **Other physics:** field rotation, dark current, refraction, and any star
   image but a Gaussian.
 - **RA backlash.** Tracking loads the RA axis, and a guide pulse only
@@ -322,6 +323,8 @@ Unit tests live with the code:
 
 ## Consumers
 
-The guiding core's tests, `rp-guiding`'s, and the `guider` service's BDD
-scenarios behind the Alpaca devices, as
-[guider.md § Testing](../services/guider.md#testing) designs them.
+The guiding core's tests, `rp-guiding`'s; the replay's tests,
+[`guide-replay`](guide-replay.md)'s; and the `guider` service's BDD
+scenarios behind [`guide-simulator-alpaca`](guide-simulator-alpaca.md)'s
+devices, as [guider.md § Testing](../services/guider.md#testing) designs
+them.

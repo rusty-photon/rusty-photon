@@ -1,0 +1,28 @@
+[package]
+name = "guide-simulator-alpaca"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "guide-simulator's mount and sky behind an ASCOM Alpaca Camera and Telescope on the wall clock, for the guider service's BDD scenarios"
+
+[lints]
+workspace = true
+
+[dependencies]
+ascom-alpaca = { workspace = true, features = ["server", "camera", "telescope"] }
+async-trait = { workspace = true }
+axum = { workspace = true }
+guide-simulator = { workspace = true }
+ndarray = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+ascom-alpaca = { workspace = true, features = ["client", "camera", "telescope"] }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
