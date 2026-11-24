@@ -28,6 +28,7 @@ pub struct State {
     pub mount: MountSession,
     pub pulses: Vec<PulseRecord>,
     pub exposures: Vec<ExposureRecord>,
+    pub aborts: usize,
     pub last_truth: Option<FrameTruth>,
 }
 
@@ -153,6 +154,7 @@ impl Rig {
                 },
                 pulses: Vec::new(),
                 exposures: Vec::new(),
+                aborts: 0,
                 last_truth: None,
             }),
         }

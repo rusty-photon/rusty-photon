@@ -123,13 +123,19 @@ fn start(
     }
     let fault = state.camera.faults.take();
     if fault == Some(FrameFault::StartFails) {
+        state.camera.exposure = None;
         debug!("simulated camera fails StartExposure, as scripted");
         return Err(ASCOMError::invalid_operation(
             "the exposure failed to start, as scripted",
         ));
     }
+    // The frame is rendered from a copy of the mount run over the whole
+    // exposure; the mount itself stays on the wall clock, so nothing runs
+    // ahead of it, and an exposure that is dropped leaves nothing behind.
     let at = state.sim.now();
+    let mount = state.sim.mount().clone();
     let frame = state.sim.expose(duration);
+    *state.sim.mount_mut() = mount;
     let binned = rig::binned(&frame.pixels, bin, state.sim.camera().full_scale_adu);
     let narrower = u32::from(fault == Some(FrameFault::WrongSize));
     let end = at.after(duration);
@@ -386,7 +392,12 @@ impl Camera for SimCamera {
     }
 
     async fn abort_exposure(&self) -> ASCOMResult<()> {
+        let can_abort = self.rig.camera.can_abort_exposure;
         self.session(|state, now| {
+            state.aborts = state.aborts.saturating_add(1);
+            if !can_abort {
+                return Err(ASCOMError::NOT_IMPLEMENTED);
+            }
             if exposing(state, now) {
                 state.camera.exposure = None;
                 debug!("simulated camera exposure aborted");

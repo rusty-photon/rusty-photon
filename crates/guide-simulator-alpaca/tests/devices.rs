@@ -199,15 +199,25 @@ async fn the_camera_reports_its_sensor() {
 }
 
 #[tokio::test]
-async fn an_exposure_runs_from_start_to_image() {
+async fn an_exposure_is_in_progress_for_its_length() {
+    let (_devices, camera, _mount) = connected().await;
+    camera
+        .start_exposure(Duration::from_secs(10), true)
+        .await
+        .unwrap();
+    assert!(!camera.image_ready().await.unwrap());
+    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Exposing);
+    assert_eq!(camera.percent_completed().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn an_exposure_runs_to_its_image() {
     let (devices, camera, _mount) = connected().await;
     camera.set_gain(30).await.unwrap();
     camera
         .start_exposure(Duration::from_millis(300), true)
         .await
         .unwrap();
-    assert!(!camera.image_ready().await.unwrap());
-    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Exposing);
     wait_ready(&*camera).await;
     assert_eq!(camera.camera_state().await.unwrap(), CameraState::Idle);
     let image = camera.image_array().await.unwrap();
@@ -223,22 +233,47 @@ async fn an_exposure_runs_from_start_to_image() {
 
 #[tokio::test]
 async fn a_second_exposure_is_refused_while_one_runs_and_an_abort_drops_it() {
-    let (_devices, camera, _mount) = connected().await;
+    let (devices, camera, mount) = connected().await;
     camera
-        .start_exposure(Duration::from_secs(2), true)
+        .start_exposure(Duration::from_secs(10), true)
         .await
         .unwrap();
     assert_eq!(
-        code(camera.start_exposure(Duration::from_secs(2), true).await),
+        code(camera.start_exposure(Duration::from_secs(1), true).await),
         ASCOMErrorCode::INVALID_OPERATION
     );
     camera.abort_exposure().await.unwrap();
+    assert_eq!(devices.aborts(), 1);
     assert_eq!(camera.camera_state().await.unwrap(), CameraState::Idle);
     assert!(!camera.image_ready().await.unwrap());
-    camera
-        .start_exposure(Duration::from_millis(20), true)
+    // Nothing of the aborted exposure is left: the next exposure and the
+    // next pulse start now, not at the aborted exposure's end 10 s on.
+    frame(&*camera, Duration::from_millis(20)).await;
+    mount
+        .pulse_guide(GuideDirection::East, Duration::from_millis(10))
         .await
         .unwrap();
+    let now = devices.now();
+    assert!(devices.exposures().last().unwrap().at <= now);
+    assert!(devices.pulses().last().unwrap().at <= now);
+}
+
+#[tokio::test]
+async fn a_camera_that_cannot_abort_refuses_and_the_attempt_is_counted() {
+    let mut config = config();
+    config.camera.can_abort_exposure = false;
+    let (devices, camera, _mount) = connected_with(config).await;
+    assert!(!camera.can_abort_exposure().await.unwrap());
+    camera
+        .start_exposure(Duration::from_secs(10), true)
+        .await
+        .unwrap();
+    assert_eq!(
+        code(camera.abort_exposure().await),
+        ASCOMErrorCode::NOT_IMPLEMENTED
+    );
+    assert_eq!(devices.aborts(), 1);
+    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Exposing);
 }
 
 #[tokio::test]
@@ -318,14 +353,13 @@ async fn pulse_shift(
     frame(camera, Duration::from_millis(20)).await;
     let before = devices.last_truth().unwrap().field_shift;
     mount.pulse_guide(direction, duration).await.unwrap();
-    assert!(mount.is_pulse_guiding().await.unwrap());
     wait_pulse_end(mount).await;
     frame(camera, Duration::from_millis(20)).await;
     devices.last_truth().unwrap().field_shift.minus(before)
 }
 
 #[tokio::test]
-async fn a_pulse_moves_the_stars_its_way_in_the_next_frame_and_ends_on_the_wall_clock() {
+async fn a_pulse_moves_the_stars_its_way_in_the_next_frame() {
     let (devices, camera, mount) = connected().await;
     let half = Duration::from_millis(500);
     // 0.5 s at half the sidereal rate at 2″ a pixel, RA at declination 30°.
@@ -361,6 +395,30 @@ async fn a_pulse_moves_the_stars_its_way_in_the_next_frame_and_ends_on_the_wall_
             (SimDirection::South, half),
         ]
     );
+}
+
+#[tokio::test]
+async fn a_pulse_is_in_progress_until_it_ends_and_a_park_stops_it() {
+    let (devices, _camera, mount) = connected().await;
+    mount
+        .pulse_guide(GuideDirection::West, Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert!(mount.is_pulse_guiding().await.unwrap());
+    devices.park();
+    assert!(!mount.is_pulse_guiding().await.unwrap());
+}
+
+#[tokio::test]
+async fn a_pulse_lasts_its_length_on_the_wall_clock() {
+    let (_devices, _camera, mount) = connected().await;
+    let asked = std::time::Instant::now();
+    mount
+        .pulse_guide(GuideDirection::North, Duration::from_millis(300))
+        .await
+        .unwrap();
+    wait_pulse_end(&*mount).await;
+    assert!(asked.elapsed() >= Duration::from_millis(300));
 }
 
 #[tokio::test]
@@ -408,15 +466,13 @@ async fn a_park_stops_tracking_and_refuses_pulses() {
 }
 
 #[tokio::test]
-async fn a_slew_moves_the_pointing_and_can_change_the_pier_side() {
+async fn a_slew_in_progress_reads_as_slewing_and_refuses_pulses() {
     let (devices, _camera, mount) = connected().await;
-    // An hour of right ascension at declination 30°, and a degree north.
-    let hour_east = 15.0 * 3_600.0 * 30_f64.to_radians().cos();
     devices
         .slew(
-            SkyOffset::new(hour_east, 3_600.0),
-            Duration::from_millis(200),
-            SimSide::West,
+            SkyOffset::new(0.0, 3_600.0),
+            Duration::from_secs(10),
+            SimSide::East,
         )
         .unwrap();
     assert!(mount.slewing().await.unwrap());
@@ -428,7 +484,26 @@ async fn a_slew_moves_the_pointing_and_can_change_the_pier_side() {
         ),
         ASCOMErrorCode::INVALID_OPERATION
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
+}
+
+#[tokio::test]
+async fn a_slew_moves_the_pointing_and_can_change_the_pier_side() {
+    let (devices, _camera, mount) = connected().await;
+    // An hour of right ascension at declination 30°, and a degree north.
+    let hour_east = 15.0 * 3_600.0 * 30_f64.to_radians().cos();
+    devices
+        .slew(
+            SkyOffset::new(hour_east, 3_600.0),
+            Duration::from_millis(200),
+            SimSide::West,
+        )
+        .unwrap();
+    for _ in 0..500 {
+        if !mount.slewing().await.unwrap() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert!(!mount.slewing().await.unwrap());
     assert_eq!(mount.side_of_pier().await.unwrap(), PierSide::West);
     assert!((mount.declination().await.unwrap() - 31.0).abs() < 1e-6);
@@ -526,6 +601,22 @@ async fn a_start_fault_fails_start_exposure_for_its_count() {
     }
     frame(&*camera, Duration::from_millis(20)).await;
     assert_eq!(devices.exposures().len(), 1);
+}
+
+#[tokio::test]
+async fn a_start_fault_drops_the_last_frame() {
+    let (devices, camera, _mount) = connected().await;
+    frame(&*camera, Duration::from_millis(20)).await;
+    devices.fail_frames(FrameFault::StartFails, Some(1));
+    camera
+        .start_exposure(Duration::from_millis(20), true)
+        .await
+        .unwrap_err();
+    assert!(!camera.image_ready().await.unwrap());
+    assert_eq!(
+        code(camera.image_array().await),
+        ASCOMErrorCode::INVALID_OPERATION
+    );
 }
 
 #[tokio::test]

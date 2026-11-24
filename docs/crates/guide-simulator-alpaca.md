@@ -35,15 +35,21 @@ the system's monotonic clock. Each call runs the simulation up to that
 time before it acts, so the mount drifts, tracks and ends its pulses as
 real time passes, whether anyone calls or not.
 
-**An exposure is rendered when it starts.** `StartExposure` runs the
-simulation over the whole exposure at once and keeps the frame. The
-simulation's clock then stands at the exposure's end, ahead of the wall
-clock, until the wall clock reaches it: the simulation never runs
-backward. So a pulse sent during an exposure starts at the exposure's
-end and does not show in that frame. The guider never pulses during an
+**An exposure is rendered when it starts.** `StartExposure` runs a copy
+of the simulated mount over the whole exposure at once and renders the
+frame from its course; the mount itself stays on the wall clock. So
+nothing runs ahead of the wall clock, and an exposure that is aborted or
+dropped leaves nothing behind: the next exposure and the next pulse start
+when they are asked for.
+
+The frame shows the mount as it moves with nothing sent to it during the
+exposure. A pulse, a slew or a park sent while it runs acts when it is
+sent and shows from the next frame on. The guider never pulses during an
 exposure ([guider.md § The camera loop](../services/guider.md#the-camera-loop)),
 and a scenario that wants a pulse in a frame sends it before the
-exposure.
+exposure. A scripted slew that ends before the exposure does is over by
+the guider's next mount check, so a scenario that wants the guider to see
+a slew makes it longer than an exposure, as a real slew is.
 
 ## The camera
 
@@ -59,10 +65,10 @@ exposure.
 | `Gain`, `Offset` | Kept and reported, 0 to 1,000; they change nothing in the frame |
 | `CanAbortExposure` | `camera.can_abort_exposure` |
 | `ExposureMin`, `ExposureMax` | 1 ms and one hour |
-| `StartExposure` | Renders the frame and keeps it. Refused for a dark frame (`Light` false), for a duration outside `ExposureMin` to `ExposureMax`, while an exposure is in progress, and for a region that leaves the binned sensor |
+| `StartExposure` | Renders the frame and keeps it. Refused for a dark frame (`Light` false), for a duration outside `ExposureMin` to `ExposureMax`, while an exposure is in progress, and for a region that leaves the binned sensor. A start that fails as scripted drops the last frame |
 | `ImageReady` | True from `camera.readout` after the exposure's end until the next `StartExposure` |
 | `ImageArray` | The frame as 16-bit values, the region cut from the binned sensor |
-| `AbortExposure` | Drops the exposure in progress, and does nothing when none is |
+| `AbortExposure` | Drops the exposure in progress, and does nothing when none is. With `camera.can_abort_exposure` false it is refused with `NOT_IMPLEMENTED` |
 | `CameraState` | `Exposing` until the exposure's end, `Reading` until `ImageReady`, `Idle` otherwise |
 
 A camera that is not connected answers every Camera member with
@@ -113,17 +119,21 @@ what they were asked:
 - **What was asked.** `pulses` lists every pulse the mount accepted, with
   its direction, its duration and the simulated time it started.
   `exposures` lists every exposure the camera started, with its
-  duration, binning, region, gain and offset. `last_truth` is the truth
-  of the latest frame rendered.
+  duration, binning, region, gain and offset. `aborts` counts the
+  `AbortExposure` calls the connected camera received, refused ones
+  included. `last_truth` is the truth of the latest frame rendered.
 
 ## Testing
 
 The crate's tests start the devices and drive them through the Alpaca
 client, as the guider does: each device's listing and `UniqueID`, the
 refusals of a device that is not connected, an exposure from start to
-image, binning and the region, a pulse that moves the stars in the next
-frame and ends on the wall clock, the mount check's reads after a park
-and a slew, and each scripted fault.
+image, an abort that leaves nothing behind, binning and the region, a
+pulse that moves the stars its way in the next frame and lasts its length
+on the wall clock, the mount check's reads after a park and a slew, and
+each scripted fault. A reading that holds only while an exposure, a pulse
+or a slew lasts is taken in one of several seconds, so that a slow
+runner does not outlast it.
 
 ## Consumers
 

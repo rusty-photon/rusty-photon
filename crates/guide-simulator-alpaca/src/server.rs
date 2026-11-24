@@ -206,6 +206,13 @@ impl SimDevices {
         self.rig.with(|state| state.exposures.clone())
     }
 
+    /// How many times the camera was asked to abort its exposure, while
+    /// connected, whether or not it could.
+    #[must_use]
+    pub fn aborts(&self) -> usize {
+        self.rig.with(|state| state.aborts)
+    }
+
     /// The truth of the latest frame rendered.
     #[must_use]
     pub fn last_truth(&self) -> Option<FrameTruth> {
