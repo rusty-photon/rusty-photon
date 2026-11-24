@@ -1305,10 +1305,12 @@ whether it does, as a JSON string:
   `power_up_ticks` its encoder pair for the configured latitude and the
   handshake's counts per revolution: `null` for `ap_park_0`, which asserts
   no pose.
-- `park_target_ticks` is the park target the last connect resolved
-  ([§Park-target resolution](#park-target-resolution)): `null` when an
-  axis has none, as for an unanchored frame without a raw override, or a
-  position lost or awaiting its power-up check.
+- `park_target_ticks` is the park target the driver holds when it
+  answers: the one the connect resolved
+  ([§Park-target resolution](#park-target-resolution)), or the one a
+  `SetPark` or an anchoring sync has put in its place since. It is `null`
+  when an axis has none, as for an unanchored frame without a raw
+  override, or a position lost or awaiting its power-up check.
 - `matches` is `true` only when both pairs are present and equal on both
   axes. A `SetPark` capture, raw `park_*_ticks`, or a `preferred_ap_park`
   other than the power-up pose makes it `false`.

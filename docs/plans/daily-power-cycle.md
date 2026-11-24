@@ -314,14 +314,11 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
    lost and logs each failed retry at `debug!`. A device off for 16 hours
    otherwise costs about 11,500 warnings.
 7. **Dusk starts at civil twilight, once the roof is open** (settled
-   2026-11-07). Dusk starts at a configured offset from the evening end
-   of civil twilight, when the Sun sinks below −6° (`get_twilight`'s
-   `begin_utc`), and powers nothing up until rp's safety monitors read
-   safe, with the roof open, waiting until dawn at most. Dawn starts at a
-   configured offset from its morning end. On a night the roof stays
+   2026-11-07). Dusk starts at a configured offset from civil
+   twilight and powers nothing up until rp's safety monitors read safe, with
+   the roof open, waiting until dawn at most. On a night the roof stays
    shut, no device is powered at all. The camera then cools in time that
-   is already dark, or in the last of the light when the offset brings
-   dusk forward for sky flats.
+   is already dark.
    - **Not before dark, without the roof.** Nothing in the dusk sequence
      slews the mount, so dusk could start early enough for the
      camera to reach its setpoint by dark, but it would power every device
@@ -394,7 +391,9 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     switched back on, the devices settle (decision 2), each of their
     services restarts (decision 5) and each device is connected through rp.
     Then dusk tries once more. The cycle follows dawn's cut rules (decision
-    15), and an output they leave on gives the camera up at once. A second
+    15), and an output they leave on gives the camera up at once; an
+    output this dusk switched on feeds no cold camera, so only the mount's
+    rule can hold it. A second
     wedge gives the camera up
     for the night, with a log line that says so. The guide camera takes
     its test frame as any roster camera does: `check_camera` holds the
@@ -433,7 +432,11 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     out every device on its outputs and cuts them; `check_camera` takes
     decision 11's test frame. `get_power_map` reads the map whole
     ([rp.md § Power Switching](../services/rp.md#power-switching)). An
-    operator calls the same tools by hand.
+    operator calls the same tools by hand. Dusk starts at an offset from
+    the evening end of civil twilight, when the Sun sinks below −6°
+    (`get_twilight`'s `begin_utc`), and an offset that brings it forward
+    leaves time for sky flats; dawn starts at an offset from the morning
+    end.
     - **Not dusk and dawn documents.** `session-runner` runs one
       document at a time, so a dawn document cannot start while an imaging
       run holds the run slot. A run paused for safety runs none of its
@@ -446,11 +449,13 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       cut the power between the two, and a paused run would still miss
       dawn.
 13. **A configured night is the operator's standing decision** (settled
-    2026-11-23). Configuring the night is the operator's decision to power
-    the rig up at every dusk and down at every dawn, so the schedule acts
-    on its clock at any time, a start of `session-runner` included. A
-    start after dusk with the roof open powers the rig up at once, and a
-    start in the day runs a dawn the night still owes. Dawn runs every
+    2026-11-23). Configuring the night is the operator's decision to run
+    every night: power the rig up at dusk, cool it, start the configured
+    runs, and at dawn warm, park, close the covers and power down. So the
+    schedule does all of it on its clock at any time, a start of
+    `session-runner` included. A start after dusk with the roof open
+    powers the rig up at once and goes on with the night, and a start in
+    the day runs a dawn the night still owes. Dawn runs every
     morning, whether or not dusk powered anything: a daily output that
     reads on at dawn goes back to the rig's daytime state, after an
     install that started every service with its devices powered
@@ -471,12 +476,17 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       mapped too, and the night would hold it at its maximum all night.
 15. **The schedule decides what dawn leaves on** (settled 2026-11-23).
     Before it calls `power_down`, the schedule takes off its list every
-    output that feeds a camera whose cooler still reads on, or whose
-    cooler cannot be read, and every output that feeds the mount while
-    the mount does not read parked or says a cut would lose its pose
-    (decision 16). It cuts the rest, logs each output it left on with the
-    reason, and checks those outputs every 5 minutes until the next dusk,
-    cutting each once its reason has cleared. `power_down` cuts what it is
+    output that feeds a camera whose sensor still reads colder than the
+    warm-up's target, and every output that feeds the mount while the
+    mount does not read parked or says a cut would lose its pose
+    (decision 16). The sensor's temperature decides, not `CoolerOn`,
+    which a driver can hold in its process alone. An output that feeds a
+    camera the schedule cannot read stays on until the warm-up's time has
+    passed, and is cut then: holding it for good would keep a wedged
+    camera wedged and its fan running all day. The schedule cuts the
+    rest, logs each output it left on with the reason, and checks those
+    outputs every 5 minutes until the next dusk, cutting each once its
+    reason has cleared. `power_down` cuts what it is
     given, as `set_switch` does, and an operator who calls it by hand owns
     the same checks. rp's `start_warmup` warms every camera with a setpoint
     ladder whose cooler reads on, so a camera whose cooling an rp restart in
@@ -505,8 +515,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Merged | [#1723](https://github.com/rusty-photon/rusty-photon/pull/1723) |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; rp's `restart_service` sends the requests | Merged. PHD2's restart, its Linux units and rp's `restart_guider` were built with it. `restart_guider` left `rp` with stage G6's code on 2026-11-16, and PHD2's restart and its units left the tree with PHD2 on 2026-11-17 (decision 10) | [#1734](https://github.com/rusty-photon/rusty-photon/pull/1734) |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Merged | [#1730](https://github.com/rusty-photon/rusty-photon/pull/1730) |
-| P4a | rp's power tools for the night (decision 12): the power map's `daily` mark (decision 14); `power_up`, `power_down`, `check_camera` and `get_power_map`; `get_camera_info`'s cooler state, and `start_warmup` for every laddered camera whose cooler reads on (decision 15); `get_park_state`'s `park_matches_power_up_pose`, over `star-adventurer-gti`'s `ParkMatchesPowerUpPose` Action (decision 16) | Designed; not started | |
-| P4b | `session-runner`'s night schedule (decisions 7, 11, 12, 13 and 15). Dusk, from an offset from civil twilight once the roof is open: `power_up`, a test frame per camera with one power-cycle retry on a wedge, `start_cooldown`, then the configured runs in turn. Dawn, every morning: the active run ended, `start_warmup` and a wait for the coolers to read off, the park, the covers closed, and `power_down` over the daily outputs the cut rules allow, with the outputs left on checked again every 5 minutes until dusk. A state file a restart carries on from, at any time of day | Designed; needs P4a | |
+| P4a | rp's power tools for the night (decision 12): the power map's `daily` mark (decision 14); `power_up`, `power_down`, `check_camera` and `get_power_map`; `get_camera_info`'s cooler state and `sensor_cold`, and `start_warmup` for every laddered camera whose cooler reads on (decision 15); `get_park_state`'s `park_matches_power_up_pose`, over `star-adventurer-gti`'s `ParkMatchesPowerUpPose` Action (decision 16) | Designed; not started | |
+| P4b | `session-runner`'s night schedule (decisions 7, 11, 12, 13 and 15). Dusk, from an offset from civil twilight once the roof is open: `power_up`, a test frame per camera with one power-cycle retry on a wedge, `start_cooldown`, then the configured runs in turn. Dawn, every morning: the active run ended, `start_warmup`, the park and the covers closed while it ramps, a wait for the sensors to warm, and `power_down` over the daily outputs the cut rules allow, with the outputs left on checked again every 5 minutes until dusk. A state file a restart carries on from, at any time of day | Designed; needs P4a | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
 P0, P1 and P2 depend on nothing else, P4a needs P2 and P3, P4b needs P4a,

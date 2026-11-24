@@ -1007,7 +1007,7 @@ decision 12).
 | `dusk_offset` | signed duration | `"0s"` | When dusk starts, from the evening end of civil twilight (`get_twilight`'s `begin_utc`, the Sun sinking below −6°). A leading `-` is earlier: sky flats need dusk before that end |
 | `dawn_offset` | signed duration | `"0s"` | When dawn starts, from the morning end of civil twilight (`get_twilight`'s `end_utc`) |
 | `settle` | duration | `"30s"` | Passed to `power_up`: the time the devices get between their outputs going on and their services restarting |
-| `warmup_timeout` | duration | `"45m"` | How long dawn waits for the cameras' coolers to read off before it cuts what the cut rules allow |
+| `warmup_timeout` | duration | `"45m"` | How long dawn waits for the cameras' sensors to warm before it applies the cut rules, and how long an output whose camera cannot be read stays on after dawn's `start_warmup` |
 | `runs` | array | `[]` | The documents the night runs, in order, each `{ "workflow", "params" }` as in a `POST /runs` body |
 
 The block is checked at load as far as `session-runner` can check it
@@ -1026,8 +1026,11 @@ with no civil darkness that night) is skipped with a `warn!`.
 
 1. **Dusk.** At dusk the schedule reads `get_safety_status` every
    `safety_poll_interval`, woken early by a `safety_changed` event, until
-   `overall` reads `safe`, and goes no further until then. It waits until
-   dawn at most: a night whose roof stays shut powers nothing and starts
+   `overall` reads `safe`, and goes no further until then. While a run an
+   operator started holds the run slot, it waits for that run to end as
+   well, since the power-up restarts the services the run's devices are
+   on. It waits until dawn at most: a night whose roof stays shut, or
+   whose slot an operator's run holds all night, powers nothing and starts
    no run, and the schedule logs at `info!` that it did not.
 2. **Power-up.** `power_up {settle}` switches every daily output on,
    restarts each service with a device on them and connects every
@@ -1040,7 +1043,8 @@ with no civil darkness that night) is skipped with a `warn!`.
    the cut rules below, and checks once more. A second `wedged`, or an
    output the cut rules leave on, gives the camera up for the night with
    a `warn!`. `unavailable` is logged at `warn!`, with no retry. The night
-   goes on either way.
+   goes on either way. A camera given up is not checked again that night,
+   a restart of `session-runner` included.
 4. **Cooldown.** `start_cooldown`.
 5. **Runs.** Each `runs` entry starts in turn, as a `POST /runs` with its
    `workflow` and `params` would start it, under the session id
@@ -1052,16 +1056,18 @@ with no civil darkness that night) is skipped with a `warn!`.
 6. **Dawn.** At dawn the schedule ends the active run as
    `POST /runs/{id}/stop` ends it, the operator's included: a running run
    at its next safe point with its `finally` blocks, a paused one at once.
-   Once it has ended, every step is an ungated tool, so dawn runs
-   whatever the weather:
-   1. `start_warmup`, and a wait until no camera on a daily output reads
-      its cooler on (`get_camera_info`'s `cooler_on`), polled every
-      30 s and woken early by `cooler_warmup_complete`, for at most
-      `warmup_timeout`;
-   2. `park`;
+   It waits 10 minutes at most for the run to end; a run still ending
+   then is left to end, and dawn goes on. Every step of dawn is an
+   ungated tool, so dawn runs whatever the weather:
+   1. `start_warmup`, which returns at once and ramps in the background;
+   2. `park`, with the warm-up under way, so that the mount never waits
+      out the warm-up away from its park;
    3. `close_cover` for each calibrator on a daily output, before its
       power goes;
-   4. the cut rules over the daily outputs that read on, and
+   4. a wait until no camera on a daily output reads its sensor cold
+      (`get_camera_info`'s `sensor_cold`), polled every 30 s and woken
+      early by `cooler_warmup_complete`, for at most `warmup_timeout`;
+   5. the cut rules over the daily outputs that read on, and
       `power_down` with the outputs they allow.
 
    Dawn runs every morning, whether or not dusk powered anything: a
@@ -1079,14 +1085,27 @@ The schedule learns the daily outputs and the devices on them from
 Before it calls `power_down`, at dawn, after dawn and for a wedge
 retry, the schedule takes off its list:
 
-- every output that feeds a camera whose `cooler_on` reads `true`, or
-  whose `get_camera_info` fails. `null`, a camera without a cooler,
-  cuts;
+- every output that feeds a camera whose `sensor_cold` reads `true`:
+  its sensor is colder than the warm-up's target. The sensor's own
+  temperature decides, not `CoolerOn`, which a driver can hold in its
+  process alone (`qhy-camera` reads it false in a process started after
+  the cooler was engaged). `null`, a camera that reports no sensor
+  temperature, cuts;
+- every output that feeds a camera the schedule cannot read: one `rp`
+  holds no session with, after a `connect_device` for it has failed, or
+  one whose `get_camera_info` fails. It stays on until `warmup_timeout`
+  has passed since dawn's `start_warmup`, and is cut then: an unreadable
+  camera has had the warm-up's whole time to warm, and holding its output
+  for good would keep a wedged camera wedged and its fan running all day;
 - every output that feeds the mount while `get_park_state` reads
   `at_park` false, or `park_matches_power_up_pose` false, or fails.
 
 `park_matches_power_up_pose: null`, a mount whose driver offers no such
-check, cuts. Each output left on is logged at `warn!` with its reason.
+check, cuts. For a wedge retry at dusk, an output that dusk's `power_up`
+switched on feeds no cold camera, since every camera on it was unpowered
+all day, so only the mount's rule can hold it. Each output left on is
+logged at `warn!` once, with its reason, the re-checks that follow at
+`debug!`, and the cut that ends it at `info!`.
 The rules are the schedule's, not `power_down`'s, which cuts what it is
 given ([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
 decisions 15 and 16). A cold sensor whose power goes can frost, and a
@@ -1100,27 +1119,33 @@ dusk and dawn, its phase (`dusk`, `power_up`, `camera_check`, `runs`,
 `dawn`, `after_dawn`), the index of the run it started last, the
 cameras it gave up and the outputs dawn left on. A start reads it and
 carries on, at any time of day. A configured night is the operator's
-standing decision to power the rig up at every dusk and down at every
-dawn, which
+standing decision to run every night, power, cooling, runs and dawn
+alike, which
 [tenet 3](../workspace.md#project-tenets) names beside `rp`'s safety
 response ([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
-decision 13):
+decision 13). A night's file belongs to it until the next night's dusk;
+the cases below are taken in order, and the first that matches decides:
 
-- **No file, or the file of a night that has ended:** the schedule
-  reads the night ahead. A start between its dusk and its dawn goes
-  straight to dusk's safety wait and powers the rig up once the roof
-  reads open.
-- **`dusk`:** back to the safety wait.
-- **`power_up` or `camera_check`:** `power_up` again from the top, then
-  the camera check. A second round of service restarts at dusk costs
-  seconds, and leaves no service on an SDK that saw its device go.
-- **`runs`:** the schedule waits for the run the self-resume picks up
-  ([Self-resume on startup](#self-resume-on-startup)), then goes on with
-  the next.
-- **`dawn`, or a dawn the night still owes** (the service was down
-  through it): dawn from its first step. Every step of dawn is
-  idempotent.
-- **`after_dawn`:** the checks of the outputs left on, until dusk.
+1. **No file, or a file whose next night's dusk has passed:** the
+   schedule reads the night ahead, the one whose dawn is still to come.
+   Before its dusk the phase is `day`. A start between its dusk and its
+   dawn goes straight to dusk's safety wait and powers the rig up once
+   the roof reads open.
+2. **A dawn the night still owes**, its dawn passed in any phase before
+   `after_dawn` (the service was down through it): dawn from its first
+   step, then the after-dawn checks. Every step of dawn is idempotent.
+3. **`dusk`:** back to the safety wait.
+4. **`power_up` or `camera_check`:** `power_up` again from the top, then
+   the camera check of every camera not already given up. A second round
+   of service restarts at dusk costs seconds, and leaves no service on an
+   SDK that saw its device go.
+5. **`runs`:** the schedule waits for the run the self-resume picks up
+   ([Self-resume on startup](#self-resume-on-startup)), then goes on with
+   the next. With `resume_on_start: false` nothing is picked up, the
+   run's manifest stays where it is, and the schedule goes on with the
+   next run.
+6. **`dawn`:** dawn from its first step.
+7. **`after_dawn`:** the checks of the outputs left on, until dusk.
 
 `resume_on_start: false` keeps a start passive for runs, and does not
 hold the schedule: an operator who wants no night removes the `night`
@@ -1130,14 +1155,14 @@ block.
 
 ```jsonc
 {
-  "phase": "runs",                 // off | dusk | power_up | camera_check | runs | dawn | after_dawn
+  "phase": "runs",                 // off | day | dusk | power_up | camera_check | runs | dawn | after_dawn
   "night": "2026-11-23",
   "dusk": "2026-11-23T16:58:00Z",
   "dawn": "2026-11-24T06:31:00Z",
   "run_id": "run-6f1c0e2a…",       // the run the schedule started, while it is active
   "cameras_given_up": [ "main-cam" ],
   "outputs_left_on": [
-    { "switch_id": "ppba", "output": "Quad 12V Output", "reason": "main-cam's cooler reads on" }
+    { "switch_id": "ppba", "output": "Quad 12V Output", "reason": "main-cam's sensor reads cold" }
   ]
 }
 ```

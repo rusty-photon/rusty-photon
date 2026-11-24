@@ -32,9 +32,10 @@ these away, the decision is wrong.
    is the dangerous outcome, not the park
    ([rp.md § Safety](services/rp.md#safety)). **So is
    `session-runner`'s night schedule.** Configuring it is the operator's
-   standing decision to power the rig up at every dusk, once the roof
-   reads open, and down at every dawn, so it acts on its clock at any
-   time, a start of `session-runner` included
+   standing decision to run every night: power the rig up at dusk once
+   the roof reads open, cool it and start the configured runs, and at
+   dawn warm, park, close the covers and power down. So all of it runs on
+   the schedule's clock at any time, a start of `session-runner` included
    ([session-runner.md § Night Schedule](services/session-runner.md#night-schedule)).
    A workflow's own cleanup
    (warm-up at its end) is that workflow's decision, not a violation.
