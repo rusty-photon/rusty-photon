@@ -121,11 +121,15 @@ what they were asked:
 - **What was asked.** `pulses` lists every pulse the mount accepted, with
   its direction, its duration and the simulated time it started.
   `exposures` lists every exposure the camera started, with its
-  duration, binning, region, gain and offset. `aborts` counts the
-  `AbortExposure` calls the connected camera received, refused ones
-  included. `last_truth` is the truth of the latest frame rendered, in
-  the simulated sensor's pixels: unbinned and over the full sensor,
-  whatever the binning and the region the frame was served at.
+  duration, binning, region, gain and offset, and the truth of its
+  frame, in the simulated sensor's pixels: unbinned and over the full
+  sensor, whatever the binning and the region the frame was served at.
+  A scenario pairs the frames the guider measured with their truths by
+  the records' order: a camera that loops starts its next exposure as
+  soon as it has fetched a frame, before anything the guider reports
+  shows that frame. `last_truth` is the truth of the latest exposure,
+  measured or not. `aborts` counts the `AbortExposure` calls the
+  connected camera received, refused ones included.
 
 ## Testing
 

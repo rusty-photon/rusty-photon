@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use guide_simulator::{GuideDirection, SimConfig, SimTime};
+use guide_simulator::{FrameTruth, GuideDirection, SimConfig, SimTime};
 
 /// The simulation and the two devices in front of it.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -132,8 +132,8 @@ pub struct PulseRecord {
     pub at: SimTime,
 }
 
-/// An exposure the camera started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// An exposure the camera started, and the truth of its frame.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExposureRecord {
     /// When it started, in simulated time.
     pub at: SimTime,
@@ -147,4 +147,8 @@ pub struct ExposureRecord {
     pub gain: i32,
     /// `Offset` when it started.
     pub offset: i32,
+    /// What its frame shows, in the simulated sensor's pixels: unbinned
+    /// and over the full sensor, whatever the binning and the region the
+    /// frame was served at.
+    pub truth: FrameTruth,
 }

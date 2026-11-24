@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use guide_simulator::{FrameTruth, SimTime, Simulator};
+use guide_simulator::{SimTime, Simulator};
 use ndarray::{s, Array2, Zip};
 use parking_lot::{Mutex, MutexGuard};
 
@@ -29,7 +29,6 @@ pub struct State {
     pub pulses: Vec<PulseRecord>,
     pub exposures: Vec<ExposureRecord>,
     pub aborts: usize,
-    pub last_truth: Option<FrameTruth>,
 }
 
 /// The camera's connection, settings, exposure and faults.
@@ -155,7 +154,6 @@ impl Rig {
                 pulses: Vec::new(),
                 exposures: Vec::new(),
                 aborts: 0,
-                last_truth: None,
             }),
         }
     }

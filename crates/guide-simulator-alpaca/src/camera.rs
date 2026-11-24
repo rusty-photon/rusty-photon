@@ -164,8 +164,8 @@ fn start(
         region,
         gain: state.camera.gain,
         offset: state.camera.offset,
+        truth: frame.truth,
     });
-    state.last_truth = Some(frame.truth);
     debug!(
         ?duration,
         bin,

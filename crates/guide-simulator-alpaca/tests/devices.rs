@@ -512,6 +512,54 @@ async fn a_pulse_lasts_its_length_on_the_wall_clock() {
     assert!(asked.elapsed() >= Duration::from_millis(300));
 }
 
+/// Whether the image is lit well above the bias of 500 ADU at `point`.
+fn lit_at(
+    image: &ascom_alpaca::api::camera::ImageArray,
+    point: guide_simulator::SensorPoint,
+) -> bool {
+    image[(point.x.round() as usize, point.y.round() as usize, 0)] > 1_000
+}
+
+#[tokio::test]
+async fn each_exposure_record_carries_the_truth_of_its_own_frame() {
+    let (devices, camera, _mount) = connected().await;
+    let exposure = Duration::from_millis(300);
+    // As a camera loops: fetch a frame, and start the next at once. An
+    // instant slew of 40″ (20 px) between them sets the frames apart.
+    let mut images = Vec::new();
+    camera.start_exposure(exposure, true).await.unwrap();
+    for _ in 0..2 {
+        wait_ready(&*camera).await;
+        images.push(camera.image_array().await.unwrap());
+        devices
+            .slew(SkyOffset::new(40.0, 0.0), Duration::ZERO, SimSide::East)
+            .unwrap();
+        camera.start_exposure(exposure, true).await.unwrap();
+    }
+    let records = devices.exposures();
+    assert_eq!(records.len(), 3);
+    for record in &records {
+        assert_eq!(
+            (record.truth.start, record.truth.duration),
+            (record.at, record.duration)
+        );
+    }
+    assert_eq!(devices.last_truth(), Some(records[2].truth.clone()));
+    for (k, image) in images.iter().enumerate() {
+        let own = &records[k].truth.stars;
+        let next = &records[k + 1].truth.stars;
+        assert_ne!(own.len(), 0, "frame {k} has stars");
+        assert!(
+            own.iter().all(|star| lit_at(image, star.position)),
+            "frame {k}"
+        );
+        assert!(
+            next.iter().all(|star| !lit_at(image, star.position)),
+            "frame {k} shows the next frame's stars"
+        );
+    }
+}
+
 #[tokio::test]
 async fn the_mount_reports_its_rates_and_where_it_points() {
     let (_devices, _camera, mount) = connected().await;

@@ -213,12 +213,13 @@ impl SimDevices {
         self.rig.with(|state| state.aborts)
     }
 
-    /// The truth of the latest frame rendered, in the simulated sensor's
-    /// pixels: unbinned and over the full sensor, whatever the binning and
-    /// the region the frame was served at.
+    /// The truth of the latest frame rendered: that of the latest
+    /// exposure the camera started, which may be one the guider has not
+    /// measured yet. [`Self::exposures`] pairs each frame with its truth.
     #[must_use]
     pub fn last_truth(&self) -> Option<FrameTruth> {
-        self.rig.with(|state| state.last_truth.clone())
+        self.rig
+            .with(|state| state.exposures.last().map(|record| record.truth.clone()))
     }
 
     /// Stops both servers and waits for them to end.
