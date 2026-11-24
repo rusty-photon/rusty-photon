@@ -33,7 +33,8 @@ these away, the decision is wrong.
    ([rp.md § Safety](services/rp.md#safety)). **So is
    `session-runner`'s night schedule.** Configuring it is the operator's
    standing decision to run every night: power the rig up at dusk once
-   the roof reads open, cool it and start the configured runs, and at
+   the roof reads open, open its covers, cool it and start the configured
+   runs, and at
    dawn warm, park, close the covers and power down. So all of it runs on
    the schedule's clock at any time, a start of `session-runner` included
    ([session-runner.md § Night Schedule](services/session-runner.md#night-schedule)).

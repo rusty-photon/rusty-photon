@@ -970,8 +970,8 @@ POST /runs ─► running ──(safety: cancelled / SafetyUnsafe)──► paus
 
 With a `night` block in its configuration, `session-runner` runs the
 rig's night itself. At dusk it has `rp` power the rig up, checks each
-camera for a wedge and starts the cooldown, then starts the configured
-runs one after another. At dawn it ends whatever run is active, warms
+camera for a wedge, opens the covers and starts the cooldown, then
+starts the configured runs one after another. At dawn it ends whatever run is active, warms
 the cameras, parks the mount, closes the covers and has `rp` power the
 rig down. Without a `night` block nothing is scheduled, and a run starts
 only on `POST /runs`.
@@ -1049,8 +1049,12 @@ with no civil darkness that night) is skipped with a `warn!`.
    with a `warn!`. `unavailable` is logged at `warn!`, with no retry. The night
    goes on either way. A camera given up is not checked again that night,
    a restart of `session-runner` included.
-4. **Cooldown.** `start_cooldown`.
-5. **Runs.** Each `runs` entry starts in turn, as a `POST /runs` with its
+4. **Covers.** `open_cover` for each calibrator the power map lists:
+   the covers dawn closes. `open_cover` is gated, and dusk has already
+   waited for the roof to read safe. A cover that fails to open is
+   logged at `warn!`, and the night goes on.
+5. **Cooldown.** `start_cooldown`.
+6. **Runs.** Each `runs` entry starts in turn, as a `POST /runs` with its
    `workflow` and `params` would start it, under the session id
    `night-<date>-<n>`, which carries its index in the list. The next
    starts once it has ended, however it ended. A start that fails at the
@@ -1059,7 +1063,7 @@ with no civil darkness that night) is skipped with a `warn!`.
    `warn!`, and the next starts. While a run an
    operator started holds the slot, the schedule waits for it to end.
    Once the list is done, the schedule waits for dawn.
-6. **Dawn.** At dawn the schedule ends the active run as
+7. **Dawn.** At dawn the schedule ends the active run as
    `POST /runs/{id}/stop` ends it, the operator's included: a running run
    at its next safe point with its `finally` blocks, a paused one at once.
    It waits 10 minutes at most for the run to end; a run still ending
@@ -1084,7 +1088,7 @@ with no civil darkness that night) is skipped with a `warn!`.
    Dawn runs every morning, whether or not dusk powered anything: a
    daily output that reads on at dawn goes back to the rig's daytime
    state.
-7. **After dawn**, the schedule checks every output dawn left on each
+8. **After dawn**, the schedule checks every output dawn left on each
    5 minutes until the next dusk, and cuts each once its reason has
    cleared, through `power_down` with that output. A check of an output
    the mount holds calls `park` again first while the mount does not read
@@ -1165,9 +1169,12 @@ night ahead's, and says the latest dawn is done. The cases below are
 taken in order, and the first that matches decides:
 
 1. **A dawn still owed.** The latest dawn has passed and the next dusk
-   has not, and nothing shows that dawn done: there is no file, the file
-   is an earlier night's, or the file is this night's in a phase from
-   `dusk` to `dawn`. Dawn runs from its first step, then the after-dawn checks
+   has not, and nothing shows that dawn done. This night is the night
+   whose dawn passed latest; its dawn is owed when there is no file, the
+   file is an earlier night's, or the file is this night's in any phase
+   before `after_dawn`, `day` included (the service was down from before
+   its dusk until after its dawn). A file already moved to the next
+   night shows this dawn done. Dawn runs from its first step, then the after-dawn checks
    until dusk. One dawn settles every dawn a long outage missed, and a
    first start in the day, with every service started on powered devices
    (decision 2), puts the rig in its daytime state. Every step of dawn is
@@ -1180,7 +1187,8 @@ taken in order, and the first that matches decides:
    after-dawn checks meanwhile.
 4. **`dusk`:** back to the safety wait.
 5. **`power_up` or `camera_check`:** `power_up` again from the top, then
-   the camera check of every camera not already given up. A second round
+   the camera check of every camera not already given up, and the steps
+   that follow it. A second round
    of service restarts at dusk costs seconds, and leaves no service on an
    SDK that saw its device go. The outputs the first `power_up` switched
    on stay recorded, so a wedge retry still treats them as switched on

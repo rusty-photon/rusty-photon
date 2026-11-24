@@ -130,8 +130,10 @@ record), most productive first:
   setpoint. Stop-class commands are exempt, and so is `rp`'s safety
   response to an unsafe or unreadable monitor, park included, at any
   time, and so is `session-runner`'s configured night schedule —
-  its power-up, cooldown, runs, and dawn's warm-up, park, covers and
-  power-down — after a start of the service too.
+  everything a night does, from dusk's power-up, wedge-retry power
+  cycle, covers and cooldown through its runs to dawn's warm-up, park,
+  covers, power-down and later re-parks — after a start of the service
+  too.
 - **Races and lifetimes** — guards held across `.await`, detached tasks,
   error paths that skip rollback, missing timeouts; in shell and infra
   state machines too (crash and restart windows).

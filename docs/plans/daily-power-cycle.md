@@ -424,8 +424,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     (settled 2026-11-23). A `night` block in `session-runner`'s
     configuration has the service run the night itself, as an MCP client
     of rp. At dusk it waits for the roof, has rp power the rig up, checks
-    each camera and starts the cooldown, then starts the configured runs
-    one after another. At dawn it ends whatever run is active, warms the
+    each camera, opens the covers dawn closes and starts the cooldown,
+    then starts the configured runs one after another. At dawn it ends whatever run is active, warms the
     cameras, parks the mount, closes the covers and has rp power the rig
     down ([session-runner.md § Night
     Schedule](../services/session-runner.md#night-schedule)). Three rp
@@ -453,8 +453,9 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       dawn.
 13. **A configured night is the operator's standing decision** (settled
     2026-11-23). Configuring the night is the operator's decision to run
-    every night: power the rig up at dusk, cool it, start the configured
-    runs, and at dawn warm, park, close the covers and power down. So the
+    every night: power the rig up at dusk, open its covers, cool it, start
+    the configured runs, and at dawn warm, park, close the covers and
+    power down. So the
     schedule does all of it on its clock at any time, a start of
     `session-runner` included. A start after dusk with the roof open
     powers the rig up at once and goes on with the night, and a start in
@@ -531,7 +532,7 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; rp's `restart_service` sends the requests | Merged. PHD2's restart, its Linux units and rp's `restart_guider` were built with it. `restart_guider` left `rp` with stage G6's code on 2026-11-16, and PHD2's restart and its units left the tree with PHD2 on 2026-11-17 (decision 10) | [#1734](https://github.com/rusty-photon/rusty-photon/pull/1734) |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Merged | [#1730](https://github.com/rusty-photon/rusty-photon/pull/1730) |
 | P4a | rp's power tools for the night (decision 12): the power map's `daily` mark (decision 14); `power_up`, `power_down`, `check_camera` and `get_power_map`; `get_camera_info`'s cooler state and `cooler_running`, and `start_warmup` for every laddered camera whose cooler reads running (decision 15); `get_park_state`'s `park_matches_power_up_pose`, over `star-adventurer-gti`'s `ParkMatchesPowerUpPose` Action or the mount entry's `power_cut_keeps_pose` (decisions 16 and 17) | Designed; not started | |
-| P4b | `session-runner`'s night schedule (decisions 7, 11, 12, 13 and 15). Dusk, from an offset from civil twilight once the roof is open: `power_up`, a test frame per camera with one power-cycle retry on a wedge, `start_cooldown`, then the configured runs in turn. Dawn, every morning: the active run ended, `start_warmup`, the park and the covers closed while it ramps, a wait for the coolers to stop, and `power_down` over the daily outputs the cut rules allow, with the outputs left on checked again every 5 minutes until dusk. A state file a restart carries on from, at any time of day | Designed; needs P4a | |
+| P4b | `session-runner`'s night schedule (decisions 7, 11, 12, 13 and 15). Dusk, from an offset from civil twilight once the roof is open: `power_up`, a test frame per camera with one power-cycle retry on a wedge, the covers dawn closes opened, `start_cooldown`, then the configured runs in turn. Dawn, every morning: the active run ended, `start_warmup`, the park and the covers closed while it ramps, a wait for the coolers to stop, and `power_down` over the daily outputs the cut rules allow, with the outputs left on checked again every 5 minutes until dusk. A state file a restart carries on from, at any time of day | Designed; needs P4a | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
 P0, P1 and P2 depend on nothing else, P4a needs P2 and P3, P4b needs P4a,
