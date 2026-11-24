@@ -213,7 +213,9 @@ impl SimDevices {
         self.rig.with(|state| state.aborts)
     }
 
-    /// The truth of the latest frame rendered.
+    /// The truth of the latest frame rendered, in the simulated sensor's
+    /// pixels: unbinned and over the full sensor, whatever the binning and
+    /// the region the frame was served at.
     #[must_use]
     pub fn last_truth(&self) -> Option<FrameTruth> {
         self.rig.with(|state| state.last_truth.clone())

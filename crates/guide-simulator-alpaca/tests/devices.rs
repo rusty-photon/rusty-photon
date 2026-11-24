@@ -259,6 +259,33 @@ async fn a_second_exposure_is_refused_while_one_runs_and_an_abort_drops_it() {
 }
 
 #[tokio::test]
+async fn an_image_arrives_once_the_readout_is_over() {
+    let readout = Duration::from_secs(2);
+    let mut config = config();
+    config.camera.readout = readout;
+    let (_devices, camera, _mount) = connected_with(config).await;
+    let asked = std::time::Instant::now();
+    camera
+        .start_exposure(Duration::from_millis(20), true)
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        if camera.camera_state().await.unwrap() == CameraState::Reading {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Reading);
+    wait_ready(&*camera).await;
+    assert!(asked.elapsed() >= Duration::from_millis(20) + readout);
+    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Idle);
+    assert_eq!(
+        camera.image_array().await.unwrap().dim(),
+        (WIDTH, HEIGHT, 1)
+    );
+}
+
+#[tokio::test]
 async fn a_start_is_refused_while_the_last_exposure_reads_out() {
     let mut config = config();
     config.camera.readout = Duration::from_secs(10);
@@ -402,6 +429,7 @@ async fn binning_sums_cells_and_the_region_must_lie_on_the_binned_sensor() {
     camera.set_connected(true).await.unwrap();
     assert_eq!(camera.bin_x().await.unwrap(), 1);
     assert_eq!(camera.num_x().await.unwrap(), 320);
+    assert_eq!(camera.start_x().await.unwrap(), 0);
 }
 
 /// The shift of the field a pulse of `direction` brings, in the frame

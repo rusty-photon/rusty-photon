@@ -123,14 +123,17 @@ what they were asked:
   `exposures` lists every exposure the camera started, with its
   duration, binning, region, gain and offset. `aborts` counts the
   `AbortExposure` calls the connected camera received, refused ones
-  included. `last_truth` is the truth of the latest frame rendered.
+  included. `last_truth` is the truth of the latest frame rendered, in
+  the simulated sensor's pixels: unbinned and over the full sensor,
+  whatever the binning and the region the frame was served at.
 
 ## Testing
 
 The crate's tests start the devices and drive them through the Alpaca
 client, as the guider does: each device's listing and `UniqueID`, the
 refusals of a device that is not connected, an exposure from start to
-image, an abort that leaves nothing behind, binning and the region, a
+image, an image that waits out the readout, an abort that leaves nothing
+behind, binning and the region, a
 pulse that moves the stars its way in the next frame and lasts its length
 on the wall clock, the mount check's reads after a park and a slew, and
 each scripted fault. A reading that holds only while an exposure, a pulse

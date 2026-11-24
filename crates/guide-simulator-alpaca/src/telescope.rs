@@ -55,9 +55,16 @@ impl SimTelescope {
     }
 }
 
-/// An hour angle or right ascension brought into 0 to 24 hours.
+/// An hour angle or right ascension brought into 0 to 24 hours, 24
+/// excluded: a value a hair below 0 wraps to 24.0 in floating point, and
+/// that is 0.
 fn hours(value: f64) -> f64 {
-    value.rem_euclid(24.0)
+    let wrapped = value.rem_euclid(24.0);
+    if wrapped < 24.0 {
+        wrapped
+    } else {
+        0.0
+    }
 }
 
 /// The simulated mount's refusal as an Alpaca error.
@@ -303,6 +310,7 @@ mod tests {
         assert_eq!(hours(25.5), 1.5);
         assert_eq!(hours(-1.0), 23.0);
         assert_eq!(hours(6.0), 6.0);
+        assert_eq!(hours(-1e-18), 0.0);
     }
 
     #[test]
