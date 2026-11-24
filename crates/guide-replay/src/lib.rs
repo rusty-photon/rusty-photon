@@ -40,8 +40,11 @@
 //! guide stars on the first frame that has enough of them, measures every frame
 //! after it as the guider does, and holds what it finds to a
 //! [`Tolerance`]: whether the measurement keeps its stars, and whether
-//! they agree with one another. See `docs/crates/guide-replay.md`.
+//! they agree with one another. [`crop`] cuts a sample of a recording to
+//! a region of the sensor as FITS, a recording small enough to check in.
+//! See `docs/crates/guide-replay.md`.
 
+mod crop;
 mod imagebytes;
 mod presence;
 mod recording;
@@ -50,6 +53,7 @@ mod report;
 #[cfg(test)]
 mod test_support;
 
+pub use crop::{crop, CropError, Region};
 pub use imagebytes::{decode, DecodeError};
 pub use recording::{Camera, Recorded, Recording, RecordingError};
 pub use replay::{replay, write_csv, Reading, Replay, ReplayError, StarRow};

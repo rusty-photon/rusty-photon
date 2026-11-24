@@ -1944,6 +1944,7 @@ dependencies = [
  "csv",
  "guide-simulator",
  "ndarray",
+ "rp-fits",
  "rp-guiding",
  "serde",
  "serde_json",

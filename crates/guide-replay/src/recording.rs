@@ -1,10 +1,12 @@
 //! A recording: the directory `record.ps1` writes. See
 //! `docs/crates/guide-replay.md` (The recording).
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use ndarray::Array2;
+use rp_fits::FitsError;
 use rp_guiding::SensorType;
 use serde::Deserialize;
 
@@ -55,6 +57,14 @@ pub enum RecordingError {
         /// Why.
         source: csv::Error,
     },
+    /// A FITS frame cannot be read.
+    #[error("{path}: {source}")]
+    Fits {
+        /// The file.
+        path: PathBuf,
+        /// Why.
+        source: FitsError,
+    },
     /// A frame's file is no frame.
     #[error("{path}: {source}")]
     Decode {
@@ -99,6 +109,8 @@ pub struct Recorded {
     pub frame: u32,
     /// The time its exposure was asked for, in UTC.
     pub start_utc: String,
+    /// Its binning.
+    pub bin: u32,
     /// Its pixels, indexed `[[y, x]]`, or the recorder's error for a frame
     /// that did not come.
     pub pixels: Result<Array2<i32>, String>,
@@ -162,22 +174,52 @@ impl Recording {
 
     fn read(&self, row: &Row) -> Result<Recorded, RecordingError> {
         let pixels = if row.error.is_empty() {
-            let path = self.dir.join(&row.file);
-            let body = fs::read(&path).map_err(|source| RecordingError::Io {
-                path: path.clone(),
-                source,
-            })?;
-            Ok(imagebytes::decode(&body)
-                .map_err(|source| RecordingError::Decode { path, source })?)
+            Ok(read_frame(&self.dir.join(&row.file))?)
         } else {
             Err(row.error.clone())
         };
         Ok(Recorded {
             frame: row.frame,
             start_utc: row.start_utc.clone(),
+            bin: row.bin,
             pixels,
         })
     }
+}
+
+/// Reads a frame's file: FITS when its name ends in `.fits`, the body a
+/// camera sent otherwise.
+fn read_frame(path: &Path) -> Result<Array2<i32>, RecordingError> {
+    let io = |source| RecordingError::Io {
+        path: path.to_path_buf(),
+        source,
+    };
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "fits")
+    {
+        let fits = |source| RecordingError::Fits {
+            path: path.to_path_buf(),
+            source,
+        };
+        let (pixels, width, height) =
+            rp_fits::reader::read_primary_as_i32(BufReader::new(File::open(path).map_err(io)?))
+                .map_err(fits)?;
+        let got = pixels.len();
+        return Array2::from_shape_vec((height, width), pixels).map_err(|_| {
+            fits(FitsError::DimensionMismatch {
+                got,
+                width,
+                height,
+                expected: width.saturating_mul(height),
+            })
+        });
+    }
+    let body = fs::read(path).map_err(io)?;
+    imagebytes::decode(&body).map_err(|source| RecordingError::Decode {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 fn camera(path: &Path) -> Result<Camera, RecordingError> {
@@ -321,6 +363,31 @@ mod tests {
         let error = Recording::open(dir.path()).unwrap_err();
         assert!(
             matches!(error, RecordingError::BinnedMosaic { frame: 2, bin: 2 }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_fits_frame_that_cannot_be_read_is_an_error_that_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write_camera(dir.path(), r#"{"sensortype": 0}"#);
+        fs::write(
+            dir.path().join("frames.csv"),
+            "frame,file,start_utc,bin,error\n1,frame-00001.fits,2026-11-23T03:00:00.000Z,2,\n",
+        )
+        .unwrap();
+        let file = dir.path().join("frame-00001.fits");
+        fs::write(&file, b"SIMPLE  = no FITS header here").unwrap();
+        let recording = Recording::open(dir.path()).unwrap();
+        let error = recording.frames().next().unwrap().unwrap_err();
+        assert!(
+            matches!(&error, RecordingError::Fits { path, .. } if *path == file),
+            "{error}"
+        );
+        fs::remove_file(&file).unwrap();
+        let error = recording.frames().next().unwrap().unwrap_err();
+        assert!(
+            matches!(&error, RecordingError::Io { path, .. } if *path == file),
             "{error}"
         );
     }
