@@ -213,6 +213,9 @@ async fn poll_loop(
     interval: Duration,
 ) {
     let mut ticker = tokio::time::interval(interval);
+    // Skip the immediate first tick — the handshake just read the same
+    // five fields; the first poll waits one interval.
+    ticker.tick().await;
     loop {
         tokio::select! {
             _ = ticker.tick() => {}
@@ -469,8 +472,10 @@ mod mock_tests {
             .parse_ok()
             .unwrap();
         // The mock reports the motor running for exactly one `[GMOV]`
-        // read after `[SMOV]`, its model of a move settling (see mock.rs);
-        // a poll's `[GMOV]` read would consume it the same way.
+        // read after `[SMOV]`, its model of a move settling (see mock.rs).
+        // A poll's `[GMOV]` would take that read, but the first poll comes
+        // one polling interval — a minute here — after the handshake
+        // (`the_first_poll_reads_one_interval_after_the_handshake`).
         let m = session.request(Command::GetMotorState).await.unwrap();
         assert!(m.parse_bool().unwrap());
         // Confirm the cover state observable through GOPS once settled.
@@ -520,6 +525,39 @@ mod mock_tests {
             snap.read().await.light_on.value(),
             Some(true),
             "a poll's light read before the command put the light back off"
+        );
+
+        factory.release_reply();
+        session.close().await.unwrap();
+    }
+
+    // ---- the first poll -------------------------------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn the_first_poll_reads_one_interval_after_the_handshake() {
+        let factory = Arc::new(HoldingFactory::new(MockTransportFactory::default()));
+        let mut config = test_config();
+        // Under the hold's own deadline, which runs on the same paused
+        // clock.
+        config.serial.polling_interval = transport_doubles::HOLD_DEADLINE / 2;
+        let dyn_factory: Arc<dyn TransportFactory> = Arc::<HoldingFactory<_>>::clone(&factory);
+        let manager = FlatPanelManager::new(&config, dyn_factory);
+        let session = manager.transport().acquire().await.unwrap();
+        let handshake_read = manager
+            .snapshot()
+            .read()
+            .await
+            .heater_temp_c
+            .read_at()
+            .unwrap();
+
+        // A poll reads the motor first.
+        factory.hold_next_reply_to(Fp2Codec.encode(&Command::GetMotorState));
+        factory.reply_held().await;
+        let waited = handshake_read.elapsed();
+        assert!(
+            waited >= config.serial.polling_interval,
+            "the first poll read the panel {waited:?} after the handshake"
         );
 
         factory.release_reply();
