@@ -106,6 +106,7 @@ _MEMBERS = [
     "services/filemonitor",
     "services/focus-model",
     "services/gemini-powerbox-adv3-driver",
+    "services/guider",
     "services/pa-falcon-rotator",
     "services/pa-scops-oag",
     "services/planetarium-bridge",
@@ -131,10 +132,10 @@ _MEMBERS = [
 # pool_routing.rs reads the workflows and actionlint's runner labels,
 # toolchain_pins.rs MODULE.bazel and the root Cargo.toml, packaging.rs's tests
 # the install modules' pins and the services' pkg/, and pkg_assets.rs the
-# packaging files, among them doctor's Cargo.toml: doctor has no package of its
-# own, it ships in sentinel's. bare_refs.rs reads every member's sources, the
-# root's own files (this BUILD file among them), the workflows and the local
-# actions'. Cargo sets CARGO_MANIFEST_DIR when it runs a test; here it is
+# packaging files, among them the Cargo.toml of doctor and of guider: doctor has
+# no package of its own, it ships in sentinel's, and guider is not packaged
+# yet. bare_refs.rs reads every member's sources, the root's own files (this
+# BUILD file among them), the workflows and the local actions'. Cargo sets CARGO_MANIFEST_DIR when it runs a test; here it is
 # relative to the runfiles root the test starts in. The tests of
 # rust_toolchain_sha256s.rs and brew_formulas.rs `include_str!` the saved
 # channel manifests and formulas in testdata/.
@@ -161,6 +162,7 @@ rust_test(
         "//crates/qhyccd-rs/libqhyccd-sys:build.rs",
         "//crates/zwo-rs/libzwo-sys:sdk/include/license.txt",
         "//services/doctor:Cargo.toml",
+        "//services/guider:Cargo.toml",
         "//services/qhy-camera:src/preflight.rs",
     ] + ["//services/%s:Cargo.toml" % service for service in _SERVICES] + [
         "//services/%s:pkg" % service

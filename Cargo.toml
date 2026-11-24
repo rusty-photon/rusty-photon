@@ -44,6 +44,7 @@ members = [
   "services/qhy-focuser",
   "services/calibrator-flats",
   "services/focus-model",
+  "services/guider",
   "services/doctor",
   "services/dsd-fp2",
   "services/rp",

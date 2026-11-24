@@ -106,7 +106,7 @@ process boundary:
 | Category | What | Examples | Process boundary | Supervised by |
 |----------|------|----------|------------------|---------------|
 | **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
-| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP); the [`guider`](guider.md), designed and not yet built, is the control loop | one process per service | Sentinel restarts on hang/crash |
+| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP); the [`guider`](guider.md), being built, is the control loop | one process per service | Sentinel restarts on hang/crash |
 | **Plugins (extension)** | Separate processes that follow the plugin protocol (event, tool provider): third-party extensions, and first-party capabilities that do not belong in `rp`'s process. | Custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` applies the per-tool safety gate and bounds each webhook delivery and each provider dial, but not a proxied tool call, which runs until the provider answers or the call is cancelled; Sentinel may restart configurable plugins |
 
 The category boundary is **process supervision and lifecycle role**, not
@@ -5121,7 +5121,7 @@ credentials to an auth-enabled guider; `doctor --fix` wires it from
 the observatory credential once the guider's own `server.auth` is on
 (`joins.client-auth`, `docs/services/doctor.md` §Client-target joins).
 
-**The guider service is designed and not yet built**
+**The guider service is being built and does not guide yet**
 ([`guider.md`](guider.md)), so no rig guides under `rp` yet. `rp`'s
 side of its contract is built: the guider tools, the check and the
 watch below, the [guide camera guard](#the-guide-camera-guard) that a

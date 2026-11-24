@@ -1980,6 +1980,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "guider"
+version = "0.1.0"
+dependencies = [
+ "ascom-alpaca",
+ "axum",
+ "base64 0.23.1",
+ "bdd-infra",
+ "cargo-husky",
+ "clap",
+ "cucumber",
+ "guide-simulator",
+ "guide-simulator-alpaca",
+ "humantime",
+ "reqwest",
+ "rp-auth",
+ "rustls-pemfile",
+ "rusty-photon-config",
+ "rusty-photon-doctor-checks",
+ "rusty-photon-server-config",
+ "rusty-photon-service-lifecycle",
+ "rusty-photon-tls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

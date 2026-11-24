@@ -6,7 +6,7 @@ Accepted (2026-11-12, by the owner on the options study
 [`docs/plans/native-guider.md`](../plans/native-guider.md),
 [#1764](https://github.com/rusty-photon/rusty-photon/pull/1764)). The
 service is designed in [`docs/services/guider.md`](../services/guider.md)
-and is not yet built; the plan's § Staging orders the work.
+and is being built; the plan's § Staging orders the work.
 
 Extends the sorting rule of
 [rp.md § Component Categories](../services/rp.md#component-categories)

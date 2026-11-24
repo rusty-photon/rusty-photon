@@ -1,0 +1,58 @@
+[package]
+name = "guider"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The guider: keeps a mount on its target from the frames of an Alpaca Camera, with PulseGuide on an Alpaca Telescope, commanded by rp over HTTP"
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The guider is a client of one Camera and one Telescope, never a server of
+# Alpaca devices (docs/services/guider.md § Overview).
+ascom-alpaca = { workspace = true, features = ["client", "camera", "telescope"] }
+axum = { workspace = true }
+base64 = { workspace = true }
+clap = { workspace = true }
+humantime = { workspace = true }
+reqwest = { workspace = true }
+# A `ca_cert` that holds no certificate refuses the start (guider.md
+# § Configuration validation at startup).
+rustls-pemfile = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+rp-auth = { workspace = true }
+rusty-photon-config = { workspace = true }
+rusty-photon-doctor-checks = { workspace = true }
+rusty-photon-server-config = { workspace = true }
+rusty-photon-service-lifecycle = { workspace = true }
+rusty-photon-tls = { workspace = true }
+
+# Enable the Windows Service Control Manager dispatch only on Windows;
+# on Unix the `scm` feature would pull in `windows-service` for no
+# runtime benefit.
+[target.'cfg(windows)'.dependencies]
+rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+
+[dev-dependencies]
+bdd-infra = { workspace = true, features = ["tls-auth"] }
+cucumber = { workspace = true }
+guide-simulator = { workspace = true }
+guide-simulator-alpaca = { workspace = true }
+tempfile = { workspace = true }
+# test-util: unlocks paused tokio time (`start_paused`), so the call
+# deadline's test waits out 10 s without taking them.
+tokio = { workspace = true, features = ["test-util"] }
+cargo-husky = { workspace = true }
+
+[[test]]
+name = "bdd"
+harness = false
