@@ -171,16 +171,22 @@ impl GuiderWorld {
             path
         };
         let path = path.to_string_lossy().into_owned();
-        if let Ok(handle) = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &path).await {
-            self.guider = Some(handle);
-        } else {
-            let output =
-                bdd_infra::run_once_async(env!("CARGO_PKG_NAME"), &["--config", &path], None).await;
-            self.refusal = Some(Refusal {
-                code: output.status.code(),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
+        match ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &path).await {
+            Ok(handle) => self.guider = Some(handle),
+            // A guider that exited is run again for its output. One that
+            // neither bound nor exited is not: run again, it could serve
+            // and never exit.
+            Err(error) if error.contains("exited without binding") => {
+                let output =
+                    bdd_infra::run_once_async(env!("CARGO_PKG_NAME"), &["--config", &path], None)
+                        .await;
+                self.refusal = Some(Refusal {
+                    code: output.status.code(),
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                });
+            }
+            Err(error) => panic!("the guider neither bound nor exited: {error}"),
         }
     }
 
