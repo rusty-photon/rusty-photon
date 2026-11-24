@@ -365,10 +365,11 @@ fn put_sync(db: &Database, record: &FlatRecord) -> Result<(), StoreError> {
 fn get_sync(db: &Database, key: &str) -> Result<Option<FlatRecord>, StoreError> {
     let read_txn = db.begin_read()?;
     let table = read_txn.open_table(RECORDS_TABLE)?;
-    match table.get(key)? {
-        Some(value) => Ok(Some(serde_json::from_slice(value.value())?)),
-        None => Ok(None),
-    }
+    let record = match table.get(key)? {
+        Some(value) => Some(serde_json::from_slice(value.value())?),
+        None => None,
+    };
+    Ok(record)
 }
 
 fn list_sync(db: &Database, train_id: &str) -> Result<Vec<FlatRecord>, StoreError> {

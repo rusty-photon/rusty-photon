@@ -175,11 +175,12 @@ scraper = "0.29"
 parking_lot = "0.13.0"
 # Single-file embedded stores: rp-targets (the imaging plan),
 # calibrator-flats (flat timing per train and filter) and focus-model (each
-# train's focus record and run history). Pinned to the 4.x
-# file-format generation — a redb-major bump needs a one-time
-# `Database::upgrade()` step, distinct from each store's own `schema_version`
-# (docs/crates/rp-targets.md "Schema migration").
-redb = "4"
+# train's focus record and run history). redb 3 to 5 write file format 3; a
+# redb that raises the file format needs a one-time `Database::upgrade()` step,
+# distinct from each store's own `schema_version` (docs/crates/rp-targets.md
+# "Schema migration"). Every table maps `&str` to `&[u8]` (JSON), so a change
+# to redb's encoding of its other value types does not reach the stores.
+redb = "5"
 if-addrs = "0.15"
 tokio-serial = "5.4.5"
 # 0.10.1, not 0.10: rand 0.10.0's feature table references `rand/getrandom` as a
