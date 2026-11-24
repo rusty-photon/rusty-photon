@@ -1052,9 +1052,11 @@ with no civil darkness that night) is skipped with a `warn!`.
 4. **Cooldown.** `start_cooldown`.
 5. **Runs.** Each `runs` entry starts in turn, as a `POST /runs` with its
    `workflow` and `params` would start it, under the session id
-   `night-<date>-<n>`. The next starts once it has ended, however it
-   ended. A run refused at its start (the catalog layer, an unreachable
-   `rp`) is logged at `warn!`, and the next starts. While a run an
+   `night-<date>-<n>`, which carries its index in the list. The next
+   starts once it has ended, however it ended. A start that fails at the
+   request level, `rp` unreachable, is retried as § Errors retries any
+   step, until dawn; a run `rp` refuses (the catalog layer) is logged at
+   `warn!`, and the next starts. While a run an
    operator started holds the slot, the schedule waits for it to end.
    Once the list is done, the schedule waits for dawn.
 6. **Dawn.** At dawn the schedule ends the active run as
@@ -1115,17 +1117,20 @@ retry, the schedule takes off its list:
   camera has had the warm-up's whole time to warm, and holding its output
   for good would keep a wedged camera wedged and its fan running all day;
 - every output that feeds the mount while `get_park_state` reads
-  `at_park` false, or `park_matches_power_up_pose` false, or fails.
+  `at_park` false, or `park_matches_power_up_pose` anything but `true`,
+  or fails.
 
-`park_matches_power_up_pose: null`, a mount whose driver offers no such
-check, cuts. For a wedge retry at dusk, an output that dusk's `power_up`
+The mount's output is cut only when `park_matches_power_up_pose` reads
+`true`: `null`, a mount whose driver offers no such check and whose `rp`
+entry sets no `power_cut_keeps_pose`, keeps its power through the day.
+For a wedge retry at dusk, an output that dusk's `power_up`
 switched on feeds no running cooler, since every camera on it was
 unpowered all day, so only the mount's rule can hold it. That rule then
 skips `at_park`: the night has not moved the mount since dusk's power-up
 seeded it, and a driver restarted by the power-up need not remember that
 it was parked (`star-adventurer-gti` reads `AtPark` false in a new
-process); `park_matches_power_up_pose` false, or a failed read, still
-holds the output. Each output left on is
+process); `park_matches_power_up_pose` reading anything but `true`, or
+a failed read, still holds the output. Each output left on is
 logged at `warn!` once, with its reason, the re-checks that follow at
 `debug!`, and the cut that ends it at `info!`.
 The rules are the schedule's, not `power_down`'s, which cuts what it is
@@ -1139,7 +1144,8 @@ The schedule keeps its place in `<state_dir>/night.json`, written with
 the workspace atomic-write pattern at every change: the night's date,
 dusk and dawn, its phase (`day`, `dusk`, `power_up`, `camera_check`,
 `runs`, `dawn`, `after_dawn`), the outputs dusk's `power_up` switched
-on, the index of the run it started last, the cameras it gave up, the
+on, the index of the next run to start (moved on as each run ends), the
+cameras it gave up, the
 time of dawn's `start_warmup`, and the outputs dawn left on. A start reads it and
 carries on, at any time of day. A configured night is the operator's
 standing decision to run every night, power, cooling, runs and dawn
@@ -1170,11 +1176,18 @@ matches decides:
    SDK that saw its device go. The outputs the first `power_up` switched
    on stay recorded, so a wedge retry still treats them as switched on
    this dusk.
-6. **`runs`:** the schedule waits for the run the self-resume picks up
-   ([Self-resume on startup](#self-resume-on-startup)), then goes on with
-   the next. With `resume_on_start: false` nothing is picked up, the
+6. **`runs`:** a run the self-resume picks up
+   ([Self-resume on startup](#self-resume-on-startup)) names its own
+   index in its session id, `night-<date>-<n>`: the schedule waits for it
+   and goes on from run n+1, whatever `night.json`'s index says, so a
+   crash between a run's start and the file's next write neither repeats
+   nor skips a run. With no such run, the schedule starts the run
+   `night.json` names. A crash in the moment between a run's end and the
+   file's move to the next index starts that run once more, which a
+   planner-driven document absorbs: it re-asks the planner and finds its
+   goals met. With `resume_on_start: false` nothing is picked up, the
    run's manifest stays where it is, and the schedule goes on with the
-   next run.
+   run after the one the manifest names.
 
 `resume_on_start: false` keeps a start passive for runs, and does not
 hold the schedule: an operator who wants no night removes the `night`

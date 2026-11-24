@@ -1527,7 +1527,7 @@ Operators can move any tool across the line with `safety.gate`
 | `set_tracking` | Gated | enabled | — | Enable or disable sidereal tracking |
 | `park` | Ungated | — | — | Park the mount (blocks polling `AtPark` every 100 ms until it returns `true`). Bounded by a **predicted deadline**: rp can't read the park position via Alpaca, so it sizes a worst-case full-axis traverse — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)` (falls back to a 300 s ceiling with no mount configured); `predicted`/`max` ride the `park_started` envelope. `AtPark` is the ASCOM-canonical completion signal — `Slewing` is sticky on `MoveAxis` rate state and unrelated `SlewState` activity, so polling it would be over-conservative. Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park. Exempt from the [mount motion gate](#mount-motion-gate): a terminal/emergency action must never queue behind an exposure |
 | `unpark` | Gated | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
-| `get_park_state` | Ungated | — | at_park, can_park, can_unpark, park_matches_power_up_pose | Read park state and capabilities; fails loud on `AtPark` read error. `park_matches_power_up_pose` is the mount driver's answer to the read-only `ParkMatchesPowerUpPose` Action when its `SupportedActions` lists it (`star-adventurer-gti`: whether a power cut and power-up seed the mount where it parks), and `null` for a mount whose driver does not; a failed Action read is a tool error ([Power Switching](#power-switching)) |
+| `get_park_state` | Ungated | — | at_park, can_park, can_unpark, park_matches_power_up_pose | Read park state and capabilities; fails loud on `AtPark` read error. `park_matches_power_up_pose` is the mount driver's answer to the read-only `ParkMatchesPowerUpPose` Action when its `SupportedActions` lists it (`star-adventurer-gti`: whether a power cut and power-up seed the mount where it parks); for a mount whose driver does not, it is the mount entry's `power_cut_keeps_pose` when the config sets it, and `null` when it does not. A failed Action read is a tool error ([Power Switching](#power-switching)) |
 | `abort_slew` | Ungated | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
 | `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name, lease_id (optional, a held [train lease](#train-lease)) | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way, writes the slot, and blocks until the wheel names it, each wait bounded at 60 s (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id`. Filter changes through one wheel run one at a time; one that names no lease, of a wheel a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
@@ -8260,6 +8260,14 @@ when the config sets a non-zero default). `mount.slew_rate_arcsec_per_sec`
 (default `7200` = 2°/s, a conservative slow-stepper rate) feeds the
 predictive slew deadline; set it per-rig for a tighter bound. It must be a
 finite positive number — a bad value is rejected at config load.
+`mount.power_cut_keeps_pose` (optional boolean) is the operator's word
+that a power cut and the next power-up leave the mount where it parks,
+for a mount whose driver answers no `ParkMatchesPowerUpPose` Action;
+`get_park_state` reports it as `park_matches_power_up_pose`, and the
+night schedule cuts the mount's output at dawn only when that reads
+`true`. A driver that lists the Action answers for itself, and the key is
+then not read. Absent, a mount without the Action keeps its power
+through the day.
 `focuser.steps_per_sec` (default `500`, a conservative slow rate) feeds the
 predictive `move_focuser` deadline the same way — likewise a finite
 positive number rejected at load otherwise. The optional

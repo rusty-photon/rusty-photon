@@ -24,8 +24,9 @@ and dusk checks each camera for a wedge (decision 11). The night is a
 `session-runner` schedule over rp's power tools (decision 12), a
 configured night is the operator's standing decision (decision 13), the
 power map marks the outputs the night switches (decision 14), the schedule
-decides what dawn leaves on (decision 15), and the mount says whether a cut
-keeps its pose (decision 16).
+decides what dawn leaves on (decision 15), the mount says whether a cut
+keeps its pose (decision 16), and a mount without that check keeps its
+power unless the operator vouches for it (decision 17).
 What this plan builds is
 everything around those: a survey of what each device does across a power
 cut, quiet logging while a device is off, services that restart on request,
@@ -503,13 +504,23 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     `ParkMatchesPowerUpPose`, with its park target, its power-up pose and
     whether the two are one encoder pair, and rp's `get_park_state`
     reports the answer as `park_matches_power_up_pose`: `true` or `false`
-    from a mount whose driver lists the Action, `null` from any other.
-    Dawn leaves the mount's output on when it reads `false` or the read
-    fails, and cuts it on `true` or `null`: a mount whose driver offers no
-    such check is the operator's to configure.
+    from a mount whose driver lists the Action, and for any other mount
+    what decision 17 says. Dawn cuts the mount's output only when it reads
+    `true`.
     - **Not a check of the configuration** at load, on the setup page or
       in doctor. A `SetPark` capture in the night moves the park target
       after any such check.
+17. **A mount without the pose check keeps its power unless the operator
+    vouches for it** (settled 2026-11-24). For a mount whose driver
+    answers no `ParkMatchesPowerUpPose` Action, rp's mount entry takes
+    `power_cut_keeps_pose`, and `get_park_state` reports it as
+    `park_matches_power_up_pose`. Absent, the reading is `null`, and dawn
+    leaves the mount's output on. A driver that lists the Action answers
+    for itself.
+    - **Not a cut by default.** A mount that loses its pose across a cut
+      would be cut until someone noticed.
+    - **Not a required key.** It would add a load error for every rig
+      whose mount sits on no daily output.
 
 ## Implementation Status
 
@@ -519,7 +530,7 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Merged | [#1723](https://github.com/rusty-photon/rusty-photon/pull/1723) |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; rp's `restart_service` sends the requests | Merged. PHD2's restart, its Linux units and rp's `restart_guider` were built with it. `restart_guider` left `rp` with stage G6's code on 2026-11-16, and PHD2's restart and its units left the tree with PHD2 on 2026-11-17 (decision 10) | [#1734](https://github.com/rusty-photon/rusty-photon/pull/1734) |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Merged | [#1730](https://github.com/rusty-photon/rusty-photon/pull/1730) |
-| P4a | rp's power tools for the night (decision 12): the power map's `daily` mark (decision 14); `power_up`, `power_down`, `check_camera` and `get_power_map`; `get_camera_info`'s cooler state and `cooler_running`, and `start_warmup` for every laddered camera whose cooler reads running (decision 15); `get_park_state`'s `park_matches_power_up_pose`, over `star-adventurer-gti`'s `ParkMatchesPowerUpPose` Action (decision 16) | Designed; not started | |
+| P4a | rp's power tools for the night (decision 12): the power map's `daily` mark (decision 14); `power_up`, `power_down`, `check_camera` and `get_power_map`; `get_camera_info`'s cooler state and `cooler_running`, and `start_warmup` for every laddered camera whose cooler reads running (decision 15); `get_park_state`'s `park_matches_power_up_pose`, over `star-adventurer-gti`'s `ParkMatchesPowerUpPose` Action or the mount entry's `power_cut_keeps_pose` (decisions 16 and 17) | Designed; not started | |
 | P4b | `session-runner`'s night schedule (decisions 7, 11, 12, 13 and 15). Dusk, from an offset from civil twilight once the roof is open: `power_up`, a test frame per camera with one power-cycle retry on a wedge, `start_cooldown`, then the configured runs in turn. Dawn, every morning: the active run ended, `start_warmup`, the park and the covers closed while it ramps, a wait for the coolers to stop, and `power_down` over the daily outputs the cut rules allow, with the outputs left on checked again every 5 minutes until dusk. A state file a restart carries on from, at any time of day | Designed; needs P4a | |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
