@@ -1514,7 +1514,7 @@ Operators can move any tool across the line with `safety.gate`
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
 | `capture` | Per call: gated for a frame that needs the sky, ungated otherwise | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), light_source (optional: `panel`/`sky`, with a `Flat` or an untyped capture), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. While conditions are unsafe, only a `Dark`, a `Bias` or a capture with `light_source: panel` is taken; any other is refused with the `SafetyUnsafe` error before the camera is touched, and one in flight when conditions turn unsafe is cancelled, while a dark, a bias or a panel flat in flight runs to its end (§ Safety → [In-Flight Tool Calls](#in-flight-tool-calls)). Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop is a separate, more generous `duration + 120 s` ceiling. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
-| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset, cooler_on, ccd_temperature_c, sensor_cold | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `max_adu` is read from the driver on every call, because a readout-mode change can change it ([Core Fields](#core-fields-owned-by-rp)); a failed read is a tool error. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at. `cooler_on` (`CoolerOn`) and `ccd_temperature_c` (`CCDTemperature`) are read on every call too, each `null` when the driver does not implement it; any other read failure is a tool error, so that the night schedule never takes a sensor it could not read for a warm one. `sensor_cold` is `true` while `ccd_temperature_c` is more than `cooling.tolerance_c` below the warm-up's target (`HeatSinkTemperature` when the camera implements it, else `cooling.warm_target_c`), `false` otherwise, and `null` when `ccd_temperature_c` is: the night schedule's test for a sensor whose power may not go yet, read from the sensor rather than from `CoolerOn`, which a driver can hold in its process alone |
+| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset, cooler_on, cooler_power_pct, ccd_temperature_c, cooler_running | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `max_adu` is read from the driver on every call, because a readout-mode change can change it ([Core Fields](#core-fields-owned-by-rp)); a failed read is a tool error. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at. `cooler_on` (`CoolerOn`), `cooler_power_pct` (`CoolerPower`) and `ccd_temperature_c` (`CCDTemperature`) are read on every call too, each `null` when the driver does not implement it; any other read failure is a tool error, so that the night schedule never takes a cooler it could not read for a stopped one. `cooler_running` is `true` when `cooler_on` is `true` or `cooler_power_pct` is above 0, `false` when neither is, and `null` for a camera that implements neither: the night schedule's test for a TEC whose power may not be cut yet. It reads the TEC's drive as well as `CoolerOn`, which a driver can hold in its process alone (`qhy-camera` reads `CoolerOn` false in a process started while its TEC regulates on) |
 | `move_focuser` | Ungated | focuser_id, position, lease_id (optional, a held [train lease](#train-lease)) | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Moves through one focuser run one at a time; one that names no lease, of a focuser a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with its travel bounds and backlash block — `min_position` / `max_position`, the configured bounds narrowed to the driver's travel of `0` to `MaxStep` and falling back to it where the config sets none (`max_position` is `null` only when the config sets none and `MaxStep` could not be read), and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor. `temperature_c` is null for a focuser without a probe (its driver answers `Temperature` with `NOT_IMPLEMENTED`); any other failed read is a tool error. An id rp does not know is the tool error `focuser not found: <id>`, which focus-model reads as a mistyped stand-in sensor ([focus-model.md § The temperature source](focus-model.md#the-temperature-source)) |
@@ -1546,7 +1546,7 @@ Operators can move any tool across the line with `safety.gate`
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
 | `start_cooldown` | Ungated | — | cameras | Run the setpoint-ladder cooldown pass for every camera with a `cooler_targets_c` ladder, in the background; returns the camera ids it is driving (empty when no camera has a ladder). Idempotent: a running pass is left alone, a cooler already regulating at a ladder rung is adopted without re-selection, a running warm-up is cancelled and superseded |
-| `start_warmup` | Ungated | — | cameras | Ramp every camera `rp` is cooling warm (+5 °C steps, then cooler off), and every camera with a setpoint ladder whose cooler reads on though `rp` holds no record of cooling it, in the background; returns the camera ids it is warming (empty when there are none). Idempotent: a running ramp is left alone |
+| `start_warmup` | Ungated | — | cameras | Ramp every camera `rp` is cooling warm (+5 °C steps, then cooler off), and every camera with a setpoint ladder whose cooler reads running (`CoolerOn`, or `CoolerPower` above 0) though `rp` holds no record of cooling it, in the background; returns the camera ids it is warming (empty when there are none). Idempotent: a running ramp is left alone |
 
 **Guider**
 
@@ -4465,10 +4465,13 @@ every device they touch, so that their caller, `session-runner`'s night
 schedule or an operator, makes one call per step. Both take `outputs`, a
 list of `{switch_id, output}`; without it they take every output the
 power map marks `daily`, across every `switches[]` entry. An output the
-map does not list, one its box reports read-only, and one its box
-reports no switch for refuse the whole call with a tool error before
+map does not list refuses the whole call with a tool error before
 anything is switched, as does an output marked `protected` given to
-`power_down`. A call that comes to no output returns at once with empty
+`power_down`: both are the caller's mistake. An output whose box `rp`
+cannot read, one its box reports read-only, and one its box reports no
+switch for are skipped, each reported with an `error`, and the call goes
+on with the rest, so that one box that is down costs only its own
+outputs. A call that comes to no output returns at once with empty
 lists. The two run one at a time: a second call waits for the first to
 end.
 
@@ -4524,7 +4527,8 @@ on}`, with an `error` where the write failed, and each device as
 A device stays held out until `connect_device` or a `power_up` connects
 it. `power_down` reads no cooler and no park state. Which outputs may
 go is its caller's decision: the night schedule leaves on the outputs
-of a camera still cold and of a mount that would lose its pose
+of a camera whose cooler is still running and of a mount that would
+lose its pose
 ([session-runner.md § Night Schedule](session-runner.md#night-schedule)),
 and an operator who calls it by hand owns the same checks.
 
@@ -5762,14 +5766,17 @@ path — startup, a safety transition, a config reload — calls them.
 
 `start_warmup` (ungated — it secures, like `park`) starts a warm-up ramp
 per camera `rp` is cooling, and per camera with a setpoint ladder whose
-`CoolerOn` reads true though `rp` holds no record of cooling it, and
+cooler reads running (`CoolerOn` true, or `CoolerPower` above 0) though
+`rp` holds no record of cooling it, and
 returns at once with those cameras (`{"cameras": [...]}` — empty when
 there are none). The second kind is a camera whose cooling an `rp`
-restart in the night left without a record: the driver kept regulating,
-and dawn warms it all the same
+restart in the night left without a record, or whose driver's own
+restart left `CoolerOn` reading false while the TEC regulated on: dawn
+warms it all the same
 ([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
 decision 15). For such a camera the ramp starts from the setpoint the
-driver reports (`SetCCDTemperature`). The rung is
+driver reports (`SetCCDTemperature`), or from its sensor temperature
+when the driver reports none. The rung is
 cleared immediately (frames captured during the ramp are off the grid),
 `cooler_warmup_started` is emitted, the setpoint rises +5 °C every
 `cooling.warmup_step_interval` until it reaches the warm target
@@ -5777,7 +5784,7 @@ cleared immediately (frames captured during the ramp are off the grid),
 `cooling.warm_target_c`), then the cooler switches off and
 `cooler_warmup_complete` is emitted. The ramp avoids thermal shock and
 condensation/frost on the sensor window. A camera without a ladder is
-never touched, nor one with a ladder whose cooler reads off. Idempotent:
+never touched, nor one with a ladder whose cooler reads stopped. Idempotent:
 a ramp already running is left to finish.
 
 The shipped workflow documents call it in their `finally` blocks, so a
