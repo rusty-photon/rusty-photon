@@ -411,7 +411,9 @@ impl Camera for SimCamera {
             if !can_abort {
                 return Err(ASCOMError::NOT_IMPLEMENTED);
             }
-            if exposing(state, now) {
+            // Exposing, reading out, or an image that never comes: all are
+            // dropped. A ready image is the idle camera's, and stays.
+            if state.camera.exposure.is_some() && ready(state, now).is_none() {
                 state.camera.exposure = None;
                 debug!("simulated camera exposure aborted");
             }

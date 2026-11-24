@@ -281,6 +281,47 @@ async fn a_start_is_refused_while_the_last_exposure_reads_out() {
 }
 
 #[tokio::test]
+async fn an_abort_during_readout_returns_the_camera_to_idle() {
+    let mut config = config();
+    config.camera.readout = Duration::from_secs(10);
+    let (_devices, camera, _mount) = connected_with(config).await;
+    camera
+        .start_exposure(Duration::from_millis(20), true)
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        if camera.camera_state().await.unwrap() == CameraState::Reading {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    camera.abort_exposure().await.unwrap();
+    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Idle);
+    assert!(!camera.image_ready().await.unwrap());
+    camera
+        .start_exposure(Duration::from_millis(20), true)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_abort_drops_an_image_that_never_comes_and_keeps_a_ready_one() {
+    let (devices, camera, _mount) = connected().await;
+    devices.fail_frames(FrameFault::NeverReady, Some(1));
+    camera
+        .start_exposure(Duration::from_millis(20), true)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Reading);
+    camera.abort_exposure().await.unwrap();
+    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Idle);
+    frame(&*camera, Duration::from_millis(20)).await;
+    camera.abort_exposure().await.unwrap();
+    assert!(camera.image_ready().await.unwrap());
+}
+
+#[tokio::test]
 async fn a_camera_that_cannot_abort_refuses_and_the_attempt_is_counted() {
     let mut config = config();
     config.camera.can_abort_exposure = false;

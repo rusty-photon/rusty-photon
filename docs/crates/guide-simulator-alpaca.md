@@ -65,11 +65,11 @@ a slew makes it longer than an exposure, as a real slew is.
 | `Gain`, `Offset` | Kept and reported, 0 to 1,000; they change nothing in the frame |
 | `CanAbortExposure` | `camera.can_abort_exposure` |
 | `ExposureMin`, `ExposureMax` | 1 ms and one hour |
-| `StartExposure` | Renders the frame and keeps it. Refused for a dark frame (`Light` false), for a duration outside `ExposureMin` to `ExposureMax`, while an exposure is in progress or the last one reads out, and for a region that leaves the binned sensor. A start that fails as scripted drops the last frame |
+| `StartExposure` | Renders the frame and keeps it. Refused for a dark frame (`Light` false), for a duration outside `ExposureMin` to `ExposureMax`, while an exposure is in progress or the last one reads out, and for a region that leaves the binned sensor. A frame scripted never to come holds no start up. A start that fails as scripted drops the last frame |
 | `ImageReady` | True from `camera.readout` after the exposure's end until the next `StartExposure` |
 | `ImageArray` | The frame as 16-bit values, the region cut from the binned sensor |
-| `AbortExposure` | Drops the exposure in progress, and does nothing when none is. With `camera.can_abort_exposure` false it is refused with `NOT_IMPLEMENTED` |
-| `CameraState` | `Exposing` until the exposure's end, `Reading` until `ImageReady`, `Idle` otherwise |
+| `AbortExposure` | Drops the exposure in progress or reading out, or one whose image never comes, and does nothing when the camera is idle. With `camera.can_abort_exposure` false it is refused with `NOT_IMPLEMENTED` |
+| `CameraState` | `Exposing` until the exposure's end, `Reading` until `ImageReady`, `Idle` otherwise. A frame scripted never to come reads `Reading` until an abort or the next start, as a download that never finishes |
 
 A camera that is not connected answers every Camera member this table
 lists with `NOT_CONNECTED`; the members it leaves to the Alpaca
