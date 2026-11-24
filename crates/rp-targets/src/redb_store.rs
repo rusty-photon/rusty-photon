@@ -97,10 +97,11 @@ fn decode_schema_version(bytes: &[u8]) -> Result<u32, TargetStoreError> {
 fn get_target_sync(db: &Database, slug: &str) -> Result<Option<Target>, TargetStoreError> {
     let read_txn = db.begin_read()?;
     let table = read_txn.open_table(TARGETS_TABLE)?;
-    match table.get(slug)? {
-        Some(value) => Ok(Some(serde_json::from_slice(value.value())?)),
-        None => Ok(None),
-    }
+    let target = match table.get(slug)? {
+        Some(value) => Some(serde_json::from_slice(value.value())?),
+        None => None,
+    };
+    Ok(target)
 }
 
 fn list_targets_sync(db: &Database) -> Result<Vec<Target>, TargetStoreError> {

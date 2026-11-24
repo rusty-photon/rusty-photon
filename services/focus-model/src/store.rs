@@ -984,10 +984,11 @@ fn put_sync(db: &Database, record: &FocusRecord) -> Result<(), StoreError> {
 fn get_sync(db: &Database, train_id: &str) -> Result<Option<FocusRecord>, StoreError> {
     let read_txn = db.begin_read()?;
     let table = read_txn.open_table(RECORDS_TABLE)?;
-    match table.get(train_id)? {
-        Some(value) => Ok(Some(serde_json::from_slice(value.value())?)),
-        None => Ok(None),
-    }
+    let record = match table.get(train_id)? {
+        Some(value) => Some(serde_json::from_slice(value.value())?),
+        None => None,
+    };
+    Ok(record)
 }
 
 #[cfg(test)]
