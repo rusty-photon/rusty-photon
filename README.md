@@ -233,6 +233,7 @@ rusty-photon/
     bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)
     guide-replay/                    Recorded guide-camera frames replayed through the guider's measurement
     guide-simulator/                 Mount model + star renderer in simulated time, for the guider's tests
+    guide-simulator-alpaca/          The simulator behind an Alpaca Camera and Telescope, for the guider's scenarios
     rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum + memoised verifier)
     rp-catalog/                      Embedded Messier/NGC/IC catalog with name resolution
     rp-ephemeris/                    Astronomical math (Ephemeris + ERFA wrapper + Site)
