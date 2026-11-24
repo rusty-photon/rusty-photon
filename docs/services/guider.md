@@ -70,7 +70,8 @@ guider serves nothing for it, and refuses no request on its account.
 | `rp-image-analysis` | Library crate | The image kernels `rp` and the guider share: background, star detection, centroid, half-flux diameter, signal-to-noise ratio |
 | `rp-guider` | Library crate | The HTTP contract of this document: request and response types, the error codes, and the client `rp` uses |
 | `guider` | Service, port 11129 | The Alpaca clients, the loop that drives the core, the HTTP API, the setup page, the calibration store and the guide log |
-| `guide-simulator` | Test-infrastructure crate | A mount model and a star renderer behind an Alpaca Camera and an Alpaca Telescope: drift, periodic error, backlash, pulse granularity and seeing, with the stars moving as the pulses say |
+| `guide-simulator` | Test-infrastructure crate | A mount model and a star renderer in simulated time: drift, periodic error, backlash, pulse granularity and seeing, with the stars moving as the pulses say |
+| `guide-simulator-alpaca` | Test-infrastructure crate | `guide-simulator` behind an Alpaca Camera and an Alpaca Telescope on the wall clock, scripted by the service's scenarios |
 
 ### Alpaca members used
 
@@ -1603,7 +1604,9 @@ clients as they cover `rp`'s.
   measurement
   ([docs/crates/guide-replay.md](../crates/guide-replay.md)).
 - **The service.** BDD scenarios start the `guider` binary against
-  `guide-simulator`'s Alpaca devices and hold it to this document
+  `guide-simulator-alpaca`'s devices
+  ([docs/crates/guide-simulator-alpaca.md](../crates/guide-simulator-alpaca.md))
+  and hold it to this document
   section by section: the states, starting idle, the mount
   check and each stop reason, the calibration and its store, each
   endpoint and each error code.

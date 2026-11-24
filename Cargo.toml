@@ -3,6 +3,7 @@ members = [
   "crates/bdd-infra",
   "crates/guide-replay",
   "crates/guide-simulator",
+  "crates/guide-simulator-alpaca",
   "crates/qhyccd-rs",
   "crates/qhyccd-rs/libqhyccd-sys",
   "crates/rp-auth",
@@ -124,6 +125,7 @@ nursery = { level = "deny", priority = -1 }
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }
 guide-simulator = { path = "crates/guide-simulator" }
+guide-simulator-alpaca = { path = "crates/guide-simulator-alpaca" }
 tokio = { version = "1.52.3", features = ["full"] }
 tokio-util = "0.7"
 async-stream = "0.3"

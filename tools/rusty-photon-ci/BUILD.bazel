@@ -66,6 +66,7 @@ _MEMBERS = [
     "crates/bdd-infra",
     "crates/guide-replay",
     "crates/guide-simulator",
+    "crates/guide-simulator-alpaca",
     "crates/qhyccd-rs",
     "crates/qhyccd-rs/libqhyccd-sys",
     "crates/rp-auth",
