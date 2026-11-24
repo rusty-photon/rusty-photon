@@ -468,8 +468,9 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       restart in the evening before the power-up would cost the night.
 14. **The power map marks the outputs the night switches** (settled
     2026-11-23). An `outputs[]` entry with `daily: true` is switched on at
-    dusk and off at dawn, and `power_up` and `power_down` called with no
-    outputs switch exactly those. An output is never both `daily` and
+    dusk and off at dawn, and `power_up` and `power_down` called without
+    an `outputs` list switch exactly those (an empty list switches
+    nothing). An output is never both `daily` and
     `protected`. The rig is described once, in rp's configuration, and
     edited where the rest of the power map is.
     - **Not a list in the night's configuration.** The outputs, and the

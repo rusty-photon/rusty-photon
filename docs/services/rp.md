@@ -1602,8 +1602,8 @@ block is absent.
 | `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
 | `restart_service` | Ungated | device_id (a roster id, or `mount`) | device_id, service, devices, restart (`restarted` \| `timed_out`) | Have the driver service that serves the device restart, once every device `rp` has on it is held out, and wait up to 60 s for its new process to answer |
 | `get_power_map` | Ungated | — | outputs: \[{switch_id, output, daily, protected, on, devices: \[{device_id, kind, connected, held_out}\]}\] | Read every mapped output of every power box; `on` is `null` for a box `rp` cannot read |
-| `power_up` | Ungated | outputs (optional: \[{switch_id, output}\], default every `daily` output), settle (optional humantime, default `30s`, at most `5m`) | outputs: \[{switch_id, output, on, switched, error}\], services: \[{service, devices, restart, error}\], devices: \[{device_id, kind, connected, error}\] | Switch the outputs on, wait `settle`, restart once each service with a device on them and connect every device on those services; a failed step is reported and the call goes on |
-| `power_down` | Ungated | outputs (optional: \[{switch_id, output}\], default every `daily` output) | outputs: \[{switch_id, output, on, error}\], devices: \[{device_id, kind, close}\] | Hold out every device on the outputs, then switch them off; reads no cooler and no park state |
+| `power_up` | Ungated | outputs (optional: \[{switch_id, output}\]; absent, every `daily` output; `[]`, none), settle (optional humantime, default `30s`, at most `5m`) | outputs: \[{switch_id, output, on, switched, error}\], services: \[{service, devices, restart, error}\], devices: \[{device_id, kind, connected, error}\] | Switch the outputs on, wait `settle`, restart once each service with a device on them and connect every device on those services; a failed step is reported and the call goes on |
+| `power_down` | Ungated | outputs (optional: \[{switch_id, output}\]; absent, every `daily` output; `[]`, none) | outputs: \[{switch_id, output, on, error}\], devices: \[{device_id, kind, close}\] | Hold out every device on the outputs, then switch them off; reads no cooler and no park state |
 | `check_camera` | Ungated | camera_id, duration (optional humantime, default `1s`) | camera_id, verdict (`ok` \| `wedged` \| `unavailable`), elapsed_s, error (when `unavailable`) | Take one dark test exposure, keep nothing, and say whether the camera is wedged: late past `capture`'s advisory maximum, not ready by its readout backstop, or all zero |
 
 **Compute (image analysis)**
@@ -4282,8 +4282,8 @@ A `switches[]` entry lists its power box's outputs under `outputs`:
   monitor stays powered and connected because dusk waits for it to read
   safe.
 - **`daily`** (default `false`) marks an output the night switches: on
-  at dusk and off at dawn. `power_up` and `power_down` called with no
-  outputs switch exactly the outputs marked `daily`. An output that
+  at dusk and off at dawn. `power_up` and `power_down` called without
+  an `outputs` list switch exactly the outputs marked `daily`. An output that
   lists no devices may be `daily`, a dew heater's among them, and is then
   switched on to whatever its driver's `SetSwitch` makes of on.
 
@@ -4463,8 +4463,10 @@ out of `rp` until `connect_device`.
 `power_up` and `power_down` carry the night's two power steps over
 every device they touch, so that their caller, `session-runner`'s night
 schedule or an operator, makes one call per step. Both take `outputs`, a
-list of `{switch_id, output}`; without it they take every output the
-power map marks `daily`, across every `switches[]` entry. An output the
+list of `{switch_id, output}`. Without `outputs` they take every output
+the power map marks `daily`, across every `switches[]` entry; an empty
+list is no output, never the default, so a caller whose own rules leave
+nothing to switch switches nothing. An output the
 map does not list refuses the whole call with a tool error before
 anything is switched, as does an output marked `protected` given to
 `power_down`: both are the caller's mistake. An output whose box `rp`

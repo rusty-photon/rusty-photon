@@ -1073,8 +1073,11 @@ with no civil darkness that night) is skipped with a `warn!`.
    4. a wait until no camera on a daily output reads its cooler running
       (`get_camera_info`'s `cooler_running`), polled every 30 s and woken
       early by `cooler_warmup_complete`, for at most `warmup_timeout`;
-   5. the cut rules over the daily outputs that read on, and
-      `power_down` with the outputs they allow.
+   5. the cut rules over the daily outputs that do not read off, and
+      `power_down` with the outputs they allow, skipped when they allow
+      none. An output whose box cannot be read (`on: null`), or whose cut
+      `power_down` reports with an `error`, joins the outputs dawn left
+      on with that reason, and the after-dawn checks try it again.
 
    Dawn runs every morning, whether or not dusk powered anything: a
    daily output that reads on at dawn goes back to the rig's daytime
