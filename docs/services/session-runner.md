@@ -1092,7 +1092,13 @@ with no civil darkness that night) is skipped with a `warn!`.
    (the mount briefly unreachable, a park that timed out) otherwise holds
    the mount's output, and every device on it, until dusk. After the
    third failed park the schedule logs at `warn!` that the mount stays
-   unparked, and leaves its output on until dusk.
+   unparked, and leaves its output on until dusk. A check of an output
+   whose cut failed, or whose box could not be read, first connects the
+   devices on it again through `connect_device`: `power_down` held them
+   out before its cut, and a mount still held out fails every park and
+   every pose read. Once the checks have cut every output dawn left on,
+   or at the next dusk, `night.json` moves to the next night, in phase
+   `day` or `dusk`.
 
 The schedule learns the daily outputs and the devices on them from
 `get_power_map`.
@@ -1152,19 +1158,22 @@ standing decision to run every night, power, cooling, runs and dawn
 alike, which
 [tenet 3](../workspace.md#project-tenets) names beside `rp`'s safety
 response ([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
-decision 13). The cases below are taken in order, and the first that
-matches decides:
+decision 13). The file stays with its night through `after_dawn`, and
+moves to the next night only once the after-dawn checks have nothing
+left to cut, in phase `day`, or at the next dusk; so a `day` file is the
+night ahead's, and says the latest dawn is done. The cases below are
+taken in order, and the first that matches decides:
 
 1. **A dawn still owed.** The latest dawn has passed and the next dusk
    has not, and nothing shows that dawn done: there is no file, the file
-   is an earlier night's, or the file is this night's in any phase before
-   `after_dawn`. Dawn runs from its first step, then the after-dawn checks
+   is an earlier night's, or the file is this night's in a phase from
+   `dusk` to `dawn`. Dawn runs from its first step, then the after-dawn checks
    until dusk. One dawn settles every dawn a long outage missed, and a
    first start in the day, with every service started on powered devices
    (decision 2), puts the rig in its daytime state. Every step of dawn is
    idempotent.
 2. **Between a dusk and its dawn, with no file, an earlier night's, or
-   this night's in phase `day`:**
+   this night's still in phase `day`:**
    the schedule takes up this night at dusk's safety wait and powers the
    rig up once the roof reads open.
 3. **`day`, or `after_dawn`:** the schedule waits for dusk, running the
