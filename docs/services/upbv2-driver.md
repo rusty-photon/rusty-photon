@@ -551,8 +551,9 @@ master off; auto-dew *writes*; boot-state (`PE:`/`US:`) configuration; the
 The [daily power cycle plan](../plans/daily-power-cycle.md) switches
 outputs at dusk and dawn through rp's switch tools. This driver
 *exposes* the outputs; deciding to flip one at dusk is a workflow decision
-that belongs in a session-runner document, not in any connect or
-supervisory path here (tenet 3).
+that belongs to `session-runner`'s night schedule, a session-runner
+document or an operator's tool call, not to any connect or supervisory
+path here (tenet 3).
 
 **Restart on request.** The service serves `POST /service/v1/restart`
 and `GET /service/v1/instance` beside the Alpaca API, behind the same

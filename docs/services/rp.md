@@ -1514,7 +1514,7 @@ Operators can move any tool across the line with `safety.gate`
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
 | `capture` | Per call: gated for a frame that needs the sky, ungated otherwise | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), light_source (optional: `panel`/`sky`, with a `Flat` or an untyped capture), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. While conditions are unsafe, only a `Dark`, a `Bias` or a capture with `light_source: panel` is taken; any other is refused with the `SafetyUnsafe` error before the camera is touched, and one in flight when conditions turn unsafe is cancelled, while a dark, a bias or a panel flat in flight runs to its end (§ Safety → [In-Flight Tool Calls](#in-flight-tool-calls)). Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop is a separate, more generous `duration + 120 s` ceiling. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
-| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `max_adu` is read from the driver on every call, because a readout-mode change can change it ([Core Fields](#core-fields-owned-by-rp)); a failed read is a tool error. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at |
+| `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset, cooler_on, ccd_temperature_c | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `max_adu` is read from the driver on every call, because a readout-mode change can change it ([Core Fields](#core-fields-owned-by-rp)); a failed read is a tool error. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at. `cooler_on` (`CoolerOn`) and `ccd_temperature_c` (`CCDTemperature`) are read on every call too, each `null` when the driver does not implement it; any other read failure is a tool error, so that the night schedule never takes a cooler it could not read for one that is off |
 | `move_focuser` | Ungated | focuser_id, position, lease_id (optional, a held [train lease](#train-lease)) | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Moves through one focuser run one at a time; one that names no lease, of a focuser a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with its travel bounds and backlash block — `min_position` / `max_position`, the configured bounds narrowed to the driver's travel of `0` to `MaxStep` and falling back to it where the config sets none (`max_position` is `null` only when the config sets none and `MaxStep` could not be read), and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor. `temperature_c` is null for a focuser without a probe (its driver answers `Temperature` with `NOT_IMPLEMENTED`); any other failed read is a tool error. An id rp does not know is the tool error `focuser not found: <id>`, which focus-model reads as a mistyped stand-in sensor ([focus-model.md § The temperature source](focus-model.md#the-temperature-source)) |
@@ -1527,7 +1527,7 @@ Operators can move any tool across the line with `safety.gate`
 | `set_tracking` | Gated | enabled | — | Enable or disable sidereal tracking |
 | `park` | Ungated | — | — | Park the mount (blocks polling `AtPark` every 100 ms until it returns `true`). Bounded by a **predicted deadline**: rp can't read the park position via Alpaca, so it sizes a worst-case full-axis traverse — `predicted = 180° / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 2, MIN_PARK_DEADLINE = 60 s)` (falls back to a 300 s ceiling with no mount configured); `predicted`/`max` ride the `park_started` envelope. `AtPark` is the ASCOM-canonical completion signal — `Slewing` is sticky on `MoveAxis` rate state and unrelated `SlewState` activity, so polling it would be over-conservative. Per ASCOM, a successful park clears `Tracking`. Unlike `slew`, does NOT auto-abort on timeout — call `abort_slew` to interrupt a stuck park. Exempt from the [mount motion gate](#mount-motion-gate): a terminal/emergency action must never queue behind an exposure |
 | `unpark` | Gated | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
-| `get_park_state` | Ungated | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
+| `get_park_state` | Ungated | — | at_park, can_park, can_unpark, park_matches_power_up_pose | Read park state and capabilities; fails loud on `AtPark` read error. `park_matches_power_up_pose` is the mount driver's answer to the read-only `ParkMatchesPowerUpPose` Action when its `SupportedActions` lists it (`star-adventurer-gti`: whether a power cut and power-up seed the mount where it parks), and `null` for a mount whose driver does not; a failed Action read is a tool error ([Power Switching](#power-switching)) |
 | `abort_slew` | Ungated | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
 | `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name, lease_id (optional, a held [train lease](#train-lease)) | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way, writes the slot, and blocks until the wheel names it, each wait bounded at 60 s (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id`. Filter changes through one wheel run one at a time; one that names no lease, of a wheel a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
@@ -1546,7 +1546,7 @@ Operators can move any tool across the line with `safety.gate`
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
 | `start_cooldown` | Ungated | — | cameras | Run the setpoint-ladder cooldown pass for every camera with a `cooler_targets_c` ladder, in the background; returns the camera ids it is driving (empty when no camera has a ladder). Idempotent: a running pass is left alone, a cooler already regulating at a ladder rung is adopted without re-selection, a running warm-up is cancelled and superseded |
-| `start_warmup` | Ungated | — | cameras | Ramp every camera `rp` is cooling warm (+5 °C steps, then cooler off), in the background; returns the camera ids it is warming (empty when `rp` commands none). Idempotent: a running ramp is left alone |
+| `start_warmup` | Ungated | — | cameras | Ramp every camera `rp` is cooling warm (+5 °C steps, then cooler off), and every camera with a setpoint ladder whose cooler reads on though `rp` holds no record of cooling it, in the background; returns the camera ids it is warming (empty when there are none). Idempotent: a running ramp is left alone |
 
 **Guider**
 
@@ -1598,9 +1598,13 @@ block is absent.
 |--------|-------|-----------|---------|-------------|
 | `disconnect_device` | Ungated | device_id (a roster id, or `mount`) | device_id, kind, close (`closed` \| `timed_out` \| `failed` \| `no_session`), error (when `failed`) | Hold the device out of the reconnect supervisor, then send its driver `Connected = false` within a 10 s deadline; the hold-out stands whatever the close does |
 | `connect_device` | Ungated | device_id (a roster id, or `mount`) | device_id, kind, connected | Release the hold-out and connect the device now with the full connect budget; a live session is confirmed and left as it is, never cycled |
-| `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices and protection beside each |
+| `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, daily, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices, protection and `daily` mark beside each |
 | `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
 | `restart_service` | Ungated | device_id (a roster id, or `mount`) | device_id, service, devices, restart (`restarted` \| `timed_out`) | Have the driver service that serves the device restart, once every device `rp` has on it is held out, and wait up to 60 s for its new process to answer |
+| `get_power_map` | Ungated | — | outputs: \[{switch_id, output, daily, protected, on, devices: \[{device_id, kind, connected, held_out}\]}\] | Read every mapped output of every power box; `on` is `null` for a box `rp` cannot read |
+| `power_up` | Ungated | outputs (optional: \[{switch_id, output}\], default every `daily` output), settle (optional humantime, default `30s`, at most `5m`) | outputs: \[{switch_id, output, on, error}\], services: \[{service, devices, restart, error}\], devices: \[{device_id, kind, connected, error}\] | Switch the outputs on, wait `settle`, restart once each service with a device on them and connect every device on those services; a failed step is reported and the call goes on |
+| `power_down` | Ungated | outputs (optional: \[{switch_id, output}\], default every `daily` output) | outputs: \[{switch_id, output, on, error}\], devices: \[{device_id, kind, close}\] | Hold out every device on the outputs, then switch them off; reads no cooler and no park state |
+| `check_camera` | Ungated | camera_id, duration (optional humantime, default `1s`) | camera_id, verdict (`ok` \| `wedged` \| `unavailable`), elapsed_s, error (when `unavailable`) | Take one dark test exposure, keep nothing, and say whether the camera is wedged: late past `capture`'s advisory maximum, not ready by its readout backstop, or all zero |
 
 **Compute (image analysis)**
 
@@ -4230,11 +4234,15 @@ tools carry it: `disconnect_device` and
 `connect_device`, which hold a device out of the reconnect supervisor
 and give it back, `get_switch` and `set_switch`, which read and switch
 a power box's outputs through the power map, and `restart_service`,
-which has a held-out device's driver service restart. The tools are
-built; the `session-runner` dusk and dawn documents that drive them,
-which this section names as their callers, are designed in the
-[daily power cycle plan](../plans/daily-power-cycle.md) and not written
-yet.
+which has a held-out device's driver service restart. Four more carry
+a step of the night over every device it touches: `power_up` and
+`power_down`, which power a set of outputs up or down with every device
+on them, `check_camera`, which tests a camera for a wedge, and
+`get_power_map`, which reads the whole map. The first five are built.
+The last four, and `session-runner`'s night schedule that calls them
+([session-runner.md § Night Schedule](session-runner.md#night-schedule)),
+are designed in the [daily power cycle
+plan](../plans/daily-power-cycle.md) and not built yet.
 
 #### The power map
 
@@ -4246,8 +4254,8 @@ A `switches[]` entry lists its power box's outputs under `outputs`:
   "alpaca_url": "https://127.0.0.1:11112",
   "device_number": 0,
   "outputs": [
-    { "name": "Quad 12V Output", "devices": ["main-cam", "main-focuser", "mount"] },
-    { "name": "USB Hub", "devices": ["guide-cam"] },
+    { "name": "Quad 12V Output", "devices": ["main-cam", "main-focuser", "mount"], "daily": true },
+    { "name": "USB Hub", "devices": ["guide-cam"], "daily": true },
     { "name": "Dew Heater A" },
     { "name": "Adjustable Output", "protected": "the host runs off it" }
   ]
@@ -4273,6 +4281,11 @@ A `switches[]` entry lists its power box's outputs under `outputs`:
   off its PPBA's Adjustable Output. A safety
   monitor stays powered and connected because dusk waits for it to read
   safe.
+- **`daily`** (default `false`) marks an output the night switches: on
+  at dusk and off at dawn. `power_up` and `power_down` called with no
+  outputs switch exactly the outputs marked `daily`. An output that
+  lists no devices may be `daily`, a dew heater's among them, and is then
+  switched on to whatever its driver's `SetSwitch` makes of on.
 
 `rp` checks the map when it loads its configuration, and the setup
 page's save checks it with the same rules:
@@ -4281,6 +4294,8 @@ page's save checks it with the same rules:
 - an output that lists a safety monitor or a switch carries `protected`.
   `rp` knows those kinds, so a map that leaves one unprotected is a
   mistake it can name;
+- an output is never both `daily` and `protected`: the night would cut
+  an output nothing may cut;
 - output names do not repeat within an entry.
 
 The map's ids are why roster ids are unique across every kind, map or
@@ -4343,7 +4358,7 @@ returns:
 - **Any other session** is established as the supervisor would establish
   it: the identity pin, `Connected = true`, a fresh read of the
   connect-time cache, and an `equipment_changed` event with
-  `connected: true`, the event a dusk document waits on.
+  `connected: true`.
 
 The result is `{device_id, kind, connected: true}`. A failure is a tool
 error that carries the reason. The hold-out is gone either way, so the
@@ -4366,7 +4381,8 @@ named `output`, or every switch the box reports when `output` is
 omitted. Each comes back as `name`, `index` (its Alpaca switch id),
 `can_write`, `on` (`GetSwitch`) and `value` (`GetSwitchValue`), with
 the power map's view beside them: `mapped`, `protected` (the reason, or
-`null`), and `devices`, each `{device_id, kind, connected, held_out}`.
+`null`), `daily`, and `devices`, each `{device_id, kind, connected,
+held_out}`.
 Map outputs the box reports no switch for are listed under `unmatched`,
 so a name the driver no longer reports shows. A switch that is not
 connected, or an `output` the box reports no switch for, is a tool
@@ -4398,9 +4414,9 @@ no device can be connected between the two.
 
 `restart_service {device_id}` has the driver service that serves the
 device restart, so the service meets its device in a fresh process.
-The dusk document asks for it once the device's output is
-back on and the device has settled, before `connect_device`, and its
-wedge retry asks for it again after the second cut.
+`power_up` asks for it once the device's output is
+back on and the device has settled, before `connect_device`, and so
+does the second `power_up` of dusk's wedge retry.
 
 - **The service is the device's `alpaca_url`**: its scheme, host and
   port. Every roster entry whose `alpaca_url` has the same three is a
@@ -4433,13 +4449,117 @@ restart requests) are tool errors. The devices stay held out whatever
 the outcome; the next step is `connect_device` for each.
 
 One call restarts the service for every device on it, and a second call
-restarts the new process again. A document that has power-cycled
-several devices on one service restarts that service once: the first
-call's `devices` names every device the restart covered.
+restarts the new process again. A caller that has power-cycled
+several devices on one service restarts that service once, as
+`power_up` does: the first call's `devices` names every device the
+restart covered.
 
 `restart_service` actuates nothing (tenet 3): the restarted service's
 start runs the handshake every start runs, and its devices stay held
 out of `rp` until `connect_device`.
+
+#### Powering outputs up and down
+
+`power_up` and `power_down` carry the night's two power steps over
+every device they touch, so that their caller, `session-runner`'s night
+schedule or an operator, makes one call per step. Both take `outputs`, a
+list of `{switch_id, output}`; without it they take every output the
+power map marks `daily`, across every `switches[]` entry. An output the
+map does not list, one its box reports read-only, and one its box
+reports no switch for refuse the whole call with a tool error before
+anything is switched, as does an output marked `protected` given to
+`power_down`. A call that comes to no output returns at once with empty
+lists. The two run one at a time: a second call waits for the first to
+end.
+
+`power_up {outputs?, settle?}` brings the outputs' devices up in fresh
+service processes:
+
+1. **Switch on.** Each output that reads off is switched on. One that
+   already reads on is left as it is.
+2. **Settle.** Once the last output has gone on, `power_up` waits
+   `settle` (a humantime duration, default `30s`, at most `5m`), so that
+   a QHY camera is back through its firmware loader and a wheel has
+   finished homing before its service starts afresh: a service starts
+   with its devices present
+   ([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
+   decision 2). No output switched on, no wait.
+3. **Restart.** The services are every service with a device on the
+   outputs. One after another, `power_up` holds out every device `rp`
+   has on the service and has it restart, as `disconnect_device` and
+   `restart_service` would. Every such service restarts, not only those
+   whose devices were off: a service restarted with its devices powered
+   loses nothing at dusk, and `power_up` needs no record of what was
+   off, so a second call after a crash restarts the same services as the
+   first.
+4. **Connect.** Every device on those services, the mount among them,
+   is connected as `connect_device` connects it, with the connect
+   routine's full budget.
+
+The result is `{outputs, services, devices}`. `outputs` lists each
+output as `{switch_id, output, on}`, `on` read back after any write,
+with an `error` where the write failed. `services` lists each restart
+as `{service, devices, restart}`, `restart` being `restarted`,
+`timed_out` or `failed` with an `error`. `devices` lists each device as
+`{device_id, kind, connected}`, with an `error` where its connect
+failed. A failure at one step is reported and the call goes on with the
+rest: a device whose service did not restart is still connected, to the
+process that serves it, and a device that failed to connect is no
+longer held out, so the reconnect supervisor goes on trying it every
+pass. The call can last minutes: the settle, up to 60 s per restart,
+and the connects.
+
+`power_down {outputs?}` takes the outputs' devices out of `rp`'s hands
+and cuts the outputs:
+
+1. **Hold out.** Every device the map puts on the outputs is held out,
+   as `disconnect_device` holds it out, each close within its 10 s
+   deadline. A close that hangs holds the device out all the same.
+2. **Cut.** Each output that reads on is switched off.
+
+The result is `{outputs, devices}`: each output as `{switch_id, output,
+on}`, with an `error` where the write failed, and each device as
+`{device_id, kind, close}`, `close` as `disconnect_device` reports it.
+A device stays held out until `connect_device` or a `power_up` connects
+it. `power_down` reads no cooler and no park state. Which outputs may
+go is its caller's decision: the night schedule leaves on the outputs
+of a camera still cold and of a mount that would lose its pose
+([session-runner.md § Night Schedule](session-runner.md#night-schedule)),
+and an operator who calls it by hand owns the same checks.
+
+`get_power_map` reads the map whole, for a caller that does not know
+the power boxes' ids: every mapped output of every `switches[]` entry
+as `{switch_id, output, daily, protected, on, devices}`, `devices` as
+`get_switch` gives them. `on` is `null` for an output whose box `rp`
+cannot read, and the call answers for the other boxes.
+
+#### Checking a camera for a wedge
+
+`check_camera {camera_id, duration?}` takes one dark exposure of
+`duration` (default `1s`) and says whether the camera is wedged: a
+camera whose first exposure after a power cycle under a live SDK reads
+out for a minute or more and returns an all-zero frame
+([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
+decision 11). It takes the camera's capture slot and the guide camera
+guard as `capture` does, and keeps nothing: it writes no FITS file and
+no exposure document, and emits no exposure events, because a test
+frame is no data and would land among the night's darks.
+
+The result is `{camera_id, verdict, elapsed_s}`, with an `error` where
+the verdict is `unavailable`. `elapsed_s` runs from the camera
+accepting the exposure to the frame ready, and is `null` when the
+exposure never started.
+
+- **`ok`**: the frame was ready within `duration` plus the camera's
+  `readout_time_estimate` plus 30 s, `capture`'s advisory maximum, and
+  at least one pixel is not 0.
+- **`wedged`**: the frame was ready later than that, it was not ready
+  by `capture`'s readout backstop (`duration` + 120 s), or every pixel
+  reads 0. At the backstop `check_camera` aborts the exposure and gives
+  the slot back.
+- **`unavailable`**: anything else. The camera is not connected or is
+  held out, the exposure is refused or fails (a camera that reads
+  `Error`), or the download fails.
 
 #### The guider across a power cycle
 
@@ -4450,13 +4570,14 @@ A guide camera on a switched output is held out, has its driver service
 restarted and is connected again like any other camera, and the guider
 reads the fresh driver at its next request.
 
-All five tools are ungated (§ [In-Flight Tool
-Calls](#in-flight-tool-calls)). A dawn document cuts power whatever the
-weather, and a dusk document powers devices up only once `rp`'s safety
+Every tool in this section is ungated (§ [In-Flight Tool
+Calls](#in-flight-tool-calls)). Dawn cuts power whatever the
+weather, and dusk powers devices up only once `rp`'s safety
 monitors read safe with the roof open, a check that belongs
-to the document. `set_switch` is the one tool here that actuates, and it
-does so only on a tool call: power is switched by a workflow or an
-operator, never by a connect path or the supervisor (tenet 3).
+to the night schedule. `set_switch`, `power_up` and `power_down` are
+the tools here that switch power, and they do so only on a tool call:
+power is switched by a workflow or an operator, never by a connect path
+or the supervisor (tenet 3).
 
 ### Optical Trains
 
@@ -5639,16 +5760,24 @@ path — startup, a safety transition, a config reload — calls them.
 ### Warm-up: `start_warmup`
 
 `start_warmup` (ungated — it secures, like `park`) starts a warm-up ramp
-per camera `rp` is cooling and returns at once with those cameras
-(`{"cameras": [...]}` — empty when `rp` commands none): the rung is
+per camera `rp` is cooling, and per camera with a setpoint ladder whose
+`CoolerOn` reads true though `rp` holds no record of cooling it, and
+returns at once with those cameras (`{"cameras": [...]}` — empty when
+there are none). The second kind is a camera whose cooling an `rp`
+restart in the night left without a record: the driver kept regulating,
+and dawn warms it all the same
+([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
+decision 15). For such a camera the ramp starts from the setpoint the
+driver reports (`SetCCDTemperature`). The rung is
 cleared immediately (frames captured during the ramp are off the grid),
 `cooler_warmup_started` is emitted, the setpoint rises +5 °C every
 `cooling.warmup_step_interval` until it reaches the warm target
 (`HeatSinkTemperature` when the camera implements it, else
 `cooling.warm_target_c`), then the cooler switches off and
 `cooler_warmup_complete` is emitted. The ramp avoids thermal shock and
-condensation/frost on the sensor window. Cameras `rp` never commanded
-are untouched. Idempotent: a ramp already running is left to finish.
+condensation/frost on the sensor window. A camera without a ladder is
+never touched, nor one with a ladder whose cooler reads off. Idempotent:
+a ramp already running is left to finish.
 
 The shipped workflow documents call it in their `finally` blocks, so a
 run that ends any way — complete, failed, or terminated for safety —
@@ -5662,7 +5791,7 @@ commanded setpoint is recorded before the first mutating call, so the
 cooler is never left regulating with nobody driving. `rp` shutting down
 mid-ramp simply leaves the cooler at its last commanded setpoint — the
 driver keeps regulating, and the next `start_cooldown` adopts or
-re-selects.
+re-selects, or the next `start_warmup` warms it.
 
 ### Per-frame recording
 
@@ -8340,8 +8469,8 @@ return a structured "site not configured" error.
         "alpaca_url": "http://localhost:11112",
         "device_number": 0,
         "outputs": [
-          { "name": "Quad 12V Output", "devices": ["main-cam", "main-fw", "main-focuser", "mount"] },
-          { "name": "USB Hub", "devices": ["guide-cam", "guide-focuser"] },
+          { "name": "Quad 12V Output", "devices": ["main-cam", "main-fw", "main-focuser", "mount"], "daily": true },
+          { "name": "USB Hub", "devices": ["guide-cam", "guide-focuser"], "daily": true },
           { "name": "Adjustable Output", "protected": "the host runs off it" }
         ]
       }
