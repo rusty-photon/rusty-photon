@@ -28,8 +28,9 @@ Out of scope:
 - **The Alpaca devices.** The Alpaca Camera and Telescope that put the
   simulator behind the guider's own clients, on the wall clock, are
   [`guide-simulator-alpaca`](guide-simulator-alpaca.md)'s.
-- **Hardware binning and subframes.** The guider reads full frames, and a
-  test that wants binned pixels sets a coarser pixel scale.
+- **Hardware binning and subframes.** `guide-simulator-alpaca`'s camera
+  bins and cuts regions from the rendered frame; a test of the core alone
+  that wants binned pixels sets a coarser pixel scale.
 - **Other physics:** field rotation, dark current, refraction, and any star
   image but a Gaussian.
 - **RA backlash.** Tracking loads the RA axis, and a guide pulse only

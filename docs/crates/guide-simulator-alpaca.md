@@ -65,14 +65,15 @@ a slew makes it longer than an exposure, as a real slew is.
 | `Gain`, `Offset` | Kept and reported, 0 to 1,000; they change nothing in the frame |
 | `CanAbortExposure` | `camera.can_abort_exposure` |
 | `ExposureMin`, `ExposureMax` | 1 ms and one hour |
-| `StartExposure` | Renders the frame and keeps it. Refused for a dark frame (`Light` false), for a duration outside `ExposureMin` to `ExposureMax`, while an exposure is in progress, and for a region that leaves the binned sensor. A start that fails as scripted drops the last frame |
+| `StartExposure` | Renders the frame and keeps it. Refused for a dark frame (`Light` false), for a duration outside `ExposureMin` to `ExposureMax`, while an exposure is in progress or the last one reads out, and for a region that leaves the binned sensor. A start that fails as scripted drops the last frame |
 | `ImageReady` | True from `camera.readout` after the exposure's end until the next `StartExposure` |
 | `ImageArray` | The frame as 16-bit values, the region cut from the binned sensor |
 | `AbortExposure` | Drops the exposure in progress, and does nothing when none is. With `camera.can_abort_exposure` false it is refused with `NOT_IMPLEMENTED` |
 | `CameraState` | `Exposing` until the exposure's end, `Reading` until `ImageReady`, `Idle` otherwise |
 
-A camera that is not connected answers every Camera member with
-`NOT_CONNECTED`. A connect starts it at the full frame at bin 1, with no
+A camera that is not connected answers every Camera member this table
+lists with `NOT_CONNECTED`; the members it leaves to the Alpaca
+library's defaults answer as those do. A connect starts it at the full frame at bin 1, with no
 frame.
 
 ## The mount
@@ -84,15 +85,16 @@ frame.
 | `Slewing`, `AtPark` | The simulated mount's |
 | `Park`, `Unpark` | Park at once, and unpark with tracking off, as the model does |
 | `SideOfPier` | `pierEast` or `pierWest`. With `mount.reports_pier_side` false it is `pierUnknown` |
-| `RightAscension`, `Declination` | Where the mount points: `mount.right_ascension_hours` and the simulated declination at the start, moved by the pointing |
+| `RightAscension`, `Declination` | Where the mount points: `mount.right_ascension_hours` and the simulated declination at the start, moved by the pointing. A slew moves both, but the simulated mount keeps the declination it started at for the scale of its RA axis, as `guide-simulator` does: a scenario that calibrates or guides at another declination starts devices configured for it |
 | `SiderealTime` | `mount.right_ascension_hours` at the start, so the mount points at the meridian, advancing at the sidereal rate |
 | `Altitude`, `Azimuth` | `mount.altitude_deg` and `mount.azimuth_deg`, fixed: the guider reads them only for its guide log |
 | `GuideRateRightAscension`, `GuideRateDeclination` | The simulated guide rates in degrees a second. With `mount.reports_guide_rates` false both answer `NOT_IMPLEMENTED` |
 | `PulseGuide` | Starts the pulse on the simulated mount. Refused while `CanPulseGuide` is false (`NOT_IMPLEMENTED`), while parked (`INVALID_WHILE_PARKED`), and while slewing or while a pulse on the same axis is in progress (`INVALID_OPERATION`) |
 | `IsPulseGuiding` | Whether a pulse on either axis is in progress |
 
-A mount that is not connected answers every Telescope member with
-`NOT_CONNECTED`. The mount slews only when a scenario slews it: it has no
+A mount that is not connected answers every Telescope member this table
+lists with `NOT_CONNECTED`; the members it leaves to the Alpaca library's
+defaults answer as those do. The mount slews only when a scenario slews it: it has no
 Alpaca slew members.
 
 ## What a scenario scripts

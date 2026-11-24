@@ -259,6 +259,28 @@ async fn a_second_exposure_is_refused_while_one_runs_and_an_abort_drops_it() {
 }
 
 #[tokio::test]
+async fn a_start_is_refused_while_the_last_exposure_reads_out() {
+    let mut config = config();
+    config.camera.readout = Duration::from_secs(10);
+    let (_devices, camera, _mount) = connected_with(config).await;
+    camera
+        .start_exposure(Duration::from_millis(20), true)
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        if camera.camera_state().await.unwrap() == CameraState::Reading {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(camera.camera_state().await.unwrap(), CameraState::Reading);
+    assert_eq!(
+        code(camera.start_exposure(Duration::from_millis(20), true).await),
+        ASCOMErrorCode::INVALID_OPERATION
+    );
+}
+
+#[tokio::test]
 async fn a_camera_that_cannot_abort_refuses_and_the_attempt_is_counted() {
     let mut config = config();
     config.camera.can_abort_exposure = false;

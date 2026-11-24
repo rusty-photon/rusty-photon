@@ -74,6 +74,14 @@ fn exposing(state: &State, now: SimTime) -> bool {
         .is_some_and(|exposure| exposure.end > now)
 }
 
+/// Whether the last exposure reads out at `now`: it has ended, and its
+/// image is still to come. An image that never comes holds nothing up.
+fn reading(state: &State, now: SimTime) -> bool {
+    state.camera.exposure.as_ref().is_some_and(|exposure| {
+        exposure.end <= now && exposure.ready.is_some_and(|ready| ready > now)
+    })
+}
+
 /// A setting outside 0 to `SETTING_MAX`.
 fn check_setting(name: &str, value: i32) -> ASCOMResult<()> {
     if (0..=SETTING_MAX).contains(&value) {
@@ -113,6 +121,11 @@ fn start(
     }
     if exposing(state, now) {
         return Err(ASCOMError::invalid_operation("an exposure is in progress"));
+    }
+    if reading(state, now) {
+        return Err(ASCOMError::invalid_operation(
+            "the last exposure is still reading out",
+        ));
     }
     let bin = state.camera.bin;
     let region = state.camera.region;
