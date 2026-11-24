@@ -14,8 +14,8 @@ written. The last slice left five items to the owner, outside this
 plan's definition: ADR ids in strings that programs print, the ASTAP
 pin-refresh procedure that only ADR-005 holds, issue numbers in the
 bodies of tracking issues, a `.bazelrc` claim about qhy-camera's
-simulation binary, and the qhyccd-rs doc tests' flaky attempts — each
-described in [that pull request](https://github.com/rusty-photon/rusty-photon/pull/1866).
+simulation binary, and the qhyccd-rs doc tests' flaky attempts. They
+are tracked in [issue 1888](https://github.com/rusty-photon/rusty-photon/issues/1888).
 
 ## Goal
 
