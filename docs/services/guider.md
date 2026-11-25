@@ -8,8 +8,12 @@ measures how far a set of guide stars has moved, and corrects the mount
 with `PulseGuide` on one ASCOM Alpaca Telescope. `rp` commands it over
 an HTTP API.
 
-**The service is designed and not yet built.** This document is the
-design the implementation is written against. Of the guiding core,
+**The service is being built.** This document is the design the
+implementation is written against. Of the service, the configuration
+and its validation, the lifecycle and the state directory, the device
+clients and their poll, `GET /api/v1/devices`, `/health` and
+`guider doctor` are built; the camera loop, guiding, the guide log, the
+setup page and the packages are not yet. Of the guiding core,
 `crates/rp-guiding`, the star selection, the measurement, the
 calibration, the control, dither and settling are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
@@ -212,6 +216,15 @@ comes back, it reads that device's static properties: the camera's
 sensor size, pixel size, sensor type, `MaxADU`, `MaxBinX` and
 `CanAbortExposure`, and the mount's `CanPulseGuide`. The poll only
 reads. `GET /api/v1/devices` and `/health` answer from its results.
+
+- **Reaching a device.** A device is reachable when its server lists
+  it at `device_number` and its `Connected` reads. A server that does
+  not answer, a read that fails and a server that lists no device of the
+  kind at `device_number` leave it unreachable, the last with no
+  `UniqueID`. A device is unreachable until its first poll reaches it.
+- **What a device keeps.** A device that stops answering keeps the
+  `UniqueID` and the static properties last read of it. A static read
+  that fails is tried again at the next poll.
 
 **At a request.** `loop`, `calibrate` and `guiding/start` read
 `Connected` afresh before anything else. A device that does not answer
@@ -1185,7 +1198,11 @@ celestial equator ([Calibration](#calibration)).
   [deadline of a call](#devices-and-connections) to a device that has
   stopped answering.
 - A device that is not configured is `null`. A property that has not
-  been read yet is `null`. `binning` is the effective binning.
+  been read yet is `null`. `binning` is the effective binning, and
+  `null` for a sensor type the guider cannot measure.
+- `reachable` is whether the last poll reached the device, and
+  `connected` whether it reached it and read `Connected` true
+  ([The device poll](#devices-and-connections)).
 - `unique_id` is the `UniqueID` the device's server listed for it at
   the last poll that read the list, and `null` until a poll has read
   it.
@@ -1207,10 +1224,13 @@ The setup page, HTML for a browser: see [Setup page](#setup-page).
 `200 {"status": "ok"}` while the configuration names both devices and
 the focal length, and both devices answer and are connected.
 `503 {"status": "unavailable", "message": "..."}` otherwise, where
-`message` says what is missing: the configuration names no camera or no
-focal length, the mount does not answer, the camera is not connected.
-The answer comes from the configuration and the device poll, so a probe
-costs no device call.
+`message` names everything missing, joined by `"; "`: first what the
+configuration does not name (`the configuration names no camera`, `…no
+mount`, `…no focal length`), then the camera and then the mount, each as
+`the camera does not answer`, `the camera's server lists no camera at
+device number 1` or `the camera is not connected` (`telescope` for the
+mount's kind). The answer comes from the configuration and the device
+poll, so a probe costs no device call.
 
 The `503` means **alive but degraded**. Devices that are switched off
 or not connected are the normal daytime state and nothing a restart of
