@@ -637,7 +637,9 @@ towards `calibration.max_steps`. The state stays `calibrating`, and
 answer](#the-mount-checks-and-pulses)). The leg does not count that
 step: the next frame is judged as if it had not been asked for, so the
 leg asks for the step again, and its rate is worked out from the pulses
-the mount was sent.
+the mount was sent. A step whose `PulseGuide` call returned was sent,
+and counts, even when the `IsPulseGuiding` read after it fails; that
+cycle still counts as one with a failed mount call.
 
 **The step.** The guider sizes the step so that a leg takes about
 `calibration.steps` steps. It works the step out from the guide rate

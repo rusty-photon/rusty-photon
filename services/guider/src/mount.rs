@@ -150,9 +150,12 @@ pub async fn ready(mount: &dyn Telescope) -> Result<MountStart, ApiError> {
 pub enum Fault {
     /// The run stops.
     Stop(Stop),
-    /// A read or a `PulseGuide` call failed: the cycle sends no further
-    /// pulse.
+    /// A read or a `PulseGuide` call failed before a pulse went out: the
+    /// cycle sends no pulse.
     Failed(String),
+    /// The `PulseGuide` call returned, so the pulse went out, and the
+    /// `IsPulseGuiding` read after it failed.
+    Unconfirmed(String),
 }
 
 /// The mount during a run.
@@ -200,17 +203,16 @@ impl RunMount {
         }
     }
 
-    /// The mount check, then `pulse`, ended: the call has returned, its
-    /// duration has passed and `IsPulseGuiding` reads false.
+    /// `pulse`, ended: the call has returned, its duration has passed and
+    /// `IsPulseGuiding` reads false. The caller has checked the mount.
     ///
     /// # Errors
     ///
-    /// As [`RunMount::check`], and [`Fault::Stop`] with `pulse_timeout` for
-    /// a pulse still in progress `mount.pulse_timeout` after its duration;
-    /// [`Fault::Failed`] for a `PulseGuide` call or an `IsPulseGuiding` read
-    /// that fails.
-    pub async fn checked_pulse(&self, pulse: Pulse) -> Result<(), Fault> {
-        self.check().await?;
+    /// [`Fault::Stop`] with `pulse_timeout` for a pulse still in progress
+    /// `mount.pulse_timeout` after its duration, [`Fault::Failed`] for a
+    /// `PulseGuide` call that fails, and [`Fault::Unconfirmed`] for an
+    /// `IsPulseGuiding` read that fails after the call returned.
+    pub async fn pulse(&self, pulse: Pulse) -> Result<(), Fault> {
         let direction = match pulse.direction {
             Direction::North => GuideDirection::North,
             Direction::South => GuideDirection::South,
@@ -243,7 +245,7 @@ impl RunMount {
             match tokio::time::timeout_at(deadline, member(self.mount.is_pulse_guiding())).await {
                 Err(_) => return Err(timed_out()),
                 Ok(Err(error)) => {
-                    return Err(Fault::Failed(format!(
+                    return Err(Fault::Unconfirmed(format!(
                         "reading IsPulseGuiding failed: {error}"
                     )))
                 }
@@ -437,7 +439,7 @@ mod tests {
     async fn a_pulse_ends_once_its_duration_has_passed() {
         let (mount, run) = run(FakeMount::default());
         let started = Instant::now();
-        run.checked_pulse(west(300)).await.unwrap();
+        run.pulse(west(300)).await.unwrap();
         assert!(started.elapsed() >= Duration::from_millis(300));
         assert_eq!(mount.pulses.load(Ordering::SeqCst), 1);
     }
@@ -448,7 +450,7 @@ mod tests {
             pulse_guiding: true.into(),
             ..FakeMount::default()
         });
-        let Err(Fault::Stop(stop)) = run.checked_pulse(west(300)).await else {
+        let Err(Fault::Stop(stop)) = run.pulse(west(300)).await else {
             panic!("the pulse ended");
         };
         assert_eq!(stop.reason, StopReason::PulseTimeout);
@@ -460,7 +462,7 @@ mod tests {
             pulse_hangs: true,
             ..FakeMount::default()
         });
-        let Err(Fault::Stop(stop)) = run.checked_pulse(west(300)).await else {
+        let Err(Fault::Stop(stop)) = run.pulse(west(300)).await else {
             panic!("the pulse ended");
         };
         assert_eq!(stop.reason, StopReason::PulseTimeout);
@@ -472,23 +474,38 @@ mod tests {
             pulse_refused: true,
             ..FakeMount::default()
         });
-        let Err(Fault::Failed(message)) = run.checked_pulse(west(300)).await else {
+        let Err(Fault::Failed(message)) = run.pulse(west(300)).await else {
             panic!("the pulse did not fail");
         };
         assert!(message.starts_with("PulseGuide failed"), "{message}");
     }
 
     #[tokio::test(start_paused = true)]
-    async fn no_pulse_goes_to_a_mount_that_fails_its_check() {
+    async fn a_pulse_whose_end_cannot_be_read_went_out() {
         let (mount, run) = run(FakeMount {
+            pulse_guiding_fails: true,
+            ..FakeMount::default()
+        });
+        let Err(Fault::Unconfirmed(message)) = run.pulse(west(300)).await else {
+            panic!("the pulse's end was read");
+        };
+        assert!(
+            message.starts_with("reading IsPulseGuiding failed"),
+            "{message}"
+        );
+        assert_eq!(mount.pulses.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_mount_on_another_side_than_the_runs_fails_its_check() {
+        let (_, run) = run(FakeMount {
             side: Some(AlpacaSide::West),
             ..FakeMount::default()
         });
-        let Err(Fault::Stop(stop)) = run.checked_pulse(west(300)).await else {
-            panic!("the pulse went out");
+        let Err(Fault::Stop(stop)) = run.check().await else {
+            panic!("the mount passed its check");
         };
         assert_eq!(stop.reason, StopReason::PierSideChanged);
-        assert_eq!(mount.pulses.load(Ordering::SeqCst), 0);
     }
 
     #[test]

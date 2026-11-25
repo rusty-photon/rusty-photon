@@ -225,6 +225,7 @@ pub async fn run(
         ending_turn: None,
         first,
         reselect: None,
+        pending_calibration: None,
         stars: None,
         failures: 0,
         settings_due: Some(Settings::Start),
@@ -291,6 +292,8 @@ struct Cycle {
     ending_turn: Option<Turn>,
     first: Option<oneshot::Sender<usize>>,
     reselect: Option<ReselectReply>,
+    /// A calibration asked for during a frame, taken up after it.
+    pending_calibration: Option<CalibrationRun>,
     stars: Option<GuideStars>,
     /// Frames failed in a row.
     failures: u32,
@@ -327,7 +330,7 @@ impl Cycle {
                 return Some(End::Stop(stop));
             }
         }
-        self.after_frame(took).await
+        self.after_frame(took, cancel).await
     }
 
     /// The frame settings when they are due, then a frame and its
@@ -362,15 +365,15 @@ impl Cycle {
         cancel: &CancellationToken,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Result<Result<ImageArray, String>, Stop> {
-        let (taken, calibrate) = {
+        let taken = {
             let Self {
                 exposer,
                 devices,
                 sensor,
                 reselect,
+                pending_calibration,
                 ..
             } = self;
-            let mut calibrate = None;
             let frame = exposer.frame();
             tokio::pin!(frame);
             let taken = loop {
@@ -379,7 +382,7 @@ impl Cycle {
                     () = cancel.cancelled() => return Err(Stop::requested()),
                     Some(command) = commands.recv() => match command {
                         Command::Reselect(reply) => *reselect = Some(reply),
-                        Command::Calibrate(run) => calibrate = Some(*run),
+                        Command::Calibrate(run) => *pending_calibration = Some(*run),
                     },
                     Ok(()) = devices.changed() => {
                         if let Some(message) = came_back_changed(devices, sensor) {
@@ -389,10 +392,12 @@ impl Cycle {
                     result = &mut frame => break result,
                 }
             };
-            (taken, calibrate)
+            taken
         };
-        // A calibration asked for during the frame calibrates on it.
-        if let Some(run) = calibrate {
+        // A calibration asked for during the frame calibrates on it. One the
+        // loop stops before it takes up stays here, and drops with the loop
+        // once its stop is recorded.
+        if let Some(run) = self.pending_calibration.take() {
             self.calibrate(run);
         }
         Ok(taken)
@@ -512,7 +517,7 @@ impl Cycle {
     }
 
     /// What follows a frame: in a calibration, the calibrator's next step.
-    async fn after_frame(&mut self, took: Took) -> Option<End> {
+    async fn after_frame(&mut self, took: Took, cancel: &CancellationToken) -> Option<End> {
         let now = self.now();
         let Mode::Calibrating(calibrating) = &mut self.mode else {
             return None;
@@ -563,9 +568,20 @@ impl Cycle {
             Progress::Wait(next) => (next, None),
             Progress::Pulse(next, pulse) => (next, Some(pulse)),
         };
-        let fault = match pulse {
-            None => calibrating.mount.check().await.err(),
-            Some(pulse) => calibrating.mount.checked_pulse(pulse).await.err(),
+        // A stop ends the cycle before any pulse goes out: the check is
+        // raced against it, and looked at again before the pulse.
+        let checked = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Some(End::Stop(Stop::requested())),
+            checked = calibrating.mount.check() => checked,
+        };
+        let fault = match (checked, pulse) {
+            (Err(fault), _) => Some(fault),
+            (Ok(()), None) => None,
+            (Ok(()), Some(_)) if cancel.is_cancelled() => {
+                return Some(End::Stop(Stop::requested()));
+            }
+            (Ok(()), Some(pulse)) => calibrating.mount.pulse(pulse).await.err(),
         };
         let failed = match fault {
             Some(Fault::Stop(stop)) => return Some(End::Stop(stop)),
@@ -573,6 +589,11 @@ impl Cycle {
                 // The step was not sent: the next frame is judged as if it
                 // had not been asked for.
                 calibrating.calibrator = Some(before);
+                Some(message)
+            }
+            Some(Fault::Unconfirmed(message)) => {
+                // The step went out, and counts.
+                calibrating.calibrator = Some(next);
                 Some(message)
             }
             None => {
@@ -1294,6 +1315,7 @@ mod tests {
             ending_turn: None,
             first: None,
             reselect: None,
+            pending_calibration: None,
             stars: None,
             failures: 0,
             settings_due: None,
@@ -1339,12 +1361,15 @@ mod tests {
         }
     }
 
-    /// The calibrator a calibrating cycle holds, as its debug output.
-    fn calibrator(cycle: &Cycle) -> String {
+    /// The steps of the leg the calibrator a calibrating cycle holds has
+    /// sent, read off its debug output, whose last field they are.
+    fn leg_steps(cycle: &Cycle) -> String {
         let Mode::Calibrating(calibrating) = &cycle.mode else {
             panic!("the loop is not calibrating");
         };
-        format!("{:?}", calibrating.calibrator)
+        let held = format!("{:?}", calibrating.calibrator);
+        let (_, last) = held.rsplit_once("steps: ").expect("the calibrator's steps");
+        format!("steps: {}", last.trim_end_matches(['}', ')', ' ']))
     }
 
     #[tokio::test(start_paused = true)]
@@ -1354,12 +1379,11 @@ mod tests {
             run_on(crate::test_mount::FakeMount::default(), Return::Idle).await;
         cycle.calibrate(run);
         assert_eq!(cycle.status.lock().state(), State::Calibrating);
-        assert!(cycle.after_frame(selected()).await.is_none());
-        assert!(
-            calibrator(&cycle).contains("steps: 1"),
-            "{}",
-            calibrator(&cycle)
-        );
+        assert!(cycle
+            .after_frame(selected(), &CancellationToken::new())
+            .await
+            .is_none());
+        assert_eq!(leg_steps(&cycle), "steps: 1");
     }
 
     #[tokio::test(start_paused = true)]
@@ -1371,12 +1395,56 @@ mod tests {
         };
         let (run, _answer, _turns) = run_on(mount, Return::Idle).await;
         cycle.calibrate(run);
-        assert!(cycle.after_frame(selected()).await.is_none());
-        let held = calibrator(&cycle);
+        assert!(cycle
+            .after_frame(selected(), &CancellationToken::new())
+            .await
+            .is_none());
+        assert_eq!(leg_steps(&cycle), "steps: 0");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_whose_pulse_went_out_counts_though_its_end_could_not_be_read() {
+        let mut cycle = looping_cycle();
+        let mount = crate::test_mount::FakeMount {
+            pulse_guiding_fails: true,
+            ..crate::test_mount::FakeMount::default()
+        };
+        let (run, _answer, _turns) = run_on(mount, Return::Idle).await;
+        cycle.calibrate(run);
+        assert!(cycle
+            .after_frame(selected(), &CancellationToken::new())
+            .await
+            .is_none());
+        assert_eq!(leg_steps(&cycle), "steps: 1");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_during_the_mount_check_sends_no_pulse() {
+        let mut cycle = looping_cycle();
+        let mount = Arc::new(crate::test_mount::FakeMount {
+            read_delay: Duration::from_secs(5),
+            ..crate::test_mount::FakeMount::default()
+        });
+        let (mut run, _answer, _turns) =
+            run_on(crate::test_mount::FakeMount::default(), Return::Idle).await;
+        run.mount = Arc::clone(&mount) as Arc<dyn Telescope>;
+        cycle.calibrate(run);
+        let cancel = CancellationToken::new();
+        let stopping = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            stopping.cancel();
+        });
+        let started = Instant::now();
+        let Some(End::Stop(stop)) = cycle.after_frame(selected(), &cancel).await else {
+            panic!("the calibration went on");
+        };
+        assert_eq!(stop.reason, crate::api::StopReason::Requested);
         assert!(
-            held.contains("steps: 0") && held.contains("start: None"),
-            "{held}"
+            started.elapsed() < Duration::from_secs(5),
+            "the stop waited for the check to end"
         );
+        assert_eq!(mount.pulses.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1388,7 +1456,10 @@ mod tests {
         };
         let (run, _answer, _turns) = run_on(mount, Return::Idle).await;
         cycle.calibrate(run);
-        let Some(End::Stop(stop)) = cycle.after_frame(selected()).await else {
+        let Some(End::Stop(stop)) = cycle
+            .after_frame(selected(), &CancellationToken::new())
+            .await
+        else {
             panic!("the calibration went on");
         };
         assert_eq!(stop.reason, crate::api::StopReason::MountSlewing);
@@ -1403,7 +1474,12 @@ mod tests {
         };
         let (run, _answer, _turns) = run_on(mount, Return::Idle).await;
         cycle.calibrate(run);
-        let Some(End::Stop(stop)) = cycle.after_frame(Took::Failed("no frame".to_owned())).await
+        let Some(End::Stop(stop)) = cycle
+            .after_frame(
+                Took::Failed("no frame".to_owned()),
+                &CancellationToken::new(),
+            )
+            .await
         else {
             panic!("the calibration went on");
         };
@@ -1446,10 +1522,13 @@ mod tests {
             run_on(crate::test_mount::FakeMount::default(), Return::Idle).await;
         cycle.calibrate(run);
         let end = cycle
-            .after_frame(Took::Measured {
-                offset: None,
-                selection: Some(Err(())),
-            })
+            .after_frame(
+                Took::Measured {
+                    offset: None,
+                    selection: Some(Err(())),
+                },
+                &CancellationToken::new(),
+            )
             .await;
         let Some(End::Calibrated { outcome, .. }) = end else {
             panic!("the calibration went on");

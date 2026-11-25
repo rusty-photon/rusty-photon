@@ -323,17 +323,6 @@ impl GuiderWorld {
         }));
     }
 
-    /// `POST path` in the background by a client that gives up waiting
-    /// after `patience`, its answer, if any, ignored.
-    pub fn post_and_give_up(&self, path: &str, patience: Duration) {
-        let request = http()
-            .post(format!("{}{path}", self.base_url()))
-            .timeout(patience);
-        tokio::spawn(async move {
-            let _ = send(request, None).await;
-        });
-    }
-
     /// `GET path` on the guider: the status and the JSON body.
     pub async fn get(&self, path: &str) -> Result<(u16, Value), String> {
         let response = http()

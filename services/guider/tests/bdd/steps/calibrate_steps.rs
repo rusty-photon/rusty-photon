@@ -127,9 +127,13 @@ fn ask_to_calibrate_in_background(world: &mut GuiderWorld) {
     world.post_in_background("/api/v1/calibrate", None);
 }
 
-#[given("a client asks the guider to calibrate and gives up waiting")]
-fn ask_to_calibrate_and_give_up(world: &mut GuiderWorld) {
-    world.post_and_give_up("/api/v1/calibrate", Duration::from_secs(1));
+#[given("the client gives up waiting")]
+fn gives_up(world: &mut GuiderWorld) {
+    world
+        .background
+        .take()
+        .expect("the scenario sent no request in the background")
+        .abort();
 }
 
 #[given("a client asks the guider to clear the calibration store")]

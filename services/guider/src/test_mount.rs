@@ -30,6 +30,10 @@ pub struct FakeMount {
     pub pulse_refused: bool,
     /// `IsPulseGuiding` reads true.
     pub pulse_guiding: AtomicBool,
+    /// `IsPulseGuiding` answers an error.
+    pub pulse_guiding_fails: bool,
+    /// How long each read of the mount check (`Tracking`) takes.
+    pub read_delay: Duration,
     /// `PulseGuide` calls.
     pub pulses: AtomicUsize,
 }
@@ -46,6 +50,8 @@ impl Default for FakeMount {
             pulse_hangs: false,
             pulse_refused: false,
             pulse_guiding: AtomicBool::new(false),
+            pulse_guiding_fails: false,
+            read_delay: Duration::ZERO,
             pulses: AtomicUsize::new(0),
         }
     }
@@ -117,6 +123,9 @@ impl Telescope for FakeMount {
     }
 
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
+        if self.pulse_guiding_fails {
+            return Err(ASCOMError::invalid_operation("not now"));
+        }
         Ok(self.pulse_guiding.load(Ordering::SeqCst))
     }
 
@@ -141,6 +150,7 @@ impl Telescope for FakeMount {
     }
 
     async fn tracking(&self) -> ASCOMResult<bool> {
+        tokio::time::sleep(self.read_delay).await;
         Ok(self.tracking)
     }
 

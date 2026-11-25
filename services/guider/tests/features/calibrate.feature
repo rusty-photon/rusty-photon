@@ -157,8 +157,9 @@ Feature: Calibrating
 
   Scenario: A calibration whose client gave up holds the requests' turn until it ends
     Given the guider is started
-    And a client asks the guider to calibrate and gives up waiting
+    And a client asks the guider to calibrate in the background
     And the simulated mount has received a pulse
+    And the client gives up waiting
     When a client asks the guider to clear the calibration store
     Then the request answers 200 with the body {"state": "idle"}
     And the simulated mount received West pulses, then East, then North, then South
