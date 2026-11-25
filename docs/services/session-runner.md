@@ -1099,11 +1099,14 @@ with no civil darkness that night) is skipped with a `warn!`.
    (the mount briefly unreachable, a park that timed out) otherwise holds
    the mount's output, and every device on it, until dusk. After the
    third failed park the schedule logs at `warn!` that the mount stays
-   unparked, and leaves its output on until dusk. A check of an output
-   held for a camera whose cooler is running calls `start_warmup` first:
-   a ramp cut short, which an `rp` restart in the middle of it leaves at
-   its last setpoint, starts again, and a ramp still running is left
-   alone. A check of an output
+   unparked, and leaves its output on until dusk. When the schedule sees
+   `rp` come back from a restart while an output is held for a running
+   cooler (its event stream drops and reconnects, or a call fails at the
+   request level and then answers), it calls `start_warmup` once: the
+   restart emptied `rp`'s record and left any ramp it cut short at its
+   last setpoint, and the call warms exactly those cameras. Without an
+   `rp` restart nothing calls it again, so a camera an operator cools by
+   day is left alone. A check of an output
    whose cut failed, or whose box could not be read, first connects the
    devices on it again through `connect_device`: `power_down` held them
    out before its cut, and a mount still held out fails every park and
@@ -1162,7 +1165,7 @@ the workspace atomic-write pattern at every change: the night's date,
 dusk and dawn, its phase (`day`, `dusk`, `power_up`, `camera_check`,
 `runs`, `dawn`, `after_dawn`), the outputs dusk's `power_up` switched
 on, the index of the next run to start (moved on as each run ends), the
-cameras it gave up, the
+covers still to open, the cameras it gave up, the
 time of dawn's `start_warmup`, and the outputs dawn left on. A start reads it and
 carries on, at any time of day. A configured night is the operator's
 standing decision to run every night, power, cooling, runs and dawn
@@ -1211,7 +1214,8 @@ taken in order, and the first that matches decides:
    planner-driven document absorbs: it re-asks the planner and finds its
    goals met. With `resume_on_start: false` nothing is picked up, the
    run's manifest stays where it is, and the schedule goes on with the
-   run after the one the manifest names.
+   run after the one the manifest names. The retries of the covers
+   `night.json` records as still to open go on.
 
 `resume_on_start: false` keeps a start passive for runs, and does not
 hold the schedule: an operator who wants no night removes the `night`
