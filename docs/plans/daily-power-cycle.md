@@ -393,8 +393,9 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
     services restarts (decision 5) and each device is connected through rp.
     Then dusk tries once more. The cycle follows dawn's cut rules (decision
     15), and an output they leave on gives the camera up at once; an
-    output this dusk switched on feeds no running cooler, so only the
-    mount's rule can hold it, and at dusk that rule asks only whether a
+    output that did not read on before dusk's power-up feeds no running
+    cooler, so only the mount's and the cover's rules can hold it, and at
+    dusk the mount's rule asks only whether a
     cut keeps the mount's pose (decision 16), since the night has not
     moved the mount since its power-up. A second
     wedge gives the camera up
