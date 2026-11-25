@@ -1558,9 +1558,16 @@ region, the signal-to-noise floor, the flux change, the calibration
 distance and step count and the two warning thresholds are the values
 the options study collected from guiders in field use, with its sources
 ([native-guider.md § Options](../plans/native-guider.md#options), parts
-4 to 6). Every other number here is a starting value of this design:
-the plan's stage G1 settles the camera timings, G3 the star values on
-recorded frames, and G5 the control values and the rest on sky.
+4 to 6). Every other number here is a starting value of this design,
+and two sets of them are measured. The camera's: over an hour on each
+guide camera, a frame of the 2 s exposure reaches a client within 0.7 s
+of the exposure's end, far inside the 10 s `camera.frame_timeout`
+([native-guider.md § Staging](../plans/native-guider.md#staging), "What
+G1 found"). The stars': the star defaults keep all 8 guide stars usable
+in all 1,441 frames of an hour recorded on rig2, each scattering at most
+0.11 px
+([its record](../validation/2026-11-22-guide-replay-qhy5iii678m-rig2/README.md)).
+The plan's stage G5 settles the control values and the rest on sky.
 
 `guider doctor [--config <file>] [--json]` checks the configuration
 without starting the service, as every service's doctor does
@@ -1655,8 +1662,12 @@ clients as they cover `rp`'s.
 
 ### Deferred
 
-- **Subframes.** Every frame is the full frame. Stage G1 measures what
-  that costs.
+- **Subframes.** Every frame is the full frame. On the guide cameras a
+  512 × 512 subframe would cut the SDK's readout from about 460 ms to
+  264–305 ms, and the full frame already reaches a client within 0.7 s
+  of its exposure's end
+  ([native-guider.md § Staging](../plans/native-guider.md#staging),
+  "What G1 found").
 - **Dark frames and a defect map.**
 - **Hardware-binned colour frames** and sensor types other than
   `Monochrome` and `RGGB`.
