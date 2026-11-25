@@ -1,13 +1,17 @@
-//! The guider's state and its requests (docs/services/guider.md § States,
-//! § Concurrency, § HTTP API): `loop`, `star/reselect` and `guiding/stop`,
-//! and the reads `stats`, `metrics` and `frame/latest` answer from.
+//! The guider's state and its requests.
 //!
-//! Mutating requests take turns behind one mutex, and queue. A
-//! `guiding/stop` takes no turn: it cancels the loop, and every mutating
-//! request waiting or queued when it arrives answers `stopped`, since each
-//! watches the count of stops from its arrival. A loop is started under the
-//! same lock a stop cancels under, so nothing accepted before a stop runs
-//! after it.
+//! `loop`, `calibrate`, `star/reselect`, `guiding/stop` and
+//! `calibration/clear`, and the reads `stats`, `metrics`, `frame/latest`
+//! and `calibration` answer from (docs/services/guider.md § States,
+//! § Concurrency, § HTTP API).
+//!
+//! Mutating requests take turns behind one mutex, and queue; a calibration
+//! keeps its request's turn until it ends. A `guiding/stop` takes no turn:
+//! it cancels the loop, and every mutating request waiting or queued when
+//! it arrives answers `stopped`, since each watches the count of stops from
+//! its arrival. A loop is started, and handed a calibration, under the same
+//! lock a stop cancels under, so nothing accepted before a stop runs after
+//! it.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -22,13 +26,19 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
 use crate::api::{ApiError, ErrorCode, Stop, StopReason};
-use crate::camera_loop::{self, Command, LoopSetup};
+use crate::calibration_store::{CalibrationStore, RecordBody, StoreBody};
+use crate::camera_loop::{self, CalibrationRun, Command, LoopSetup, Return};
 use crate::config::Config;
 use crate::devices::{
     camera_sensor, CameraKind, CameraSensor, DeviceClient, DevicesState, Found, Kind, MountKind,
     Reach,
 };
+use crate::mount;
 use crate::sensor;
+
+/// A turn of the mutating requests, which a calibration holds until it
+/// ends.
+pub type Turn = tokio::sync::OwnedMutexGuard<()>;
 
 /// The frames the metrics window holds.
 const METRICS_WINDOW: usize = 50;
@@ -41,6 +51,16 @@ pub enum State {
     Idle,
     /// Frames are taken and measured.
     Looping,
+    /// The guider learns what a pulse in each direction does to the stars.
+    Calibrating,
+}
+
+impl State {
+    /// Whether the state is a run state.
+    #[must_use]
+    pub const fn is_run(self) -> bool {
+        matches!(self, Self::Calibrating)
+    }
 }
 
 /// What one measured frame told of its usable stars.
@@ -120,7 +140,7 @@ pub struct Status {
 }
 
 impl Status {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             state: State::Idle,
             frames: 0,
@@ -130,12 +150,25 @@ impl Status {
         }
     }
 
-    /// The loop starts from `idle`: the metrics window and the latest frame
-    /// are cleared.
-    fn loop_started(&mut self) {
-        self.state = State::Looping;
-        self.metrics.clear();
+    /// The loop starts from `idle`, in `state`: the latest frame is cleared,
+    /// and the metrics window with it when `clear_metrics`.
+    fn loop_started(&mut self, state: State, clear_metrics: bool) {
+        self.state = state;
+        if clear_metrics {
+            self.metrics.clear();
+        }
         self.latest = None;
+    }
+
+    /// The loop goes on in `state`.
+    pub const fn set_state(&mut self, state: State) {
+        self.state = state;
+    }
+
+    /// The loop ended with no stop, its exposure ended: a calibration from
+    /// `idle` returned there.
+    pub const fn idle(&mut self) {
+        self.state = State::Idle;
     }
 
     /// A frame was measured.
@@ -169,6 +202,12 @@ impl Status {
         });
     }
 
+    /// The state.
+    #[cfg(test)]
+    pub(crate) const fn state(&self) -> State {
+        self.state
+    }
+
     /// The guide stars of the latest measured frame, 0 before the first.
     fn star_count(&self) -> usize {
         self.latest
@@ -198,6 +237,13 @@ pub struct StateAnswer {
     pub state: State,
 }
 
+/// The answer of `calibrate`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CalibrateAnswer {
+    pub state: State,
+    pub calibration: RecordBody,
+}
+
 /// The guider.
 pub struct Guider {
     config: Arc<Config>,
@@ -205,7 +251,8 @@ pub struct Guider {
     mount: Option<Arc<DeviceClient>>,
     devices: watch::Receiver<DevicesState>,
     /// The mutating requests' turns.
-    turns: tokio::sync::Mutex<()>,
+    turns: Arc<tokio::sync::Mutex<()>>,
+    store: Arc<CalibrationStore>,
     /// The count of stops.
     stops: watch::Sender<u64>,
     running: Mutex<Option<Running>>,
@@ -224,13 +271,15 @@ impl Guider {
         camera: Option<Arc<DeviceClient>>,
         mount: Option<Arc<DeviceClient>>,
         devices: watch::Receiver<DevicesState>,
+        store: Arc<CalibrationStore>,
     ) -> Self {
         Self {
             config,
             camera,
             mount,
             devices,
-            turns: tokio::sync::Mutex::new(()),
+            turns: Arc::new(tokio::sync::Mutex::new(())),
+            store,
             stops: watch::Sender::new(0),
             running: Mutex::new(None),
             status: Arc::new(Mutex::new(Status::new())),
@@ -250,57 +299,110 @@ impl Guider {
     ///
     /// # Errors
     ///
-    /// `stopped`, `not_configured`, `device_unreachable`,
+    /// `stopped`, `not_idle`, `not_configured`, `device_unreachable`,
     /// `device_not_connected`, `camera_unsupported` and `guide_failed`, as
     /// guider.md § `POST /api/v1/loop` and § Error envelope say.
     pub async fn start_loop(&self) -> Result<SelectionAnswer, ApiError> {
         let mut stops = self.stops.subscribe();
         let _turn = self.take_turn(&mut stops).await?;
+        self.not_in_a_run()?;
         if self.looping() {
             return Ok(SelectionAnswer {
                 state: State::Looping,
                 star_count: self.status.lock().star_count(),
             });
         }
-        let (Some(camera_client), Some(mount_client), Some(_)) = (
-            self.camera.as_ref(),
-            self.mount.as_ref(),
-            self.config.optics.focal_length_mm,
-        ) else {
-            return Err(ApiError::new(
-                ErrorCode::NotConfigured,
-                "the configuration names no camera, no mount or no focal length",
-            ));
-        };
-        self.ended(&mut stops).await?;
-        let (camera, mount) = tokio::join!(
-            camera_client.find::<CameraKind>(),
-            mount_client.find::<MountKind>()
-        );
-        let camera = connected::<CameraKind>(camera, camera_client.device_number())?;
-        connected::<MountKind>(mount, mount_client.device_number())?;
-        let sensor = self.camera_sensor(&camera).await?;
-        let reading = sensor::reading(&sensor, self.config.camera.binning.get())
-            .map_err(|error| ApiError::new(ErrorCode::CameraUnsupported, error.to_string()))?;
+        let devices = self.devices_for_a_start(&mut stops).await?;
         let (first, first_frame) = oneshot::channel();
         self.spawn(
-            LoopSetup {
-                config: Arc::clone(&self.config),
-                client: Arc::clone(camera_client),
-                camera,
-                sensor,
-                reading,
-                status: Arc::clone(&self.status),
-                devices: self.devices.clone(),
-                first,
-            },
+            self.setup(devices, Some(first), None),
             &stops,
+            State::Looping,
+            true,
         )?;
         let star_count = self.answer(first_frame, &mut stops).await?;
         Ok(SelectionAnswer {
             state: State::Looping,
             star_count,
         })
+    }
+
+    /// `POST /api/v1/calibrate`.
+    ///
+    /// # Errors
+    ///
+    /// `stopped`, `not_idle`, `not_configured`, `device_unreachable`,
+    /// `device_not_connected`, `camera_unsupported`, `mount_not_ready`,
+    /// `no_stars`, `calibration_failed` and `guide_failed`, as guider.md
+    /// § `POST /api/v1/calibrate` and § Error envelope say.
+    pub async fn calibrate(&self) -> Result<CalibrateAnswer, ApiError> {
+        let mut stops = self.stops.subscribe();
+        let turn = self.take_turn(&mut stops).await?;
+        self.not_in_a_run()?;
+        let looping = self.looping();
+        let devices = self.devices_for_a_start(&mut stops).await?;
+        let start = mount::ready(&*devices.mount).await?;
+        let (reply, outcome) = oneshot::channel();
+        let run = CalibrationRun {
+            mount: Arc::clone(&devices.mount),
+            start,
+            reply,
+            return_to: if looping {
+                Return::Looping
+            } else {
+                Return::Idle
+            },
+            turn,
+        };
+        if looping {
+            let running = self.running.lock();
+            if stops.has_changed().unwrap_or(true) {
+                return Err(ApiError::stopped());
+            }
+            running
+                .as_ref()
+                .filter(|running| self.takes_frames(running))
+                .ok_or_else(ApiError::stopped)?
+                .commands
+                .send(Command::Calibrate(Box::new(run)))
+                .map_err(|_| ApiError::stopped())?;
+        } else {
+            self.spawn(
+                self.setup(devices, None, Some(run)),
+                &stops,
+                State::Calibrating,
+                false,
+            )?;
+        }
+        let answer = self.answer(outcome, &mut stops).await??;
+        Ok(CalibrateAnswer {
+            state: answer.state,
+            calibration: RecordBody::from(&answer.record),
+        })
+    }
+
+    /// `POST /api/v1/calibration/clear`.
+    ///
+    /// # Errors
+    ///
+    /// `stopped`, `not_idle`, and `internal` when the store's file cannot be
+    /// written.
+    pub async fn clear_calibration(&self) -> Result<StateAnswer, ApiError> {
+        let mut stops = self.stops.subscribe();
+        let _turn = self.take_turn(&mut stops).await?;
+        self.not_in_a_run()?;
+        self.store
+            .clear()
+            .map_err(|error| ApiError::new(ErrorCode::Internal, error))?;
+        Ok(StateAnswer {
+            state: self.status.lock().state,
+        })
+    }
+
+    /// `GET /api/v1/calibration`.
+    #[must_use]
+    pub fn calibration(&self) -> StoreBody {
+        self.store.body()
     }
 
     /// `POST /api/v1/star/reselect`.
@@ -439,6 +541,76 @@ impl Guider {
         })
     }
 
+    /// `not_idle` in a run state.
+    fn not_in_a_run(&self) -> Result<(), ApiError> {
+        let state = self.status.lock().state;
+        if state.is_run() {
+            return Err(ApiError::new(
+                ErrorCode::NotIdle,
+                format!("the guider is in a run: {}", state_name(state)),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The devices a request that starts the loop or a run reads afresh,
+    /// once a loop that is ending has ended.
+    async fn devices_for_a_start(
+        &self,
+        stops: &mut watch::Receiver<u64>,
+    ) -> Result<StartDevices, ApiError> {
+        let (Some(camera_client), Some(mount_client), Some(_)) = (
+            self.camera.as_ref(),
+            self.mount.as_ref(),
+            self.config.optics.focal_length_mm,
+        ) else {
+            return Err(ApiError::new(
+                ErrorCode::NotConfigured,
+                "the configuration names no camera, no mount or no focal length",
+            ));
+        };
+        if !self.looping() {
+            self.ended(stops).await?;
+        }
+        let (camera, mount) = tokio::join!(
+            camera_client.find::<CameraKind>(),
+            mount_client.find::<MountKind>()
+        );
+        let camera = connected::<CameraKind>(camera, camera_client.device_number())?;
+        let mount = connected::<MountKind>(mount, mount_client.device_number())?;
+        let sensor = self.camera_sensor(&camera).await?;
+        let reading = sensor::reading(&sensor, self.config.camera.binning.get())
+            .map_err(|error| ApiError::new(ErrorCode::CameraUnsupported, error.to_string()))?;
+        Ok(StartDevices {
+            client: Arc::clone(camera_client),
+            camera,
+            sensor,
+            reading,
+            mount,
+        })
+    }
+
+    /// What a loop starts with.
+    fn setup(
+        &self,
+        devices: StartDevices,
+        first: Option<oneshot::Sender<usize>>,
+        calibration: Option<CalibrationRun>,
+    ) -> LoopSetup {
+        LoopSetup {
+            config: Arc::clone(&self.config),
+            client: devices.client,
+            camera: devices.camera,
+            sensor: devices.sensor,
+            reading: devices.reading,
+            status: Arc::clone(&self.status),
+            devices: self.devices.clone(),
+            store: Arc::clone(&self.store),
+            first,
+            calibration,
+        }
+    }
+
     /// Whether a loop runs that no stop has ended or is ending.
     fn looping(&self) -> bool {
         self.running
@@ -458,15 +630,12 @@ impl Guider {
 
     /// Take a turn behind the mutating requests ahead, unless a stop
     /// arrives first.
-    async fn take_turn(
-        &self,
-        stops: &mut watch::Receiver<u64>,
-    ) -> Result<tokio::sync::MutexGuard<'_, ()>, ApiError> {
+    async fn take_turn(&self, stops: &mut watch::Receiver<u64>) -> Result<Turn, ApiError> {
         // Biased: a stop that arrived by the time the turn comes wins.
         tokio::select! {
             biased;
             _ = stops.changed() => Err(ApiError::stopped()),
-            turn = self.turns.lock() => Ok(turn),
+            turn = Arc::clone(&self.turns).lock_owned() => Ok(turn),
         }
     }
 
@@ -508,8 +677,15 @@ impl Guider {
         })
     }
 
-    /// Start the loop, unless a stop arrived since the request did.
-    fn spawn(&self, setup: LoopSetup, stops: &watch::Receiver<u64>) -> Result<(), ApiError> {
+    /// Start the loop in `state`, unless a stop arrived since the request
+    /// did; the metrics window is cleared when `clear_metrics`.
+    fn spawn(
+        &self,
+        setup: LoopSetup,
+        stops: &watch::Receiver<u64>,
+        state: State,
+        clear_metrics: bool,
+    ) -> Result<(), ApiError> {
         let mut running = self.running.lock();
         if stops.has_changed().unwrap_or(true) {
             return Err(ApiError::stopped());
@@ -517,7 +693,7 @@ impl Guider {
         let cancel = CancellationToken::new();
         let (commands, received) = mpsc::unbounded_channel();
         let (ended, done) = watch::channel(false);
-        self.status.lock().loop_started();
+        self.status.lock().loop_started(state, clear_metrics);
         let task = tokio::spawn(camera_loop::run(setup, cancel.clone(), received));
         let ended_abnormally = self.ended_abnormally.clone();
         tokio::spawn(async move {
@@ -556,6 +732,24 @@ impl Guider {
                 }
             }),
         }
+    }
+}
+
+/// What a request that starts the loop or a run read of the devices.
+struct StartDevices {
+    client: Arc<DeviceClient>,
+    camera: Arc<dyn Camera>,
+    sensor: CameraSensor,
+    reading: sensor::Reading,
+    mount: Arc<dyn ascom_alpaca::api::Telescope>,
+}
+
+/// `state` as the API names it.
+const fn state_name(state: State) -> &'static str {
+    match state {
+        State::Idle => "idle",
+        State::Looping => "looping",
+        State::Calibrating => "calibrating",
     }
 }
 
@@ -658,7 +852,14 @@ mod tests {
         }))
         .unwrap();
         let (_, devices) = watch::channel(DevicesState::default());
-        Guider::new(Arc::new(config), None, None, devices)
+        Guider::new(Arc::new(config), None, None, devices, store())
+    }
+
+    /// A store in a directory of its own, which the test leaves behind for
+    /// the system to clean up.
+    fn store() -> Arc<CalibrationStore> {
+        let dir = tempfile::tempdir().unwrap().keep();
+        Arc::new(CalibrationStore::open(&dir))
     }
 
     fn summary(star_count: usize) -> FrameSummary {
@@ -691,7 +892,7 @@ mod tests {
     fn a_loop_from_idle_clears_the_window_and_the_latest_frame_and_the_count_goes_on() {
         let mut status = Status::new();
         status.record(summary(3), frame(), Vec::new());
-        status.loop_started();
+        status.loop_started(State::Looping, true);
         assert!(status.metrics.is_empty());
         assert!(status.latest.is_none());
         status.record(summary(2), frame(), Vec::new());
@@ -702,7 +903,7 @@ mod tests {
     #[test]
     fn a_stop_returns_to_idle_and_is_the_last_stop() {
         let mut status = Status::new();
-        status.loop_started();
+        status.loop_started(State::Looping, true);
         status.stopped(Stop::requested());
         assert_eq!(status.state, State::Idle);
         assert_eq!(status.last_stop.unwrap().stop.reason, StopReason::Requested);
@@ -749,6 +950,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn requests_that_need_idle_or_looping_answer_not_idle_in_a_run() {
+        let guider = guider();
+        guider.status.lock().set_state(State::Calibrating);
+        for error in [
+            guider.clear_calibration().await.unwrap_err(),
+            guider.calibrate().await.unwrap_err(),
+            guider.start_loop().await.unwrap_err(),
+        ] {
+            assert_eq!(
+                (error.code, error.message.as_str()),
+                (ErrorCode::NotIdle, "the guider is in a run: calibrating")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn clearing_in_idle_empties_the_store_and_answers_idle() {
+        let guider = guider();
+        assert_eq!(
+            guider.clear_calibration().await.unwrap(),
+            StateAnswer { state: State::Idle }
+        );
+        assert_eq!(guider.calibration(), StoreBody::default());
+    }
+
+    #[tokio::test]
     async fn a_reselect_in_idle_is_refused_with_not_exposing() {
         assert_eq!(
             guider().reselect().await.unwrap_err().code,
@@ -768,7 +995,7 @@ mod tests {
         let mut stops = guider.stops.subscribe();
         let error = guider.answer(answer, &mut stops).await.unwrap_err();
         assert_eq!(
-            (error.code, error.stop_reason),
+            (error.code, error.stop_reason()),
             (ErrorCode::GuideFailed, Some(StopReason::CameraError))
         );
     }
@@ -789,7 +1016,7 @@ mod tests {
     fn install_loop(guider: &Guider) -> (watch::Sender<bool>, mpsc::UnboundedReceiver<Command>) {
         let (ended, done) = watch::channel(false);
         let (commands, received) = mpsc::unbounded_channel();
-        guider.status.lock().loop_started();
+        guider.status.lock().loop_started(State::Looping, true);
         *guider.running.lock() = Some(Running {
             cancel: CancellationToken::new(),
             commands,
@@ -892,7 +1119,7 @@ mod tests {
             }),
             mount: None,
         });
-        Guider::new(Arc::new(Config::default()), None, None, devices)
+        Guider::new(Arc::new(Config::default()), None, None, devices, store())
     }
 
     #[tokio::test]

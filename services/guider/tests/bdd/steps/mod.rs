@@ -6,6 +6,8 @@
 //! serve every feature.
 
 pub mod auth_steps;
+pub mod calibrate_steps;
+pub mod calibration_store_steps;
 pub mod config_steps;
 pub mod devices_steps;
 pub mod doctor_steps;

@@ -15,27 +15,37 @@
 //! comes back with another sensor. The loop ends its own exposure when it
 //! stops: an abort when the camera can abort, a wait for its end
 //! otherwise.
+//!
+//! A calibration runs in the loop (§ Calibration): after each frame the
+//! calibrator says what comes next, and the loop checks the mount and sends
+//! the pulse before the next exposure starts, so that no pulse overlaps an
+//! exposure. A step whose pulse was not sent is asked for again.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use ascom_alpaca::api::camera::ImageArray;
-use ascom_alpaca::api::Camera;
+use ascom_alpaca::api::{Camera, Telescope};
 use ndarray::Axis;
 use parking_lot::Mutex;
-use rp_guiding::{Frame, GuideStars, StarParams};
+use rp_guiding::{
+    CalibrationParams, Calibrator, CameraGeometry, Frame, GuideStars, Offset, Progress, Setup,
+    StarParams,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::api::{ApiError, ErrorCode, Stop};
+use crate::calibration_store::{CalibrationStore, Record};
 use crate::config::Config;
 use crate::devices::{
     call, camera_sensor, CallError, CameraKind, CameraSensor, DeviceClient, DevicesState, Found,
 };
-use crate::guider::{FrameSummary, Status};
-use crate::sensor::{changed, FrameSettings, Reading};
+use crate::guider::{FrameSummary, State, Status, Turn};
+use crate::mount::{Fault, MountStart, RunMount};
+use crate::sensor::{changed, effective_binning, FrameSettings, Reading};
 
 /// How often `ImageReady` is read once the exposure should have ended.
 const READY_POLL: Duration = Duration::from_millis(50);
@@ -50,16 +60,51 @@ pub struct LoopSetup {
     pub reading: Reading,
     pub status: Arc<Mutex<Status>>,
     pub devices: watch::Receiver<DevicesState>,
-    /// Answered with the guide stars of the first measured frame.
-    pub first: oneshot::Sender<usize>,
+    pub store: Arc<CalibrationStore>,
+    /// Answered with the guide stars of the first measured frame, for a
+    /// `loop`.
+    pub first: Option<oneshot::Sender<usize>>,
+    /// The calibration the loop starts with, for a `calibrate` from `idle`.
+    pub calibration: Option<CalibrationRun>,
+}
+
+/// The state a calibration returns to: the one its request found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Return {
+    /// The loop ends with the calibration.
+    Idle,
+    /// The loop goes on.
+    Looping,
+}
+
+/// A calibration that passed, and the state the guider is in after it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Calibrated {
+    pub state: State,
+    pub record: Record,
+}
+
+/// A calibration's answer.
+pub type CalibrationReply = oneshot::Sender<Result<Calibrated, ApiError>>;
+
+/// What a `calibrate` hands the loop.
+pub struct CalibrationRun {
+    pub mount: Arc<dyn Telescope>,
+    /// What the request read of the mount.
+    pub start: MountStart,
+    pub reply: CalibrationReply,
+    pub return_to: Return,
+    /// The request's turn, held until the calibration ends.
+    pub turn: Turn,
 }
 
 /// A request a running loop serves.
-#[derive(Debug)]
 pub enum Command {
     /// Select the guide stars anew on the next frame, answering with how
     /// many were selected, or `no_stars`.
-    Reselect(oneshot::Sender<Result<usize, ApiError>>),
+    Reselect(ReselectReply),
+    /// Calibrate, from `looping`.
+    Calibrate(Box<CalibrationRun>),
 }
 
 /// The star settings of the configuration, as the core takes them.
@@ -74,11 +119,73 @@ fn star_params(config: &Config) -> StarParams {
     }
 }
 
+/// The calibration settings of the configuration, as the core takes them.
+fn calibration_params(config: &Config) -> CalibrationParams {
+    CalibrationParams {
+        distance_px: config.calibration.distance_px.get(),
+        steps: config.calibration.steps,
+        max_steps: config.calibration.max_steps,
+        backlash_clear_px: config.calibration.backlash_clear_px.get(),
+        fallback_step: config.calibration.fallback_step.get(),
+        timeout: config.calibration.timeout.get(),
+        min_pulse: config.mount.min_pulse.get(),
+        max_pulse: config.mount.max_pulse.get(),
+        dec: config.control.dec.mode != crate::config::DecMode::Off,
+    }
+}
+
 /// A reselect's answer.
 type ReselectReply = oneshot::Sender<Result<usize, ApiError>>;
 
+/// How the loop ends.
+enum End {
+    /// It stopped: the stop is recorded.
+    Stop(Stop),
+    /// A calibration from `idle` ended: the loop ends with no stop, and the
+    /// calibration's request is answered once the guider is idle.
+    Calibrated {
+        reply: CalibrationReply,
+        outcome: Result<Record, ApiError>,
+    },
+}
+
+/// What the loop does with its frames.
+enum Mode {
+    /// It measures them.
+    Looping,
+    /// It calibrates on them.
+    Calibrating(Box<Calibrating>),
+}
+
+/// A calibration in the loop.
+struct Calibrating {
+    /// The calibration's steps, taken out while a frame is judged.
+    calibrator: Option<Calibrator>,
+    mount: RunMount,
+    reply: CalibrationReply,
+    return_to: Return,
+    /// Whether the guide stars are still to be selected: on the first frame
+    /// from `idle`, or on the next from a loop that holds none.
+    selecting: bool,
+    /// The request's turn, held until the guider is back in the state the
+    /// request found.
+    turn: Turn,
+}
+
+/// What a cycle's frame gave.
+enum Took {
+    /// A measured frame: its offset, and when it was a selection, how many
+    /// guide stars it selected, or that it had too few.
+    Measured {
+        offset: Option<Offset>,
+        selection: Option<Result<usize, ()>>,
+    },
+    /// A frame that failed.
+    Failed(String),
+}
+
 /// Run the loop until `cancel` is cancelled or it stops by itself, then
-/// end its exposure and report the stop.
+/// end its exposure and report how it ended.
 pub async fn run(
     setup: LoopSetup,
     cancel: CancellationToken,
@@ -92,7 +199,9 @@ pub async fn run(
         reading,
         status,
         devices,
+        store,
         first,
+        calibration,
     } = setup;
     let mut cycle = Cycle {
         params: star_params(&config),
@@ -109,7 +218,12 @@ pub async fn run(
         reading,
         devices,
         status,
-        first: Some(first),
+        store,
+        config: Arc::clone(&config),
+        epoch: Instant::now(),
+        mode: Mode::Looping,
+        ending_turn: None,
+        first,
         reselect: None,
         stars: None,
         failures: 0,
@@ -122,17 +236,36 @@ pub async fn run(
         bin = cycle.exposer.settings.bin,
         "the camera loop started"
     );
-    let stop = loop {
-        if let Some(stop) = cycle.turn(&cancel, &mut commands).await {
-            break stop;
+    if let Some(run) = calibration {
+        cycle.calibrate(run);
+    }
+    let end = loop {
+        if let Some(end) = cycle.turn(&cancel, &mut commands).await {
+            break end;
         }
     };
     cycle
         .exposer
         .end_exposure(cycle.sensor.can_abort_exposure)
         .await;
-    info!(reason = stop.reason.as_str(), message = %stop.message, "the camera loop stopped");
-    cycle.status.lock().stopped(stop);
+    match end {
+        End::Stop(stop) => {
+            info!(reason = stop.reason.as_str(), message = %stop.message, "the camera loop stopped");
+            cycle.status.lock().stopped(stop);
+        }
+        End::Calibrated { reply, outcome } => {
+            info!("the camera loop ended with its calibration");
+            cycle.status.lock().idle();
+            drop(cycle.ending_turn.take());
+            let _ = reply.send(outcome.map(|record| Calibrated {
+                state: State::Idle,
+                record,
+            }));
+        }
+    }
+    // A calibration a stop ended gives up its turn here, once the guider is
+    // idle.
+    drop(cycle);
 }
 
 /// The loop between its cycles.
@@ -147,6 +280,15 @@ struct Cycle {
     reading: Reading,
     devices: watch::Receiver<DevicesState>,
     status: Arc<Mutex<Status>>,
+    store: Arc<CalibrationStore>,
+    config: Arc<Config>,
+    /// The start of the loop's clock, which a calibration's timeout runs
+    /// on.
+    epoch: Instant,
+    mode: Mode,
+    /// The turn of a calibration from `idle` that has ended, given up once
+    /// the guider is idle again.
+    ending_turn: Option<Turn>,
     first: Option<oneshot::Sender<usize>>,
     reselect: Option<ReselectReply>,
     stars: Option<GuideStars>,
@@ -161,38 +303,56 @@ struct Cycle {
 
 impl Cycle {
     /// One cycle: the frame settings when they are due, a frame and its
-    /// measurement. The stop when the loop ends.
+    /// measurement, and in a calibration what comes after it. How the loop
+    /// ends, when it does.
     async fn turn(
         &mut self,
         cancel: &CancellationToken,
         commands: &mut mpsc::UnboundedReceiver<Command>,
-    ) -> Option<Stop> {
+    ) -> Option<End> {
         if let Some(at) = self.retry_at.take() {
             tokio::select! {
                 biased;
-                () = cancel.cancelled() => return Some(Stop::requested()),
+                () = cancel.cancelled() => return Some(End::Stop(Stop::requested())),
                 () = tokio::time::sleep_until(at) => {}
             }
         }
         self.attempt_started = Instant::now();
+        let took = match self.take(cancel, commands).await {
+            Ok(took) => took,
+            Err(stop) => return Some(End::Stop(stop)),
+        };
+        if let Took::Failed(message) = &took {
+            if let Some(stop) = self.failed(message) {
+                return Some(End::Stop(stop));
+            }
+        }
+        self.after_frame(took).await
+    }
+
+    /// The frame settings when they are due, then a frame and its
+    /// measurement; the stop when the loop stops before they are done.
+    async fn take(
+        &mut self,
+        cancel: &CancellationToken,
+        commands: &mut mpsc::UnboundedReceiver<Command>,
+    ) -> Result<Took, Stop> {
         if let Some(due) = self.settings_due {
             let written = tokio::select! {
                 biased;
-                () = cancel.cancelled() => return Some(Stop::requested()),
+                () = cancel.cancelled() => return Err(Stop::requested()),
                 written = write_settings(due, &self.client, &mut self.sensor, &mut self.exposer) => written,
             };
             match written {
                 Ok(()) => self.settings_due = None,
-                Err(Rewrite::Changed(message)) => return Some(Stop::camera_error(message)),
-                Err(Rewrite::Failed(message)) => return self.failed(&message),
+                Err(Rewrite::Changed(message)) => return Err(Stop::camera_error(message)),
+                Err(Rewrite::Failed(message)) => return Ok(Took::Failed(message)),
             }
         }
-        let image = match self.frame(cancel, commands).await {
-            Err(stop) => return Some(stop),
-            Ok(Err(message)) => return self.failed(&message),
-            Ok(Ok(image)) => image,
-        };
-        self.measure(image, cancel).await
+        match self.frame(cancel, commands).await? {
+            Err(message) => Ok(Took::Failed(message)),
+            Ok(image) => self.measure(image, cancel).await,
+        }
     }
 
     /// A frame, while requests and the device poll are heard; the stop when
@@ -202,35 +362,49 @@ impl Cycle {
         cancel: &CancellationToken,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Result<Result<ImageArray, String>, Stop> {
-        let Self {
-            exposer,
-            devices,
-            sensor,
-            reselect,
-            ..
-        } = self;
-        let frame = exposer.frame();
-        tokio::pin!(frame);
-        loop {
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => return Err(Stop::requested()),
-                Some(command) = commands.recv() => match command {
-                    Command::Reselect(reply) => *reselect = Some(reply),
-                },
-                Ok(()) = devices.changed() => {
-                    if let Some(message) = came_back_changed(devices, sensor) {
-                        return Err(Stop::camera_error(message));
+        let (taken, calibrate) = {
+            let Self {
+                exposer,
+                devices,
+                sensor,
+                reselect,
+                ..
+            } = self;
+            let mut calibrate = None;
+            let frame = exposer.frame();
+            tokio::pin!(frame);
+            let taken = loop {
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Err(Stop::requested()),
+                    Some(command) = commands.recv() => match command {
+                        Command::Reselect(reply) => *reselect = Some(reply),
+                        Command::Calibrate(run) => calibrate = Some(*run),
+                    },
+                    Ok(()) = devices.changed() => {
+                        if let Some(message) = came_back_changed(devices, sensor) {
+                            return Err(Stop::camera_error(message));
+                        }
                     }
+                    result = &mut frame => break result,
                 }
-                result = &mut frame => return Ok(result),
-            }
+            };
+            (taken, calibrate)
+        };
+        // A calibration asked for during the frame calibrates on it.
+        if let Some(run) = calibrate {
+            self.calibrate(run);
         }
+        Ok(taken)
     }
 
     /// Measure `image` off the async workers, answer the requests that
     /// waited on it and record it.
-    async fn measure(&mut self, image: ImageArray, cancel: &CancellationToken) -> Option<Stop> {
+    async fn measure(
+        &mut self,
+        image: ImageArray,
+        cancel: &CancellationToken,
+    ) -> Result<Took, Stop> {
         let reselecting = self.reselect.is_some();
         let job = Job {
             stars: self.stars.take(),
@@ -241,21 +415,22 @@ impl Cycle {
         };
         let measured = tokio::select! {
             biased;
-            () = cancel.cancelled() => return Some(Stop::requested()),
+            () = cancel.cancelled() => return Err(Stop::requested()),
             measured = tokio::task::spawn_blocking(move || job.run(&image)) => measured,
         };
         let Measured {
             stars,
             summary,
+            offset,
             selection,
             frame,
         } = match measured {
             Ok(Ok(measured)) => measured,
-            Ok(Err(message)) => return self.failed(&message),
+            Ok(Err(message)) => return Ok(Took::Failed(message)),
             // A panic of the core's ends the loop's task without a stop, as
             // the failure domains of guider.md say.
             Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
-            Err(_) => return Some(Stop::requested()),
+            Err(_) => return Err(Stop::requested()),
         };
         self.failures = 0;
         let centres = stars
@@ -279,7 +454,163 @@ impl Cycle {
                 }));
             }
         }
-        None
+        Ok(Took::Measured { offset, selection })
+    }
+
+    /// Take up `run`: the loop calibrates from its next frame on.
+    fn calibrate(&mut self, run: CalibrationRun) {
+        let CalibrationRun {
+            mount,
+            start,
+            reply,
+            return_to,
+            turn,
+        } = run;
+        let binning =
+            effective_binning(self.sensor.sensor_type, self.reading.bin).map_or(1, u32::from);
+        let setup = Setup {
+            pier_side: start.side,
+            camera: CameraGeometry {
+                pixel_size_um: self.sensor.pixel_size_um,
+                width: self.sensor.width,
+                height: self.sensor.height,
+                binning,
+            },
+            focal_length_mm: self
+                .config
+                .optics
+                .focal_length_mm
+                .map_or(f64::NAN, crate::config::FocalLength::get),
+            guide_rates: start.guide_rates,
+        };
+        let calibrator = Calibrator::new(
+            setup,
+            start.declination_deg,
+            calibration_params(&self.config),
+            self.now(),
+        );
+        info!(pier_side = ?start.side, declination_deg = start.declination_deg, "calibration started");
+        self.status.lock().set_state(State::Calibrating);
+        self.mode = Mode::Calibrating(Box::new(Calibrating {
+            calibrator: Some(calibrator),
+            mount: RunMount::new(
+                mount,
+                start.side,
+                self.config.mount.pulse_timeout.get(),
+                self.config.mount.max_failures.get(),
+            ),
+            reply,
+            return_to,
+            selecting: self.stars.is_none(),
+            turn,
+        }));
+    }
+
+    /// The time on the loop's clock.
+    fn now(&self) -> Duration {
+        self.epoch.elapsed()
+    }
+
+    /// What follows a frame: in a calibration, the calibrator's next step.
+    async fn after_frame(&mut self, took: Took) -> Option<End> {
+        let now = self.now();
+        let Mode::Calibrating(calibrating) = &mut self.mode else {
+            return None;
+        };
+        if calibrating.selecting {
+            match took {
+                Took::Measured {
+                    selection: Some(Err(())),
+                    ..
+                } => {
+                    return self.calibration_ended(Err(ApiError::new(
+                        ErrorCode::NoStars,
+                        "the frame has fewer guide stars than stars.min",
+                    )));
+                }
+                Took::Measured {
+                    selection: Some(Ok(_)),
+                    ..
+                } => calibrating.selecting = false,
+                Took::Measured { .. } | Took::Failed(_) => {}
+            }
+        }
+        let offset = match took {
+            Took::Measured { offset, .. } if !calibrating.selecting => offset,
+            Took::Measured { .. } | Took::Failed(_) => None,
+        };
+        let calibrator = calibrating.calibrator.take()?;
+        let before = calibrator.clone();
+        let progress = match calibrator.frame(offset, now) {
+            Ok(progress) => progress,
+            Err(error) => {
+                info!(%error, "calibration failed");
+                return self.calibration_ended(Err(ApiError::calibration_failed(&error)));
+            }
+        };
+        let (next, pulse) = match progress {
+            Progress::Done(calibration) => {
+                let record = Record {
+                    calibrated_at: SystemTime::now(),
+                    calibration,
+                };
+                if let Err(error) = self.store.put(record.clone()) {
+                    warn!(%error, "the calibration could not be stored; it serves its own run");
+                }
+                info!("calibration passed");
+                return self.calibration_ended(Ok(record));
+            }
+            Progress::Wait(next) => (next, None),
+            Progress::Pulse(next, pulse) => (next, Some(pulse)),
+        };
+        let fault = match pulse {
+            None => calibrating.mount.check().await.err(),
+            Some(pulse) => calibrating.mount.checked_pulse(pulse).await.err(),
+        };
+        let failed = match fault {
+            Some(Fault::Stop(stop)) => return Some(End::Stop(stop)),
+            Some(Fault::Failed(message)) => {
+                // The step was not sent: the next frame is judged as if it
+                // had not been asked for.
+                calibrating.calibrator = Some(before);
+                Some(message)
+            }
+            None => {
+                calibrating.calibrator = Some(next);
+                None
+            }
+        };
+        calibrating.mount.cycle(failed.as_deref()).map(End::Stop)
+    }
+
+    /// A calibration ended with `outcome`: back to the state its request
+    /// found, the loop going on or ending with it.
+    fn calibration_ended(&mut self, outcome: Result<Record, ApiError>) -> Option<End> {
+        let Mode::Calibrating(calibrating) = std::mem::replace(&mut self.mode, Mode::Looping)
+        else {
+            return None;
+        };
+        let Calibrating {
+            reply,
+            return_to,
+            turn,
+            ..
+        } = *calibrating;
+        match return_to {
+            Return::Idle => {
+                self.ending_turn = Some(turn);
+                Some(End::Calibrated { reply, outcome })
+            }
+            Return::Looping => {
+                self.status.lock().set_state(State::Looping);
+                drop(turn);
+                let _ = reply.send(outcome.map(|record| Calibrated {
+                    state: State::Looping,
+                    record,
+                }));
+                None
+            }
+        }
     }
 
     /// Count a failed frame, write the frame settings again before the next
@@ -571,6 +902,8 @@ struct Measured {
     /// The guide stars after the frame.
     stars: Option<GuideStars>,
     summary: FrameSummary,
+    /// The frame's offset; `None` for a star-lost frame.
+    offset: Option<Offset>,
     /// When the frame was a selection: how many guide stars it selected,
     /// or that it had too few.
     selection: Option<Result<usize, ()>>,
@@ -610,6 +943,9 @@ impl Job {
             summary: measurement
                 .as_ref()
                 .map_or_else(FrameSummary::none, FrameSummary::of),
+            offset: measurement
+                .as_ref()
+                .and_then(|measurement| measurement.offset),
             selection,
             frame,
         })
@@ -923,6 +1259,202 @@ mod tests {
         let camera = Arc::new(FakeCamera::default());
         exposer(Arc::clone(&camera)).end_exposure(true).await;
         assert_eq!(camera.aborts.load(Ordering::SeqCst), 0);
+    }
+
+    /// A loop on the fake camera, in `looping`, with the guider's default
+    /// configuration and a focal length of 200 mm.
+    fn looping_cycle() -> Cycle {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "optics": { "focal_length_mm": 200.0 }
+        }))
+        .unwrap();
+        let address: crate::config::DeviceAddress =
+            serde_json::from_value(serde_json::json!({ "alpaca_url": "http://127.0.0.1:9" }))
+                .unwrap();
+        let sensor = camera_of(2.0);
+        let reading = Reading {
+            sensor: rp_guiding::SensorType::Monochrome,
+            bin: 1,
+        };
+        let (_, devices) = watch::channel(DevicesState::default());
+        let dir = tempfile::tempdir().unwrap().keep();
+        Cycle {
+            params: star_params(&config),
+            max_failures: 3,
+            exposer: exposer(Arc::new(FakeCamera::default())),
+            client: Arc::new(DeviceClient::new(&address, None).unwrap()),
+            sensor,
+            reading,
+            devices,
+            status: Arc::new(Mutex::new(Status::new())),
+            store: Arc::new(CalibrationStore::open(&dir)),
+            config: Arc::new(config),
+            epoch: Instant::now(),
+            mode: Mode::Looping,
+            ending_turn: None,
+            first: None,
+            reselect: None,
+            stars: None,
+            failures: 0,
+            settings_due: None,
+            attempt_started: Instant::now(),
+            retry_at: None,
+        }
+    }
+
+    /// A calibration on `mount` that returns to `return_to`, with the
+    /// receiver of its answer and the turns its turn was taken from.
+    async fn run_on(
+        mount: crate::test_mount::FakeMount,
+        return_to: Return,
+    ) -> (
+        CalibrationRun,
+        oneshot::Receiver<Result<Calibrated, ApiError>>,
+        Arc<tokio::sync::Mutex<()>>,
+    ) {
+        let turns = Arc::new(tokio::sync::Mutex::new(()));
+        let (reply, answer) = oneshot::channel();
+        let run = CalibrationRun {
+            mount: Arc::new(mount),
+            start: MountStart {
+                side: rp_guiding::PierSide::East,
+                declination_deg: 0.0,
+                guide_rates: Some(rp_guiding::GuideRates {
+                    ra_deg_per_s: 0.004,
+                    dec_deg_per_s: 0.004,
+                }),
+            },
+            reply,
+            return_to,
+            turn: Arc::clone(&turns).lock_owned().await,
+        };
+        (run, answer, turns)
+    }
+
+    /// The selection's frame of a calibration, with the stars at home.
+    const fn selected() -> Took {
+        Took::Measured {
+            offset: Some(Offset { x: 0.0, y: 0.0 }),
+            selection: Some(Ok(3)),
+        }
+    }
+
+    /// The calibrator a calibrating cycle holds, as its debug output.
+    fn calibrator(cycle: &Cycle) -> String {
+        let Mode::Calibrating(calibrating) = &cycle.mode else {
+            panic!("the loop is not calibrating");
+        };
+        format!("{:?}", calibrating.calibrator)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_calibration_takes_the_state_calibrating_and_pulses_after_its_first_frame() {
+        let mut cycle = looping_cycle();
+        let (run, _answer, _turns) =
+            run_on(crate::test_mount::FakeMount::default(), Return::Idle).await;
+        cycle.calibrate(run);
+        assert_eq!(cycle.status.lock().state(), State::Calibrating);
+        assert!(cycle.after_frame(selected()).await.is_none());
+        assert!(
+            calibrator(&cycle).contains("steps: 1"),
+            "{}",
+            calibrator(&cycle)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_whose_pulse_failed_is_asked_for_again() {
+        let mut cycle = looping_cycle();
+        let mount = crate::test_mount::FakeMount {
+            pulse_refused: true,
+            ..crate::test_mount::FakeMount::default()
+        };
+        let (run, _answer, _turns) = run_on(mount, Return::Idle).await;
+        cycle.calibrate(run);
+        assert!(cycle.after_frame(selected()).await.is_none());
+        let held = calibrator(&cycle);
+        assert!(
+            held.contains("steps: 0") && held.contains("start: None"),
+            "{held}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_mount_that_fails_its_check_stops_the_calibration() {
+        let mut cycle = looping_cycle();
+        let mount = crate::test_mount::FakeMount {
+            slewing: true,
+            ..crate::test_mount::FakeMount::default()
+        };
+        let (run, _answer, _turns) = run_on(mount, Return::Idle).await;
+        cycle.calibrate(run);
+        let Some(End::Stop(stop)) = cycle.after_frame(selected()).await else {
+            panic!("the calibration went on");
+        };
+        assert_eq!(stop.reason, crate::api::StopReason::MountSlewing);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cycle_that_sends_no_pulse_still_checks_the_mount() {
+        let mut cycle = looping_cycle();
+        let mount = crate::test_mount::FakeMount {
+            at_park: true,
+            ..crate::test_mount::FakeMount::default()
+        };
+        let (run, _answer, _turns) = run_on(mount, Return::Idle).await;
+        cycle.calibrate(run);
+        let Some(End::Stop(stop)) = cycle.after_frame(Took::Failed("no frame".to_owned())).await
+        else {
+            panic!("the calibration went on");
+        };
+        assert_eq!(stop.reason, crate::api::StopReason::MountParked);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_calibration_from_looping_goes_back_to_looping_and_gives_up_its_turn() {
+        let mut cycle = looping_cycle();
+        let (run, answer, turns) =
+            run_on(crate::test_mount::FakeMount::default(), Return::Looping).await;
+        cycle.calibrate(run);
+        let record_error = ApiError::new(ErrorCode::NoStars, "none");
+        assert!(cycle.calibration_ended(Err(record_error)).is_none());
+        assert_eq!(cycle.status.lock().state(), State::Looping);
+        assert!(turns.try_lock().is_ok(), "the turn is still held");
+        assert_eq!(answer.await.unwrap().unwrap_err().code, ErrorCode::NoStars);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_calibration_from_idle_ends_the_loop_holding_its_turn_until_the_guider_is_idle() {
+        let mut cycle = looping_cycle();
+        let (run, _answer, turns) =
+            run_on(crate::test_mount::FakeMount::default(), Return::Idle).await;
+        cycle.calibrate(run);
+        let end = cycle.calibration_ended(Err(ApiError::new(ErrorCode::NoStars, "none")));
+        assert!(matches!(end, Some(End::Calibrated { .. })));
+        assert_eq!(cycle.status.lock().state(), State::Calibrating);
+        assert!(
+            turns.try_lock().is_err(),
+            "the turn was given up before the guider was idle"
+        );
+        assert!(cycle.ending_turn.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_calibration_from_idle_without_enough_stars_answers_no_stars() {
+        let mut cycle = looping_cycle();
+        let (run, _answer, _turns) =
+            run_on(crate::test_mount::FakeMount::default(), Return::Idle).await;
+        cycle.calibrate(run);
+        let end = cycle
+            .after_frame(Took::Measured {
+                offset: None,
+                selection: Some(Err(())),
+            })
+            .await;
+        let Some(End::Calibrated { outcome, .. }) = end else {
+            panic!("the calibration went on");
+        };
+        assert_eq!(outcome.unwrap_err().code, ErrorCode::NoStars);
     }
 
     #[test]

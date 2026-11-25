@@ -237,7 +237,13 @@ impl GuiderWorld {
             std::fs::write(&path, text).expect("write the guider's config");
             path
         };
-        let path = path.to_string_lossy().into_owned();
+        self.start_process(&path.to_string_lossy()).await;
+    }
+
+    /// Start the guider on the configuration at `path`. A start the guider
+    /// refuses is run again to its exit, so its output can be read.
+    async fn start_process(&mut self, path: &str) {
+        let path = path.to_owned();
         match ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &path).await {
             Ok(handle) => self.guider = Some(handle),
             // A guider that exited is run again for its output. One that
@@ -255,6 +261,16 @@ impl GuiderWorld {
             }
             Err(error) => panic!("the guider neither bound nor exited: {error}"),
         }
+    }
+
+    /// Stop the guider and start it again on the same configuration, the
+    /// simulated devices left running.
+    pub async fn restart_guider(&mut self) {
+        if let Some(mut guider) = self.guider.take() {
+            guider.stop().await;
+        }
+        let path = self.scratch.path().join("guider.json");
+        self.start_process(&path.to_string_lossy()).await;
     }
 
     /// The running guider's base URL.
@@ -281,25 +297,41 @@ impl GuiderWorld {
     }
 
     /// `POST path` with `body`, its answer kept as the scenario's latest
-    /// with the simulated time it arrived at.
+    /// with the simulated time it arrived at. A mutating request may wait
+    /// on a whole calibration, so it gets the wait's budget.
     pub async fn post(&mut self, path: &str, body: Option<&str>) {
-        let answer = self
-            .request(reqwest::Method::POST, path, body)
+        let request = http()
+            .post(format!("{}{path}", self.base_url()))
+            .timeout(WAIT_BUDGET);
+        let answer = send(request, body)
             .await
-            .unwrap_or_else(|e| panic!("POST {e}"));
+            .unwrap_or_else(|e| panic!("POST {path}: {e}"));
         self.answered_at = self.sim.as_ref().map(SimDevices::now);
         self.answer = Some(answer);
     }
 
     /// `POST path` with `body` in the background.
     pub fn post_in_background(&mut self, path: &str, body: Option<&str>) {
-        let request = http().post(format!("{}{path}", self.base_url()));
+        let request = http()
+            .post(format!("{}{path}", self.base_url()))
+            .timeout(WAIT_BUDGET);
         let body = body.map(str::to_owned);
         self.background = Some(tokio::spawn(async move {
             send(request, body.as_deref())
                 .await
                 .map_err(|e| e.to_string())
         }));
+    }
+
+    /// `POST path` in the background by a client that gives up waiting
+    /// after `patience`, its answer, if any, ignored.
+    pub fn post_and_give_up(&self, path: &str, patience: Duration) {
+        let request = http()
+            .post(format!("{}{path}", self.base_url()))
+            .timeout(patience);
+        tokio::spawn(async move {
+            let _ = send(request, None).await;
+        });
     }
 
     /// `GET path` on the guider: the status and the JSON body.
