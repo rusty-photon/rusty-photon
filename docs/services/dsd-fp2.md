@@ -326,9 +326,10 @@ this section says what the FP2 does at each step.
    ([Reconnect](../crates/rusty-photon-shared-transport.md#reconnect)).
 3. The while-open task ticks every `polling_interval` (default 500 ms),
    refreshing `[GMOV]`, `[GOPS]`, `[GLON]`, `[GLBR]`, `[GHTT]` into the
-   cached state. The task uses `tokio::select!` against
-   `ctx.cancelled()` so cancellation at teardown returns within one
-   tick. Each field is stored with the instant it was brought up to date
+   cached state. Its first tick comes one interval after the handshake,
+   which has just read the same five fields. The task uses
+   `tokio::select!` against `ctx.cancelled()` so cancellation at
+   teardown returns within one tick. Each field is stored with the instant it was brought up to date
    — its own read, or the answer to the command that set it
    (`CalibratorOn`'s `[SLBR]` and `[SLON1]`, `CalibratorOff`'s `[SLON0]`,
    a cover move's `[SMOV]`) — and a value older than the cached one is
