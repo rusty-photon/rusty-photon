@@ -40,6 +40,7 @@ fn every_exposure_fails(world: &mut GuiderWorld, fault: String) {
 async fn next_exposures_fail(world: &mut GuiderWorld, count: usize, fault: String) {
     world.noted_frames = vec![last_frame(world).await.unwrap_or(0)];
     world.noted_exposure = world.sim().exposures().last().map(|exposure| exposure.at);
+    world.faults_at = Some(world.sim().now());
     world.sim().fail_frames(fault_named(&fault), Some(count));
 }
 
@@ -79,7 +80,20 @@ async fn next_exposure_no_sooner(world: &mut GuiderWorld, seconds: u64) {
 #[when(regex = r"^the guider's metrics gain at least (\d+) frames after the failures$")]
 #[then(regex = r"^the guider's metrics gain at least (\d+) frames after the failures$")]
 async fn gain_frames_after_failures(world: &mut GuiderWorld, count: u64) {
-    let before = world.noted_frames.first().copied().unwrap_or(0);
+    // Every start after the faults were scripted fails until they are spent,
+    // so an exposure the camera recorded after them comes after the
+    // failures; frames measured from then on are frames after them.
+    let faults_at = world.faults_at.expect("the scenario scripted failures");
+    world
+        .wait_until("an exposure after the failures", || {
+            world
+                .sim()
+                .exposures()
+                .last()
+                .is_some_and(|exposure| exposure.at > faults_at)
+        })
+        .await;
+    let before = last_frame(world).await.unwrap_or(0);
     let target = before + count;
     world
         .wait_for(

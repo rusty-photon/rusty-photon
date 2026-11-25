@@ -262,6 +262,9 @@ impl Cycle {
             .as_ref()
             .map_or_else(Vec::new, GuideStars::search_centres);
         self.stars = stars;
+        // Recorded before the answers go out, so that a client that reads
+        // stats or the latest frame on its answer finds the frame there.
+        self.status.lock().record(summary, frame, centres);
         // A request that is gone has nothing to hear.
         if let Some(first) = self.first.take() {
             let _ = first.send(selection.unwrap_or(Ok(0)).unwrap_or(0));
@@ -276,7 +279,6 @@ impl Cycle {
                 }));
             }
         }
-        self.status.lock().record(summary, frame, centres);
         None
     }
 

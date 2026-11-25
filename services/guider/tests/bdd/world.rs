@@ -121,6 +121,8 @@ pub struct GuiderWorld {
     /// When the simulated camera's last exposure started, at a step that
     /// noted it.
     pub noted_exposure: Option<SimTime>,
+    /// When the scenario last scripted failed exposures.
+    pub faults_at: Option<SimTime>,
     pub tls_auth: TlsAuthState,
     pub doctor_smoke: DoctorSmokeState,
 }
@@ -149,6 +151,7 @@ impl GuiderWorld {
             background: None,
             noted_frames: Vec::new(),
             noted_exposure: None,
+            faults_at: None,
             tls_auth: TlsAuthState::default(),
             doctor_smoke: DoctorSmokeState::default(),
         }

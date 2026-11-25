@@ -53,12 +53,12 @@ Feature: Frames that fail, and the camera's stop reasons
   Scenario: Failures that are not in a row do not add up
     Given the simulated camera and mount, both connected
     And a guider configuration naming both devices and a focal length of 206.265 mm
-    And the guider configuration's "/camera/max_frame_failures" is the JSON 3
+    And the guider configuration's "/camera/max_frame_failures" is the JSON 5
     And the guider is started
     And the guider is looping
-    When the next 2 exposures of the simulated camera fail as a start that fails
+    When the next 3 exposures of the simulated camera fail as a start that fails
     And the guider's metrics gain at least 3 frames after the failures
-    And the next 2 exposures of the simulated camera fail as a start that fails
+    And the next 3 exposures of the simulated camera fail as a start that fails
     Then the guider's metrics gain at least 3 frames after the failures
     And the guider's stats report the state "looping"
 
