@@ -732,7 +732,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `PulseGuide(direction, duration)` | rate change on the targeted axis for `duration`; returns once the new rate is on the wire, with a watcher task left to restore it. An East/West pulse on a tracking RA axis changes the step period of the running motor (`:I1`) and never stops it; every other pulse starts its axis from rest. Refuses when parked / disconnected / slewing / same-axis pulse already in flight / RA running a goto. `duration = 0` is a no-op success. See [§PulseGuide lifecycle](#pulseguide-lifecycle) for the wire paths. |
 | `SetGuideRateRightAscension(deg_per_sec)` | validate `(0, SIDEREAL_DEG_PER_SEC)` exclusive; store as fraction = `deg_per_sec / SIDEREAL_DEG_PER_SEC`. Out-of-range → `INVALID_VALUE`. |
 | `SetGuideRateDeclination(deg_per_sec)` | same shape as RA. |
-| `Action(name, parameters)` | `ACTION_NOT_IMPLEMENTED` for every name: the driver has no custom Actions. The recovery is on the mount's setup page ([§Recovery on the mount's setup page](#recovery-on-the-mounts-setup-page)). |
+| `Action(name, parameters)` | `ParkMatchesPowerUpPose` (designed and not yet built) answers, read-only, whether a power cut and the next power-up leave the mount where it parks ([§`ParkMatchesPowerUpPose`](#parkmatchespoweruppose)); `ACTION_NOT_IMPLEMENTED` for every other name. No Action moves the mount: the recovery is on the mount's setup page ([§Recovery on the mount's setup page](#recovery-on-the-mounts-setup-page)). |
 
 #### Host-clock dependency for LST-using reads
 
@@ -1280,6 +1280,47 @@ the next reconnect without restarting the driver. After load the
 in-memory target is fixed for the session unless `SetPark` or an
 anchoring sync updates it (see
 [§Park persistence](#park-persistence)).
+
+#### `ParkMatchesPowerUpPose`
+
+**Designed and not yet built** (stage P4a of the
+[daily power cycle plan](../plans/daily-power-cycle.md)).
+
+`session-runner`'s night schedule parks the mount at dawn and cuts its
+power, and powers it up again at dusk. The power-up seeds the frame at
+`unpark_from_ap_position`'s pose only when the mount state record says
+the mount came to rest there
+([§The mount state record](#the-mount-state-record)), so a cut keeps the
+mount's pose only when it parks at that pose. The read-only custom
+Action `ParkMatchesPowerUpPose`, which takes no parameters, answers
+whether it does, as a JSON string:
+
+```json
+{"matches": true, "power_up_pose": "ap_park_3",
+ "power_up_ticks": {"ra": -907200, "dec": 725760},
+ "park_target_ticks": {"ra": -907200, "dec": 725760}}
+```
+
+- `power_up_pose` is the `unpark_from_ap_position` name, and
+  `power_up_ticks` its encoder pair for the configured latitude and the
+  handshake's counts per revolution: `null` for `ap_park_0`, which asserts
+  no pose.
+- `park_target_ticks` is the park target the driver holds when it
+  answers: the one the connect resolved
+  ([§Park-target resolution](#park-target-resolution)), or the one a
+  `SetPark` or an anchoring sync has put in its place since. It is `null`
+  when an axis has none, as for an unanchored frame without a raw
+  override, or a position lost or awaiting its power-up check.
+- `matches` is `true` only when both pairs are present and equal on both
+  axes. A `SetPark` capture, raw `park_*_ticks`, or a `preferred_ap_park`
+  other than the power-up pose makes it `false`.
+
+The Action moves nothing and writes nothing (tenet 3). It answers
+`NOT_CONNECTED` while the mount is not connected, because the park target
+is resolved on connect. `rp` reports its answer as `get_park_state`'s
+`park_matches_power_up_pose`, and the night schedule leaves the mount's
+output on at dawn unless it reads `true`
+([session-runner.md § Night Schedule](session-runner.md#night-schedule)).
 
 ### Park persistence
 
@@ -3267,10 +3308,11 @@ permits: the Stop is stop-class, the reset writes counters on a mount it
 found still, and no path from startup, connect, a save or a supervisory
 transition reaches either.
 
-The driver has no custom Actions: `SupportedActions` is empty, and every
-`Action` answers `ACTION_NOT_IMPLEMENTED`. The power-up pose and the park
-target are configuration, edited on the mount's page
-([§Setup pages](#setup-pages)).
+The driver's one custom Action is the read-only `ParkMatchesPowerUpPose`
+([§`ParkMatchesPowerUpPose`](#parkmatchespoweruppose), designed and not
+yet built), and no Action
+moves the mount. The power-up pose and the park target are configuration,
+edited on the mount's page ([§Setup pages](#setup-pages)).
 
 Standard ASCOM `Unpark()` always just clears the
 `AtPark` flag, with no encoder write. `Unpark()` and the recovery from
@@ -3375,8 +3417,9 @@ page edits (`device_sections` in `setup.rs`), its one secret
 other page's section. The pages work whether or not the mount is
 `Connected`.
 
-`SupportedActions` is empty, and every `Action` answers
-`ACTION_NOT_IMPLEMENTED`.
+`SupportedActions` lists only `ParkMatchesPowerUpPose` (designed and not
+yet built), and every other
+`Action` answers `ACTION_NOT_IMPLEMENTED`.
 
 #### Validation rules
 
@@ -3982,8 +4025,10 @@ request](../crates/rusty-photon-service-lifecycle.md#restart-on-request)).
 - Connect / disconnect lifecycle, ref-counted transport
 - Init handshake: `:e`, `:f`, `:F`, `:a`, `:b`, `:g`, `:j`
 - ASCOM device metadata (`Description`, `DriverInfo`, `DriverVersion`,
-  `InterfaceVersion`, `Name`; `SupportedActions` is empty — the recovery
-  is on the mount's setup page, see [§Unpark from AP position](#unpark-from-ap-position))
+  `InterfaceVersion`, `Name`; `SupportedActions` lists only the read-only
+  `ParkMatchesPowerUpPose`, designed and not yet built — the recovery is
+  on the mount's setup page, see
+  [§Unpark from AP position](#unpark-from-ap-position))
 - Site lat/lon/elevation from config (read-only via ASCOM)
 - `RightAscension` / `Declination` reads (encoder + LST + sync offset)
 - `Azimuth` / `Altitude` reads (derived from RA/Dec)

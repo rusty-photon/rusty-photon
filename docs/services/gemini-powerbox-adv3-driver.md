@@ -905,7 +905,8 @@ unit); any persistence of dew modes.
 
 The [daily power cycle plan](../plans/daily-power-cycle.md) switches
 outputs at dusk and dawn. This driver exposes the outputs; the decision to
-flip one belongs to a session-runner document, never to any connect or
+flip one belongs to `session-runner`'s night schedule, a session-runner
+document or an operator's tool call, never to any connect or
 supervisory path here — the same boundary
 [`upbv2-driver`](upbv2-driver.md#relationship-to-the-daily-power-cycle-plan)
 draws.

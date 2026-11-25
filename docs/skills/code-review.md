@@ -129,7 +129,11 @@ record), most productive first:
   supervisory transition may move, home, park, toggle power or change a
   setpoint. Stop-class commands are exempt, and so is `rp`'s safety
   response to an unsafe or unreadable monitor, park included, at any
-  time.
+  time, and so is `session-runner`'s configured night schedule —
+  everything a night does, from dusk's power-up, wedge-retry power
+  cycle, covers and cooldown through its runs to dawn's warm-up, park,
+  covers, power-down and later re-parks — after a start of the service
+  too.
 - **Races and lifetimes** — guards held across `.await`, detached tasks,
   error paths that skip rollback, missing timeouts; in shell and infra
   state machines too (crash and restart windows).
@@ -243,9 +247,10 @@ A finding that shows a path from startup, connect or reconnect, config
 apply or a supervisory transition that physically actuates hardware —
 project tenet 3, no actuation on connect (AGENTS.md rule 13) — rates
 **fix** whatever its realism, a repeat included: that tenet holds on
-every path, not only the likely ones. Stop-class commands and `rp`'s
-safety response to an unsafe or unreadable monitor, park included, are
-no such path: the tenet permits them at any time.
+every path, not only the likely ones. Stop-class commands, `rp`'s
+safety response to an unsafe or unreadable monitor, park included, and
+`session-runner`'s configured night schedule, after a start of the
+service too, are no such path: the tenet permits them at any time.
 
 Text the PR adds to a living document that breaches AGENTS.md rule 16 —
 a bare issue or pull request number, or narration of how the code came
