@@ -1436,9 +1436,9 @@ pub(crate) mod mock {
     /// the test, a failed assertion included — lets a capture still held run
     /// on, so the test's runtime is not kept from shutting down.
     #[must_use = "dropping the hold releases the captures"]
-    pub struct CaptureHold(Arc<AtomicBool>);
+    pub struct Hold(Arc<AtomicBool>);
 
-    impl Drop for CaptureHold {
+    impl Drop for Hold {
         fn drop(&mut self) {
             self.0.store(false, Ordering::SeqCst);
         }
@@ -1459,7 +1459,7 @@ pub(crate) mod mock {
         cooler_on: AtomicBool,
         /// E9 injection: make the next capture fail at the SDK.
         pub fail_capture: AtomicBool,
-        /// Raised while a test's [`CaptureHold`] is alive: every capture then
+        /// Raised while a test's [`Hold`] is alive: every capture then
         /// stays in its integration wait — in flight, and still answering an
         /// abort or a stop — until the test drops the hold. A departure is
         /// found at the readout, so only once the hold is dropped. The
@@ -1698,9 +1698,9 @@ pub(crate) mod mock {
         /// lives. A held capture still ends at once on an abort or a stop, as
         /// a real integration does. It does not notice its camera leaving the
         /// bus: the readout finds that, once the hold is dropped.
-        pub fn hold_captures(&self) -> CaptureHold {
+        pub fn hold_captures(&self) -> Hold {
             self.capture_hold.store(true, Ordering::SeqCst);
-            CaptureHold(Arc::clone(&self.capture_hold))
+            Hold(Arc::clone(&self.capture_hold))
         }
 
         /// Take the camera off the bus, as a cut cable or power does (C6).

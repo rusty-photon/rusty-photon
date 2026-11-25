@@ -2134,6 +2134,15 @@ capture keeps the guard alive until it has seen the capture end; dropped
 earlier, the release would end the capture and the test would pass with the
 abort lost.
 
+The camera mocks hold their other calls the same way: `svbony-camera`'s
+`hold_open()` keeps a connect inside the camera's open until a second connect
+has been admitted behind it, and `qhy-camera`'s `hold_parameter_reads()` keeps
+a property read inside the SDK until another task has run. Where the timer is
+the driver's own and cannot be held — a guide pulse ends at its wall-clock
+deadline — the test asks for a pulse longer than its test target may run, so
+no stall the test survives can end it (`pulse_guide_reports_in_flight`,
+`services/zwo-camera/src/camera.rs`).
+
 Prove such a test earns its name: reintroduce the defect it targets and watch
 it fail. For a nap-based test, also delay the code under test (a temporary
 `sleep` right before it) to model a loaded runner — with the bug present and

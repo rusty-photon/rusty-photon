@@ -1954,14 +1954,15 @@ pub(crate) mod mock {
         ]
     }
 
-    /// Keeps a [`MockCameraHandle`]'s captures in flight until it is dropped
-    /// (see [`MockCameraHandle::hold_captures`]). Dropping it — at the end of
-    /// the test, a failed assertion included — lets a capture still held run
-    /// on, so the test's runtime is not kept from shutting down.
-    #[must_use = "dropping the hold releases the captures"]
-    pub struct CaptureHold(Arc<AtomicBool>);
+    /// Keeps something a [`MockCameraHandle`] is doing in flight until it is
+    /// dropped: its captures ([`MockCameraHandle::hold_captures`]) or its
+    /// `open` ([`MockCameraHandle::hold_open`]). Dropping it — at the end of
+    /// the test, a failed assertion included — lets whatever is still held
+    /// run on, so the test's runtime is not kept from shutting down.
+    #[must_use = "dropping the hold releases what it holds"]
+    pub struct Hold(Arc<AtomicBool>);
 
-    impl Drop for CaptureHold {
+    impl Drop for Hold {
         fn drop(&mut self) {
             self.0.store(false, Ordering::SeqCst);
         }
@@ -2086,11 +2087,15 @@ pub(crate) mod mock {
         /// handle's critical section) so exactly one racing caller
         /// observes `true`.
         open_section: Mutex<()>,
-        /// Optional artificial delay inside `open()`'s critical section
-        /// (modeling the SDK open's latency), so a test can hold one
-        /// connect transition in-flight while a second races it.
-        open_delay: Mutex<Duration>,
-        /// Raised while a test's [`CaptureHold`] is alive: every capture then
+        /// Raised while a test's open [`Hold`] is alive: an `open()` that
+        /// opens the camera then parks inside its critical section, before it
+        /// reports the camera open, so a test can keep one connect transition
+        /// in flight while a second arrives.
+        open_hold: Arc<AtomicBool>,
+        /// Set while an `open()` is parked at the hold, so a test can wait
+        /// for the transition to be inside it.
+        in_open: AtomicBool,
+        /// Raised while a test's [`Hold`] is alive: every capture then
         /// stays in its integration wait — in flight, and still answering an
         /// abort or a departure — until the test drops the hold. The
         /// integration has no length of its own: a delay would run on the
@@ -2165,7 +2170,8 @@ pub(crate) mod mock {
                 target_temp_tenths: Mutex::new(0),
                 current_temp_tenths: Mutex::new(200),
                 open_section: Mutex::new(()),
-                open_delay: Mutex::new(Duration::ZERO),
+                open_hold: Arc::new(AtomicBool::new(false)),
+                in_open: AtomicBool::new(false),
                 capture_hold: Arc::new(AtomicBool::new(false)),
                 capture_gate: AtomicBool::new(false),
                 mode_select_gate: AtomicBool::new(false),
@@ -2242,9 +2248,9 @@ pub(crate) mod mock {
         /// Keep every capture in flight for as long as the returned hold
         /// lives. A held capture still ends at once on an abort or on its
         /// camera being found gone, as the production handle's wait does.
-        pub fn hold_captures(&self) -> CaptureHold {
+        pub fn hold_captures(&self) -> Hold {
             self.capture_hold.store(true, Ordering::SeqCst);
-            CaptureHold(Arc::clone(&self.capture_hold))
+            Hold(Arc::clone(&self.capture_hold))
         }
 
         /// Hold every capture at the gate (or release the held ones).
@@ -2263,11 +2269,16 @@ pub(crate) mod mock {
             self.capture_outcomes.lock().clone()
         }
 
-        /// Make the next `open()` calls linger before reporting open (runs
-        /// on the `spawn_blocking` thread, so the sleep never stalls the
-        /// async executor).
-        pub fn set_open_delay(&self, delay: Duration) {
-            *self.open_delay.lock() = delay;
+        /// Park an `open()` that opens the camera, before it reports the
+        /// camera open, for as long as the returned hold lives.
+        pub fn hold_open(&self) -> Hold {
+            self.open_hold.store(true, Ordering::SeqCst);
+            Hold(Arc::clone(&self.open_hold))
+        }
+
+        /// Whether an `open()` is parked at the hold right now.
+        pub fn is_in_open(&self) -> bool {
+            self.in_open.load(Ordering::SeqCst)
         }
 
         /// The most recent request `capture` received, if any.
@@ -2547,10 +2558,11 @@ pub(crate) mod mock {
             if self.departed.load(Ordering::SeqCst) {
                 return Err(svbony_rs::Error::Svb(SvbError::InvalidIndex).into());
             }
-            let delay = *self.open_delay.lock();
-            if !delay.is_zero() {
-                std::thread::sleep(delay);
+            self.in_open.store(true, Ordering::SeqCst);
+            while self.open_hold.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
             }
+            self.in_open.store(false, Ordering::SeqCst);
             self.open.store(true, Ordering::SeqCst);
             // A freshly opened camera has the SDK's auto-exposure on.
             self.auto_exposure.store(true, Ordering::SeqCst);

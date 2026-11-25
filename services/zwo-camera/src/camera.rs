@@ -3605,14 +3605,16 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
         device.abort_exposure().await.unwrap();
-        // No fresh frame is ready after an abort. Best-effort, deadline-bounded
-        // wait (not a fixed nap count) for the in-flight flag to clear.
-        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        // No fresh frame is ready after an abort. The capture is held, so
+        // only the abort can end it; once its claim is gone its commit has
+        // run, and what it left behind is what is asserted.
+        tokio::time::timeout(Duration::from_secs(30), async {
             while device.state.exposure_in_flight() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
-        .await;
+        .await
+        .expect("the aborted capture never drained");
         assert!(!device.image_ready().await.unwrap());
         assert_eq!(
             device.image_array().await.unwrap_err().code,
@@ -3654,15 +3656,16 @@ mod tests {
     async fn pulse_guide_reports_in_flight() {
         // ASCOM PulseGuide returns promptly instead of blocking for the
         // pulse, and IsPulseGuiding is true while one is in flight (PG2).
-        // The 60 s pulse outlives the test, so the in-flight read races
-        // nothing — a shorter pulse would let a starved runtime delay the
-        // read past the deadline. The pulse never ends: runtime shutdown
-        // drops the detached stop task, and the mock needs no cleanup.
+        // The pulse's deadline is the driver's own, on the wall clock, so
+        // the pulse is a day long: longer than this test target may run at
+        // all, and so longer than any stall the in-flight read can meet.
+        // The pulse never ends: runtime shutdown drops the detached stop
+        // task, and the mock needs no cleanup.
         // PulseGuide returning promptly is implied by the test finishing.
         let device = connected_device(MockCameraHandle::default());
         assert!(!device.is_pulse_guiding().await.unwrap());
         device
-            .pulse_guide(GuideDirection::North, Duration::from_mins(1))
+            .pulse_guide(GuideDirection::North, Duration::from_hours(24))
             .await
             .unwrap();
         assert!(device.is_pulse_guiding().await.unwrap());

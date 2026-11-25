@@ -3416,21 +3416,36 @@ mod tests {
         // produces exactly this): `handle.open()`'s atomic check-and-open
         // lets exactly one of them own the handshake — the other no-ops
         // instead of running a second handshake whose video-capture arm
-        // fails with the SDK's "video mode active". The open delay holds
-        // the winner inside the open critical section so the two
-        // genuinely overlap.
+        // fails with the SDK's "video mode active". The winner is held
+        // inside the open critical section until the duplicate has been
+        // admitted behind it, so the two overlap on every run.
         let handle = Arc::new(MockCameraHandle::default());
-        handle.set_open_delay(Duration::from_millis(200));
+        let hold = handle.hold_open();
         let cam = SvbonyCamera::new(handle.clone(), None);
-        let racer = cam.clone();
-        let (first, second) = tokio::join!(cam.set_connected(true), async move {
-            // Let the first transition park inside `open()` before the
-            // duplicate arrives, so the duplicate cannot win by ordering.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            racer.set_connected(true).await
-        });
-        first.unwrap();
-        second.unwrap();
+        let first = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(true).await })
+        };
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !handle.is_in_open() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first connect never reached the camera's open");
+        // One poll takes the duplicate past its fast path, which still reads
+        // a closed camera, and queues its transition behind the first's.
+        let mut second = std::pin::pin!(cam.set_connected(true));
+        tokio::select! {
+            biased;
+            answer = &mut second => panic!(
+                "the duplicate connect answered {answer:?} while the first was still opening"
+            ),
+            () = std::future::ready(()) => {}
+        }
+        drop(hold);
+        first.await.unwrap().unwrap();
+        second.await.unwrap();
         assert!(cam.connected().await.unwrap());
         assert_eq!(handle.start_video_capture_call_count(), 1);
     }
@@ -3654,9 +3669,16 @@ mod tests {
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
         assert_eq!(cam.percent_completed().await.unwrap(), 0);
         // The late-completing capture task must not resurrect ImageReady or
-        // an Error state once it eventually drains (the generation-counter
-        // guard, E7).
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // an Error state once it has drained (the generation-counter guard,
+        // E7). The claim is released in the same critical section as the
+        // commit, so once it is gone the commit has run.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while cam.state.exposure_in_flight() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the aborted capture never drained");
         assert!(!cam.image_ready().await.unwrap());
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
     }
