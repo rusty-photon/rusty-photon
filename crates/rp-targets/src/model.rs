@@ -245,8 +245,6 @@ pub struct Target {
     #[serde(default)]
     pub position_angle_degrees: Option<f64>,
 
-    /// Scheduling priority, stored and editable; no selection reads it.
-    pub priority: i32,
     /// Whether the planner may select this target. Bridge-imported targets
     /// land with `active: false` pending operator review.
     pub active: bool,
@@ -523,5 +521,23 @@ mod tests {
         });
         let target: Target = serde_json::from_value(old_row).unwrap();
         assert_eq!(target.position_angle_degrees, None);
+    }
+
+    // A stored row may carry a `priority` key, which no field holds: it is
+    // ignored on read and gone from the row's next write.
+    #[test]
+    fn a_row_with_a_priority_key_deserializes_and_writes_without_it() {
+        let old_row = serde_json::json!({
+            "slug": "m31",
+            "display_name": "M 31",
+            "coord": { "ra_hours": 0.7123, "dec_degrees": 41.2688 },
+            "priority": 3,
+            "active": true,
+            "created_at": "2026-07-22T00:00:00Z",
+            "updated_at": "2026-07-22T00:00:00Z"
+        });
+        let target: Target = serde_json::from_value(old_row).unwrap();
+        let written = serde_json::to_value(&target).unwrap();
+        assert_eq!(written.get("priority"), None, "{written}");
     }
 }

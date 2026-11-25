@@ -2,9 +2,9 @@
 //! surface (`docs/services/ui-htmx.md` "Targets inbox").
 //!
 //! Pending targets await review, active targets sit in the roster
-//! section, and the per-target review page edits display name,
-//! priority, notes, the framing position angle, and the acquisition
-//! goals, then activates or discards the target.
+//! section, and the per-target review page edits display name, notes,
+//! the framing position angle, and the acquisition goals, then activates
+//! or discards the target.
 //!
 //! Every read and write rides rp's MCP-only target tools through the
 //! [`crate::targets_client`] seam, the filter roster and train
@@ -77,7 +77,6 @@ struct Row {
     object_type: Option<String>,
     magnitude: Option<f64>,
     position_angle_degrees: Option<f64>,
-    priority: i64,
     goals: Vec<Goal>,
     notes: Option<String>,
     created_by: String,
@@ -113,7 +112,6 @@ fn parse_row(value: &Value) -> Row {
         object_type: opt_text("object_type"),
         magnitude: value.get("magnitude").and_then(Value::as_f64),
         position_angle_degrees: value.get("position_angle_degrees").and_then(Value::as_f64),
-        priority: value.get("priority").and_then(Value::as_i64).unwrap_or(0),
         goals: value
             .get("goals")
             .and_then(Value::as_array)
@@ -399,7 +397,6 @@ fn provenance_markup(row: &Row) -> Markup {
 #[derive(Debug, Default)]
 struct FormEcho {
     display_name: String,
-    priority: String,
     /// The raw field text: explicit angle, or empty = inherit.
     position_angle: String,
     goals: Vec<Goal>,
@@ -409,7 +406,6 @@ impl FormEcho {
     fn from_row(row: &Row) -> Self {
         Self {
             display_name: row.display_name.clone(),
-            priority: row.priority.to_string(),
             position_angle: row.position_angle_degrees.map_or_default(trim_float),
             goals: row.goals.clone(),
         }
@@ -431,13 +427,12 @@ fn trim_float(value: f64) -> String {
 #[derive(Debug, Default)]
 struct FormErrors {
     display_name: Option<String>,
-    priority: Option<String>,
     position_angle: Option<String>,
 }
 
 impl FormErrors {
     const fn any(&self) -> bool {
-        self.display_name.is_some() || self.priority.is_some() || self.position_angle.is_some()
+        self.display_name.is_some() || self.position_angle.is_some()
     }
 }
 
@@ -483,8 +478,6 @@ fn review_markup(
                 hx-target="#targets-page" hx-swap="outerHTML" {
                 (text_field("Display name", "display_name", &echo.display_name,
                     errors.display_name.as_deref()))
-                (text_field("Priority", "priority", &echo.priority,
-                    errors.priority.as_deref()))
                 div class={ "field" @if errors.position_angle.is_some() { " invalid" } } {
                     label for="position_angle_degrees" { "Position angle" }
                     input type="text" name="position_angle_degrees"
@@ -740,7 +733,6 @@ pub(crate) async fn save(
         mut echo,
         mut errors,
         display_name,
-        priority,
         angle,
         notes,
     } = parse_scalar_fields(&form);
@@ -776,7 +768,6 @@ pub(crate) async fn save(
 
     let mut fields = Map::new();
     fields.insert("display_name".to_string(), Value::String(display_name));
-    fields.insert("priority".to_string(), json!(priority));
     fields.insert(
         "position_angle_degrees".to_string(),
         angle.clone().unwrap_or(Value::Null),
@@ -836,7 +827,6 @@ struct ScalarFields {
     echo: FormEcho,
     errors: FormErrors,
     display_name: String,
-    priority: i64,
     angle: Option<Value>,
     notes: Option<String>,
 }
@@ -846,10 +836,6 @@ fn parse_scalar_fields(form: &[(String, String)]) -> ScalarFields {
         .unwrap_or("")
         .trim()
         .to_string();
-    let priority_raw = form_value(form, "priority")
-        .unwrap_or("0")
-        .trim()
-        .to_string();
     let angle_raw = form_value(form, "position_angle_degrees")
         .unwrap_or("")
         .to_string();
@@ -857,7 +843,6 @@ fn parse_scalar_fields(form: &[(String, String)]) -> ScalarFields {
 
     let echo = FormEcho {
         display_name: display_name.clone(),
-        priority: priority_raw.clone(),
         position_angle: angle_raw.clone(),
         goals: Vec::new(),
     };
@@ -866,12 +851,6 @@ fn parse_scalar_fields(form: &[(String, String)]) -> ScalarFields {
     if display_name.is_empty() {
         errors.display_name = Some("a display name is required".to_string());
     }
-    let priority: i64 = if let Ok(priority) = priority_raw.parse() {
-        priority
-    } else {
-        errors.priority = Some("not a whole number".to_string());
-        0
-    };
     let angle = match parse_position_angle(&angle_raw) {
         Ok(angle) => Some(angle),
         Err(message) => {
@@ -883,7 +862,6 @@ fn parse_scalar_fields(form: &[(String, String)]) -> ScalarFields {
         echo,
         errors,
         display_name,
-        priority,
         angle,
         notes,
     }
@@ -1196,7 +1174,6 @@ mod tests {
             "display_name": "M 82",
             "active": false,
             "coord": { "ra_hours": 5.5, "dec_degrees": 10.0 },
-            "priority": 0,
             "goals": [],
             "created_by": "operator",
             "updated_by": "operator",
@@ -1207,7 +1184,6 @@ mod tests {
     fn base_form() -> Vec<(String, String)> {
         vec![
             ("display_name".to_string(), "M 82".to_string()),
-            ("priority".to_string(), "0".to_string()),
             ("position_angle_degrees".to_string(), String::new()),
             ("notes".to_string(), String::new()),
         ]

@@ -19,8 +19,8 @@ compute progress; this doc covers the crate's own design.
 In scope — the crate is a typed CRUD repository over a single `redb`
 file:
 
-- **Targets** — a named pointing with denormalized coordinates,
-  priority, an active flag, and optional per-target overrides.
+- **Targets** — a named pointing with denormalized coordinates, an
+  active flag, and optional per-target overrides.
 - **Acquisition goals** — the desired frame count per
   `(filter, binning, exposure_duration)` sub-spec, owned by a target.
 - **Override storage** — per-target grading thresholds and scheduling
@@ -122,7 +122,6 @@ pub struct Target {
     pub position_angle_degrees: Option<f64>,
 
     // --- Planning ---
-    pub priority: i32,
     pub active: bool,
     pub goals: Vec<AcquisitionGoal>,
 
@@ -277,8 +276,7 @@ supplies both at the call boundary, exactly as it does for the
 altitude floor) and orders (nearest transit, then least progress, then
 the filter in the wheel — rp.md § Decision Logic) in Rust — the row
 count is tens, so a scan-and-sort is cheaper and simpler than
-maintaining an index. `priority` is stored and editable, but no
-selection reads it.
+maintaining an index.
 There is intentionally **no** `record_exposure`/counter-mutation method:
 actuals are derived from the filesystem, never written here
 (see [rp Integration](#rp-integration-outside-this-crate)).
@@ -387,11 +385,19 @@ On open, read `meta["schema_version"]`:
   `#[serde(default)]` their new fields and tolerate unknown ones, so an
   old value deserializes into the new `Target` directly. A migration
   step is only authored for a breaking re-shape (rename, split, type
-  change), as a `Target_vN → Target` transform. `CURRENT_SCHEMA_VERSION`
-  is 1, so no step exists: an older version is stamped current.
+  change), as a `Target_vN → Target` transform. Removing a field an
+  older build requires needs no step either, but bumps the version, so
+  that the older build refuses the database at open instead of failing
+  on each row a newer build has written. `CURRENT_SCHEMA_VERSION` is 2:
+  a row a version 2 build writes has no `priority`, which version 1
+  builds require, while an upgraded version 1 database keeps each row's
+  `priority` until the row is rewritten. No step exists, and a version 1
+  database is stamped current on open.
 - **> current** → `UnsupportedSchemaVersion` (refuse to run against a
   database written by a newer build, rather than silently dropping
-  fields).
+  fields). rp opens the store at startup and does not start against a
+  refused one, so rolling rp back past a version bump needs the store
+  file as it was before the upgrade.
 
 ### File location
 

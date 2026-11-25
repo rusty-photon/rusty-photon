@@ -2,7 +2,7 @@ Feature: Targets inbox
   /targets is the operator surface for rp's target store: pending (paused)
   targets — typically planetarium imports — await review in the inbox,
   active targets sit in the roster section, and the per-target review page
-  edits display name, priority, notes, the framing position angle, and the
+  edits display name, notes, the framing position angle, and the
   acquisition goals, then activates the target into the planner's rotation
   or discards it. Target CRUD is MCP-only on rp, so every read and write
   here rides rp's target tools over a per-request rp-mcp-client session;
