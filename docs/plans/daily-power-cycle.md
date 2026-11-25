@@ -481,9 +481,11 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       mapped too, and the night would hold it at its maximum all night.
 15. **The schedule decides what dawn leaves on** (settled 2026-11-23).
     Before it calls `power_down`, the schedule takes off its list every
-    output that feeds a camera whose TEC is still running, and every
-    output that feeds the mount while the mount does not read parked or
-    says a cut would lose its pose (decision 16). A cut is the TEC
+    output that feeds a camera whose TEC is still running, every output
+    that feeds the mount while the mount does not read parked or says a
+    cut would lose its pose (decision 16), and every output that feeds a
+    cover that does not read closed, since a cover whose power goes while
+    it is open stays open until dusk. A cut is the TEC
     switching off abruptly, so only a running TEC makes it a shock to the
     sensor. The TEC's drive (`CoolerPower` above 0) counts as well as
     `CoolerOn`, which a driver can hold in its process alone. An output that feeds a

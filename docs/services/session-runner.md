@@ -885,7 +885,9 @@ server, nothing more.
   schema violation, unknown tool, bad parameters) is `400` carrying the
   issues — the run fails to start loudly, before any hardware moves.
 - **One run at a time.** A `POST /runs` while a run is `running` or
-  `paused` answers `409 Conflict` naming the active run. The service
+  `paused` answers `409 Conflict` naming the active run, and so does one
+  while the night schedule holds the slot for its own steps
+  ([Night Schedule](#night-schedule)), naming the night. The service
   drives one rig; two documents contending for the mount is never what
   anyone meant.
 
@@ -1035,7 +1037,13 @@ with no civil darkness that night) is skipped with a `warn!`.
    on. It waits until dawn at most: a night whose roof stays shut, or
    whose slot an operator's run holds all night, powers nothing and starts
    no run, and the schedule logs at `info!` that it did not.
-2. **Power-up.** `power_up {settle}` switches every daily output on,
+2. **Power-up.** From here until its first run starts, the schedule
+   holds the run slot itself, so that no run starts under the power-up,
+   the camera check or a wedge retry, and it hands the slot straight to
+   that run. It reads `get_power_map` and records in `night.json` the
+   daily outputs that read off: those are the outputs this dusk powers
+   up, whatever a later `power_up` reports after a crash in the middle of
+   this one. Then `power_up {settle}` switches every daily output on,
    restarts each service with a device on them and connects every
    device. A device that fails to connect is logged at `warn!` and the
    night goes on without it, while `rp`'s reconnect supervisor goes on
@@ -1070,15 +1078,17 @@ with no civil darkness that night) is skipped with a `warn!`.
    `POST /runs/{id}/stop` ends it, the operator's included: a running run
    at its next safe point with its `finally` blocks, a paused one at once.
    It waits 10 minutes at most for the run to end; a run still ending
-   then is left to end, and dawn goes on. Every step of dawn is an
-   ungated tool, so dawn runs whatever the weather:
+   then is left to end, and dawn goes on. From then until its
+   `power_down` returns, the schedule holds the run slot itself. Every
+   step of dawn is an ungated tool, so dawn runs whatever the weather:
    1. `start_warmup`, which returns at once and ramps in the background;
    2. `park`, with the warm-up under way, so that the mount never waits
       out the warm-up away from its park;
    3. `close_cover` for each calibrator the power map lists, a daily
-      output's before its power goes. A cover on an output the map does
-      not list is out of the schedule's sight, and the imaging document's
-      to close;
+      output's before its power goes. A cover that fails to close holds
+      its output (the cut rules below), and the after-dawn checks try it
+      again. A cover on an output the map does not list is out of the
+      schedule's sight, and the imaging document's to close;
    4. a wait until no camera on a daily output reads its cooler running
       (`get_camera_info`'s `cooler_running`), polled every 30 s and woken
       early by `cooler_warmup_complete`, for at most `warmup_timeout`;
@@ -1110,7 +1120,8 @@ with no civil darkness that night) is skipped with a `warn!`.
    whose cut failed, or whose box could not be read, first connects the
    devices on it again through `connect_device`: `power_down` held them
    out before its cut, and a mount still held out fails every park and
-   every pose read. Once the checks have cut every output dawn left on,
+   every pose read. A check of an output held for a cover calls
+   `close_cover` again first. Once the checks have cut every output dawn left on,
    or at the next dusk, `night.json` moves to the next night, in phase
    `day` or `dusk`.
 
@@ -1138,14 +1149,23 @@ retry, the schedule takes off its list:
   for good would keep a wedged camera wedged and its fan running all day;
 - every output that feeds the mount while `get_park_state` reads
   `at_park` false, or `park_matches_power_up_pose` anything but `true`,
-  or fails.
+  or fails;
+- every output that feeds a calibrator the power map lists whose
+  `get_cover_state` reads neither `Closed` nor `NotPresent`, or fails:
+  a cover whose power goes while it is open stays open until the next
+  dusk powers it.
 
 The mount's output is cut only when `park_matches_power_up_pose` reads
 `true`: `null`, a mount whose driver offers no such check and whose `rp`
 entry sets no `power_cut_keeps_pose`, keeps its power through the day.
-For a wedge retry at dusk, an output that dusk's `power_up`
-switched on feeds no running cooler, since every camera on it was
-unpowered all day, so only the mount's rule can hold it. That rule then
+For a wedge retry at dusk, an output `night.json` records as off
+before dusk's first `power_up` feeds no running cooler and no camera
+that warmed by day, since every camera on it was unpowered all day, so
+only the mount's rule can hold it; the camera rules, the unreadable
+camera's among them, do not apply to it. On an output that was already
+on, the camera rules apply as at dawn, except that an unreadable camera
+holds the output outright: no warm-up has run tonight to time it from,
+and the camera is given up. That rule then
 skips `at_park`: the night has not moved the mount since dusk's power-up
 seeded it, and a driver restarted by the power-up need not remember that
 it was parked (`star-adventurer-gti` reads `AtPark` false in a new
@@ -1163,8 +1183,8 @@ mount cut away from its power-up pose comes back with its position lost.
 The schedule keeps its place in `<state_dir>/night.json`, written with
 the workspace atomic-write pattern at every change: the night's date,
 dusk and dawn, its phase (`day`, `dusk`, `power_up`, `camera_check`,
-`runs`, `dawn`, `after_dawn`), the outputs dusk's `power_up` switched
-on, the index of the next run to start (moved on as each run ends), the
+`runs`, `dawn`, `after_dawn`), the daily outputs that read off before
+dusk's first `power_up`, the index of the next run to start (moved on as each run ends), the
 covers still to open, the cameras it gave up, the
 time of dawn's `start_warmup`, and the outputs dawn left on. A start reads it and
 carries on, at any time of day. A configured night is the operator's
@@ -1196,13 +1216,14 @@ taken in order, and the first that matches decides:
 3. **`day`, or `after_dawn`:** the schedule waits for dusk, running the
    after-dawn checks meanwhile.
 4. **`dusk`:** back to the safety wait.
-5. **`power_up` or `camera_check`:** `power_up` again from the top, then
-   the camera check of every camera not already given up, and the steps
-   that follow it. A second round
-   of service restarts at dusk costs seconds, and leaves no service on an
-   SDK that saw its device go. The outputs the first `power_up` switched
-   on stay recorded, so a wedge retry still treats them as switched on
-   this dusk.
+5. **`power_up` or `camera_check`:** after dusk's wait for a run an
+   operator started (a self-resumed one included) to end, the schedule
+   takes the slot again and runs `power_up` from the top, then the camera
+   check of every camera not already given up, and the steps that follow
+   it. A second round of service restarts at dusk costs seconds, and
+   leaves no service on an SDK that saw its device go. The outputs
+   recorded as off before the first `power_up` stay recorded, so a wedge
+   retry still treats them as powered up this dusk.
 6. **`runs`:** a run the self-resume picks up
    ([Self-resume on startup](#self-resume-on-startup)) names its own
    index in its session id, `night-<date>-<n>`: the schedule waits for it
@@ -1248,8 +1269,12 @@ absent.
 - **A tool error** at a step is logged at `warn!`, and the night goes
   on. A `power_up` refused as a whole leaves the night without its runs.
   Dawn still runs.
-- **`get_twilight` fails** while `rp` answers: retried like an
-  unreachable `rp`. A window lacking an end skips the night.
+- **`get_twilight` answered with a tool error** (`rp` has no site
+  configured, for one): the schedule logs it at `warn!` once, asks again
+  every hour, and runs no dusk and no dawn until an answer comes, since
+  both are times in the window it lacks. A request-level failure of the
+  call is retried like any other step. A window lacking an end skips the
+  night.
 
 ### Not in this stage
 
