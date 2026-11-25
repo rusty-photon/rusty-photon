@@ -176,6 +176,7 @@ base64 = "0.23.0"
 mockall = "0.15.0"
 scraper = "0.29"
 parking_lot = "0.13.0"
+png = "0.18"
 # Single-file embedded stores: rp-targets (the imaging plan),
 # calibrator-flats (flat timing per train and filter) and focus-model (each
 # train's focus record and run history). redb 3 to 5 write file format 3; a

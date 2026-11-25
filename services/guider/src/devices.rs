@@ -47,7 +47,7 @@ pub enum CallError {
 }
 
 /// `call` held to [`CALL_DEADLINE`].
-async fn call<T, E: Display>(
+pub(crate) async fn call<T, E: Display>(
     call: impl Future<Output = std::result::Result<T, E>>,
 ) -> std::result::Result<T, CallError> {
     match tokio::time::timeout(CALL_DEADLINE, call).await {
@@ -97,6 +97,10 @@ pub struct DeviceState<S> {
     pub unique_id: Option<String>,
     /// The static properties last read; `None` until a read succeeds.
     pub statics: Option<S>,
+    /// Whether `statics` were read since the device last came back: false
+    /// while it is not connected, and while a read after it came back has
+    /// not succeeded.
+    pub statics_current: bool,
 }
 
 impl<S> Default for DeviceState<S> {
@@ -105,6 +109,7 @@ impl<S> Default for DeviceState<S> {
             reach: Reach::NoAnswer,
             unique_id: None,
             statics: None,
+            statics_current: false,
         }
     }
 }
@@ -143,12 +148,15 @@ pub struct DevicesState {
 }
 
 /// A kind of device the guider is a client of.
-trait Kind {
+pub trait Kind {
     type Device: Device + ?Sized;
     type Statics: Copy + Send + Sync;
 
     /// The kind as the guider's messages name it.
     const NAME: &'static str;
+
+    /// The Alpaca device type its server lists it as.
+    const LISTED_AS: &'static str;
 
     /// `device` when it is of this kind.
     fn of(device: TypedDevice) -> Option<Arc<Self::Device>>;
@@ -160,13 +168,14 @@ trait Kind {
 }
 
 /// The guide camera.
-struct CameraKind;
+pub struct CameraKind;
 
 impl Kind for CameraKind {
     type Device = dyn Camera;
     type Statics = CameraSensor;
 
     const NAME: &'static str = "camera";
+    const LISTED_AS: &'static str = "camera";
 
     fn of(device: TypedDevice) -> Option<Arc<dyn Camera>> {
         let TypedDevice::Camera(camera) = device else {
@@ -198,13 +207,14 @@ impl Kind for CameraKind {
 }
 
 /// The mount.
-struct MountKind;
+pub struct MountKind;
 
 impl Kind for MountKind {
     type Device = dyn Telescope;
     type Statics = MountCapabilities;
 
     const NAME: &'static str = "mount";
+    const LISTED_AS: &'static str = "telescope";
 
     fn of(device: TypedDevice) -> Option<Arc<dyn Telescope>> {
         let TypedDevice::Telescope(telescope) = device else {
@@ -250,6 +260,12 @@ impl DeviceClient {
         })
     }
 
+    /// The device's position among its server's devices of its kind.
+    #[must_use]
+    pub const fn device_number(&self) -> u32 {
+        self.device_number
+    }
+
     /// The device of kind `K` at this client's position in its server's
     /// list, with the `UniqueID` listed for it: `None` when the list holds
     /// no such device.
@@ -263,6 +279,50 @@ impl DeviceClient {
             (device, unique_id)
         }))
     }
+
+    /// The device of kind `K` read afresh: its server's list, then its
+    /// `Connected`.
+    pub async fn find<K: Kind>(&self) -> Found<K::Device> {
+        match self.listed::<K>().await {
+            Err(error) => Found::NoServer(error),
+            Ok(None) => Found::NotListed,
+            Ok(Some((device, unique_id))) => {
+                let connected = call(device.connected()).await;
+                Found::Listed {
+                    device,
+                    unique_id,
+                    connected,
+                }
+            }
+        }
+    }
+}
+
+/// What a fresh read of a device found.
+#[derive(Debug)]
+pub enum Found<D: ?Sized> {
+    /// The server does not answer.
+    NoServer(CallError),
+    /// The server lists no device of the kind at the device number.
+    NotListed,
+    /// The server lists the device, with its `UniqueID` and what reading its
+    /// `Connected` gave.
+    Listed {
+        device: Arc<D>,
+        unique_id: String,
+        connected: std::result::Result<bool, CallError>,
+    },
+}
+
+/// The camera's static properties, read afresh.
+///
+/// # Errors
+///
+/// The [`CallError`] of the first read that fails.
+pub async fn camera_sensor(
+    camera: Arc<dyn Camera>,
+) -> std::result::Result<CameraSensor, CallError> {
+    CameraKind::read(camera).await
 }
 
 /// The HTTP client of a device: its user agent, the connect timeout, the
@@ -294,13 +354,13 @@ fn http_client(
 /// One device under the poll, and whether its static properties have been
 /// read since it last came back.
 struct Polled<K: Kind> {
-    client: DeviceClient,
+    client: Arc<DeviceClient>,
     state: DeviceState<K::Statics>,
     fresh: bool,
 }
 
 impl<K: Kind> Polled<K> {
-    fn new(client: DeviceClient) -> Self {
+    fn new(client: Arc<DeviceClient>) -> Self {
         Self {
             client,
             state: DeviceState::default(),
@@ -312,18 +372,22 @@ impl<K: Kind> Polled<K> {
     /// connected and they have not been read since it came back.
     async fn poll(&mut self) {
         let before = self.state.reach;
-        let reach = match self.client.listed::<K>().await {
-            Err(error) => {
+        let reach = match self.client.find::<K>().await {
+            Found::NoServer(error) => {
                 debug!(device = K::NAME, %error, "the device's server does not answer");
                 Reach::NoAnswer
             }
-            Ok(None) => {
+            Found::NotListed => {
                 self.state.unique_id = None;
                 Reach::NotListed
             }
-            Ok(Some((device, unique_id))) => {
+            Found::Listed {
+                device,
+                unique_id,
+                connected,
+            } => {
                 self.state.unique_id = Some(unique_id);
-                match call(device.connected()).await {
+                match connected {
                     Err(error) => {
                         debug!(device = K::NAME, %error, "the device does not answer");
                         Reach::NoAnswer
@@ -345,6 +409,7 @@ impl<K: Kind> Polled<K> {
             debug!(device = K::NAME, from = ?before, to = ?reach, "the device's reach changed");
         }
         self.state.reach = reach;
+        self.state.statics_current = self.fresh;
     }
 
     async fn read_statics(&mut self, device: Arc<K::Device>) {
@@ -374,8 +439,8 @@ impl DevicePoll {
     /// is `None`, and stays `None` in what is published.
     #[must_use]
     pub fn new(
-        camera: Option<DeviceClient>,
-        mount: Option<DeviceClient>,
+        camera: Option<Arc<DeviceClient>>,
+        mount: Option<Arc<DeviceClient>>,
         interval: Duration,
     ) -> (Self, watch::Receiver<DevicesState>) {
         let camera = camera.map(Polled::new);
@@ -615,7 +680,9 @@ mod tests {
 
     async fn polled_stub(stub: &Stub) -> Polled<CameraKind> {
         let url = stub_camera_server(Arc::clone(stub)).await;
-        Polled::new(DeviceClient::new(&address(&url, json!(null)), None).unwrap())
+        Polled::new(Arc::new(
+            DeviceClient::new(&address(&url, json!(null)), None).unwrap(),
+        ))
     }
 
     fn width(polled: &Polled<CameraKind>) -> Option<u32> {
@@ -675,6 +742,27 @@ mod tests {
 
         polled.poll().await;
         assert_eq!(width(&polled), Some(1936));
+    }
+
+    #[tokio::test]
+    async fn the_static_properties_are_current_only_once_read_since_the_device_came_back() {
+        let stub = stub(true);
+        let mut polled = polled_stub(&stub).await;
+        polled.poll().await;
+        assert!(polled.state.statics_current);
+
+        stub.lock().unwrap().connected = false;
+        polled.poll().await;
+        assert!(!polled.state.statics_current);
+        assert_eq!(width(&polled), Some(1936));
+
+        stub.lock().unwrap().connected = true;
+        stub.lock().unwrap().max_adu_failures = 1;
+        polled.poll().await;
+        assert!(!polled.state.statics_current);
+
+        polled.poll().await;
+        assert!(polled.state.statics_current);
     }
 
     #[tokio::test]

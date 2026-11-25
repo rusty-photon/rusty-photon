@@ -164,6 +164,13 @@ impl SimDevices {
             .with(|state| state.sim.mount_mut().set_tracking(on))
     }
 
+    /// Sets the camera's `PixelSizeX` and `PixelSizeY`, as a camera that
+    /// comes back from its driver with another sensor reports them.
+    pub fn set_pixel_size(&self, pixel_size_um: f64) {
+        self.rig
+            .with(|state| state.camera.pixel_size_um = pixel_size_um);
+    }
+
     /// Sets the mount's `CanPulseGuide`.
     pub fn set_can_pulse_guide(&self, can: bool) {
         self.rig.with(|state| state.mount.can_pulse_guide = can);

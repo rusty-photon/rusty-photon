@@ -220,11 +220,11 @@ impl Camera for SimCamera {
     }
 
     async fn pixel_size_x(&self) -> ASCOMResult<f64> {
-        self.when_connected(self.rig.camera.pixel_size_um)
+        self.session(|state, _| Ok(state.camera.pixel_size_um))
     }
 
     async fn pixel_size_y(&self) -> ASCOMResult<f64> {
-        self.when_connected(self.rig.camera.pixel_size_um)
+        self.session(|state, _| Ok(state.camera.pixel_size_um))
     }
 
     async fn sensor_type(&self) -> ASCOMResult<SensorType> {

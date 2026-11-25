@@ -19,6 +19,11 @@ axum = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true }
 humantime = { workspace = true }
+ndarray = { workspace = true }
+num-traits = { workspace = true }
+parking_lot = { workspace = true }
+# `GET /api/v1/frame/latest` answers the latest frame as a PNG.
+png = { workspace = true }
 reqwest = { workspace = true }
 # A `ca_cert` that holds no certificate refuses the start (guider.md
 # § Configuration validation at startup).
@@ -29,7 +34,10 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+# The running totals' and the metrics' epoch.
+uuid = { workspace = true }
 rp-auth = { workspace = true }
+rp-guiding = { workspace = true }
 rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
@@ -43,6 +51,8 @@ rusty-photon-tls = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
 
 [dev-dependencies]
+# The unit tests' fake camera implements the Alpaca Camera trait.
+async-trait = { workspace = true }
 bdd-infra = { workspace = true, features = ["tls-auth"] }
 cucumber = { workspace = true }
 guide-simulator = { workspace = true }

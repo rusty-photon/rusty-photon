@@ -56,7 +56,7 @@ a slew makes it longer than an exposure, as a real slew is.
 | Member | Behaviour |
 |---|---|
 | `CameraXSize`, `CameraYSize` | The simulated sensor's width and height |
-| `PixelSizeX`, `PixelSizeY` | `camera.pixel_size_um`. The simulation's pixel scale is its own; a scenario chooses the focal length it gives the guider so the two agree |
+| `PixelSizeX`, `PixelSizeY` | `camera.pixel_size_um` at the start, which a scenario can change. The simulation's pixel scale is its own; a scenario chooses the focal length it gives the guider so the two agree |
 | `SensorType` | `Monochrome`, or `RGGB` with Bayer offsets 0, as the simulated sensor is |
 | `MaxADU` | `camera.max_adu`, which may lie above the sensor's clip, as `qhy-camera`'s does |
 | `MaxBinX`, `MaxBinY` | `camera.max_bin` |
@@ -112,6 +112,9 @@ what they were asked:
   until `clear_frame_faults`, in one of three ways: `StartExposure`
   answers an error; the frame never becomes ready; or `ImageArray`
   answers a frame one pixel narrower than the region asked for.
+- **A camera that comes back changed.** `set_pixel_size` changes the
+  pixel size the camera reports, as a camera that comes back from its
+  driver with another sensor does.
 - **The mount.** `slew` moves the pointing over a duration and ends on a
   pier side; `park`, `set_tracking` and `set_can_pulse_guide` change
   what the mount check reads; `set_rate_factors` makes pulses move the

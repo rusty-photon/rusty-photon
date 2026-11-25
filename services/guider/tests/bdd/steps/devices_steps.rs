@@ -63,6 +63,7 @@ fn connect_the_camera(world: &mut GuiderWorld) {
     world.sim().set_connected(Device::Camera, true);
 }
 
+#[given(regex = r"^the (camera|mount)'s server stops answering$")]
 #[when(regex = r"^the (camera|mount)'s server stops answering$")]
 fn stops_answering(world: &mut GuiderWorld, device: String) {
     world.sim().set_reachable(device_named(&device), false);
@@ -74,6 +75,9 @@ fn answers_again(world: &mut GuiderWorld, device: String) {
     world.sim().set_reachable(device_named(&device), true);
 }
 
+#[given(
+    regex = r"^the guider reports the (camera|mount) (connected|reachable and not connected|not reachable)$"
+)]
 #[when(
     regex = r"^the guider reports the (camera|mount) (connected|reachable and not connected|not reachable)$"
 )]

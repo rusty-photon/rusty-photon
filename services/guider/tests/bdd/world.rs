@@ -3,17 +3,17 @@
 //! starts, and what a refused start printed.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use ascom_alpaca::api::TypedDevice;
+use ascom_alpaca::api::{Camera, TypedDevice};
 use ascom_alpaca::Client;
 use bdd_infra::doctor_smoke::{DoctorSmokeState, DoctorSmokeWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
-use guide_simulator::{CameraConfig, SimConfig};
-use guide_simulator_alpaca::{Device, DevicesConfig, SimDevices};
+use guide_simulator::{CameraConfig, Seeing, SimConfig, SimTime, SkyConfig};
+use guide_simulator_alpaca::{Device, DevicesConfig, FrameFault, SimDevices};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -41,12 +41,42 @@ pub fn http() -> &'static reqwest::Client {
     })
 }
 
+/// The simulated sky's seeing, as a full width at half maximum.
+const SEEING_ARCSEC: f64 = 6.0;
+
+/// The exposure of every frame in every scenario, unless the scenario
+/// sets its own.
+pub const EXPOSURE: &str = "200ms";
+
 /// What a start the guider refused printed.
 #[derive(Debug)]
 pub struct Refusal {
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+}
+
+/// An answer of the guider's: its status, its content type, its body, and
+/// the body read as JSON when it is.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub bytes: Vec<u8>,
+    pub json: Option<Value>,
+}
+
+impl Answer {
+    /// The body as JSON; panics when it is not.
+    pub fn json(&self) -> &Value {
+        self.json.as_ref().unwrap_or_else(|| {
+            panic!(
+                "the answer {} is not JSON: {}",
+                self.status,
+                String::from_utf8_lossy(&self.bytes)
+            )
+        })
+    }
 }
 
 #[derive(Debug, World)]
@@ -61,6 +91,9 @@ pub struct GuiderWorld {
     pub camera_connected: bool,
     pub mount_connected: bool,
     pub sim: Option<SimDevices>,
+    /// A fault every exposure, or a count of them, fails with from the
+    /// simulated devices' start.
+    pub frame_faults: Option<(FrameFault, Option<usize>)>,
     /// Which simulated devices the guider's configuration names.
     pub name_camera: bool,
     pub name_mount: bool,
@@ -76,6 +109,20 @@ pub struct GuiderWorld {
     pub config_path: Option<PathBuf>,
     pub guider: Option<ServiceHandle>,
     pub refusal: Option<Refusal>,
+    /// The answer to the scenario's latest request, and the simulated time
+    /// it arrived at.
+    pub answer: Option<Answer>,
+    pub answered_at: Option<SimTime>,
+    /// A request sent in the background, still to be answered.
+    pub background: Option<tokio::task::JoinHandle<Result<Answer, String>>>,
+    /// The frame numbers the metrics window held at a step that noted
+    /// them.
+    pub noted_frames: Vec<u64>,
+    /// When the simulated camera's last exposure started, at a step that
+    /// noted it.
+    pub noted_exposure: Option<SimTime>,
+    /// When the scenario last scripted failed exposures.
+    pub faults_at: Option<SimTime>,
     pub tls_auth: TlsAuthState,
     pub doctor_smoke: DoctorSmokeState,
 }
@@ -90,6 +137,7 @@ impl GuiderWorld {
             camera_connected: false,
             mount_connected: false,
             sim: None,
+            frame_faults: None,
             name_camera: false,
             name_mount: false,
             config,
@@ -98,6 +146,12 @@ impl GuiderWorld {
             config_path: None,
             guider: None,
             refusal: None,
+            answer: None,
+            answered_at: None,
+            background: None,
+            noted_frames: Vec::new(),
+            noted_exposure: None,
+            faults_at: None,
             tls_auth: TlsAuthState::default(),
             doctor_smoke: DoctorSmokeState::default(),
         }
@@ -109,7 +163,10 @@ impl GuiderWorld {
     }
 
     /// The simulated devices' configuration, created on first use: a
-    /// 320 × 240 sensor of 2 µm pixels.
+    /// 320 × 240 sensor of 2 µm pixels, in seeing of 6″, three pixels at
+    /// bin 1: a frame binned 2 × 2 still resolves a star, where it would
+    /// put the light of one in a single pixel in finer seeing and pass it
+    /// over as a hot pixel.
     pub fn sim_config(&mut self) -> &mut DevicesConfig {
         self.sim_config.get_or_insert_with(|| DevicesConfig {
             sim: SimConfig {
@@ -117,6 +174,13 @@ impl GuiderWorld {
                     width: 320,
                     height: 240,
                     ..CameraConfig::default()
+                },
+                sky: SkyConfig {
+                    seeing: Seeing {
+                        fwhm_arcsec: SEEING_ARCSEC,
+                        ..SkyConfig::default().seeing
+                    },
+                    ..SkyConfig::default()
                 },
                 ..SimConfig::default()
             },
@@ -147,6 +211,9 @@ impl GuiderWorld {
                 .expect("start the simulated devices");
             sim.set_connected(Device::Camera, self.camera_connected);
             sim.set_connected(Device::Mount, self.mount_connected);
+            if let Some((fault, count)) = self.frame_faults {
+                sim.fail_frames(fault, count);
+            }
             if self.name_camera {
                 self.config["devices"]["camera"] = json!({ "alpaca_url": sim.camera_url() });
             }
@@ -198,6 +265,43 @@ impl GuiderWorld {
             .base_url()
     }
 
+    /// `method path` on the guider, with `body` when there is one.
+    pub async fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<Answer, String> {
+        send(
+            http().request(method, format!("{}{path}", self.base_url())),
+            body,
+        )
+        .await
+        .map_err(|e| format!("{path}: {e}"))
+    }
+
+    /// `POST path` with `body`, its answer kept as the scenario's latest
+    /// with the simulated time it arrived at.
+    pub async fn post(&mut self, path: &str, body: Option<&str>) {
+        let answer = self
+            .request(reqwest::Method::POST, path, body)
+            .await
+            .unwrap_or_else(|e| panic!("POST {e}"));
+        self.answered_at = self.sim.as_ref().map(SimDevices::now);
+        self.answer = Some(answer);
+    }
+
+    /// `POST path` with `body` in the background.
+    pub fn post_in_background(&mut self, path: &str, body: Option<&str>) {
+        let request = http().post(format!("{}{path}", self.base_url()));
+        let body = body.map(str::to_owned);
+        self.background = Some(tokio::spawn(async move {
+            send(request, body.as_deref())
+                .await
+                .map_err(|e| e.to_string())
+        }));
+    }
+
     /// `GET path` on the guider: the status and the JSON body.
     pub async fn get(&self, path: &str) -> Result<(u16, Value), String> {
         let response = http()
@@ -236,6 +340,36 @@ impl GuiderWorld {
             "GET {path} did not show {what} within {WAIT_BUDGET:?} (waited {:?}); last answer: {last}",
             start.elapsed()
         );
+    }
+
+    /// Wait until `done` holds. Panics naming `what` when [`WAIT_BUDGET`]
+    /// runs out.
+    pub async fn wait_until(&self, what: &str, done: impl Fn() -> bool) {
+        let start = Instant::now();
+        while start.elapsed() < WAIT_BUDGET {
+            if done() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("{what} did not come within {WAIT_BUDGET:?}");
+    }
+
+    /// A client of the simulated camera of the suite's own, as another
+    /// client of the rig would hold.
+    pub async fn sim_camera(&self) -> Arc<dyn Camera> {
+        let client = Client::new(self.sim().camera_url().as_str())
+            .expect("a client of the simulated camera");
+        let listed = tokio::time::timeout(REQUEST_TIMEOUT, client.get_devices())
+            .await
+            .expect("the simulated camera's server answers")
+            .expect("the device list");
+        for device in listed {
+            if let TypedDevice::Camera(camera) = device {
+                return camera;
+            }
+        }
+        panic!("the simulated camera is not listed");
     }
 
     /// The `Connected` the simulated `device` reports to a client of its
@@ -277,14 +411,40 @@ impl GuiderWorld {
     }
 }
 
+/// Send `request` with `body`, and read the answer.
+async fn send(request: reqwest::RequestBuilder, body: Option<&str>) -> reqwest::Result<Answer> {
+    let request = match body {
+        Some(body) => request
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body.to_owned()),
+        None => request,
+    };
+    let response = request.send().await?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let bytes = response.bytes().await?.to_vec();
+    let json = serde_json::from_slice(&bytes).ok();
+    Ok(Answer {
+        status,
+        content_type,
+        bytes,
+        json,
+    })
+}
+
 /// The configuration every scenario starts from: the listener on port 0
 /// of the loopback address, the state directory in the scratch directory,
-/// and a poll every [`POLL_INTERVAL`].
+/// a poll every [`POLL_INTERVAL`] and exposures of [`EXPOSURE`].
 fn base_config(scratch: &TempDir) -> Value {
     json!({
         "server": { "port": 0, "bind_address": "127.0.0.1" },
         "state_dir": scratch.path().join("state"),
-        "devices": { "poll_interval": POLL_INTERVAL }
+        "devices": { "poll_interval": POLL_INTERVAL },
+        "camera": { "exposure": EXPOSURE }
     })
 }
 

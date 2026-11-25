@@ -11,8 +11,10 @@ an HTTP API.
 **The service is being built.** This document is the design the
 implementation is written against. Of the service, the configuration
 and its validation, the lifecycle and the state directory, the device
-clients and their poll, `GET /api/v1/devices`, `/health` and
-`guider doctor` are built; the camera loop, guiding, the guide log, the
+clients and their poll, the camera loop and the sensor handling,
+`loop`, `star/reselect` and `guiding/stop`, the requests' turns, the
+metrics window, `stats`, `frame/latest`, `GET /api/v1/devices`,
+`/health` and `guider doctor` are built; guiding, the guide log, the
 setup page and the packages are not yet. Of the guiding core,
 `crates/rp-guiding`, the star selection, the measurement, the
 calibration, the control, dither and settling are built.
@@ -171,7 +173,7 @@ for the stars to settle, the state is `guiding` and `stats` reports
 - **Finding a device again starts nothing.** When the camera or the
   mount answers again, or reports `Connected` again, the guider reads
   the device's static properties and stays in its state. The one
-  exception is a stop: a run does not go on with
+  exception is a stop: neither the loop nor a run goes on with
   [a camera that came back changed](#the-camera-loop).
 - **Saving the configuration starts nothing.** A save on the setup page
   is written to the file and takes effect at the next start.
@@ -260,7 +262,8 @@ after another. One cycle is:
    overlaps an exposure.
 
 **Frame settings.** Each time the guider leaves `idle` it writes the
-binning, the region (the full frame at that binning) and, when
+binning, the region (the full frame at that binning: `CameraXSize` and
+`CameraYSize` divided by the binning, rounded down) and, when
 `camera.gain` or `camera.offset` is set, the gain and the offset. A
 `null` gain or offset leaves the camera's value as the last client left
 it. The settings are written again after every frame failure. `rp`
@@ -278,20 +281,37 @@ for. A failed frame is discarded and no pulse follows it. After
 `camera.max_frame_failures` consecutive failures the guider stops with
 the reason `camera_error`.
 
-**A camera that comes back changed.** A run's calibration, pixel scale
-and star positions belong to the sensor it started on. A camera that
-comes back during a run with a sensor size, pixel size or sensor type
-other than the run started with stops the run with `camera_error`. The
-guider learns of it from the camera's static properties. It reads them
-when the [device poll](#devices-and-connections) finds the camera
-again, and after every frame failure, before it writes the frame
-settings again; a read that fails there fails the next frame.
+- **Each failed attempt takes an exposure.** The guider starts its next
+  attempt no sooner than `camera.exposure` after the failed one began.
+  A call that fails at once, such as a `StartExposure` refused by a
+  camera that is not connected, would otherwise use up
+  `camera.max_frame_failures` in milliseconds. So the failures span
+  about as many exposures, and a camera that drops out for less than
+  that, as when its driver restarts, does not stop the loop. A stop
+  ends the wait.
+- **An exposure of its own that may still run** after a failed frame,
+  one that never became ready or whose start got no answer, is ended
+  before the frame settings are written again, as when the loop stops.
+
+**A camera that comes back changed.** The frame settings, the pixel
+scale and the star positions belong to the sensor the camera had when
+the guider left `idle`, and a run's calibration with them. A camera
+that comes back while the guider takes frames, with a sensor size,
+pixel size or sensor type other than that sensor's, stops the loop with
+`camera_error`, and the run with it. The guider learns of it from the
+camera's static properties. It reads them when the
+[device poll](#devices-and-connections) finds the camera again, and
+after every frame failure, before it writes the frame settings again; a
+read that fails there fails the next frame.
 
 **Stopping the loop.** When the loop ends for any reason the guider
 aborts its own exposure if the camera reports `CanAbortExposure`, and
-waits for it to end otherwise. It never aborts an exposure it did not
-start: in `idle`, the one state in which `rp` exposes on the camera, it
-has none.
+waits for it to end otherwise: until `ImageReady` reads true, or
+`camera.frame_timeout` after the exposure should have ended. It never
+aborts an exposure it did not start: in `idle`, the one state in which
+`rp` exposes on the camera, it has none. The state stays what it was
+until the exposure has ended, so `idle` always means that the guider
+has no exposure on the camera.
 
 **One frame in memory.** The guider keeps the latest measured frame,
 for `GET /api/v1/frame/latest`, and writes no frame to disk.
@@ -557,8 +577,9 @@ work.
 **Metrics.** Every measured frame, in every exposing state, appends an
 entry to a window of the last 50 frames: the frame number, the median
 half-flux diameter, signal-to-noise ratio and flux of its usable stars,
-their count, and whether it was a star-lost frame.
-`GET /api/v1/guiding/metrics` returns the window.
+their count, and whether it was a star-lost frame. A frame of `looping`
+on which selection found too few stars has no usable star, and is a
+star-lost frame. `GET /api/v1/guiding/metrics` returns the window.
 
 No dark frame and no defect map is applied.
 
@@ -822,7 +843,7 @@ It then aborts its own exposure, sends no further pulse and goes to
 | `pier_side_changed` | The mount check found another pier side than the run's |
 | `mount_unreachable` | `mount.max_failures` consecutive cycles with a failed mount read or pulse call |
 | `pulse_timeout` | A pulse still in progress `mount.pulse_timeout` after its duration |
-| `camera_error` | `camera.max_frame_failures` consecutive failed frames, or a camera that came back with another sensor size, pixel size or sensor type than the run started with |
+| `camera_error` | `camera.max_frame_failures` consecutive failed frames, or a camera that came back with another sensor size, pixel size or sensor type than it had when the guider left `idle` |
 | `runaway` | Corrections in one direction that the error does not follow |
 | `calibration_failed` | A calibration failed inside a run that was already guiding |
 
@@ -1211,8 +1232,10 @@ celestial equator ([Calibration](#calibration)).
 #### `GET /api/v1/frame/latest`
 
 The latest measured frame as a PNG, stretched to eight bits, with the
-search region of each guide star drawn in. It is a diagnostic for a
-person: which stars the guider chose, and what the frame looks like.
+search region of each guide star drawn in: a circle of
+`stars.search_region_px` around the position the star is looked for at
+in the next frame. It is a diagnostic for a person: which stars the
+guider chose, and what the frame looks like.
 `no_frame` when no frame has been measured since the loop last started.
 
 #### `GET /setup` / `POST /setup`

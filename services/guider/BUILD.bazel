@@ -8,6 +8,7 @@ exports_files(
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
+    "//crates/rp-guiding:rp-guiding",
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
@@ -51,7 +52,8 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    # The camera loop's tests measure frames the simulator renders.
+    deps = ["//crates/guide-simulator"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
