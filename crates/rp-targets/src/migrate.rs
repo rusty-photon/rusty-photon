@@ -20,9 +20,10 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// Checks a database's on-disk `schema_version` against
 /// [`CURRENT_SCHEMA_VERSION`].
 ///
-/// Version 2's rows lack version 1's required `priority`, which this build
-/// ignores on read, so no migration step exists and this function only
-/// classifies `found` against `CURRENT_SCHEMA_VERSION`. A breaking
+/// A row this build writes lacks version 1's required `priority`, and a
+/// version 1 row keeps it, which this build ignores on read, so no
+/// migration step exists and this function only classifies `found`
+/// against `CURRENT_SCHEMA_VERSION`. A breaking
 /// `Target` re-shape adds an ordered step here, run inside the caller's
 /// single write transaction before the version key is bumped.
 ///

@@ -389,11 +389,15 @@ On open, read `meta["schema_version"]`:
   older build requires needs no step either, but bumps the version, so
   that the older build refuses the database at open instead of failing
   on each row a newer build has written. `CURRENT_SCHEMA_VERSION` is 2:
-  version 2's rows lack version 1's required `priority`, so no step
-  exists and a version 1 database is stamped current.
+  a row a version 2 build writes has no `priority`, which version 1
+  builds require, while an upgraded version 1 database keeps each row's
+  `priority` until the row is rewritten. No step exists, and a version 1
+  database is stamped current on open.
 - **> current** → `UnsupportedSchemaVersion` (refuse to run against a
   database written by a newer build, rather than silently dropping
-  fields).
+  fields). rp opens the store at startup and does not start against a
+  refused one, so rolling rp back past a version bump needs the store
+  file as it was before the upgrade.
 
 ### File location
 
