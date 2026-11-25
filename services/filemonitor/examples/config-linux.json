@@ -13,12 +13,12 @@
       {
         "type": "contains",
         "pattern": "CLOSED",
-        "safe": true
+        "safe": false
       },
       {
-        "type": "contains", 
-        "pattern": "OPEN",
-        "safe": false
+        "type": "regex",
+        "pattern": "Status:\\s*OPEN\\b",
+        "safe": true
       },
       {
         "type": "regex",

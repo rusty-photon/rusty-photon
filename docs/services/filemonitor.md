@@ -36,13 +36,13 @@ The service uses a JSON configuration file with the following format:
     "rules": [
       {
         "type": "contains",
-        "pattern": "OPEN",
-        "safe": true
-      },
-      {
-        "type": "contains", 
         "pattern": "CLOSED",
         "safe": false
+      },
+      {
+        "type": "regex",
+        "pattern": "Status:\\s*OPEN\\b",
+        "safe": true
       },
       {
         "type": "regex",
@@ -76,7 +76,7 @@ The `server` block is the shared `AlpacaServerConfig` from
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
-The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons. With `case_sensitive` false, a `contains` rule compares the lowercased text and a `regex` rule is compiled under `(?i)` (`ParsingConfig::compile_regex`, the one compile behind the evaluation and the rule check below).
+The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons. The rules above are also the default the service writes on first start. They check for CLOSED first and read a roof open only from `Status:` followed by the whole word `OPEN`, so a roof still opening (`Status: OPENING`), an error such as `could not open COM3`, or a line that also says CLOSED reads unsafe. Rule 3 reads `Status: SAFE` and `Status: OK` safe. With `case_sensitive` false, a `contains` rule compares the lowercased text and a `regex` rule is compiled under `(?i)` (`ParsingConfig::compile_regex`, the one compile behind the evaluation and the rule check below).
 
 Every block (`Config` and each nested config struct — `DeviceConfig`, `FileConfig`, `ParsingConfig`, `ParsingRule`, and the shared `AlpacaServerConfig`) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
 
