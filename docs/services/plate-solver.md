@@ -643,9 +643,12 @@ workflow's own token opened, so the M 101 check is the only ASTAP check
 the proposal gets before merge. Closing and reopening it starts the
 pull-request workflows.
 
-**The manual steps** refresh the D20 database, whose rotation the
-refresh only warns about, and the CLI archives whenever the refresh
-itself cannot run. For the CLI archives:
+**The manual steps** refresh the D20 database and, whenever the refresh
+itself cannot run, the CLI archives. The refresh never moves the
+database pin. It downloads the database only to check a rotated CLI
+archive, and then warns when the database has rotated too; a rotation
+of the database alone shows only as `plate-solver-smoke`'s failure and
+its tracking issue. For the CLI archives:
 
 1. Download each runner's archive from SourceForge, from the folder
    the table names.
@@ -665,18 +668,21 @@ For the D20 database:
 2. Take its SHA-256.
 3. Write it as `database.sha256` in `assets.json`. The action's cache
    key carries the pin, so the cache moves with it.
-4. Push the change to a branch. `install-astap` does not download the
-   database; `plate-solver-smoke` does, and runs on a push that touches
-   `.github/actions/install-astap/`, on `ubuntu-latest`, `macos-latest`
-   and `windows-latest`.
+4. Push the change to a branch. The `install-astap` workflow leaves
+   the database out; `plate-solver-smoke` has the action download it,
+   and runs on a push that touches `.github/actions/install-astap/`, on
+   `ubuntu-latest`, `macos-latest` and `windows-latest`.
 
 The table points Windows-ARM64 at `windows_installer/older versions`,
 where upstream files its current archive; the usual `windows_installer`
-folder answers 404 for it. When upstream moves the archive back, the
-table's folder follows. Should the archive move or go first, the
-refresh still runs: the Windows-ARM64 leg only compares, so an archive
-it cannot download keeps its pin, the proposal says why, and the other
-runners still refresh.
+folder answers 404 for it. Nothing rewrites a runner's `folder`: the
+refresh changes only pins. When upstream moves the archive back, the
+refresh reports it as not downloadable and keeps its pin, and the fix
+is manual: set Windows-ARM64's `folder` back to `windows_installer` in
+`assets.json`, then follow the CLI steps above for its pin. Should the
+archive move or go first, the refresh still runs: the Windows-ARM64 leg
+only compares, so an archive it cannot download keeps its pin, the
+proposal says why, and the other runners still refresh.
 
 ## Supervision and recovery
 
