@@ -20,14 +20,17 @@ use std::time::SystemTime;
 use ascom_alpaca::api::Camera;
 use parking_lot::Mutex;
 use rp_guiding::{Frame, FrameMeasurement, Position};
+use rusty_photon_rolling_stats::SquareSums;
 use serde::Serialize;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error};
 
-use crate::api::{ApiError, ErrorCode, Stop, StopReason};
+use crate::api::{
+    ApiError, DitherBody, ErrorCode, PauseBody, SettleSpec, Size, StartBody, Stop, StopReason,
+};
 use crate::calibration_store::{CalibrationStore, RecordBody, StoreBody};
-use crate::camera_loop::{self, CalibrationRun, Command, LoopSetup, Return};
+use crate::camera_loop::{self, CalibrationRun, Command, DitherRun, GuidingRun, LoopSetup, Return};
 use crate::config::Config;
 use crate::devices::{
     camera_sensor, CameraKind, CameraSensor, DeviceClient, DevicesState, Found, Kind, MountKind,
@@ -43,6 +46,9 @@ pub type Turn = tokio::sync::OwnedMutexGuard<()>;
 /// The frames the metrics window holds.
 const METRICS_WINDOW: usize = 50;
 
+/// The guide steps the RMS window holds.
+const RMS_WINDOW: usize = 50;
+
 /// The guider's state (guider.md § States).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -53,13 +59,22 @@ pub enum State {
     Looping,
     /// The guider learns what a pulse in each direction does to the stars.
     Calibrating,
+    /// The guide loop is closed.
+    Guiding,
+    /// A client paused the corrections.
+    Paused,
+    /// Too few of the guide stars are usable; the guider keeps looking.
+    StarLost,
 }
 
 impl State {
     /// Whether the state is a run state.
     #[must_use]
     pub const fn is_run(self) -> bool {
-        matches!(self, Self::Calibrating)
+        matches!(
+            self,
+            Self::Calibrating | Self::Guiding | Self::Paused | Self::StarLost
+        )
     }
 }
 
@@ -128,25 +143,55 @@ struct LastStop {
     at: SystemTime,
 }
 
+/// The running totals (guider.md § Statistics): what the service has
+/// counted since it started, never reset.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Totals {
+    pub(crate) guide_steps: u64,
+    pub(crate) ra: SquareSums,
+    pub(crate) dec: SquareSums,
+    pub(crate) star_lost: u64,
+    pub(crate) interruptions: u64,
+}
+
 /// What the loop reports and the reads answer from.
 #[derive(Debug)]
 pub struct Status {
     state: State,
+    /// Whether the guider takes frames: false in `idle` and in a full pause.
+    exposing: bool,
+    /// Whether a `guiding/start` or a `dither` waits for the stars to
+    /// settle.
+    settling: bool,
     /// The frames measured since the service started.
     frames: u64,
     metrics: VecDeque<FrameMetrics>,
     latest: Option<Arc<LatestFrame>>,
     last_stop: Option<LastStop>,
+    /// The errors of the last guide steps: RA, and Dec when it is
+    /// corrected.
+    rms: VecDeque<(f64, Option<f64>)>,
+    totals: Totals,
 }
 
 impl Status {
     pub(crate) const fn new() -> Self {
         Self {
             state: State::Idle,
+            exposing: false,
+            settling: false,
             frames: 0,
             metrics: VecDeque::new(),
             latest: None,
             last_stop: None,
+            rms: VecDeque::new(),
+            totals: Totals {
+                guide_steps: 0,
+                ra: SquareSums::new(),
+                dec: SquareSums::new(),
+                star_lost: 0,
+                interruptions: 0,
+            },
         }
     }
 
@@ -154,21 +199,104 @@ impl Status {
     /// and the metrics window with it when `clear_metrics`.
     fn loop_started(&mut self, state: State, clear_metrics: bool) {
         self.state = state;
+        self.exposing = true;
         if clear_metrics {
             self.metrics.clear();
         }
         self.latest = None;
     }
 
-    /// The loop goes on in `state`.
+    /// The loop goes on in `state`, exposing unless it is a full pause.
     pub const fn set_state(&mut self, state: State) {
         self.state = state;
+        self.exposing = true;
     }
 
-    /// The loop ended with no stop, its exposure ended: a calibration from
-    /// `idle` returned there.
+    /// The corrections are paused, and with `full` the exposures too.
+    pub const fn paused(&mut self, full: bool) {
+        self.state = State::Paused;
+        self.exposing = !full;
+    }
+
+    /// The loop ended with no stop, its exposure ended: a run that a
+    /// request found in `idle` returned there.
     pub const fn idle(&mut self) {
         self.state = State::Idle;
+        self.exposing = false;
+        self.settling = false;
+    }
+
+    /// Whether a request waits for the stars to settle.
+    pub const fn set_settling(&mut self, settling: bool) {
+        self.settling = settling;
+    }
+
+    /// An accepted `guiding/start` clears the RMS window and the metrics
+    /// window.
+    pub fn start_accepted(&mut self) {
+        self.rms.clear();
+        self.metrics.clear();
+    }
+
+    /// A guide step with its errors: RA, and Dec when it is corrected.
+    pub fn guide_step(&mut self, ra: f64, dec: Option<f64>) {
+        if self.rms.len() >= RMS_WINDOW {
+            self.rms.pop_front();
+        }
+        self.rms.push_back((ra, dec));
+        self.totals.guide_steps = self.totals.guide_steps.saturating_add(1);
+        self.totals.ra.add(ra);
+        if let Some(dec) = dec {
+            self.totals.dec.add(dec);
+        }
+    }
+
+    /// A star-lost frame of a run.
+    pub const fn star_lost_frame(&mut self) {
+        self.totals.star_lost = self.totals.star_lost.saturating_add(1);
+    }
+
+    /// A run was paused, calibrated again or selected stars again.
+    pub const fn interruption(&mut self) {
+        self.totals.interruptions = self.totals.interruptions.saturating_add(1);
+    }
+
+    /// The RMS of the RA errors, of the Dec errors, and their total, over
+    /// the RMS window; the Dec and the total are `None` when Dec is not
+    /// corrected, and all three with no guide step.
+    fn rms(&self) -> (Option<f64>, Option<f64>, Option<f64>) {
+        let mut ra = SquareSums::new();
+        let mut dec = SquareSums::new();
+        let mut every_dec = true;
+        for (ra_error, dec_error) in &self.rms {
+            ra.add(*ra_error);
+            match dec_error {
+                Some(dec_error) => dec.add(*dec_error),
+                None => every_dec = false,
+            }
+        }
+        let ra = ra.rms();
+        let dec = dec.rms().filter(|_| every_dec);
+        let total = ra.zip(dec).map(|(ra, dec)| ra.hypot(dec));
+        (ra, dec, total)
+    }
+
+    /// What a `guiding/start` or a `dither` answers once settled, the
+    /// arcseconds at `pixel_scale`.
+    #[must_use]
+    pub fn settled(&self, pixel_scale: Option<f64>) -> SettledAnswer {
+        let (ra, dec, total) = self.rms();
+        let arcsec = |pixels: Option<f64>| pixels.zip(pixel_scale).map(|(px, scale)| px * scale);
+        SettledAnswer {
+            state: State::Guiding,
+            rms_ra_px: ra,
+            rms_dec_px: dec,
+            total_rms_px: total,
+            rms_ra_arcsec: arcsec(ra),
+            rms_dec_arcsec: arcsec(dec),
+            total_rms_arcsec: arcsec(total),
+            sample_count: self.rms.len(),
+        }
     }
 
     /// A frame was measured.
@@ -193,9 +321,15 @@ impl Status {
         }));
     }
 
-    /// The loop stopped, its exposure ended.
+    /// The loop stopped, its exposure ended. A run that stops counts as
+    /// an interruption.
     pub fn stopped(&mut self, stop: Stop) {
+        if self.state.is_run() {
+            self.interruption();
+        }
         self.state = State::Idle;
+        self.exposing = false;
+        self.settling = false;
         self.last_stop = Some(LastStop {
             stop,
             at: SystemTime::now(),
@@ -203,9 +337,33 @@ impl Status {
     }
 
     /// The state.
-    #[cfg(test)]
-    pub(crate) const fn state(&self) -> State {
+    #[must_use]
+    pub const fn state(&self) -> State {
         self.state
+    }
+
+    /// Whether the guider takes frames.
+    #[must_use]
+    pub const fn exposing(&self) -> bool {
+        self.exposing
+    }
+
+    /// Whether a request waits for the stars to settle.
+    #[cfg(test)]
+    pub(crate) const fn settling(&self) -> bool {
+        self.settling
+    }
+
+    /// The running totals.
+    #[cfg(test)]
+    pub(crate) const fn totals(&self) -> Totals {
+        self.totals
+    }
+
+    /// The frames in the metrics window.
+    #[cfg(test)]
+    pub(crate) fn metrics_len(&self) -> usize {
+        self.metrics.len()
     }
 
     /// The guide stars of the latest measured frame, 0 before the first.
@@ -242,6 +400,26 @@ pub struct StateAnswer {
 pub struct CalibrateAnswer {
     pub state: State,
     pub calibration: RecordBody,
+}
+
+/// The answer of `guiding/start` and `dither` once settled.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct SettledAnswer {
+    pub state: State,
+    pub rms_ra_px: Option<f64>,
+    pub rms_dec_px: Option<f64>,
+    pub total_rms_px: Option<f64>,
+    pub rms_ra_arcsec: Option<f64>,
+    pub rms_dec_arcsec: Option<f64>,
+    pub total_rms_arcsec: Option<f64>,
+    pub sample_count: usize,
+}
+
+/// The answer of `dither/abort`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AbortAnswer {
+    pub state: State,
+    pub aborted: bool,
 }
 
 /// The guider.
@@ -315,7 +493,7 @@ impl Guider {
         let devices = self.devices_for_a_start(&mut stops).await?;
         let (first, first_frame) = oneshot::channel();
         self.spawn(
-            self.setup(devices, Some(first), None),
+            self.setup(devices, Some(first), None, None),
             &stops,
             State::Looping,
             true,
@@ -368,7 +546,7 @@ impl Guider {
                 .map_err(|_| ApiError::stopped())?;
         } else {
             self.spawn(
-                self.setup(devices, None, Some(run)),
+                self.setup(devices, None, Some(run), None),
                 &stops,
                 State::Calibrating,
                 false,
@@ -379,6 +557,163 @@ impl Guider {
             state: answer.state,
             calibration: RecordBody::from(&answer.record),
         })
+    }
+
+    /// `POST /api/v1/guiding/start`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_request`, `stopped`, `not_configured`, `device_unreachable`,
+    /// `device_not_connected`, `camera_unsupported`, `mount_not_ready`,
+    /// `no_stars`, `calibration_failed`, `settle_timeout` and
+    /// `guide_failed`, as guider.md § `POST /api/v1/guiding/start` and
+    /// § Error envelope say.
+    pub async fn start_guiding(&self, body: StartBody) -> Result<SettledAnswer, ApiError> {
+        let settle = body.settle.resolve(self.default_settle())?;
+        let mut stops = self.stops.subscribe();
+        let turn = self.take_turn(&mut stops).await?;
+        self.start_on_turn(turn, body.recalibrate, settle, &mut stops)
+            .await
+    }
+
+    /// A `guiding/start` once it has its turn, which it hands the loop.
+    async fn start_on_turn(
+        &self,
+        turn: Turn,
+        recalibrate: bool,
+        settle: SettleSpec,
+        stops: &mut watch::Receiver<u64>,
+    ) -> Result<SettledAnswer, ApiError> {
+        let (mount, devices) = self.mount_for_a_start(stops).await?;
+        let (reply, answer) = oneshot::channel();
+        let run = GuidingRun {
+            mount,
+            recalibrate,
+            settle,
+            reply,
+            turn,
+        };
+        match devices {
+            None => self.send(Command::Start(Box::new(run)), stops, ApiError::stopped)?,
+            Some(devices) => self.spawn(
+                self.setup(devices, None, None, Some(run)),
+                stops,
+                State::Guiding,
+                false,
+            )?,
+        }
+        self.answer(answer, stops).await?
+    }
+
+    /// What a start reads of the mount and the devices: nothing in a run,
+    /// which guides with the run's mount; the mount from `looping`; the
+    /// mount and the devices the loop starts on from `idle`.
+    async fn mount_for_a_start(
+        &self,
+        stops: &mut watch::Receiver<u64>,
+    ) -> Result<(Option<StartMount>, Option<StartDevices>), ApiError> {
+        if self.status.lock().state.is_run() {
+            return Ok((None, None));
+        }
+        let looping = self.looping();
+        let devices = self.devices_for_a_start(stops).await?;
+        let start = mount::ready(&*devices.mount).await?;
+        let mount = Some((Arc::clone(&devices.mount), start));
+        Ok((mount, (!looping).then_some(devices)))
+    }
+
+    /// `POST /api/v1/guiding/pause`.
+    ///
+    /// # Errors
+    ///
+    /// `stopped` and `not_guiding`.
+    pub async fn pause(&self, body: PauseBody) -> Result<StateAnswer, ApiError> {
+        let mut stops = self.stops.subscribe();
+        let _turn = self.take_turn(&mut stops).await?;
+        if !matches!(
+            self.status.lock().state,
+            State::Guiding | State::StarLost | State::Paused
+        ) {
+            return Err(not_guiding());
+        }
+        let (reply, answer) = oneshot::channel();
+        self.send(
+            Command::Pause {
+                full: body.full,
+                reply,
+            },
+            &stops,
+            not_guiding,
+        )?;
+        let state = self.answer(answer, &mut stops).await??;
+        Ok(StateAnswer { state })
+    }
+
+    /// `POST /api/v1/guiding/resume`.
+    ///
+    /// # Errors
+    ///
+    /// `stopped` and `not_guiding`.
+    pub async fn resume(&self) -> Result<StateAnswer, ApiError> {
+        let mut stops = self.stops.subscribe();
+        let _turn = self.take_turn(&mut stops).await?;
+        let state = self.status.lock().state;
+        match state {
+            State::Guiding | State::StarLost => Ok(StateAnswer { state }),
+            State::Paused => {
+                let (reply, answer) = oneshot::channel();
+                self.send(Command::Resume(reply), &stops, not_guiding)?;
+                let state = self.answer(answer, &mut stops).await??;
+                Ok(StateAnswer { state })
+            }
+            State::Idle | State::Looping | State::Calibrating => Err(not_guiding()),
+        }
+    }
+
+    /// `POST /api/v1/dither`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_request`, `stopped`, `not_guiding`, `settle_timeout`,
+    /// `dither_aborted` and `guide_failed`.
+    pub async fn dither(&self, body: DitherBody) -> Result<SettledAnswer, ApiError> {
+        let amount = body.amount()?;
+        let settle = body.settle.resolve(self.default_settle())?;
+        let mut stops = self.stops.subscribe();
+        let (reply, answer) = oneshot::channel();
+        let run = DitherRun {
+            amount,
+            ra_only: body.ra_only,
+            settle,
+            reply,
+            turn: self.take_turn(&mut stops).await?,
+        };
+        if self.status.lock().state != State::Guiding {
+            return Err(not_guiding());
+        }
+        self.send(Command::Dither(Box::new(run)), &stops, not_guiding)?;
+        self.answer(answer, &mut stops).await?
+    }
+
+    /// `POST /api/v1/dither/abort`: takes no turn.
+    pub async fn abort_dither(&self) -> AbortAnswer {
+        let state = self.status.lock().state;
+        let (reply, answer) = oneshot::channel();
+        let sent = {
+            let running = self.running.lock();
+            running
+                .as_ref()
+                .filter(|running| alive(running))
+                .is_some_and(|running| running.commands.send(Command::AbortDither(reply)).is_ok())
+        };
+        let unaborted = AbortAnswer {
+            state,
+            aborted: false,
+        };
+        if !sent {
+            return unaborted;
+        }
+        answer.await.unwrap_or(unaborted)
     }
 
     /// `POST /api/v1/calibration/clear`.
@@ -423,7 +758,7 @@ impl Guider {
                 || ApiError::new(ErrorCode::NotExposing, "the guider takes no frames");
             running
                 .as_ref()
-                .filter(|running| self.takes_frames(running))
+                .filter(|running| alive(running) && self.status.lock().exposing)
                 .ok_or_else(not_exposing)?
                 .commands
                 .send(Command::Reselect(reply))
@@ -472,30 +807,26 @@ impl Guider {
     /// `GET /api/v1/guiding/stats`.
     #[must_use]
     pub fn stats(&self) -> StatsBody {
-        let sensor = self
-            .devices
-            .borrow()
-            .camera
-            .as_ref()
-            .and_then(|camera| camera.statics);
-        let pixel_scale = sensor::pixel_scale(&self.config, sensor.as_ref());
+        let pixel_scale = self.pixel_scale();
         let status = self.status.lock();
         let latest = status.latest.as_ref().map(|latest| latest.metrics);
+        let settled = status.settled(pixel_scale);
+        let totals = status.totals;
         StatsBody {
             state: status.state,
-            guiding: false,
-            settling: false,
+            guiding: status.state == State::Guiding,
+            settling: status.settling,
             pixel_scale_arcsec: pixel_scale,
-            rms_ra_px: None,
-            rms_dec_px: None,
-            total_rms_px: None,
-            rms_ra_arcsec: None,
-            rms_dec_arcsec: None,
-            total_rms_arcsec: None,
+            rms_ra_px: settled.rms_ra_px,
+            rms_dec_px: settled.rms_dec_px,
+            total_rms_px: settled.total_rms_px,
+            rms_ra_arcsec: settled.rms_ra_arcsec,
+            rms_dec_arcsec: settled.rms_dec_arcsec,
+            total_rms_arcsec: settled.total_rms_arcsec,
             snr: latest.and_then(|latest| latest.snr),
             star_mass: latest.and_then(|latest| latest.star_mass),
             star_count: latest.map(|latest| latest.star_count),
-            sample_count: 0,
+            sample_count: settled.sample_count,
             last_stop: status.last_stop.as_ref().map(|last| LastStopBody {
                 reason: last.stop.reason.as_str(),
                 at: humantime::format_rfc3339_seconds(last.at).to_string(),
@@ -503,13 +834,13 @@ impl Guider {
             }),
             totals: TotalsBody {
                 epoch: self.epoch.clone(),
-                guide_steps: 0,
-                ra_samples: 0,
-                ra_sum_sq_px2: 0.0,
-                dec_samples: 0,
-                dec_sum_sq_px2: 0.0,
-                star_lost: 0,
-                interruptions: 0,
+                guide_steps: totals.guide_steps,
+                ra_samples: totals.ra.count(),
+                ra_sum_sq_px2: totals.ra.sum_of_squares(),
+                dec_samples: totals.dec.count(),
+                dec_sum_sq_px2: totals.dec.sum_of_squares(),
+                star_lost: totals.star_lost,
+                interruptions: totals.interruptions,
             },
         }
     }
@@ -520,7 +851,7 @@ impl Guider {
         let status = self.status.lock();
         MetricsBody {
             state: status.state,
-            guiding: false,
+            guiding: status.state == State::Guiding,
             epoch: self.epoch.clone(),
             frames: status.metrics.iter().copied().collect(),
         }
@@ -596,6 +927,7 @@ impl Guider {
         devices: StartDevices,
         first: Option<oneshot::Sender<usize>>,
         calibration: Option<CalibrationRun>,
+        start: Option<GuidingRun>,
     ) -> LoopSetup {
         LoopSetup {
             config: Arc::clone(&self.config),
@@ -608,6 +940,7 @@ impl Guider {
             store: Arc::clone(&self.store),
             first,
             calibration,
+            start,
         }
     }
 
@@ -619,13 +952,50 @@ impl Guider {
             .is_some_and(|running| self.takes_frames(running))
     }
 
-    /// Whether `running` takes frames: it has not stopped, and no stop is
-    /// ending it, as one that waits for its exposure to end after a
-    /// `stop_timeout` is.
+    /// Whether `running` loops: it is alive, in `looping`.
     fn takes_frames(&self, running: &Running) -> bool {
-        !running.cancel.is_cancelled()
-            && !*running.done.borrow()
-            && self.status.lock().state == State::Looping
+        alive(running) && self.status.lock().state == State::Looping
+    }
+
+    /// Send `command` to the loop while it is alive, unless a stop arrived
+    /// since the request did; `refused` when no loop is alive.
+    fn send(
+        &self,
+        command: Command,
+        stops: &watch::Receiver<u64>,
+        refused: impl FnOnce() -> ApiError,
+    ) -> Result<(), ApiError> {
+        let running = self.running.lock();
+        if stops.has_changed().unwrap_or(true) {
+            return Err(ApiError::stopped());
+        }
+        running
+            .as_ref()
+            .filter(|running| alive(running))
+            .ok_or_else(refused)?
+            .commands
+            .send(command)
+            .map_err(|_| ApiError::stopped())
+    }
+
+    /// The configuration's `settling`, as a settle's terms.
+    fn default_settle(&self) -> SettleSpec {
+        SettleSpec {
+            tolerance: Size::Pixels(self.config.settling.pixels.get()),
+            time: self.config.settling.time.get(),
+            timeout: self.config.settling.timeout.get(),
+        }
+    }
+
+    /// The pixel scale `stats` reports.
+    fn pixel_scale(&self) -> Option<f64> {
+        let sensor = self
+            .devices
+            .borrow()
+            .camera
+            .as_ref()
+            .and_then(|camera| camera.statics);
+        sensor::pixel_scale(&self.config, sensor.as_ref())
     }
 
     /// Take a turn behind the mutating requests ahead, unless a stop
@@ -735,6 +1105,9 @@ impl Guider {
     }
 }
 
+/// The mount as a start from `idle` or `looping` read it.
+type StartMount = (Arc<dyn ascom_alpaca::api::Telescope>, mount::MountStart);
+
 /// What a request that starts the loop or a run read of the devices.
 struct StartDevices {
     client: Arc<DeviceClient>,
@@ -750,7 +1123,25 @@ const fn state_name(state: State) -> &'static str {
         State::Idle => "idle",
         State::Looping => "looping",
         State::Calibrating => "calibrating",
+        State::Guiding => "guiding",
+        State::Paused => "paused",
+        State::StarLost => "star_lost",
     }
+}
+
+/// Whether `running` is alive: it has not stopped, and no stop is ending
+/// it, as one that waits for its exposure to end after a `stop_timeout`
+/// is.
+fn alive(running: &Running) -> bool {
+    !running.cancel.is_cancelled() && !*running.done.borrow()
+}
+
+/// `not_guiding`.
+fn not_guiding() -> ApiError {
+    ApiError::new(
+        ErrorCode::NotGuiding,
+        "the guider is not in a run that guides",
+    )
 }
 
 /// The device a fresh read found, when it is connected.
@@ -804,7 +1195,7 @@ pub struct StatsBody {
     snr: Option<f64>,
     star_mass: Option<f64>,
     star_count: Option<usize>,
-    sample_count: u32,
+    sample_count: usize,
     last_stop: Option<LastStopBody>,
     totals: TotalsBody,
 }
@@ -907,6 +1298,100 @@ mod tests {
         status.stopped(Stop::requested());
         assert_eq!(status.state, State::Idle);
         assert_eq!(status.last_stop.unwrap().stop.reason, StopReason::Requested);
+    }
+
+    #[test]
+    fn a_run_that_stops_counts_an_interruption_and_a_loop_does_not() {
+        let mut status = Status::new();
+        status.loop_started(State::Looping, true);
+        status.stopped(Stop::requested());
+        assert_eq!(status.totals.interruptions, 0);
+        status.loop_started(State::Guiding, true);
+        status.stopped(Stop::requested());
+        assert_eq!(status.totals.interruptions, 1);
+    }
+
+    #[test]
+    fn the_rms_window_holds_the_last_guide_steps() {
+        let mut status = Status::new();
+        status.guide_step(10.0, Some(10.0));
+        for _ in 0..RMS_WINDOW {
+            status.guide_step(3.0, Some(4.0));
+        }
+        let settled = status.settled(Some(2.0));
+        assert_eq!(settled.sample_count, RMS_WINDOW);
+        assert_eq!(settled.rms_ra_px, Some(3.0));
+        assert_eq!(settled.total_rms_px, Some(5.0));
+        assert_eq!(settled.total_rms_arcsec, Some(10.0));
+        assert_eq!(status.totals.guide_steps, 51);
+        assert_eq!(status.totals.dec.count(), 51);
+    }
+
+    #[test]
+    fn a_window_with_a_step_that_did_not_correct_dec_has_no_dec_or_total_rms() {
+        let mut status = Status::new();
+        status.guide_step(1.0, Some(1.0));
+        status.guide_step(1.0, None);
+        let settled = status.settled(None);
+        assert_eq!(settled.rms_ra_px, Some(1.0));
+        assert_eq!((settled.rms_dec_px, settled.total_rms_px), (None, None));
+        assert_eq!(settled.rms_ra_arcsec, None);
+        assert_eq!(status.totals.dec.count(), 1);
+    }
+
+    #[test]
+    fn an_accepted_start_clears_the_rms_and_metrics_windows_and_not_the_totals() {
+        let mut status = Status::new();
+        status.guide_step(1.0, None);
+        status.start_accepted();
+        assert_eq!(status.settled(None).sample_count, 0);
+        assert_eq!(status.totals.guide_steps, 1);
+    }
+
+    #[tokio::test]
+    async fn a_pause_a_resume_or_a_dither_in_idle_answers_not_guiding() {
+        let guider = guider();
+        let pause = guider.pause(PauseBody::default()).await.unwrap_err();
+        assert_eq!(pause.code, ErrorCode::NotGuiding);
+        assert_eq!(
+            guider.resume().await.unwrap_err().code,
+            ErrorCode::NotGuiding
+        );
+        let body: DitherBody = serde_json::from_str(r#"{"amount_px": 4.0}"#).unwrap();
+        assert_eq!(
+            guider.dither(body).await.unwrap_err().code,
+            ErrorCode::NotGuiding
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dither_or_a_start_it_cannot_read_is_refused_before_its_turn() {
+        let guider = guider();
+        let _held = guider.turns.lock().await;
+        let dither: DitherBody = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            guider.dither(dither).await.unwrap_err().code,
+            ErrorCode::InvalidRequest
+        );
+        let start: StartBody =
+            serde_json::from_str(r#"{"settle": {"pixels": 1.0, "arcsec": 2.0}}"#).unwrap();
+        assert_eq!(
+            guider.start_guiding(start).await.unwrap_err().code,
+            ErrorCode::InvalidRequest
+        );
+    }
+
+    #[tokio::test]
+    async fn an_abort_with_no_loop_answers_unaborted_at_once() {
+        let guider = guider();
+        let _held = guider.turns.lock().await;
+        assert_eq!(
+            guider.abort_dither().await,
+            AbortAnswer {
+                state: State::Idle,
+                aborted: false
+            }
+        );
     }
 
     #[tokio::test]
@@ -1037,6 +1522,16 @@ mod tests {
             answer.expect("the reselect answered").unwrap_err().code,
             ErrorCode::NotExposing
         );
+        assert!(received.try_recv().is_err(), "the ending loop was asked");
+    }
+
+    #[tokio::test]
+    async fn an_abort_to_a_loop_a_stop_is_ending_answers_unaborted_at_once() {
+        let guider = guider();
+        let (_ended, mut received) = install_loop(&guider);
+        guider.running.lock().as_ref().unwrap().cancel.cancel();
+        let answer = tokio::time::timeout(Duration::from_secs(1), guider.abort_dither()).await;
+        assert!(!answer.expect("the abort answered").aborted);
         assert!(received.try_recv().is_err(), "the ending loop was asked");
     }
 

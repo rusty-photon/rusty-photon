@@ -19,7 +19,12 @@
 //! A calibration runs in the loop (§ Calibration): after each frame the
 //! calibrator says what comes next, and the loop checks the mount and sends
 //! the pulse before the next exposure starts, so that no pulse overlaps an
-//! exposure. A step whose pulse was not sent is asked for again.
+//! exposure. A step whose pulse was not sent is asked for again. Guiding
+//! runs in the loop the same way (`guiding`).
+//!
+//! The requests the loop hears during a frame are served after it, from
+//! the next frame on, so that a start selects on a frame exposed after it
+//! was taken up.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -43,9 +48,13 @@ use crate::config::Config;
 use crate::devices::{
     call, camera_sensor, CallError, CameraKind, CameraSensor, DeviceClient, DevicesState, Found,
 };
-use crate::guider::{FrameSummary, State, Status, Turn};
+use crate::guider::{AbortAnswer, FrameSummary, State, Status, Turn};
 use crate::mount::{Fault, MountStart, RunMount};
 use crate::sensor::{changed, effective_binning, FrameSettings, Reading};
+pub use guiding::{DitherRun, GuidingRun, SettledReply};
+use guiding::{Guiding, StartAfter, Starting};
+
+mod guiding;
 
 /// How often `ImageReady` is read once the exposure should have ended.
 const READY_POLL: Duration = Duration::from_millis(50);
@@ -66,6 +75,8 @@ pub struct LoopSetup {
     pub first: Option<oneshot::Sender<usize>>,
     /// The calibration the loop starts with, for a `calibrate` from `idle`.
     pub calibration: Option<CalibrationRun>,
+    /// The start the loop begins with, for a `guiding/start` from `idle`.
+    pub start: Option<GuidingRun>,
 }
 
 /// The state a calibration returns to: the one its request found.
@@ -105,6 +116,19 @@ pub enum Command {
     Reselect(ReselectReply),
     /// Calibrate, from `looping`.
     Calibrate(Box<CalibrationRun>),
+    /// Start guiding, from `looping` or in a run.
+    Start(Box<GuidingRun>),
+    /// Pause the corrections, and with `full` the exposures.
+    Pause {
+        full: bool,
+        reply: oneshot::Sender<Result<State, ApiError>>,
+    },
+    /// Resume the corrections.
+    Resume(oneshot::Sender<Result<State, ApiError>>),
+    /// Move the lock.
+    Dither(Box<DitherRun>),
+    /// End a dither that waits to settle.
+    AbortDither(oneshot::Sender<AbortAnswer>),
 }
 
 /// The star settings of the configuration, as the core takes them.
@@ -141,12 +165,17 @@ type ReselectReply = oneshot::Sender<Result<usize, ApiError>>;
 enum End {
     /// It stopped: the stop is recorded.
     Stop(Stop),
-    /// A calibration from `idle` ended: the loop ends with no stop, and the
-    /// calibration's request is answered once the guider is idle.
-    Calibrated {
-        reply: CalibrationReply,
-        outcome: Result<Record, ApiError>,
-    },
+    /// A run a request found in `idle` ended without a stop: the request is
+    /// answered once the guider is idle again.
+    Ended(Answer),
+}
+
+/// The answer of a request whose run ended the loop without a stop.
+enum Answer {
+    /// A calibration's.
+    Calibration(CalibrationReply, Result<Record, ApiError>),
+    /// A start's that did not guide.
+    Refused(SettledReply, ApiError),
 }
 
 /// What the loop does with its frames.
@@ -155,6 +184,21 @@ enum Mode {
     Looping,
     /// It calibrates on them.
     Calibrating(Box<Calibrating>),
+    /// A start waits for its fresh selection.
+    Starting(Box<Starting>),
+    /// It guides on them.
+    Guiding(Box<Guiding>),
+}
+
+/// What a calibration leads to.
+enum Then {
+    /// A `calibrate`'s answer, and the state its request found.
+    Answer {
+        reply: CalibrationReply,
+        return_to: Return,
+    },
+    /// A `guiding/start`'s guiding.
+    Guide(StartAfter),
 }
 
 /// A calibration in the loop.
@@ -162,14 +206,16 @@ struct Calibrating {
     /// The calibration's steps, taken out while a frame is judged.
     calibrator: Option<Calibrator>,
     mount: RunMount,
-    reply: CalibrationReply,
-    return_to: Return,
+    /// What the request read of the mount.
+    start: MountStart,
     /// Whether the guide stars are still to be selected: on the first frame
-    /// from `idle`, or on the next from a loop that holds none.
+    /// from `idle`, on the next from a loop that holds none, and on a fresh
+    /// frame for a start.
     selecting: bool,
     /// The request's turn, held until the guider is back in the state the
-    /// request found.
+    /// request found, or has settled.
     turn: Turn,
+    then: Then,
 }
 
 /// What a cycle's frame gave.
@@ -202,6 +248,7 @@ pub async fn run(
         store,
         first,
         calibration,
+        start,
     } = setup;
     let mut cycle = Cycle {
         params: star_params(&config),
@@ -225,7 +272,9 @@ pub async fn run(
         ending_turn: None,
         first,
         reselect: None,
-        pending_calibration: None,
+        inbox: Vec::new(),
+        select_next: false,
+        rng: rand::make_rng(),
         stars: None,
         failures: 0,
         settings_due: Some(Settings::Start),
@@ -239,6 +288,9 @@ pub async fn run(
     );
     if let Some(run) = calibration {
         cycle.calibrate(run);
+    }
+    if let Some(run) = start {
+        cycle.begin_start(run, guiding::Found::Idle);
     }
     let end = loop {
         if let Some(end) = cycle.turn(&cancel, &mut commands).await {
@@ -254,18 +306,25 @@ pub async fn run(
             info!(reason = stop.reason.as_str(), message = %stop.message, "the camera loop stopped");
             cycle.status.lock().stopped(stop);
         }
-        End::Calibrated { reply, outcome } => {
-            info!("the camera loop ended with its calibration");
+        End::Ended(answer) => {
+            info!("the camera loop ended with its run");
             cycle.status.lock().idle();
             drop(cycle.ending_turn.take());
-            let _ = reply.send(outcome.map(|record| Calibrated {
-                state: State::Idle,
-                record,
-            }));
+            match answer {
+                Answer::Calibration(reply, outcome) => {
+                    let _ = reply.send(outcome.map(|record| Calibrated {
+                        state: State::Idle,
+                        record,
+                    }));
+                }
+                Answer::Refused(reply, error) => {
+                    let _ = reply.send(Err(error));
+                }
+            }
         }
     }
-    // A calibration a stop ended gives up its turn here, once the guider is
-    // idle.
+    // A run a stop ended gives up its turn here, once the guider is idle,
+    // and a request that waited on it hears the stop.
     drop(cycle);
 }
 
@@ -287,13 +346,19 @@ struct Cycle {
     /// on.
     epoch: Instant,
     mode: Mode,
-    /// The turn of a calibration from `idle` that has ended, given up once
-    /// the guider is idle again.
+    /// The turn of a run that ends the loop, given up once the guider is
+    /// idle again.
     ending_turn: Option<Turn>,
     first: Option<oneshot::Sender<usize>>,
     reselect: Option<ReselectReply>,
-    /// A calibration asked for during a frame, taken up after it.
-    pending_calibration: Option<CalibrationRun>,
+    /// The requests heard during a frame, served after it. Those of a loop
+    /// that stops first drop with the loop once its stop is recorded.
+    inbox: Vec<Command>,
+    /// Whether the next measured frame selects the guide stars anew, for a
+    /// start.
+    select_next: bool,
+    /// The draws of dithers.
+    rng: rand::rngs::StdRng,
     stars: Option<GuideStars>,
     /// Frames failed in a row.
     failures: u32,
@@ -320,6 +385,9 @@ impl Cycle {
                 () = tokio::time::sleep_until(at) => {}
             }
         }
+        if self.full_paused() {
+            return self.full_pause(cancel, commands).await;
+        }
         self.attempt_started = Instant::now();
         let took = match self.take(cancel, commands).await {
             Ok(took) => took,
@@ -330,7 +398,19 @@ impl Cycle {
                 return Some(End::Stop(stop));
             }
         }
-        self.after_frame(took, cancel).await
+        let end = self.after_frame(took, cancel).await;
+        if end.is_none() {
+            self.serve_inbox();
+        }
+        end
+    }
+
+    /// Serve the requests heard during the frame, from the next frame on:
+    /// a start's fresh frame is one exposed after the loop took it up.
+    fn serve_inbox(&mut self) {
+        for command in std::mem::take(&mut self.inbox) {
+            self.handle(command);
+        }
     }
 
     /// The frame settings when they are due, then a frame and its
@@ -370,8 +450,7 @@ impl Cycle {
                 exposer,
                 devices,
                 sensor,
-                reselect,
-                pending_calibration,
+                inbox,
                 ..
             } = self;
             let frame = exposer.frame();
@@ -380,10 +459,7 @@ impl Cycle {
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => return Err(Stop::requested()),
-                    Some(command) = commands.recv() => match command {
-                        Command::Reselect(reply) => *reselect = Some(reply),
-                        Command::Calibrate(run) => *pending_calibration = Some(*run),
-                    },
+                    Some(command) = commands.recv() => inbox.push(command),
                     Ok(()) = devices.changed() => {
                         if let Some(message) = came_back_changed(devices, sensor) {
                             return Err(Stop::camera_error(message));
@@ -394,12 +470,6 @@ impl Cycle {
             };
             taken
         };
-        // A calibration asked for during the frame calibrates on it. One the
-        // loop stops before it takes up stays here, and drops with the loop
-        // once its stop is recorded.
-        if let Some(run) = self.pending_calibration.take() {
-            self.calibrate(run);
-        }
         Ok(taken)
     }
 
@@ -416,7 +486,7 @@ impl Cycle {
             params: self.params,
             reading: self.reading.sensor,
             max_adu: self.sensor.max_adu,
-            reselect: reselecting,
+            reselect: reselecting || self.select_next,
         };
         let measured = tokio::select! {
             biased;
@@ -438,6 +508,9 @@ impl Cycle {
             Err(_) => return Err(Stop::requested()),
         };
         self.failures = 0;
+        if selection.is_some() {
+            self.select_next = false;
+        }
         let centres = stars
             .as_ref()
             .map_or_else(Vec::new, GuideStars::search_centres);
@@ -471,9 +544,15 @@ impl Cycle {
             return_to,
             turn,
         } = run;
+        self.calibrate_with(mount, start, turn, Then::Answer { reply, return_to }, false);
+    }
+
+    /// What a run on `start` is made on: the pier side and the guide rates
+    /// the request read, the loop's camera and the configured focal length.
+    fn setup(&self, start: &MountStart) -> Setup {
         let binning =
             effective_binning(self.sensor.sensor_type, self.reading.bin).map_or(1, u32::from);
-        let setup = Setup {
+        Setup {
             pier_side: start.side,
             camera: CameraGeometry {
                 pixel_size_um: self.sensor.pixel_size_um,
@@ -487,15 +566,28 @@ impl Cycle {
                 .focal_length_mm
                 .map_or(f64::NAN, crate::config::FocalLength::get),
             guide_rates: start.guide_rates,
-        };
+        }
+    }
+
+    /// Calibrate from the next frame on, then `then`; on a fresh selection
+    /// when `reselect`, or when the loop holds no guide stars.
+    fn calibrate_with(
+        &mut self,
+        mount: Arc<dyn Telescope>,
+        start: MountStart,
+        turn: Turn,
+        then: Then,
+        reselect: bool,
+    ) {
         let calibrator = Calibrator::new(
-            setup,
+            self.setup(&start),
             start.declination_deg,
             calibration_params(&self.config),
             self.now(),
         );
         info!(pier_side = ?start.side, declination_deg = start.declination_deg, "calibration started");
         self.status.lock().set_state(State::Calibrating);
+        self.select_next = reselect;
         self.mode = Mode::Calibrating(Box::new(Calibrating {
             calibrator: Some(calibrator),
             mount: RunMount::new(
@@ -504,10 +596,10 @@ impl Cycle {
                 self.config.mount.pulse_timeout.get(),
                 self.config.mount.max_failures.get(),
             ),
-            reply,
-            return_to,
-            selecting: self.stars.is_none(),
+            start,
+            selecting: reselect || self.stars.is_none(),
             turn,
+            then,
         }));
     }
 
@@ -516,8 +608,19 @@ impl Cycle {
         self.epoch.elapsed()
     }
 
-    /// What follows a frame: in a calibration, the calibrator's next step.
+    /// What follows a frame: in a calibration the calibrator's next step,
+    /// for a start its selection, and in a guiding run the guide step.
     async fn after_frame(&mut self, took: Took, cancel: &CancellationToken) -> Option<End> {
+        match &self.mode {
+            Mode::Looping => None,
+            Mode::Starting(_) => self.starting_frame(&took),
+            Mode::Guiding(_) => self.guiding_frame(took, cancel).await,
+            Mode::Calibrating(_) => self.calibration_frame(took, cancel).await,
+        }
+    }
+
+    /// What follows a frame of a calibration: the calibrator's next step.
+    async fn calibration_frame(&mut self, took: Took, cancel: &CancellationToken) -> Option<End> {
         let now = self.now();
         let Mode::Calibrating(calibrating) = &mut self.mode else {
             return None;
@@ -528,10 +631,7 @@ impl Cycle {
                     selection: Some(Err(())),
                     ..
                 } => {
-                    return self.calibration_ended(Err(ApiError::new(
-                        ErrorCode::NoStars,
-                        "the frame has fewer guide stars than stars.min",
-                    )));
+                    return self.calibration_ended(Err(guiding::no_stars()), None);
                 }
                 Took::Measured {
                     selection: Some(Ok(_)),
@@ -544,13 +644,14 @@ impl Cycle {
             Took::Measured { offset, .. } if !calibrating.selecting => offset,
             Took::Measured { .. } | Took::Failed(_) => None,
         };
+        let frame_offset = offset;
         let calibrator = calibrating.calibrator.take()?;
         let before = calibrator.clone();
         let progress = match calibrator.frame(offset, now) {
             Ok(progress) => progress,
             Err(error) => {
                 info!(%error, "calibration failed");
-                return self.calibration_ended(Err(ApiError::calibration_failed(&error)));
+                return self.calibration_ended(Err(ApiError::calibration_failed(&error)), None);
             }
         };
         let (next, pulse) = match progress {
@@ -563,7 +664,7 @@ impl Cycle {
                     warn!(%error, "the calibration could not be stored; it serves its own run");
                 }
                 info!("calibration passed");
-                return self.calibration_ended(Ok(record));
+                return self.calibration_ended(Ok(record), frame_offset);
             }
             Progress::Wait(next) => (next, None),
             Progress::Pulse(next, pulse) => (next, Some(pulse)),
@@ -604,33 +705,49 @@ impl Cycle {
         calibrating.mount.cycle(failed.as_deref()).map(End::Stop)
     }
 
-    /// A calibration ended with `outcome`: back to the state its request
-    /// found, the loop going on or ending with it.
-    fn calibration_ended(&mut self, outcome: Result<Record, ApiError>) -> Option<End> {
+    /// A calibration ended with `outcome`, on a frame with `offset`: a
+    /// `calibrate` goes back to the state its request found, the loop going
+    /// on or ending with it; a start guides, or does not.
+    fn calibration_ended(
+        &mut self,
+        outcome: Result<Record, ApiError>,
+        offset: Option<Offset>,
+    ) -> Option<End> {
         let Mode::Calibrating(calibrating) = std::mem::replace(&mut self.mode, Mode::Looping)
         else {
             return None;
         };
         let Calibrating {
-            reply,
-            return_to,
+            mount,
+            start,
             turn,
+            then,
             ..
         } = *calibrating;
-        match return_to {
-            Return::Idle => {
-                self.ending_turn = Some(turn);
-                Some(End::Calibrated { reply, outcome })
-            }
-            Return::Looping => {
-                self.status.lock().set_state(State::Looping);
-                drop(turn);
-                let _ = reply.send(outcome.map(|record| Calibrated {
-                    state: State::Looping,
-                    record,
-                }));
-                None
-            }
+        match then {
+            Then::Answer { reply, return_to } => match return_to {
+                Return::Idle => {
+                    self.ending_turn = Some(turn);
+                    Some(End::Ended(Answer::Calibration(reply, outcome)))
+                }
+                Return::Looping => {
+                    self.status.lock().set_state(State::Looping);
+                    drop(turn);
+                    let _ = reply.send(outcome.map(|record| Calibrated {
+                        state: State::Looping,
+                        record,
+                    }));
+                    None
+                }
+            },
+            Then::Guide(after) => match outcome {
+                Ok(record) => {
+                    let home = offset.unwrap_or_default();
+                    self.begin_guiding(mount, start, record.calibration, home, after, turn);
+                    None
+                }
+                Err(error) => self.start_refused(after, turn, error),
+            },
         }
     }
 
@@ -1284,7 +1401,7 @@ mod tests {
 
     /// A loop on the fake camera, in `looping`, with the guider's default
     /// configuration and a focal length of 200 mm.
-    fn looping_cycle() -> Cycle {
+    pub(super) fn looping_cycle() -> Cycle {
         let config: Config = serde_json::from_value(serde_json::json!({
             "optics": { "focal_length_mm": 200.0 }
         }))
@@ -1315,7 +1432,9 @@ mod tests {
             ending_turn: None,
             first: None,
             reselect: None,
-            pending_calibration: None,
+            inbox: Vec::new(),
+            select_next: false,
+            rng: rand::make_rng(),
             stars: None,
             failures: 0,
             settings_due: None,
@@ -1493,7 +1612,7 @@ mod tests {
             run_on(crate::test_mount::FakeMount::default(), Return::Looping).await;
         cycle.calibrate(run);
         let record_error = ApiError::new(ErrorCode::NoStars, "none");
-        assert!(cycle.calibration_ended(Err(record_error)).is_none());
+        assert!(cycle.calibration_ended(Err(record_error), None).is_none());
         assert_eq!(cycle.status.lock().state(), State::Looping);
         assert!(turns.try_lock().is_ok(), "the turn is still held");
         assert_eq!(answer.await.unwrap().unwrap_err().code, ErrorCode::NoStars);
@@ -1505,8 +1624,8 @@ mod tests {
         let (run, _answer, turns) =
             run_on(crate::test_mount::FakeMount::default(), Return::Idle).await;
         cycle.calibrate(run);
-        let end = cycle.calibration_ended(Err(ApiError::new(ErrorCode::NoStars, "none")));
-        assert!(matches!(end, Some(End::Calibrated { .. })));
+        let end = cycle.calibration_ended(Err(ApiError::new(ErrorCode::NoStars, "none")), None);
+        assert!(matches!(end, Some(End::Ended(Answer::Calibration(..)))));
         assert_eq!(cycle.status.lock().state(), State::Calibrating);
         assert!(
             turns.try_lock().is_err(),
@@ -1530,7 +1649,7 @@ mod tests {
                 &CancellationToken::new(),
             )
             .await;
-        let Some(End::Calibrated { outcome, .. }) = end else {
+        let Some(End::Ended(Answer::Calibration(_, outcome))) = end else {
             panic!("the calibration went on");
         };
         assert_eq!(outcome.unwrap_err().code, ErrorCode::NoStars);

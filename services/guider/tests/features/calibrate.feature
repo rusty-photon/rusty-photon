@@ -45,7 +45,7 @@ Feature: Calibrating
     When a client asks the guider to calibrate
     Then the request answers 200 with the state "looping"
     And the guider's stats report the state "looping"
-    And the guider's metrics gain at least 3 frames after the calibration
+    And the guider's metrics gain at least 3 more frames
 
   Scenario: A calibration with Dec off measures the RA axis alone
     Given the guider configuration's "/control/dec/mode" is the JSON "off"

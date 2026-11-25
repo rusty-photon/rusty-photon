@@ -14,9 +14,10 @@ and its validation, the lifecycle and the state directory, the device
 clients and their poll, the camera loop and the sensor handling,
 `loop`, `star/reselect` and `guiding/stop`, the requests' turns, the
 metrics window, `stats`, `frame/latest`, the mount check and the pulses,
-`calibrate` and the calibration store, `GET /api/v1/devices`, `/health`
-and `guider doctor` are built; guiding, the guide log, the setup page
-and the packages are not yet. Of the guiding core,
+`calibrate` and the calibration store, guiding with its pause, dither
+and settling, the statistics and the running totals, `GET
+/api/v1/devices`, `/health` and `guider doctor` are built; the guide
+log, the setup page and the packages are not yet. Of the guiding core,
 `crates/rp-guiding`, the star selection, the measurement, the
 calibration, the control, dither and settling are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
@@ -1034,7 +1035,10 @@ does depends on the state it finds:
 | `star_lost` | Selects guide stars on a fresh frame and takes a new lock, then settles |
 
 - `recalibrate: true` runs a calibration first in each of these states.
-  A calibration is always followed by a new lock.
+  A calibration is always followed by a new lock, taken where the stars
+  stand in the frame after its last step.
+- A fresh frame is the first frame exposed after the request is taken
+  up. Selecting on it replaces the guide stars a loop held.
 - A frame with fewer guide stars than `stars.min` answers `no_stars` and
   leaves the state, the guide stars and the lock as they were.
 - A calibration that fails answers `calibration_failed`. The guider
@@ -1328,7 +1332,9 @@ of its interval and subtracts.
 - `interruptions` counts each time a run stops, is paused, calibrates
   again (`guiding/start` with `recalibrate: true` in a run state) or
   selects stars again (`star/reselect`, or `guiding/start` in
-  `star_lost`). With `guiding` true at both readings and the count
+  `star_lost`). A run stops when the guider stops it on its own or a
+  `guiding/stop` does; a `calibrate` that returns to `idle` or `looping`
+  has ended, not stopped, and is not counted. With `guiding` true at both readings and the count
   unchanged, the run was not stopped, paused or calibrated again in the
   interval, and it kept its stars. The frames in it that had no usable
   star are the change in `star_lost`, and no correction followed them.
@@ -1343,9 +1349,10 @@ Each axis's count and sum is a `SquareSums` from
   `star/reselect` serialize behind a single-flight mutex. Overlapping
   requests queue; they are not refused. One guider has one mount, and
   two settle waits at once mean nothing. A `calibrate` keeps its turn
-  until the calibration ends, even when its client has stopped waiting,
-  so that nothing queued behind it runs in the middle of the
-  calibration.
+  until the calibration ends, and a `guiding/start` or a `dither` until
+  it has settled or timed out, even when its client has stopped
+  waiting, so that nothing queued behind it runs in the middle of what
+  it waits for.
 - **`guiding/stop` and `dither/abort` never queue.** They act at once,
   whatever is waiting. `guiding/stop` answers every waiting and queued
   mutating request with `stopped`.

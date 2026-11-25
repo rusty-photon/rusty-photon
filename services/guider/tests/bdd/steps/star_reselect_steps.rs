@@ -12,6 +12,7 @@ use crate::world::GuiderWorld;
 const SLEW: Duration = Duration::from_secs(1);
 
 #[when("a client asks the guider to reselect the guide stars")]
+#[then("a client asks the guider to reselect the guide stars")]
 async fn ask_to_reselect(world: &mut GuiderWorld) {
     world.post("/api/v1/star/reselect", None).await;
 }

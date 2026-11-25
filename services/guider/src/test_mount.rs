@@ -36,6 +36,11 @@ pub struct FakeMount {
     pub read_delay: Duration,
     /// `PulseGuide` calls.
     pub pulses: AtomicUsize,
+    /// The directions of the `PulseGuide` calls, in order.
+    pub directions: parking_lot::Mutex<Vec<GuideDirection>>,
+    /// Cancelled by a read of `Tracking`, as a stop that arrives during
+    /// the mount check.
+    pub cancels: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl Default for FakeMount {
@@ -53,6 +58,8 @@ impl Default for FakeMount {
             pulse_guiding_fails: false,
             read_delay: Duration::ZERO,
             pulses: AtomicUsize::new(0),
+            directions: parking_lot::Mutex::new(Vec::new()),
+            cancels: None,
         }
     }
 }
@@ -151,6 +158,9 @@ impl Telescope for FakeMount {
 
     async fn tracking(&self) -> ASCOMResult<bool> {
         tokio::time::sleep(self.read_delay).await;
+        if let Some(cancels) = &self.cancels {
+            cancels.cancel();
+        }
         Ok(self.tracking)
     }
 
@@ -166,12 +176,9 @@ impl Telescope for FakeMount {
         Ok(Vec::new())
     }
 
-    async fn pulse_guide(
-        &self,
-        _direction: GuideDirection,
-        _duration: Duration,
-    ) -> ASCOMResult<()> {
+    async fn pulse_guide(&self, direction: GuideDirection, _duration: Duration) -> ASCOMResult<()> {
         self.pulses.fetch_add(1, Ordering::SeqCst);
+        self.directions.lock().push(direction);
         if self.pulse_hangs {
             std::future::pending::<()>().await;
         }

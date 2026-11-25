@@ -60,6 +60,7 @@ fn disconnect(world: &mut GuiderWorld, device: String) {
 }
 
 #[when("a client asks the guider to loop")]
+#[then("a client asks the guider to loop")]
 async fn ask_to_loop(world: &mut GuiderWorld) {
     world.post("/api/v1/loop", None).await;
 }
@@ -149,6 +150,7 @@ async fn background_answers_with_stop_reason(
     );
 }
 
+#[given(regex = r#"^the guider's stats report the state "([a-z_]+)"$"#)]
 #[then(regex = r#"^the guider's stats report the state "([a-z_]+)"$"#)]
 async fn stats_report_state(world: &mut GuiderWorld, state: String) {
     world

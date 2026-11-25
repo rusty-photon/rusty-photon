@@ -123,6 +123,10 @@ pub struct GuiderWorld {
     pub noted_exposure: Option<SimTime>,
     /// When the scenario last scripted failed exposures.
     pub faults_at: Option<SimTime>,
+    /// The guide steps the totals counted, and the exposures the camera had
+    /// started, at a step that noted them.
+    pub noted_guide_steps: u64,
+    pub noted_exposures: usize,
     pub tls_auth: TlsAuthState,
     pub doctor_smoke: DoctorSmokeState,
 }
@@ -152,6 +156,8 @@ impl GuiderWorld {
             noted_frames: Vec::new(),
             noted_exposure: None,
             faults_at: None,
+            noted_guide_steps: 0,
+            noted_exposures: 0,
             tls_auth: TlsAuthState::default(),
             doctor_smoke: DoctorSmokeState::default(),
         }

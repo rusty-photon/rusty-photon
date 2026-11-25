@@ -186,6 +186,12 @@ impl RunMount {
         }
     }
 
+    /// The mount.
+    #[must_use]
+    pub fn telescope(&self) -> Arc<dyn Telescope> {
+        Arc::clone(&self.mount)
+    }
+
     /// The mount check.
     ///
     /// # Errors

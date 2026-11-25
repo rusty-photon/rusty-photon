@@ -3,6 +3,8 @@
 //! See docs/services/guider.md § Error envelope, § Stopping on its own and
 //! § HTTP API.
 
+use std::time::Duration;
+
 use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -35,6 +37,10 @@ pub enum StopReason {
     MountUnreachable,
     /// A pulse still in progress `mount.pulse_timeout` after its duration.
     PulseTimeout,
+    /// Corrections in one direction that the error did not follow.
+    Runaway,
+    /// A calibration failed inside a run that was already guiding.
+    CalibrationFailed,
 }
 
 impl StopReason {
@@ -50,6 +56,8 @@ impl StopReason {
             Self::PierSideChanged => "pier_side_changed",
             Self::MountUnreachable => "mount_unreachable",
             Self::PulseTimeout => "pulse_timeout",
+            Self::Runaway => "runaway",
+            Self::CalibrationFailed => "calibration_failed",
         }
     }
 }
@@ -96,16 +104,19 @@ pub enum ErrorCode {
     InvalidRequest,
     NoFrame,
     NotConfigured,
+    NotGuiding,
     NotIdle,
     NotExposing,
     DeviceNotConnected,
     MountNotReady,
     Stopped,
+    DitherAborted,
     CameraUnsupported,
     NoStars,
     CalibrationFailed,
     GuideFailed,
     DeviceUnreachable,
+    SettleTimeout,
     StopTimeout,
     Internal,
 }
@@ -116,16 +127,19 @@ impl ErrorCode {
             Self::InvalidRequest => "invalid_request",
             Self::NoFrame => "no_frame",
             Self::NotConfigured => "not_configured",
+            Self::NotGuiding => "not_guiding",
             Self::NotIdle => "not_idle",
             Self::NotExposing => "not_exposing",
             Self::DeviceNotConnected => "device_not_connected",
             Self::MountNotReady => "mount_not_ready",
             Self::Stopped => "stopped",
+            Self::DitherAborted => "dither_aborted",
             Self::CameraUnsupported => "camera_unsupported",
             Self::NoStars => "no_stars",
             Self::CalibrationFailed => "calibration_failed",
             Self::GuideFailed => "guide_failed",
             Self::DeviceUnreachable => "device_unreachable",
+            Self::SettleTimeout => "settle_timeout",
             Self::StopTimeout => "stop_timeout",
             Self::Internal => "internal",
         }
@@ -136,17 +150,19 @@ impl ErrorCode {
             Self::InvalidRequest => StatusCode::BAD_REQUEST,
             Self::NoFrame => StatusCode::NOT_FOUND,
             Self::NotConfigured
+            | Self::NotGuiding
             | Self::NotIdle
             | Self::NotExposing
             | Self::DeviceNotConnected
             | Self::MountNotReady
-            | Self::Stopped => StatusCode::CONFLICT,
+            | Self::Stopped
+            | Self::DitherAborted => StatusCode::CONFLICT,
             Self::CameraUnsupported
             | Self::NoStars
             | Self::CalibrationFailed
             | Self::GuideFailed => StatusCode::UNPROCESSABLE_ENTITY,
             Self::DeviceUnreachable => StatusCode::BAD_GATEWAY,
-            Self::StopTimeout => StatusCode::GATEWAY_TIMEOUT,
+            Self::SettleTimeout | Self::StopTimeout => StatusCode::GATEWAY_TIMEOUT,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -282,6 +298,149 @@ impl TryFrom<serde_json::Map<String, serde_json::Value>> for NoFields {
     }
 }
 
+/// The size of a settle tolerance or a dither: pixels of the measured frame,
+/// or arcseconds at the pixel scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Size {
+    Pixels(f64),
+    Arcsec(f64),
+}
+
+impl Size {
+    /// The size in pixels at `pixel_scale`, in arcseconds a pixel.
+    #[must_use]
+    pub fn pixels(self, pixel_scale: f64) -> f64 {
+        match self {
+            Self::Pixels(pixels) => pixels,
+            Self::Arcsec(arcsec) => arcsec / pixel_scale,
+        }
+    }
+}
+
+/// A settle's terms, the configuration's `settling` filling what the
+/// request leaves out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SettleSpec {
+    pub tolerance: Size,
+    pub time: Duration,
+    pub timeout: Duration,
+}
+
+/// `settle` of `guiding/start` and `dither`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettleBody {
+    pixels: Option<f64>,
+    arcsec: Option<f64>,
+    time: Option<String>,
+    timeout: Option<String>,
+}
+
+/// A size given as at most one of a pixel and an arcsecond field.
+///
+/// # Errors
+///
+/// `invalid_request` for both, and for a size that is not a positive
+/// number.
+fn size(pixels: Option<f64>, arcsec: Option<f64>, what: &str) -> Result<Option<Size>, ApiError> {
+    let positive = |value: f64| value.is_finite() && value > 0.0;
+    match (pixels, arcsec) {
+        (Some(_), Some(_)) => Err(invalid(format!(
+            "{what} takes one of its pixel and its arcsecond field, not both"
+        ))),
+        (Some(pixels), None) if positive(pixels) => Ok(Some(Size::Pixels(pixels))),
+        (None, Some(arcsec)) if positive(arcsec) => Ok(Some(Size::Arcsec(arcsec))),
+        (None, None) => Ok(None),
+        _ => Err(invalid(format!("{what} must be a positive number"))),
+    }
+}
+
+/// `invalid_request` with `message`.
+fn invalid(message: String) -> ApiError {
+    ApiError::new(ErrorCode::InvalidRequest, message)
+}
+
+/// A duration field of a settle.
+fn duration(text: &str, what: &str) -> Result<Duration, ApiError> {
+    humantime::parse_duration(text).map_err(|e| invalid(format!("settle.{what} {text:?}: {e}")))
+}
+
+impl SettleBody {
+    /// The settle's terms, each field the body leaves out taken from
+    /// `default`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_request` for both a pixel and an arcsecond tolerance, a
+    /// tolerance that is not a positive number, a duration that does not
+    /// parse, and a timeout of zero.
+    pub fn resolve(&self, default: SettleSpec) -> Result<SettleSpec, ApiError> {
+        let tolerance = size(self.pixels, self.arcsec, "settle")?.unwrap_or(default.tolerance);
+        let time = self
+            .time
+            .as_deref()
+            .map(|text| duration(text, "time"))
+            .transpose()?
+            .unwrap_or(default.time);
+        let timeout = self
+            .timeout
+            .as_deref()
+            .map(|text| duration(text, "timeout"))
+            .transpose()?
+            .unwrap_or(default.timeout);
+        if timeout.is_zero() {
+            return Err(invalid(
+                "settle.timeout must be longer than zero".to_owned(),
+            ));
+        }
+        Ok(SettleSpec {
+            tolerance,
+            time,
+            timeout,
+        })
+    }
+}
+
+/// The body of `guiding/start`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StartBody {
+    pub recalibrate: bool,
+    pub settle: SettleBody,
+}
+
+/// The body of `dither`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DitherBody {
+    amount_px: Option<f64>,
+    amount_arcsec: Option<f64>,
+    #[serde(default)]
+    pub ra_only: bool,
+    #[serde(default)]
+    pub settle: SettleBody,
+}
+
+impl DitherBody {
+    /// The dither's size.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_request` for neither or both of `amount_px` and
+    /// `amount_arcsec`, and an amount that is not a positive number.
+    pub fn amount(&self) -> Result<Size, ApiError> {
+        size(self.amount_px, self.amount_arcsec, "the dither's amount")?
+            .ok_or_else(|| invalid("a dither takes one of amount_px and amount_arcsec".to_owned()))
+    }
+}
+
+/// The body of `guiding/pause`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PauseBody {
+    pub full: bool,
+}
+
 /// `body` read as `T`, an empty body as `{}`.
 ///
 /// # Errors
@@ -375,6 +534,8 @@ mod tests {
             StopReason::PierSideChanged,
             StopReason::MountUnreachable,
             StopReason::PulseTimeout,
+            StopReason::Runaway,
+            StopReason::CalibrationFailed,
         ]
         .map(StopReason::as_str);
         assert_eq!(
@@ -387,7 +548,9 @@ mod tests {
                 "mount_parked",
                 "pier_side_changed",
                 "mount_unreachable",
-                "pulse_timeout"
+                "pulse_timeout",
+                "runaway",
+                "calibration_failed"
             ]
         );
     }
@@ -398,6 +561,9 @@ mod tests {
             (ErrorCode::InvalidRequest, "invalid_request", 400),
             (ErrorCode::NoFrame, "no_frame", 404),
             (ErrorCode::NotConfigured, "not_configured", 409),
+            (ErrorCode::NotGuiding, "not_guiding", 409),
+            (ErrorCode::DitherAborted, "dither_aborted", 409),
+            (ErrorCode::SettleTimeout, "settle_timeout", 504),
             (ErrorCode::NotIdle, "not_idle", 409),
             (ErrorCode::NotExposing, "not_exposing", 409),
             (ErrorCode::DeviceNotConnected, "device_not_connected", 409),
@@ -413,6 +579,76 @@ mod tests {
         ] {
             assert_eq!((code.name(), code.status().as_u16()), (name, status));
         }
+    }
+
+    const DEFAULT: SettleSpec = SettleSpec {
+        tolerance: Size::Pixels(0.5),
+        time: Duration::from_secs(10),
+        timeout: Duration::from_secs(60),
+    };
+
+    fn settle(body: &str) -> Result<SettleSpec, ApiError> {
+        read_body::<SettleBody>(&Bytes::from(body.to_owned()))?.resolve(DEFAULT)
+    }
+
+    #[test]
+    fn a_settle_takes_each_field_it_leaves_out_from_the_configuration() {
+        assert_eq!(settle("{}").unwrap(), DEFAULT);
+        assert_eq!(
+            settle(r#"{"arcsec": 2.0, "time": "1s"}"#).unwrap(),
+            SettleSpec {
+                tolerance: Size::Arcsec(2.0),
+                time: Duration::from_secs(1),
+                ..DEFAULT
+            }
+        );
+    }
+
+    #[test]
+    fn a_settle_the_guider_cannot_read_is_invalid() {
+        for body in [
+            r#"{"pixels": 1.0, "arcsec": 1.0}"#,
+            r#"{"pixels": 0.0}"#,
+            r#"{"arcsec": -1.0}"#,
+            r#"{"time": "soon"}"#,
+            r#"{"timeout": "0s"}"#,
+            r#"{"seconds": 1}"#,
+        ] {
+            assert_eq!(
+                settle(body).unwrap_err().code,
+                ErrorCode::InvalidRequest,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dither_takes_exactly_one_positive_amount() {
+        let amount = |body: &str| {
+            read_body::<DitherBody>(&Bytes::from(body.to_owned())).and_then(|body| body.amount())
+        };
+        assert_eq!(amount(r#"{"amount_px": 3.0}"#).unwrap(), Size::Pixels(3.0));
+        assert_eq!(
+            amount(r#"{"amount_arcsec": 6.0}"#).unwrap(),
+            Size::Arcsec(6.0)
+        );
+        for body in [
+            "{}",
+            r#"{"amount_px": 3.0, "amount_arcsec": 6.0}"#,
+            r#"{"amount_px": 0.0}"#,
+        ] {
+            assert_eq!(
+                amount(body).unwrap_err().code,
+                ErrorCode::InvalidRequest,
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_size_in_arcseconds_is_taken_at_the_pixel_scale() {
+        assert_eq!(Size::Arcsec(6.0).pixels(2.0), 3.0);
+        assert_eq!(Size::Pixels(6.0).pixels(2.0), 6.0);
     }
 
     #[test]
