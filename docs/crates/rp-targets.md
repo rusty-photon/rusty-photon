@@ -385,8 +385,12 @@ On open, read `meta["schema_version"]`:
   `#[serde(default)]` their new fields and tolerate unknown ones, so an
   old value deserializes into the new `Target` directly. A migration
   step is only authored for a breaking re-shape (rename, split, type
-  change), as a `Target_vN → Target` transform. `CURRENT_SCHEMA_VERSION`
-  is 1, so no step exists: an older version is stamped current.
+  change), as a `Target_vN → Target` transform. Removing a field an
+  older build requires needs no step either, but bumps the version, so
+  that the older build refuses the database at open instead of failing
+  on each row a newer build has written. `CURRENT_SCHEMA_VERSION` is 2:
+  version 2's rows lack version 1's required `priority`, so no step
+  exists and a version 1 database is stamped current.
 - **> current** → `UnsupportedSchemaVersion` (refuse to run against a
   database written by a newer build, rather than silently dropping
   fields).

@@ -430,4 +430,50 @@ mod tests {
             TargetStoreError::UnsupportedSchemaVersion { .. }
         ));
     }
+
+    #[tokio::test]
+    async fn open_reads_a_version_1_database_and_stamps_it_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("targets.redb");
+
+        // A version 1 database, its row carrying the `priority` that
+        // version 1 builds require.
+        let db = Database::create(&db_path).unwrap();
+        let write_txn = db.begin_write().unwrap();
+        {
+            let mut meta = write_txn.open_table(META_TABLE).unwrap();
+            meta.insert(SCHEMA_VERSION_KEY, 1_u32.to_le_bytes().as_slice())
+                .unwrap();
+            let mut targets = write_txn.open_table(TARGETS_TABLE).unwrap();
+            let row = serde_json::json!({
+                "slug": "m31",
+                "display_name": "M 31",
+                "coord": { "ra_hours": 0.7123, "dec_degrees": 41.2688 },
+                "priority": 3,
+                "active": true,
+                "created_at": "2026-07-22T00:00:00Z",
+                "updated_at": "2026-07-22T00:00:00Z"
+            });
+            targets
+                .insert("m31", serde_json::to_vec(&row).unwrap().as_slice())
+                .unwrap();
+        }
+        write_txn.commit().unwrap();
+        drop(db);
+
+        let store = RedbTargetStore::open(&db_path).await.unwrap();
+        assert_eq!(store.list_targets().await.unwrap().len(), 1);
+        drop(store);
+
+        let db = Database::open(&db_path).unwrap();
+        let read_txn = db.begin_read().unwrap();
+        let meta = read_txn.open_table(META_TABLE).unwrap();
+        let version =
+            decode_schema_version(meta.get(SCHEMA_VERSION_KEY).unwrap().unwrap().value()).unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        assert!(
+            version > 1,
+            "a version 1 build requires `priority` and must refuse this database"
+        );
+    }
 }

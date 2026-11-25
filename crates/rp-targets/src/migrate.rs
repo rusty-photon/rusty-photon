@@ -6,19 +6,23 @@
 //! non-breaking field changes need no migration step at all — value structs
 //! `#[serde(default)]` their new fields and tolerate unknown ones, so an
 //! old value deserializes into the new `Target` directly. A step is only
-//! authored for a breaking re-shape (rename, split, type change).
+//! authored for a breaking re-shape (rename, split, type change). Removing
+//! a field an older build requires needs no step either, but bumps the
+//! version: an older build then refuses the database at open, where it
+//! would otherwise fail on every row this build has written.
 
 use crate::error::TargetStoreError;
 
 /// The schema version this build writes for a fresh database and expects
 /// after migration.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Checks a database's on-disk `schema_version` against
 /// [`CURRENT_SCHEMA_VERSION`].
 ///
-/// `CURRENT_SCHEMA_VERSION` is the only version, so no migration step
-/// exists and this function only classifies `found` against it. A breaking
+/// Version 2's rows lack version 1's required `priority`, which this build
+/// ignores on read, so no migration step exists and this function only
+/// classifies `found` against `CURRENT_SCHEMA_VERSION`. A breaking
 /// `Target` re-shape adds an ordered step here, run inside the caller's
 /// single write transaction before the version key is bumped.
 ///
@@ -34,7 +38,7 @@ pub const fn check_schema_version(found: u32) -> Result<(), TargetStoreError> {
         });
     }
     // found < CURRENT_SCHEMA_VERSION runs the ordered migration steps here;
-    // with one version there are none.
+    // from version 1 there are none.
     Ok(())
 }
 
@@ -49,7 +53,7 @@ mod tests {
 
     #[test]
     fn older_version_passes_with_no_migration_step_to_run() {
-        check_schema_version(0).unwrap();
+        check_schema_version(CURRENT_SCHEMA_VERSION - 1).unwrap();
     }
 
     #[test]
