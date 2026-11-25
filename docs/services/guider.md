@@ -13,9 +13,10 @@ implementation is written against. Of the service, the configuration
 and its validation, the lifecycle and the state directory, the device
 clients and their poll, the camera loop and the sensor handling,
 `loop`, `star/reselect` and `guiding/stop`, the requests' turns, the
-metrics window, `stats`, `frame/latest`, `GET /api/v1/devices`,
-`/health` and `guider doctor` are built; guiding, the guide log, the
-setup page and the packages are not yet. Of the guiding core,
+metrics window, `stats`, `frame/latest`, the mount check and the pulses,
+`calibrate` and the calibration store, `GET /api/v1/devices`, `/health`
+and `guider doctor` are built; guiding, the guide log, the setup page
+and the packages are not yet. Of the guiding core,
 `crates/rp-guiding`, the star selection, the measurement, the
 calibration, the control, dither and settling are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
@@ -366,7 +367,10 @@ on. Otherwise the run stops, with the reason `mount_not_tracking`,
 `mount_slewing`, `mount_parked` or `pier_side_changed`. The guider does
 not wait for the mount to come back and does not resume: a mount that
 slewed has moved the stars, and starting again is its client's
-decision.
+decision. When several fail at once the reason is the first of
+`mount_parked`, `mount_slewing`, `mount_not_tracking` and
+`pier_side_changed`: a parked mount does not track either, and parked
+is what happened.
 
 - The check runs in `paused` and `star_lost` too. A slew is the usual
   reason for losing the stars, and it must end the run all the same.
@@ -385,7 +389,10 @@ decision.
 **At a request.** `calibrate` and `guiding/start` run the same check
 before they start, and read `CanPulseGuide`. A mount that fails either
 refuses the request with `mount_not_ready`, and the message names what
-failed.
+failed. A read that fails, rather than answering, refuses the request
+with `device_unreachable`, as a device that does not answer does; a
+`SideOfPier` the mount does not implement is the side `unknown`, and
+guide rates it does not implement are no guide rates.
 
 **A pulse.** The guider calls `PulseGuide` with a direction and a
 duration. The pulse has ended when the call has returned, the duration
@@ -625,6 +632,15 @@ steps are its pulses, so such a frame is no step and does not count
 towards `calibration.max_steps`. The state stays `calibrating`, and
 `calibration.timeout` bounds the wait.
 
+**A step whose pulse was not sent.** A cycle whose mount read or
+`PulseGuide` call failed sends no pulse ([A mount that does not
+answer](#the-mount-checks-and-pulses)). The leg does not count that
+step: the next frame is judged as if it had not been asked for, so the
+leg asks for the step again, and its rate is worked out from the pulses
+the mount was sent. A step whose `PulseGuide` call returned was sent,
+and counts, even when the `IsPulseGuiding` read after it fails; that
+cycle still counts as one with a failed mount call.
+
 **The step.** The guider sizes the step so that a leg takes about
 `calibration.steps` steps. It works the step out from the guide rate
 the mount reports, the declination and the pixel scale, and uses
@@ -711,7 +727,13 @@ answers with it, and the slot keeps what it held.
   more than 60° from the celestial equator replaces no record, and the
   wrong one stays in its slot.
 - A `calibration.json` the guider cannot read is set aside under
-  another name when the service starts, and the store starts empty.
+  another name when the service starts, and the store starts empty. The
+  name is `calibration.json.unreadable-<UTC time>`, with the time as
+  `YYYYMMDDTHHMMSSZ`, so that a later start sets aside a file of its own
+  and the operator can still read what was there.
+- The file is written whole, to a temporary file beside it that then
+  takes its name, so that a write the service does not finish leaves the
+  old file as it was.
 
 ### Control
 
@@ -948,7 +970,11 @@ was made within 60° of the celestial equator
   is not a failed calibration: the guider goes to `idle` and the
   request answers `guide_failed`
   ([Stopping on its own](#stopping-on-its-own)).
-- From `idle` it selects guide stars on its first frame.
+- From `idle` it selects guide stars on its first frame. From
+  `looping` it calibrates on the loop's guide stars, and selects on the
+  next frame when the loop holds none. A frame with fewer guide stars
+  than `stars.min` answers `no_stars`, and the guider returns to the
+  state the request found it in.
 - `camera` and `guide_rates` hold what a later run is compared with:
   the pixel size, the sensor's size and the effective binning, and the
   mount's `GuideRateRightAscension` and `GuideRateDeclination` in
@@ -963,9 +989,13 @@ was made within 60° of the celestial equator
   mount ([The step](#calibration)). `dec` and `orthogonality_error_deg`
   are `null` in a record made with `control.dec.mode` `"off"`.
 - `warnings` lists the cross-checks that passed their warning
-  threshold, each as `{ "check", "value", "threshold" }`.
+  threshold, each as `{ "check", "value", "threshold" }`. `check` is
+  one of `orthogonality`, `ra_rate`, `dec_rate` and `rate_ratio`.
 - A calibration that fails answers `calibration_failed`; `details`
-  names the leg or the cross-check.
+  names the leg or the cross-check: `{ "leg": "west" }` for a leg that
+  ran out of steps or time (`west`, `east`, `clear_backlash`, `north`,
+  `south`), and `{ "check", "value", "threshold" }` for a cross-check
+  that failed.
 
 #### `POST /api/v1/guiding/start`
 
@@ -1312,7 +1342,10 @@ Each axis's count and sum is a `SquareSums` from
   `guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` and
   `star/reselect` serialize behind a single-flight mutex. Overlapping
   requests queue; they are not refused. One guider has one mount, and
-  two settle waits at once mean nothing.
+  two settle waits at once mean nothing. A `calibrate` keeps its turn
+  until the calibration ends, even when its client has stopped waiting,
+  so that nothing queued behind it runs in the middle of the
+  calibration.
 - **`guiding/stop` and `dither/abort` never queue.** They act at once,
   whatever is waiting. `guiding/stop` answers every waiting and queued
   mutating request with `stopped`.

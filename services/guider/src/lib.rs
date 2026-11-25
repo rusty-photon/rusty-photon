@@ -38,18 +38,23 @@
 //! client's request makes it expose or pulse.
 
 pub mod api;
+pub mod calibration_store;
 pub mod camera_loop;
 pub mod config;
 pub mod devices;
 pub mod doctor;
 pub mod error;
 pub mod guider;
+pub mod mount;
 pub mod preview;
 pub mod routes;
 pub mod sensor;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod test_camera;
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod test_mount;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -59,6 +64,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
+use crate::calibration_store::CalibrationStore;
 use crate::config::Config;
 use crate::devices::{DeviceClient, DevicePoll};
 use crate::error::{GuiderError, Result};
@@ -131,11 +137,13 @@ impl ServerBuilder {
 
         let server = config.server.clone();
         let config = Arc::new(config);
+        let store = Arc::new(CalibrationStore::open(&state_dir));
         let guider = Arc::new(Guider::new(
             Arc::clone(&config),
             camera,
             mount,
             devices.clone(),
+            store,
         ));
         let router =
             routes::build_router(routes::AppState::new(config, devices, Arc::clone(&guider)));

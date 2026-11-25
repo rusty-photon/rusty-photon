@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use ascom_alpaca::api::camera::SensorType;
 use ascom_alpaca::api::{Camera, Device, Telescope, TypedDevice};
-use ascom_alpaca::Client;
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult, Client};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use tokio::sync::watch;
@@ -54,6 +54,37 @@ pub(crate) async fn call<T, E: Display>(
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(CallError::Failed(error.to_string())),
         Err(_) => Err(CallError::Deadline),
+    }
+}
+
+/// Why a call to a device member failed, with the device's error kept so
+/// that a member the device does not implement can be told apart.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum MemberError {
+    /// No answer within [`CALL_DEADLINE`].
+    #[error("no answer within {}", humantime::format_duration(CALL_DEADLINE))]
+    Deadline,
+    /// The device answered with an error, or the call could not be made.
+    #[error("{0}")]
+    Device(ASCOMError),
+}
+
+impl MemberError {
+    /// Whether the device does not implement the member.
+    #[must_use]
+    pub fn not_implemented(&self) -> bool {
+        matches!(self, Self::Device(error) if error.code == ASCOMErrorCode::NOT_IMPLEMENTED)
+    }
+}
+
+/// A device member's `call` held to [`CALL_DEADLINE`].
+pub(crate) async fn member<T>(
+    call: impl Future<Output = ASCOMResult<T>>,
+) -> std::result::Result<T, MemberError> {
+    match tokio::time::timeout(CALL_DEADLINE, call).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(MemberError::Device(error)),
+        Err(_) => Err(MemberError::Deadline),
     }
 }
 

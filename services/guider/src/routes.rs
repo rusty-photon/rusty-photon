@@ -16,9 +16,12 @@ use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::api::{read_body, ApiError, ErrorCode, NoFields};
+use crate::calibration_store::StoreBody;
 use crate::config::Config;
 use crate::devices::{CameraState, DevicesState, MountState, Reach};
-use crate::guider::{Guider, MetricsBody, SelectionAnswer, StateAnswer, StatsBody};
+use crate::guider::{
+    CalibrateAnswer, Guider, MetricsBody, SelectionAnswer, StateAnswer, StatsBody,
+};
 use crate::preview;
 use crate::sensor::{effective_binning, sensor_type_name};
 
@@ -49,6 +52,9 @@ impl AppState {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/loop", post(start_loop))
+        .route("/api/v1/calibrate", post(calibrate))
+        .route("/api/v1/calibration", get(calibration))
+        .route("/api/v1/calibration/clear", post(clear_calibration))
         .route("/api/v1/star/reselect", post(reselect))
         .route("/api/v1/guiding/stop", post(stop))
         .route("/api/v1/guiding/stats", get(stats))
@@ -66,6 +72,29 @@ async fn start_loop(
 ) -> Result<Json<SelectionAnswer>, ApiError> {
     read_body::<NoFields>(&body)?;
     state.guider.start_loop().await.map(Json)
+}
+
+/// `POST /api/v1/calibrate`.
+async fn calibrate(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<CalibrateAnswer>, ApiError> {
+    read_body::<NoFields>(&body)?;
+    state.guider.calibrate().await.map(Json)
+}
+
+/// `GET /api/v1/calibration`.
+async fn calibration(State(state): State<AppState>) -> Json<StoreBody> {
+    Json(state.guider.calibration())
+}
+
+/// `POST /api/v1/calibration/clear`.
+async fn clear_calibration(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<StateAnswer>, ApiError> {
+    read_body::<NoFields>(&body)?;
+    state.guider.clear_calibration().await.map(Json)
 }
 
 /// `POST /api/v1/star/reselect`.

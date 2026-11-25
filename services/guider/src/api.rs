@@ -11,7 +11,10 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::json;
 
-/// Why the loop stopped.
+use crate::calibration_store::{check_name, leg_name};
+use rp_guiding::{CalibrationError, Check, Leg};
+
+/// Why the loop, or the run, stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
     /// A `guiding/stop`.
@@ -19,6 +22,19 @@ pub enum StopReason {
     /// `camera.max_frame_failures` failed frames in a row, or a camera
     /// that came back with another sensor.
     CameraError,
+    /// The mount check found `Tracking` false.
+    MountNotTracking,
+    /// The mount check found `Slewing` true.
+    MountSlewing,
+    /// The mount check found `AtPark` true.
+    MountParked,
+    /// The mount check found another pier side than the run's.
+    PierSideChanged,
+    /// `mount.max_failures` cycles in a row with a failed mount read or
+    /// pulse call.
+    MountUnreachable,
+    /// A pulse still in progress `mount.pulse_timeout` after its duration.
+    PulseTimeout,
 }
 
 impl StopReason {
@@ -28,6 +44,12 @@ impl StopReason {
         match self {
             Self::Requested => "requested",
             Self::CameraError => "camera_error",
+            Self::MountNotTracking => "mount_not_tracking",
+            Self::MountSlewing => "mount_slewing",
+            Self::MountParked => "mount_parked",
+            Self::PierSideChanged => "pier_side_changed",
+            Self::MountUnreachable => "mount_unreachable",
+            Self::PulseTimeout => "pulse_timeout",
         }
     }
 }
@@ -57,6 +79,15 @@ impl Stop {
             message,
         }
     }
+
+    /// A stop for `reason`, saying why.
+    #[must_use]
+    pub fn new(reason: StopReason, message: impl Into<String>) -> Self {
+        Self {
+            reason,
+            message: message.into(),
+        }
+    }
 }
 
 /// The error codes of the envelope.
@@ -65,11 +96,14 @@ pub enum ErrorCode {
     InvalidRequest,
     NoFrame,
     NotConfigured,
+    NotIdle,
     NotExposing,
     DeviceNotConnected,
+    MountNotReady,
     Stopped,
     CameraUnsupported,
     NoStars,
+    CalibrationFailed,
     GuideFailed,
     DeviceUnreachable,
     StopTimeout,
@@ -82,11 +116,14 @@ impl ErrorCode {
             Self::InvalidRequest => "invalid_request",
             Self::NoFrame => "no_frame",
             Self::NotConfigured => "not_configured",
+            Self::NotIdle => "not_idle",
             Self::NotExposing => "not_exposing",
             Self::DeviceNotConnected => "device_not_connected",
+            Self::MountNotReady => "mount_not_ready",
             Self::Stopped => "stopped",
             Self::CameraUnsupported => "camera_unsupported",
             Self::NoStars => "no_stars",
+            Self::CalibrationFailed => "calibration_failed",
             Self::GuideFailed => "guide_failed",
             Self::DeviceUnreachable => "device_unreachable",
             Self::StopTimeout => "stop_timeout",
@@ -98,12 +135,16 @@ impl ErrorCode {
         match self {
             Self::InvalidRequest => StatusCode::BAD_REQUEST,
             Self::NoFrame => StatusCode::NOT_FOUND,
-            Self::NotConfigured | Self::NotExposing | Self::DeviceNotConnected | Self::Stopped => {
-                StatusCode::CONFLICT
-            }
-            Self::CameraUnsupported | Self::NoStars | Self::GuideFailed => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            Self::NotConfigured
+            | Self::NotIdle
+            | Self::NotExposing
+            | Self::DeviceNotConnected
+            | Self::MountNotReady
+            | Self::Stopped => StatusCode::CONFLICT,
+            Self::CameraUnsupported
+            | Self::NoStars
+            | Self::CalibrationFailed
+            | Self::GuideFailed => StatusCode::UNPROCESSABLE_ENTITY,
             Self::DeviceUnreachable => StatusCode::BAD_GATEWAY,
             Self::StopTimeout => StatusCode::GATEWAY_TIMEOUT,
             Self::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -111,13 +152,27 @@ impl ErrorCode {
     }
 }
 
+/// What an error attaches as its `details`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Details {
+    /// The reason of the stop a `guide_failed` reports.
+    StopReason(StopReason),
+    /// The leg of a calibration that failed.
+    Leg(Leg),
+    /// The cross-check of a calibration that failed.
+    Check {
+        check: Check,
+        value: f64,
+        threshold: f64,
+    },
+}
+
 /// An error the API answers with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
-    /// The reason of the stop a `guide_failed` reports.
-    pub stop_reason: Option<StopReason>,
+    pub details: Option<Details>,
 }
 
 impl ApiError {
@@ -126,7 +181,40 @@ impl ApiError {
         Self {
             code,
             message: message.into(),
-            stop_reason: None,
+            details: None,
+        }
+    }
+
+    /// The reason of the stop a `guide_failed` reports.
+    #[must_use]
+    pub const fn stop_reason(&self) -> Option<StopReason> {
+        match self.details {
+            Some(Details::StopReason(reason)) => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// A calibration that failed, with the leg or the cross-check.
+    #[must_use]
+    pub fn calibration_failed(error: &CalibrationError) -> Self {
+        let details = match *error {
+            CalibrationError::OutOfSteps { leg } | CalibrationError::TimedOut { leg } => {
+                Details::Leg(leg)
+            }
+            CalibrationError::CheckFailed {
+                check,
+                value,
+                threshold,
+            } => Details::Check {
+                check,
+                value,
+                threshold,
+            },
+        };
+        Self {
+            code: ErrorCode::CalibrationFailed,
+            message: format!("the calibration failed: {error}"),
+            details: Some(details),
         }
     }
 
@@ -145,18 +233,27 @@ impl ApiError {
         Self {
             code: ErrorCode::GuideFailed,
             message: format!("the loop stopped: {}", stop.message),
-            stop_reason: Some(stop.reason),
+            details: Some(Details::StopReason(stop.reason)),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = match self.stop_reason {
-            Some(reason) => json!({
+        let details = self.details.map(|details| match details {
+            Details::StopReason(reason) => json!({ "stop_reason": reason.as_str() }),
+            Details::Leg(leg) => json!({ "leg": leg_name(leg) }),
+            Details::Check {
+                check,
+                value,
+                threshold,
+            } => json!({ "check": check_name(check), "value": value, "threshold": threshold }),
+        });
+        let body = match details {
+            Some(details) => json!({
                 "error": self.code.name(),
                 "message": self.message,
-                "details": { "stop_reason": reason.as_str() },
+                "details": details,
             }),
             None => json!({ "error": self.code.name(), "message": self.message }),
         };
@@ -243,17 +340,72 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_failed_calibration_names_its_leg_or_its_cross_check() {
+        let (status, body) = answer(ApiError::calibration_failed(
+            &CalibrationError::OutOfSteps {
+                leg: Leg::ClearBacklash,
+            },
+        ))
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["details"], json!({ "leg": "clear_backlash" }));
+        let (_, body) = answer(ApiError::calibration_failed(
+            &CalibrationError::CheckFailed {
+                check: Check::RateRatio,
+                value: 0.75,
+                threshold: 0.5,
+            },
+        ))
+        .await;
+        assert_eq!(
+            body["details"],
+            json!({ "check": "rate_ratio", "value": 0.75, "threshold": 0.5 })
+        );
+    }
+
+    #[test]
+    fn every_stop_reason_has_its_api_name() {
+        let names = [
+            StopReason::Requested,
+            StopReason::CameraError,
+            StopReason::MountNotTracking,
+            StopReason::MountSlewing,
+            StopReason::MountParked,
+            StopReason::PierSideChanged,
+            StopReason::MountUnreachable,
+            StopReason::PulseTimeout,
+        ]
+        .map(StopReason::as_str);
+        assert_eq!(
+            names,
+            [
+                "requested",
+                "camera_error",
+                "mount_not_tracking",
+                "mount_slewing",
+                "mount_parked",
+                "pier_side_changed",
+                "mount_unreachable",
+                "pulse_timeout"
+            ]
+        );
+    }
+
     #[test]
     fn every_code_has_the_status_of_the_design() {
         for (code, name, status) in [
             (ErrorCode::InvalidRequest, "invalid_request", 400),
             (ErrorCode::NoFrame, "no_frame", 404),
             (ErrorCode::NotConfigured, "not_configured", 409),
+            (ErrorCode::NotIdle, "not_idle", 409),
             (ErrorCode::NotExposing, "not_exposing", 409),
             (ErrorCode::DeviceNotConnected, "device_not_connected", 409),
+            (ErrorCode::MountNotReady, "mount_not_ready", 409),
             (ErrorCode::Stopped, "stopped", 409),
             (ErrorCode::CameraUnsupported, "camera_unsupported", 422),
             (ErrorCode::NoStars, "no_stars", 422),
+            (ErrorCode::CalibrationFailed, "calibration_failed", 422),
             (ErrorCode::GuideFailed, "guide_failed", 422),
             (ErrorCode::DeviceUnreachable, "device_unreachable", 502),
             (ErrorCode::StopTimeout, "stop_timeout", 504),
