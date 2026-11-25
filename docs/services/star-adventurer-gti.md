@@ -732,7 +732,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `PulseGuide(direction, duration)` | rate change on the targeted axis for `duration`; returns once the new rate is on the wire, with a watcher task left to restore it. An East/West pulse on a tracking RA axis changes the step period of the running motor (`:I1`) and never stops it; every other pulse starts its axis from rest. Refuses when parked / disconnected / slewing / same-axis pulse already in flight / RA running a goto. `duration = 0` is a no-op success. See [§PulseGuide lifecycle](#pulseguide-lifecycle) for the wire paths. |
 | `SetGuideRateRightAscension(deg_per_sec)` | validate `(0, SIDEREAL_DEG_PER_SEC)` exclusive; store as fraction = `deg_per_sec / SIDEREAL_DEG_PER_SEC`. Out-of-range → `INVALID_VALUE`. |
 | `SetGuideRateDeclination(deg_per_sec)` | same shape as RA. |
-| `Action(name, parameters)` | `ParkMatchesPowerUpPose` answers, read-only, whether a power cut and the next power-up leave the mount where it parks ([§`ParkMatchesPowerUpPose`](#parkmatchespoweruppose)); `ACTION_NOT_IMPLEMENTED` for every other name. No Action moves the mount: the recovery is on the mount's setup page ([§Recovery on the mount's setup page](#recovery-on-the-mounts-setup-page)). |
+| `Action(name, parameters)` | `ParkMatchesPowerUpPose` (designed and not yet built) answers, read-only, whether a power cut and the next power-up leave the mount where it parks ([§`ParkMatchesPowerUpPose`](#parkmatchespoweruppose)); `ACTION_NOT_IMPLEMENTED` for every other name. No Action moves the mount: the recovery is on the mount's setup page ([§Recovery on the mount's setup page](#recovery-on-the-mounts-setup-page)). |
 
 #### Host-clock dependency for LST-using reads
 
@@ -3309,7 +3309,8 @@ found still, and no path from startup, connect, a save or a supervisory
 transition reaches either.
 
 The driver's one custom Action is the read-only `ParkMatchesPowerUpPose`
-([§`ParkMatchesPowerUpPose`](#parkmatchespoweruppose)), and no Action
+([§`ParkMatchesPowerUpPose`](#parkmatchespoweruppose), designed and not
+yet built), and no Action
 moves the mount. The power-up pose and the park target are configuration,
 edited on the mount's page ([§Setup pages](#setup-pages)).
 
@@ -3416,7 +3417,8 @@ page edits (`device_sections` in `setup.rs`), its one secret
 other page's section. The pages work whether or not the mount is
 `Connected`.
 
-`SupportedActions` lists only `ParkMatchesPowerUpPose`, and every other
+`SupportedActions` lists only `ParkMatchesPowerUpPose` (designed and not
+yet built), and every other
 `Action` answers `ACTION_NOT_IMPLEMENTED`.
 
 #### Validation rules

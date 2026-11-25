@@ -1051,8 +1051,11 @@ with no civil darkness that night) is skipped with a `warn!`.
    a restart of `session-runner` included.
 4. **Covers.** `open_cover` for each calibrator the power map lists:
    the covers dawn closes. `open_cover` is gated, and dusk has already
-   waited for the roof to read safe. A cover that fails to open is
-   logged at `warn!`, and the night goes on.
+   waited for the roof to read safe. A cover that fails to open (refused
+   while the roof reads unsafe again, or a cover that does not answer)
+   is logged at `warn!` once and tried again every 5 minutes while
+   `get_cover_state` does not read it open, until dawn. The night goes on
+   meanwhile.
 5. **Cooldown.** `start_cooldown`.
 6. **Runs.** Each `runs` entry starts in turn, as a `POST /runs` with its
    `workflow` and `params` would start it, under the session id
@@ -1097,6 +1100,10 @@ with no civil darkness that night) is skipped with a `warn!`.
    the mount's output, and every device on it, until dusk. After the
    third failed park the schedule logs at `warn!` that the mount stays
    unparked, and leaves its output on until dusk. A check of an output
+   held for a camera whose cooler is running calls `start_warmup` first:
+   a ramp cut short, which an `rp` restart in the middle of it leaves at
+   its last setpoint, starts again, and a ramp still running is left
+   alone. A check of an output
    whose cut failed, or whose box could not be read, first connects the
    devices on it again through `connect_device`: `power_down` held them
    out before its cut, and a mount still held out fails every park and
