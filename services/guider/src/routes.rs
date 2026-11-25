@@ -1,40 +1,114 @@
-//! HTTP routes (docs/services/guider.md § HTTP API): `GET /api/v1/devices`
-//! and `GET /health`, both answered from the configuration and the device
-//! poll, so neither costs a device call.
+//! HTTP routes (docs/services/guider.md § HTTP API).
+//!
+//! The camera loop's requests and reads, `GET /api/v1/devices` and
+//! `GET /health`. The devices answer and `/health` answer from the
+//! configuration and the device poll, so neither costs a device call.
 
 use std::sync::Arc;
 
-use ascom_alpaca::api::camera::SensorType;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
-use axum::routing::get;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use tokio::sync::watch;
 
+use crate::api::{read_body, ApiError, ErrorCode, NoFields};
 use crate::config::Config;
 use crate::devices::{CameraState, DevicesState, MountState, Reach};
+use crate::guider::{Guider, MetricsBody, SelectionAnswer, StateAnswer, StatsBody};
+use crate::preview;
+use crate::sensor::{effective_binning, sensor_type_name};
 
 /// What the routes answer from.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     config: Arc<Config>,
     devices: watch::Receiver<DevicesState>,
+    guider: Arc<Guider>,
 }
 
 impl AppState {
     #[must_use]
-    pub const fn new(config: Arc<Config>, devices: watch::Receiver<DevicesState>) -> Self {
-        Self { config, devices }
+    pub const fn new(
+        config: Arc<Config>,
+        devices: watch::Receiver<DevicesState>,
+        guider: Arc<Guider>,
+    ) -> Self {
+        Self {
+            config,
+            devices,
+            guider,
+        }
     }
 }
 
 /// Build the router.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
+        .route("/api/v1/loop", post(start_loop))
+        .route("/api/v1/star/reselect", post(reselect))
+        .route("/api/v1/guiding/stop", post(stop))
+        .route("/api/v1/guiding/stats", get(stats))
+        .route("/api/v1/guiding/metrics", get(metrics))
+        .route("/api/v1/frame/latest", get(frame_latest))
         .route("/api/v1/devices", get(devices))
         .route("/health", get(health))
         .with_state(state)
+}
+
+/// `POST /api/v1/loop`.
+async fn start_loop(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<SelectionAnswer>, ApiError> {
+    read_body::<NoFields>(&body)?;
+    state.guider.start_loop().await.map(Json)
+}
+
+/// `POST /api/v1/star/reselect`.
+async fn reselect(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<SelectionAnswer>, ApiError> {
+    read_body::<NoFields>(&body)?;
+    state.guider.reselect().await.map(Json)
+}
+
+/// `POST /api/v1/guiding/stop`.
+async fn stop(State(state): State<AppState>, body: Bytes) -> Result<Json<StateAnswer>, ApiError> {
+    read_body::<NoFields>(&body)?;
+    state.guider.stop().await.map(Json)
+}
+
+/// `GET /api/v1/guiding/stats`.
+async fn stats(State(state): State<AppState>) -> Json<StatsBody> {
+    Json(state.guider.stats())
+}
+
+/// `GET /api/v1/guiding/metrics`.
+async fn metrics(State(state): State<AppState>) -> Json<MetricsBody> {
+    Json(state.guider.metrics())
+}
+
+/// `GET /api/v1/frame/latest`: the PNG is drawn off the async workers.
+async fn frame_latest(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let latest = state.guider.latest_frame()?;
+    let radius = state.config.stars.search_region_px.get();
+    let png = tokio::task::spawn_blocking(move || {
+        preview::render(&latest.frame, &latest.centres, radius)
+    })
+    .await
+    .map_err(|e| {
+        ApiError::new(
+            ErrorCode::Internal,
+            format!("drawing the frame failed: {e}"),
+        )
+    })?
+    .map_err(|e| ApiError::new(ErrorCode::Internal, e))?;
+    Ok(([(header::CONTENT_TYPE, "image/png")], png).into_response())
 }
 
 /// `GET /api/v1/devices`.
@@ -106,29 +180,6 @@ fn mount_body(mount: &MountState) -> MountBody {
         connected: mount.reach.connected(),
         unique_id: mount.unique_id.clone(),
         can_pulse_guide: mount.statics.map(|statics| statics.can_pulse_guide),
-    }
-}
-
-/// `SensorType` as the API names it.
-const fn sensor_type_name(sensor_type: SensorType) -> &'static str {
-    match sensor_type {
-        SensorType::Monochrome => "monochrome",
-        SensorType::Color => "color",
-        SensorType::RGGB => "rggb",
-        SensorType::CMYG => "cmyg",
-        SensorType::CMYG2 => "cmyg2",
-        SensorType::LRGB => "lrgb",
-    }
-}
-
-/// The binning of the measured frame: `camera.binning` for a
-/// `Monochrome` camera, 2 for an `RGGB` one, whose 2 × 2 cells are summed,
-/// and none for a sensor the guider cannot measure.
-const fn effective_binning(sensor_type: SensorType, binning: u8) -> Option<u8> {
-    match sensor_type {
-        SensorType::Monochrome => Some(binning),
-        SensorType::RGGB => Some(2),
-        SensorType::Color | SensorType::CMYG | SensorType::CMYG2 | SensorType::LRGB => None,
     }
 }
 
@@ -213,6 +264,8 @@ fn reach_problem(device: &str, kind: &str, device_number: u32, reach: Reach) -> 
 mod tests {
     use serde_json::json;
 
+    use ascom_alpaca::api::camera::SensorType;
+
     use super::*;
     use crate::devices::{CameraSensor, MountCapabilities};
 
@@ -249,6 +302,7 @@ mod tests {
                 reach: Reach::Connected,
                 unique_id: Some("cam".to_owned()),
                 statics: Some(sensor(SensorType::Monochrome)),
+                statics_current: true,
             }),
             mount: Some(MountState {
                 reach: Reach::Connected,
@@ -256,6 +310,7 @@ mod tests {
                 statics: Some(MountCapabilities {
                     can_pulse_guide: true,
                 }),
+                statics_current: true,
             }),
         }
     }
@@ -316,45 +371,6 @@ mod tests {
                 "the camera is not connected",
                 "the mount's server lists no telescope at device number 3"
             ]
-        );
-    }
-
-    #[test]
-    fn a_monochrome_camera_is_binned_as_configured() {
-        assert_eq!(effective_binning(SensorType::Monochrome, 2), Some(2));
-    }
-
-    #[test]
-    fn an_rggb_camera_is_summed_two_by_two() {
-        assert_eq!(effective_binning(SensorType::RGGB, 1), Some(2));
-    }
-
-    #[test]
-    fn a_sensor_the_guider_cannot_measure_has_no_binning() {
-        for sensor_type in [
-            SensorType::Color,
-            SensorType::CMYG,
-            SensorType::CMYG2,
-            SensorType::LRGB,
-        ] {
-            assert_eq!(effective_binning(sensor_type, 1), None, "{sensor_type:?}");
-        }
-    }
-
-    #[test]
-    fn every_sensor_type_has_its_api_name() {
-        let names = [
-            SensorType::Monochrome,
-            SensorType::Color,
-            SensorType::RGGB,
-            SensorType::CMYG,
-            SensorType::CMYG2,
-            SensorType::LRGB,
-        ]
-        .map(sensor_type_name);
-        assert_eq!(
-            names,
-            ["monochrome", "color", "rggb", "cmyg", "cmyg2", "lrgb"]
         );
     }
 

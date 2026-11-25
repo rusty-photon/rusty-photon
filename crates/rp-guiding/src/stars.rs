@@ -324,6 +324,20 @@ impl GuideStars {
     pub fn references(&self) -> Vec<Position> {
         self.stars.iter().map(|star| star.reference).collect()
     }
+
+    /// Where each guide star is looked for in the next frame, the centre
+    /// of its search region: where it was last usable, highest
+    /// signal-to-noise ratio first.
+    #[must_use]
+    pub fn search_centres(&self) -> Vec<Position> {
+        self.stars
+            .iter()
+            .map(|star| Position {
+                x: star.last.x,
+                y: star.last.y,
+            })
+            .collect()
+    }
 }
 
 /// How many detections selection passed over, by reason.
@@ -849,6 +863,30 @@ mod tests {
         close(offset.y, shift_y, 0.03);
         assert_eq!(measured.usable, 4);
         assert!(measured.median_hfd.unwrap() > 1.0);
+    }
+
+    #[test]
+    fn each_star_is_looked_for_where_it_was_last_usable() {
+        let mut sim = simulator(field(), |_| {});
+        let (frame, _) = expose(&mut sim);
+        let (mut stars, _) = GuideStars::select(&frame, StarParams::default()).unwrap();
+        assert_eq!(stars.search_centres(), stars.references());
+        sim.mount_mut()
+            .pulse(GuideDirection::West, Duration::from_secs(1))
+            .unwrap();
+        sim.advance(Duration::from_secs(1));
+        let (frame, _) = expose(&mut sim);
+        let measured = stars.measure(&frame);
+        let usable: Vec<Position> = measured
+            .stars
+            .iter()
+            .map(|reading| match reading {
+                StarReading::Usable(usable) => usable.position,
+                other => panic!("a star is not usable: {other:?}"),
+            })
+            .collect();
+        assert_eq!(stars.search_centres(), usable);
+        assert_ne!(stars.search_centres(), stars.references());
     }
 
     #[test]

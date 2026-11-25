@@ -36,6 +36,8 @@ pub struct State {
 pub struct CameraSession {
     pub connected: bool,
     pub reachable: bool,
+    /// `PixelSizeX` and `PixelSizeY`, in micrometres.
+    pub pixel_size_um: f64,
     pub bin: u8,
     pub region: Region,
     pub gain: i32,
@@ -129,6 +131,7 @@ impl Rig {
             height: dimension(sim.camera().height),
         };
         let can_pulse_guide = mount.can_pulse_guide;
+        let pixel_size_um = camera.pixel_size_um;
         Self {
             started: Instant::now(),
             camera,
@@ -138,6 +141,7 @@ impl Rig {
                 camera: CameraSession {
                     connected: false,
                     reachable: true,
+                    pixel_size_um,
                     bin: 1,
                     region: full,
                     gain: 0,

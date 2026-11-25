@@ -37,11 +37,19 @@
 //! serves `rp` an HTTP API. It is idle after every start: nothing but a
 //! client's request makes it expose or pulse.
 
+pub mod api;
+pub mod camera_loop;
 pub mod config;
 pub mod devices;
 pub mod doctor;
 pub mod error;
+pub mod guider;
+pub mod preview;
 pub mod routes;
+pub mod sensor;
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod test_camera;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -54,6 +62,7 @@ use tracing::{debug, info};
 use crate::config::Config;
 use crate::devices::{DeviceClient, DevicePoll};
 use crate::error::{GuiderError, Result};
+use crate::guider::Guider;
 
 /// Builder for the guider server.
 pub struct ServerBuilder {
@@ -106,18 +115,30 @@ impl ServerBuilder {
             .devices
             .camera
             .as_ref()
-            .map(|address| DeviceClient::new(address, ca_cert))
+            .map(|address| DeviceClient::new(address, ca_cert).map(Arc::new))
             .transpose()?;
         let mount = config
             .devices
             .mount
             .as_ref()
-            .map(|address| DeviceClient::new(address, ca_cert))
+            .map(|address| DeviceClient::new(address, ca_cert).map(Arc::new))
             .transpose()?;
-        let (poll, devices) = DevicePoll::new(camera, mount, config.devices.poll_interval.get());
+        let (poll, devices) = DevicePoll::new(
+            camera.clone(),
+            mount.clone(),
+            config.devices.poll_interval.get(),
+        );
 
         let server = config.server.clone();
-        let router = routes::build_router(routes::AppState::new(Arc::new(config), devices));
+        let config = Arc::new(config);
+        let guider = Arc::new(Guider::new(
+            Arc::clone(&config),
+            camera,
+            mount,
+            devices.clone(),
+        ));
+        let router =
+            routes::build_router(routes::AppState::new(config, devices, Arc::clone(&guider)));
         // Layer HTTP Basic Auth when configured (server.auth): it guards
         // the API and /health alike.
         let router = match &server.auth {
@@ -151,6 +172,7 @@ impl ServerBuilder {
             local_addr,
             tls: server.tls,
             poll,
+            guider,
         })
     }
 }
@@ -197,6 +219,7 @@ pub struct BoundServer {
     local_addr: SocketAddr,
     tls: Option<rusty_photon_tls::config::TlsConfig>,
     poll: DevicePoll,
+    guider: Arc<Guider>,
 }
 
 impl BoundServer {
@@ -206,17 +229,33 @@ impl BoundServer {
     }
 
     /// Poll the devices and serve the bound listener until `shutdown`
-    /// resolves.
+    /// resolves, then stop the loop: a request that waits on it answers
+    /// `stopped`, and the guider ends its own exposure.
     ///
     /// # Errors
     ///
     /// Returns [`Server`](GuiderError::Server) if the TLS material cannot be
-    /// loaded or the serve loop fails.
+    /// loaded or the serve loop fails, and
+    /// [`LoopEnded`](GuiderError::LoopEnded) if the camera loop's task
+    /// ended without a stop.
     pub async fn start(self, shutdown: impl Future<Output = ()> + Send + 'static) -> Result<()> {
         info!("guider service started on {}", self.local_addr);
 
         let stop_poll = CancellationToken::new();
         let poll = tokio::spawn(self.poll.run(stop_poll.clone()));
+
+        let ended_abnormally = self.guider.ended_abnormally();
+        let guider = Arc::clone(&self.guider);
+        let watched = ended_abnormally.clone();
+        let shutdown = async move {
+            tokio::select! {
+                () = shutdown => {}
+                () = watched.cancelled() => {}
+            }
+            if let Err(error) = guider.stop().await {
+                debug!(error = %error.message, "the loop did not end before the shutdown");
+            }
+        };
 
         let served = match self.tls {
             Some(ref tls) => {
@@ -235,7 +274,11 @@ impl BoundServer {
             debug!(%error, "the device poll ended abnormally");
         }
         debug!("guider service shut down");
-        served
+        served?;
+        if ended_abnormally.is_cancelled() {
+            return Err(GuiderError::LoopEnded);
+        }
+        Ok(())
     }
 }
 

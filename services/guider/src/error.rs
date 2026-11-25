@@ -27,4 +27,9 @@ pub enum GuiderError {
 
     #[error("server error: {0}")]
     Server(String),
+
+    /// The camera loop's task ended without a stop: the process exits so
+    /// that its supervisor starts it again (guider.md § Failure domains).
+    #[error("the camera loop's task ended without a stop")]
+    LoopEnded,
 }

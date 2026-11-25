@@ -1984,6 +1984,7 @@ name = "guider"
 version = "0.1.0"
 dependencies = [
  "ascom-alpaca",
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "bdd-infra",
@@ -1993,8 +1994,13 @@ dependencies = [
  "guide-simulator",
  "guide-simulator-alpaca",
  "humantime",
+ "ndarray",
+ "num-traits",
+ "parking_lot 0.13.0",
+ "png",
  "reqwest",
  "rp-auth",
+ "rp-guiding",
  "rustls-pemfile",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
@@ -2008,6 +2014,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

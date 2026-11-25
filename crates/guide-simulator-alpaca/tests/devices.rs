@@ -199,6 +199,14 @@ async fn the_camera_reports_its_sensor() {
 }
 
 #[tokio::test]
+async fn a_scenario_changes_the_cameras_pixel_size() {
+    let (devices, camera, _mount) = connected().await;
+    devices.set_pixel_size(3.75);
+    assert_eq!(camera.pixel_size_x().await.unwrap(), 3.75);
+    assert_eq!(camera.pixel_size_y().await.unwrap(), 3.75);
+}
+
+#[tokio::test]
 async fn an_exposure_is_in_progress_for_its_length() {
     let (_devices, camera, _mount) = connected().await;
     camera
