@@ -108,7 +108,6 @@ mod tests {
             magnitude: Some(5.7),
             size_arcmin: Some(62.0),
             position_angle_degrees: None,
-            priority: 0,
             active: true,
             goals: Vec::new(),
             scheduling: None,
@@ -136,12 +135,21 @@ mod tests {
         store.upsert_target(sample_target("m33")).await.unwrap();
 
         let mut updated = sample_target("m33");
-        updated.priority = 5;
+        updated.notes = Some("framed for the core".to_string());
         store.upsert_target(updated).await.unwrap();
 
         assert_eq!(store.list_targets().await.unwrap().len(), 1);
         let slug = TargetSlug::new("m33").unwrap();
-        assert_eq!(store.get_target(&slug).await.unwrap().unwrap().priority, 5);
+        assert_eq!(
+            store
+                .get_target(&slug)
+                .await
+                .unwrap()
+                .unwrap()
+                .notes
+                .as_deref(),
+            Some("framed for the core")
+        );
     }
 
     #[tokio::test]

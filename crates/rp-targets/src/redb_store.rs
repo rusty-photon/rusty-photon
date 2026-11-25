@@ -237,7 +237,6 @@ mod tests {
             magnitude: Some(4.0),
             size_arcmin: Some(120.0),
             position_angle_degrees: None,
-            priority: 0,
             active: false,
             goals: Vec::new(),
             scheduling: None,

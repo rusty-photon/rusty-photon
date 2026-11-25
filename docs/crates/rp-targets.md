@@ -19,8 +19,8 @@ compute progress; this doc covers the crate's own design.
 In scope — the crate is a typed CRUD repository over a single `redb`
 file:
 
-- **Targets** — a named pointing with denormalized coordinates,
-  priority, an active flag, and optional per-target overrides.
+- **Targets** — a named pointing with denormalized coordinates, an
+  active flag, and optional per-target overrides.
 - **Acquisition goals** — the desired frame count per
   `(filter, binning, exposure_duration)` sub-spec, owned by a target.
 - **Override storage** — per-target grading thresholds and scheduling
@@ -122,7 +122,6 @@ pub struct Target {
     pub position_angle_degrees: Option<f64>,
 
     // --- Planning ---
-    pub priority: i32,
     pub active: bool,
     pub goals: Vec<AcquisitionGoal>,
 
@@ -277,8 +276,7 @@ supplies both at the call boundary, exactly as it does for the
 altitude floor) and orders (nearest transit, then least progress, then
 the filter in the wheel — rp.md § Decision Logic) in Rust — the row
 count is tens, so a scan-and-sort is cheaper and simpler than
-maintaining an index. `priority` is stored and editable, but no
-selection reads it.
+maintaining an index.
 There is intentionally **no** `record_exposure`/counter-mutation method:
 actuals are derived from the filesystem, never written here
 (see [rp Integration](#rp-integration-outside-this-crate)).

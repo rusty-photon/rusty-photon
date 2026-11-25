@@ -118,7 +118,7 @@ stub of rp's stream.
 | `GET`  | `/stream/events` | The SSE proxy: rp's event stream rendered as HTML fragments (see [SSE proxy](#the-sse-proxy-streamevents)). |
 | `GET`  | `/stream/equipment` | Fold-panel equipment-LED fragment; the panel re-fetches it on an htmx timer. |
 | `GET`  | `/targets` | The [targets inbox](#targets-inbox-targets): pending targets awaiting review plus the active roster, from rp's `list_targets` MCP tool joined with `get_target_context`'s filter roster and train position-angle defaults. |
-| `GET`  | `/targets/{slug}` | The per-target review form: editable display name, priority, position angle (blank = inherit), notes, and the acquisition-goals editor; coordinates and provenance are display-only. |
+| `GET`  | `/targets/{slug}` | The per-target review form: editable display name, position angle (blank = inherit), notes, and the acquisition-goals editor; coordinates and provenance are display-only. |
 | `POST` | `/targets/{slug}` | Save the review form: `update_target` (scalar fields, with the position angle's blank ⇒ explicit-`null` mapping) then `set_goals` (full replacement); rp-side validation errors re-render field-level with values preserved. |
 | `POST` | `/targets/{slug}/active` | Activate (`active=true` — accept a pending target into the rotation) or pause (`active=false`) via `update_target`. |
 | `POST` | `/targets/{slug}/delete` | Discard the target via `delete_target`. |
@@ -302,7 +302,7 @@ An unknown slug renders a "no such target" card. Otherwise the form:
 
 - **Editable:** `display_name` (must not be empty — it seeds slug
   allocation on other paths and stays the operator's label),
-  `priority` (integer), `position_angle_degrees` (below), `notes`
+  `position_angle_degrees` (below), `notes`
   (textarea; an emptied field persists as an empty note — the PA field
   is deliberately the *only* one with explicit-null semantics), and the
   goals editor.
@@ -359,7 +359,7 @@ field-level on the re-rendered form.
 ### Saving (`POST /targets/{slug}`)
 
 One submit maps to two tool calls on one per-request session:
-`update_target` with the scalar subset (display name, priority, notes,
+`update_target` with the scalar subset (display name, notes,
 and the PA per the tri-state mapping), then `set_goals` with the full
 goal list (atomic replacement per call). A `Tool` error on either
 re-renders the form with the error placed on its field and every

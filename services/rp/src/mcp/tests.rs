@@ -6824,7 +6824,6 @@ fn test_store_target(
         magnitude: None,
         size_arcmin: None,
         position_angle_degrees: None,
-        priority: 0,
         active: true,
         goals,
         scheduling: min_altitude_degrees.map(|m| rp_targets::SchedulingConstraints {

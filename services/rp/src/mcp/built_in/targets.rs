@@ -160,8 +160,6 @@ pub struct UpdateTargetParams {
     pub dec_degrees: Option<f64>,
     #[serde(default)]
     pub active: Option<bool>,
-    #[serde(default)]
-    pub priority: Option<i32>,
     /// Replaces the target's scheduling overrides wholesale when
     /// present (not a field-wise merge — omit the whole parameter to
     /// leave the existing overrides untouched).
@@ -398,7 +396,6 @@ impl McpHandler {
             magnitude,
             size_arcmin,
             position_angle_degrees,
-            priority: 0,
             active: params.active.unwrap_or(true),
             goals,
             scheduling: params.scheduling.map(Into::into),
@@ -561,9 +558,6 @@ impl McpHandler {
         }
         if let Some(v) = params.active {
             target.active = v;
-        }
-        if let Some(v) = params.priority {
-            target.priority = v;
         }
         if let Some(v) = params.scheduling {
             let errors = super::plan_validation::validate_scheduling(&v, "scheduling");
@@ -769,7 +763,6 @@ impl McpHandler {
             // one in the ui-htmx targets inbox; until then the train
             // default applies.
             position_angle_degrees: None,
-            priority: 0,
             active: false,
             goals,
             scheduling: params.scheduling.map(Into::into),

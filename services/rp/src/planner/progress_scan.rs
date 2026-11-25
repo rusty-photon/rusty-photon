@@ -553,7 +553,6 @@ mod tests {
             size_arcmin: None,
             coord: rp_targets::IcrsCoord::try_new(0.712, 41.269).unwrap(),
             active: true,
-            priority: 0,
             position_angle_degrees: None,
             goals: vec![goal("L", 4)],
             scheduling: None,
