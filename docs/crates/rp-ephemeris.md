@@ -299,9 +299,9 @@ re-exports keeps the crate root self-explanatory.
 
 - Unit tests live next to the code under `#[cfg(test)] mod tests`.
 - `tests/reference_values.rs` compares `alt_az` against Astropy's
-  values in `refvals/*.json`, within 1e-4°. `refvals/gen.py`, run by
-  hand, writes those files; none is committed, so the test finds no
-  file and passes without checking anything
+  values in `refvals/*.json`, within 1e-4°, for nine fixed objects at
+  three sites and four times. `refvals/gen.py`, run by hand, writes
+  those files, which are committed; the test fails when it finds none
   ([`refvals/README.md`](../../crates/rp-ephemeris/refvals/README.md)).
 - `tests/leap_second_init_race.rs` is a standalone-binary
   concurrency regression test for the ERFA leap-second lazy-init race

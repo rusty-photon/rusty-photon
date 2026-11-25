@@ -1,11 +1,10 @@
 //! Reference-value test: compare `ErfarsEphemeris`'s `alt_az` against
 //! Astropy's values in `refvals/*.json`, within 1e-4°.
 //!
-//! `refvals/gen.py`, run by hand, writes those files (see the README in
-//! that directory). None is committed, so the test finds no file and
-//! passes without checking anything. With the files present it
-//! cross-validates the crate against an independent implementation, which
-//! the unit tests do not.
+//! `refvals/gen.py`, run by hand, writes those files, and they are
+//! committed (see the README in that directory). The test cross-validates
+//! the crate against an independent implementation, which the unit tests
+//! do not, and fails when it finds no file to check.
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![allow(
@@ -64,16 +63,21 @@ struct RefvalsFile {
     targets: HashMap<String, TargetEntry>,
 }
 
+/// `refvals/`, under the crate's directory as the test runs: Cargo sets
+/// `CARGO_MANIFEST_DIR` for the test, and Bazel sets it to the crate's
+/// path in the test's runfiles.
 fn refvals_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("refvals")
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
+        .join("refvals")
 }
 
 #[test]
 fn alt_az_matches_astropy_within_tight_tolerance() {
     // Astropy uses ERFA internally and `gen.py` passes the same
-    // 1013.25 mbar / 10 °C / 50 % / 0.55 µm refraction model that
-    // `ErfarsEphemeris` hard-codes, so end-to-end agreement should
-    // be near-perfect. 1e-4 ° = 0.36″ is well below any meaningful
+    // 1013.25 mbar / 10 °C / 50 % / 0.55 µm refraction model, and the same
+    // zero ΔUT1 and polar motion, that `ErfarsEphemeris` hard-codes, so
+    // end-to-end agreement should be near-perfect. 1e-4 ° = 0.36″ is well below any meaningful
     // pointing tolerance and far above the f64 numerical noise the
     // two paths could plausibly accumulate; tighter than this would
     // start tripping on the last bit of double-precision rounding.
@@ -81,24 +85,20 @@ fn alt_az_matches_astropy_within_tight_tolerance() {
     const AZ_TOL_DEG: f64 = 1e-4;
 
     let dir = refvals_dir();
-    let entries: Vec<_> = match fs::read_dir(&dir) {
-        Ok(it) => it
-            .filter_map(Result::ok)
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-            })
-            .collect(),
-        Err(_) => return, // refvals dir absent — nothing to check
-    };
-
-    if entries.is_empty() {
-        // No JSON is committed (refvals/README.md), so an empty directory
-        // passes with a note rather than failing every run.
-        eprintln!("no refvals/*.json present at {dir:?} — run refvals/gen.py to populate");
-        return;
-    }
+    let entries: Vec<_> = fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        })
+        .collect();
+    assert!(
+        !entries.is_empty(),
+        "no refvals/*.json in {}: run refvals/gen.py and commit its output",
+        dir.display()
+    );
 
     let eph = ErfarsEphemeris::new();
     for entry in entries {
@@ -107,9 +107,8 @@ fn alt_az_matches_astropy_within_tight_tolerance() {
         let site = Site::new(refs.site.latitude_degrees, refs.site.longitude_degrees).unwrap();
         let when: DateTime<Utc> = refs.time_utc.parse().unwrap();
         for (name, target) in refs.targets {
-            // Sun + Moon entries embed their own ICRS in the file —
-            // for fixed stars that's just the catalog entry. Either
-            // way the trait's alt_az takes ICRS as given.
+            // Each entry carries the catalog ICRS place `gen.py` gave
+            // Astropy, which the trait's alt_az takes as given.
             let coords = IcrsCoord {
                 ra_hours: target.ra_hours,
                 dec_degrees: target.dec_degrees,

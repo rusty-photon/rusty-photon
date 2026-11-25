@@ -36,10 +36,10 @@ try:
         AltAz,
         EarthLocation,
         SkyCoord,
-        get_body,
-        get_sun,
     )
+    from astropy.table import QTable
     from astropy.time import Time
+    from astropy.utils import iers
 except ImportError as exc:  # pragma: no cover - tooling
     raise SystemExit(
         "astropy is required: pip install 'astropy>=6' numpy"
@@ -47,9 +47,10 @@ except ImportError as exc:  # pragma: no cover - tooling
 
 REFVALS_DIR = pathlib.Path(__file__).resolve().parent
 
-# Targets: name, ICRS RA (hours), Dec (deg). Includes a deep-sky mix,
-# a polar object (Polaris), a southern object, and the Sun + Moon (the
-# latter two are computed live, not from this table).
+# Targets: name, ICRS RA (hours), Dec (deg). A deep-sky mix, a polar
+# object (Polaris) and southern objects. The Sun and the Moon are not
+# among them: their ICRS place is barycentric, which `alt_az`, built for a
+# star's catalog place, cannot take as given.
 TARGETS = {
     "polaris": (2.5301944, 89.2641111),
     "m31": (0.71223, 41.26878),
@@ -106,8 +107,25 @@ def _serialise_alt_az(coord: SkyCoord, location: EarthLocation, when: Time):
     }
 
 
+def _zero_earth_orientation() -> None:
+    # `ErfarsEphemeris` passes dUT1 = 0 and no polar motion to `Atco13`;
+    # Astropy otherwise applies the IERS values, which differ from those by
+    # up to several arcseconds in alt/az. A table of zeros over every date
+    # here gives Astropy the same inputs.
+    table = QTable(
+        {
+            "MJD": [40000.0, 80000.0] * u.d,
+            "UT1_UTC": [0.0, 0.0] * u.s,
+            "PM_x": [0.0, 0.0] * u.arcsec,
+            "PM_y": [0.0, 0.0] * u.arcsec,
+        }
+    )
+    iers.earth_orientation_table.set(iers.IERS(table))
+
+
 def main() -> None:
     REFVALS_DIR.mkdir(parents=True, exist_ok=True)
+    _zero_earth_orientation()
 
     for time_label, iso in TIMES.items():
         when = Time(datetime.fromisoformat(iso.replace("Z", "+00:00")))
@@ -124,20 +142,6 @@ def main() -> None:
                     "dec_degrees": dec_d,
                     "alt_az": _serialise_alt_az(coord, location, when),
                 }
-
-            sun_coord = get_sun(when)
-            entries["sun"] = {
-                "ra_hours": float(sun_coord.icrs.ra.hour),
-                "dec_degrees": float(sun_coord.icrs.dec.deg),
-                "alt_az": _serialise_alt_az(sun_coord, location, when),
-            }
-
-            moon_coord = get_body("moon", when, location)
-            entries["moon"] = {
-                "ra_hours": float(moon_coord.icrs.ra.hour),
-                "dec_degrees": float(moon_coord.icrs.dec.deg),
-                "alt_az": _serialise_alt_az(moon_coord, location, when),
-            }
 
             output = {
                 "site": {

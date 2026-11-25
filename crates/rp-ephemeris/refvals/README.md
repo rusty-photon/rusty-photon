@@ -1,25 +1,29 @@
 # Reference values for `rp-ephemeris`
 
-`gen.py` writes JSON files here that pin canonical topocentric alt/az
-for known objects at known sites and times. The matching test in
-`tests/reference_values.rs` asserts that `ErfarsEphemeris` reproduces
-each `alt_az` entry within `1e-4°` (≈ 0.36″). No JSON file is
-committed, so the test finds none and passes without checking
-anything; it prints a note to stderr saying so.
+`gen.py` writes the JSON files here, which pin canonical topocentric
+alt/az for nine fixed objects at three sites and four times. They are
+committed. The matching test in `tests/reference_values.rs` asserts
+that `ErfarsEphemeris` reproduces each `alt_az` entry within `1e-4°`
+(≈ 0.36″), and fails when it finds no file.
 
 The JSONs also carry the ICRS RA/Dec used to compute the alt/az —
 the test reads those back as inputs for the trait call, so a
 provenance audit is possible — but the assertion itself is on
 alt/az only. `gen.py` writes alt/az and nothing else, so transit,
 rise/set and the trait's own Sun and Moon positions are not
-cross-checked against Astropy: the Sun and Moon entries carry
-Astropy's ICRS for the body, which the test feeds to `alt_az` like a
-star's. The tolerance is tight enough that an alt/az regression from
-a wrapping bug surfaces at once.
+cross-checked against Astropy. Nor are the Sun and the Moon among the
+objects: their ICRS place is barycentric, and `alt_az`, built for a
+star's catalog place, cannot take it as given. The tolerance is tight
+enough that an alt/az regression from a wrapping bug surfaces at once.
 
-Astropy uses ERFA internally, so agreement should be near-perfect.
-Disagreement is a wrapping bug, not an algorithmic one — the test
-points at the seam, not at the math.
+Astropy uses ERFA internally, so with the same inputs agreement is
+near-perfect: the committed values match ERFA's `atco13` to about
+1e-11°. `gen.py` gives Astropy the inputs `ErfarsEphemeris` passes:
+the refraction conditions, sea level, and zero ΔUT1 and polar motion
+in place of the IERS values Astropy would otherwise apply, which
+differ by up to several arcseconds. Disagreement is a wrapping bug,
+not an algorithmic one — the test points at the seam, not at the
+math.
 
 ## Regenerating
 

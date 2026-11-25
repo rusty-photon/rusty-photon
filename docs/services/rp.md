@@ -9002,9 +9002,9 @@ Testing follows the conventions in `docs/skills/testing.md`.
 - **Configuration**: Deserialization, validation, defaults.
 - **Config-time validation**: a required tool missing from the merged
   catalog, a tool name offered twice.
-- **Sky calculations**: covered by `rp-ephemeris`'s own
-  reference-value tests against Astropy-generated values
-  (alt/az / transit / rise/set / sun / moon / twilight). `rp`'s
+- **Sky calculations**: covered by `rp-ephemeris`'s own tests,
+  its alt/az among them checked against Astropy-generated reference
+  values. `rp`'s
   unit tests don't re-test the math; they assert the MCP wrappers
   deserialise inputs, dispatch through the trait, and serialise
   outputs correctly. `planner/decision.rs` is unit-tested with a
