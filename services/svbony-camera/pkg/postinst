@@ -22,7 +22,7 @@ udevadm trigger || true
 # convention the shared postinst stanza (packaging/postinst.udev-stanza)
 # computes, so this is spelled out directly rather than derived from
 # $DPKG_MAINTSCRIPT_PACKAGE.)
-echo "rusty-photon-svbony-camera: the SVBony SDK is not bundled (ADR-018)."
+echo "rusty-photon-svbony-camera: the SVBony SDK is not bundled."
 echo "Run '/usr/sbin/rusty-photon-svbony-sdk-install' once as root before first use."
 echo "Until then the service cannot load the SDK; systemd keeps retrying, and"
 echo "it starts serving on its own within seconds of the helper finishing."
