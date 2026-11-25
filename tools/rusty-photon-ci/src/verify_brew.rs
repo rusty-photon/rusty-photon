@@ -350,7 +350,7 @@ impl<R: Runner> Run<'_, R> {
             !others.iter().any(|other| loads.contains(other)),
             service,
             &format!(
-                "binary links SDKs it must not ({}; ADR-014 per-device link)",
+                "binary links SDKs it must not ({}; each service links only its own device's SDK)",
                 others.join(", ")
             ),
         )?;

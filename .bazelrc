@@ -208,27 +208,16 @@ build:windows --action_env=AWS_LC_SYS_NO_JITTER_ENTROPY=1
 # registry key) and the short output base (C:/b) to stay within limits.
 build:windows --enable_runfiles
 
-# Windows links the QHYCCD SDK as a runtime DLL: `qhyccd-sdk-install` extracts
-# qhyccd.dll to `$GITHUB_WORKSPACE\sdk_win64_<ver>\x64` and prepends that to the
-# runner PATH. Bazel test actions run with a controlled environment that does NOT
-# inherit the runner PATH, so qhy-camera's BDD/ConformU-spawned simulation binary
-# — which still links qhyccd at load time even in the simulation backend — cannot
-# find qhyccd.dll and exits before binding (every scenario then fails with "failed
-# to parse bound port"). Forward PATH (by name) into Windows test actions so the
-# loader finds the DLL. On `build:windows` (not the BDD step) so the --test_env SET
-# is identical across every Windows CI Bazel invocation — a changing --test_env
-# discards the analysis cache (see the OMNISIM_PATH note below). Linux/macOS link
-# qhyccd statically (no runtime lib), so this is Windows-only.
-build:windows --test_env=PATH
-
 # GitHub's Windows image builds Windows PowerShell's module analysis cache in
 # advance and names it in PSModuleAnalysisCachePath. Without that cache, a
 # powershell.exe analyses the modules on its path to find the first cmdlet it
 # runs: 20-27 s per launch on that image, against under a second with it. The
 # install actions' tests launch one for each unpacking (`unpackZips` in
 # .github/actions/lib/install.mjs), so without the variable their Windows legs
-# outrun their size's timeout. Forwarded by name, on `build:windows` for the
-# reason PATH is above.
+# outrun their size's timeout. Forwarded by name, and on `build:windows` rather
+# than on one step, so the --test_env set is identical across every Windows CI
+# Bazel invocation: a changing --test_env discards the analysis cache (see the
+# OMNISIM_PATH note below).
 build:windows --test_env=PSModuleAnalysisCachePath
 
 # zwo-camera's `libzwo-sys` build script (bindgen) + link step need native ZWO
@@ -393,19 +382,6 @@ build:ci --jobs=64
 build:ci --experimental_ui_max_stdouterr_bytes=10485760
 test:ci --test_output=errors
 test:ci --test_summary=terse
-
-# The qhyccd-rs real/sim doc-test pair races on Windows without the doc-test
-# runner's manifest resolution (MODULE.bazel, patch 3): both targets carry
-# `libqhyccd-sys/build_script.linksearchpaths` in their runfiles, and when the
-# two execute concurrently on a Windows runner, rules_rust's process_wrapper
-# intermittently finds one tree's copy as a dangling symlink ("Access is
-# denied (os error 5)", file=false symlink=true len=0) — exactly one of the
-# pair fails per affected run. This retry is the backstop for a path the
-# manifest does not resolve: it re-executes the failed test after its sibling
-# has already finished, so the race window is gone on the second attempt;
-# scoping the retry to this pair keeps every other test's failure loud on
-# attempt one.
-test:ci --flaky_test_attempts=//crates/qhyccd-rs.*doc_test@3
 
 # Tests draw from the same CPU pool as any local action (each test reserves
 # cpu:1), so left alone at most HOST_CPUS suites execute at once. The BDD

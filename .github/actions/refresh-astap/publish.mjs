@@ -34,8 +34,8 @@ M101 fixture (services/plate-solver/tests/fixtures/m101_known.fits)
 to RA 210.8099° / Dec 54.3469° within 0.01° tolerance, then
 patched the pins in .github/actions/install-astap/assets.json.
 
-See ADR-005 §"Pinned SHA-256 + refresh procedure" for the
-manual procedure this workflow automates.
+See docs/services/plate-solver.md § "Refreshing the ASTAP
+pins" for the manual procedure this workflow automates.
 `;
 
 /** The blocker a failed check opens, found again by its label and exact title. */
@@ -137,26 +137,28 @@ tolerance (matching \`real_astap_smoke.feature\`). The
 checked.
 
 Windows-ARM64 has no GH-hosted runner, so its SHA is refreshed
-cross-mirror with no verification — same posture ADR-005
-documents. If its archive could not be downloaded, its pin stays
-and its row above says why; the table may name a folder upstream
-no longer uses.
+cross-mirror with no verification, and no smoke runs its archive
+either. If its archive could not be downloaded, its pin stays and
+its row above says why; the table may name a folder upstream no
+longer uses.
 
 Full verification logs:
 ${runUrl}
 
 ## PR CI
 
-\`pull_request\`-triggered workflows (\`install-astap\`,
-\`plate-solver-smoke\`, etc.) do not run on this PR. GitHub
-Actions suppresses workflows triggered by GITHUB_TOKEN-authored
-events, and this PR was opened by GITHUB_TOKEN — so the M101
-verification above (run on this workflow's own runners) is the
-only ASTAP validation that runs before merge.
+No workflow runs on this PR or its branch: GitHub Actions
+suppresses workflows triggered by GITHUB_TOKEN-authored events,
+and GITHUB_TOKEN opened this PR and pushed its commit. So the
+M101 verification above (run on this workflow's own runners) is
+the only ASTAP validation that runs before merge.
 
 To wake PR CI for a redundant signal, close and reopen this
 PR — a human-authored \`pull_request: reopened\` event is not
-suppressed.
+suppressed. That starts \`install-astap\`, which checks the new
+pins. \`plate-solver-smoke\`, which solves with them, has no
+\`pull_request\` trigger: dispatch it on
+\`${BRANCH}\`.
 `;
 }
 

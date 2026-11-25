@@ -518,7 +518,8 @@ jobs:
           body: |
             The nightly bazel workflow's `bazel / macos-latest` leg failed.
 
-            Likely causes: the known macOS remote-cache wedge (#765), in which
+            Likely causes: the known macOS remote-cache wedge
+            (https://github.com/rusty-photon/rusty-photon/issues/765), in which
             `bazel build` hangs in the remote cache's download tail until the
             step's 30-minute timeout, with nothing in the log to say why; or a
             build or test failure on macOS alone. Inspect the failed job in the

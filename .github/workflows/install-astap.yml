@@ -103,5 +103,6 @@ jobs:
 
             Most likely cause: ASTAP upstream rotated a SourceForge archive
             without us refreshing the SHA pin in
-            `.github/actions/install-astap/assets.json`. See ADR-005
-            §"Pinned SHA-256 + refresh procedure" for the refresh steps.
+            `.github/actions/install-astap/assets.json`. See
+            docs/services/plate-solver.md § "Refreshing the ASTAP pins"
+            for the refresh steps.

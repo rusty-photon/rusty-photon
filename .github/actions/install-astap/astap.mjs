@@ -174,20 +174,26 @@ export function staggerSeconds(text) {
 // --- Installing --------------------------------------------------------------------
 
 // What to do when a pin no longer matches: SourceForge serves each release
-// under the same name, so a mismatch is most likely a new one.
-const ROTATED =
+// under the same name, so a mismatch is most likely a new one. The refresh
+// moves the CLI archives' pins and never the database's.
+const CLI_ROTATED =
   'If upstream released a new one, refresh-astap-shas.yml opens a pull request with the new pin; ' +
-  'the pins are in .github/actions/install-astap/assets.json, and ADR-005 §"Pinned SHA-256 + refresh procedure" ' +
-  'has the manual steps.';
+  'the pins are in .github/actions/install-astap/assets.json, and docs/services/plate-solver.md ' +
+  '§ "Refreshing the ASTAP pins" has the manual steps.';
+const DATABASE_ROTATED =
+  'If upstream released a new one, its pin moves by hand, as refresh-astap-shas.yml never moves it; ' +
+  'the pin is in .github/actions/install-astap/assets.json, and docs/services/plate-solver.md ' +
+  '§ "Refreshing the ASTAP pins" has the steps.';
 
 // Downloads, checks and unpacks `asset` into `unpacked`, beside the archive
-// in the work directory `work`, once `check` accepts what it unpacked.
-async function fetchUnpacked(asset, work, unpacked, options, check) {
+// in the work directory `work`, once `check` accepts what it unpacked. A
+// mismatch with the pin ends with `rotated`, what to do about it.
+async function fetchUnpacked(asset, work, unpacked, options, check, rotated) {
   const archive = path.join(work, asset.name);
   try {
     await download(asset, archive, options);
   } catch (err) {
-    if (err instanceof ChecksumError) throw new ChecksumError(`${err.message} ${ROTATED}`);
+    if (err instanceof ChecksumError) throw new ChecksumError(`${err.message} ${rotated}`);
     throw err;
   }
   await unpack(archive, unpacked);
@@ -195,10 +201,10 @@ async function fetchUnpacked(asset, work, unpacked, options, check) {
 }
 
 // Downloads, checks and unpacks `asset` into `dir`, replacing what is there.
-async function unpackInto(asset, dir, options, check) {
+async function unpackInto(asset, dir, options, check, rotated) {
   await withWorkDir(dir, async (work) => {
     const unpacked = path.join(work, 'unpacked');
-    await fetchUnpacked(asset, work, unpacked, options, check);
+    await fetchUnpacked(asset, work, unpacked, options, check, rotated);
     await rm(dir, { recursive: true, force: true });
     await rename(unpacked, dir);
   });
@@ -219,11 +225,12 @@ function checkDatabase(database, unpacked) {
 }
 
 async function installCli(cli, dir, options) {
-  await unpackInto(cli, dir, { ...CLI_DOWNLOAD, ...options }, (unpacked) => checkCli(cli, unpacked));
+  await unpackInto(cli, dir, { ...CLI_DOWNLOAD, ...options }, (unpacked) => checkCli(cli, unpacked), CLI_ROTATED);
 }
 
 async function installDatabase(database, dir, options) {
-  await unpackInto(database, dir, { ...DATABASE_DOWNLOAD, ...options }, (unpacked) => checkDatabase(database, unpacked));
+  const check = (unpacked) => checkDatabase(database, unpacked);
+  await unpackInto(database, dir, { ...DATABASE_DOWNLOAD, ...options }, check, DATABASE_ROTATED);
 }
 
 /**
@@ -293,10 +300,10 @@ export async function installAt(dir, { cli, database }, { download: options } = 
   await checkReplaceable(dir);
   await withWorkDir(dir, async (work) => {
     const tree = path.join(work, 'astap');
-    await fetchUnpacked(cli, work, tree, { ...CLI_DOWNLOAD, ...options }, (unpacked) => checkCli(cli, unpacked));
+    await fetchUnpacked(cli, work, tree, { ...CLI_DOWNLOAD, ...options }, (unpacked) => checkCli(cli, unpacked), CLI_ROTATED);
     const files = path.join(work, 'database');
     const check = (unpacked) => checkDatabase(database, unpacked);
-    await fetchUnpacked(database, work, files, { ...DATABASE_DOWNLOAD, ...options }, check);
+    await fetchUnpacked(database, work, files, { ...DATABASE_DOWNLOAD, ...options }, check, DATABASE_ROTATED);
     await rename(files, path.join(tree, DATABASE_DIR));
     await rm(dir, { recursive: true, force: true });
     await rename(tree, dir);

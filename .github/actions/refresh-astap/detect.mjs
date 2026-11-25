@@ -188,7 +188,8 @@ async function check({ file, cli, database, work, fixtures, run, options }) {
   if (got !== database.pin.sha256) {
     warning(
       `${database.name} also rotated upstream (${got}, pinned ${database.pin.sha256}). The refresh does not move that pin: ` +
-        'ADR-005 has the manual steps. The new CLI is checked against the new database.',
+        'docs/services/plate-solver.md § "Refreshing the ASTAP pins" has the manual steps. ' +
+        'The new CLI is checked against the new database.',
     );
   }
   const stars = path.join(work, 'd20');

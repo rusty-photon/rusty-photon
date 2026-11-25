@@ -163,8 +163,9 @@ impl Labels {
 }
 
 /// The end of every refusal.
-const MOVED: &str = "A divergence here is a security boundary moving (ADR-020). \
-     If the change is meant, make it in every copy and in \
+const MOVED: &str = "A divergence here is a security boundary moving: the routes by \
+     which a job reaches a self-hosted runner, and no fork's pull request may take \
+     one. If the change is meant, make it in every copy and in \
      tools/rusty-photon-ci/src/pool_routing.rs.";
 
 /// A workflow file's name and text.
@@ -518,8 +519,8 @@ fn review(
             else {
                 problems.push(format!(
                     "{name}:{line}: job `{job}`'s `runs-on` names a self-hosted runner, \
-                     and RUNNERS does not list it. A new one is reviewed against ADR-020 \
-                     and listed there.\n{MOVED}"
+                     and RUNNERS does not list it. A new one is reviewed and listed \
+                     there.\n{MOVED}"
                 ));
                 continue;
             };

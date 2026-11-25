@@ -120,10 +120,10 @@ test('readTable refuses a table missing what an install needs', () => {
 
 test('resolve gives each runner its archive on SourceForge, with its pin and binary', () => {
   // SourceForge's URLs, folder and all. Windows-ARM64's folder is a path,
-  // since upstream filed its CLI-2026.10.30 archive under `older versions`
-  // (docs/decisions/005-plate-solver.md § Pinned SHA-256 + refresh
-  // procedure), and each part of that path is encoded on its own, so the
-  // slash between them stays one.
+  // since upstream files its archive under `older versions`
+  // (docs/services/plate-solver.md § Refreshing the ASTAP pins), and each
+  // part of that path is encoded on its own, so the slash between them
+  // stays one.
   const urls = {
     'Linux-X64': 'linux_installer/astap_command-line_version_Linux_amd64.zip',
     'Linux-ARM64': 'linux_installer/astap_command-line_version_Linux_aarch64.zip',
@@ -311,6 +311,24 @@ test('install refuses an archive that does not match its pin, and leaves nothing
     );
     assert.equal(server.requests.length, CLI_DOWNLOAD.attempts);
     assert.deepEqual(readdirSync(workspace), []);
+  } finally {
+    await server.close();
+  }
+});
+
+test('install refuses a database that does not match its pin, saying its pin moves by hand', async () => {
+  const { server, cli, database } = await sourceForge(undefined, { [TABLE.database.archive]: '1'.repeat(64) });
+  const workspace = tempDir();
+  try {
+    await inStep(() =>
+      assert.rejects(install({ workspace, cli, database, download: fast }), (err) => {
+        assert.match(err.message, /SHA-256 mismatch: expected 1{64}.* its pin moves by hand, as refresh-astap-shas\.yml never moves it/);
+        assert.doesNotMatch(err.message, /opens a pull request/);
+        return true;
+      }),
+    );
+    assert.equal(server.requests.length, 1 + DATABASE_DOWNLOAD.attempts);
+    assert.deepEqual(readdirSync(workspace), ['astap']);
   } finally {
     await server.close();
   }

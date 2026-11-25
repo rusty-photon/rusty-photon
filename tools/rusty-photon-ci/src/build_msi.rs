@@ -127,7 +127,7 @@ pub fn check_host(os: &str, arch: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "the MSI is built and verified on x86_64 Windows only (ADR-015), not {arch} {os} \
+            "the MSI is built and verified on x86_64 Windows only, not {arch} {os} \
              (Linux packages: `cargo ci build-packages`; macOS tarballs: \
              `cargo ci build-tarballs`)"
         ))
