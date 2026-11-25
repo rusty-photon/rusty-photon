@@ -1461,7 +1461,8 @@ pub(crate) mod mock {
         pub fail_capture: AtomicBool,
         /// Raised while a test's [`CaptureHold`] is alive: every capture then
         /// stays in its integration wait — in flight, and still answering an
-        /// abort, a stop or a departure — until the test drops the hold. The
+        /// abort or a stop — until the test drops the hold. A departure is
+        /// found at the readout, so only once the hold is dropped. The
         /// integration has no length of its own: a delay would run on the
         /// wall clock, and a runner that stalls for longer than it ends an
         /// exposure the test still needs in flight.
@@ -1694,8 +1695,9 @@ pub(crate) mod mock {
         }
 
         /// Keep every capture in flight for as long as the returned hold
-        /// lives. A held capture still ends at once on an abort, a stop or a
-        /// departure, as a real integration does.
+        /// lives. A held capture still ends at once on an abort or a stop, as
+        /// a real integration does. It does not notice its camera leaving the
+        /// bus: the readout finds that, once the hold is dropped.
         pub fn hold_captures(&self) -> CaptureHold {
             self.capture_hold.store(true, Ordering::SeqCst);
             CaptureHold(Arc::clone(&self.capture_hold))

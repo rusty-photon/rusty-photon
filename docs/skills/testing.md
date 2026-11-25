@@ -2124,9 +2124,12 @@ never by a delay. A delay runs on the wall clock, so a runner that stalls for
 longer than it ends the state legitimately and fails a correct build. The
 camera mocks of `svbony-camera` and `zwo-camera` have no capture delay for
 that reason: `MockCameraHandle::hold_captures()` returns a guard, and while it
-lives a capture stays in its integration, still answering an abort, a stop or
-a departure. Dropping the guard releases the capture, so a failed assertion
-releases it too and is reported at once. A test that proves an abort ended a
+lives a capture stays in its integration, ending early only on what ends that
+driver's own wait: an abort in both, a stop in `zwo-camera`, a camera found
+gone in `svbony-camera`. A `zwo-camera` capture finds its camera gone at the
+readout, so a test of that drops the guard after the camera leaves. Dropping
+the guard releases the capture, so a failed assertion releases it too and is
+reported at once. A test that proves an abort ended a
 capture keeps the guard alive until it has seen the capture end; dropped
 earlier, the release would end the capture and the test would pass with the
 abort lost.

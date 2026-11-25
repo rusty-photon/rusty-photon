@@ -2092,7 +2092,7 @@ pub(crate) mod mock {
         open_delay: Mutex<Duration>,
         /// Raised while a test's [`CaptureHold`] is alive: every capture then
         /// stays in its integration wait — in flight, and still answering an
-        /// abort, a stop or a departure — until the test drops the hold. The
+        /// abort or a departure — until the test drops the hold. The
         /// integration has no length of its own: a delay would run on the
         /// wall clock, and a runner that stalls for longer than it ends an
         /// exposure the test still needs in flight.
@@ -2240,8 +2240,8 @@ pub(crate) mod mock {
         }
 
         /// Keep every capture in flight for as long as the returned hold
-        /// lives. A held capture still ends at once on an abort, a stop or a
-        /// departure, as a real integration does.
+        /// lives. A held capture still ends at once on an abort or on its
+        /// camera being found gone, as the production handle's wait does.
         pub fn hold_captures(&self) -> CaptureHold {
             self.capture_hold.store(true, Ordering::SeqCst);
             CaptureHold(Arc::clone(&self.capture_hold))
