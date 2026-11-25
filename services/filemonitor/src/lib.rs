@@ -189,12 +189,12 @@ impl Default for Config {
                 rules: vec![
                     ParsingRule {
                         rule_type: RuleType::Contains,
-                        pattern: "CLOSED".to_string(),
+                        pattern: "OPEN".to_string(),
                         safe: true,
                     },
                     ParsingRule {
                         rule_type: RuleType::Contains,
-                        pattern: "OPEN".to_string(),
+                        pattern: "CLOSED".to_string(),
                         safe: false,
                     },
                     ParsingRule {
@@ -1745,6 +1745,18 @@ mod default_config_tests {
         let c = load_config(&path).unwrap();
 
         assert_eq!(c.server.port, 11111);
+    }
+
+    #[test]
+    fn the_default_reads_an_open_roof_safe() {
+        let device = FileMonitorDevice::new(Config::default());
+        assert!(device.evaluate_safety("2025-12-15 01:20:13AM Roof Status: OPEN"));
+    }
+
+    #[test]
+    fn the_default_reads_a_closed_roof_unsafe() {
+        let device = FileMonitorDevice::new(Config::default());
+        assert!(!device.evaluate_safety("2025-12-15 01:20:13AM Roof Status: CLOSED"));
     }
 
     /// Writes `config` to a file in `dir` and loads it back.
