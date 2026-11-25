@@ -334,8 +334,8 @@ fn refuse(node: &Node) -> Result<(), String> {
     }
 }
 
-/// The line `node` starts on. A block scalar starts on its first line of
-/// text, below its key.
+/// The line `node` starts on. A block scalar starts at its `|` or `>`
+/// indicator, above its first line of text.
 fn line(node: &Node) -> usize {
     node.span.start.line()
 }
