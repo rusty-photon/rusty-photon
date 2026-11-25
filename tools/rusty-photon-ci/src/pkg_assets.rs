@@ -707,6 +707,32 @@ fn vendor_id(rule: &str) -> Option<&str> {
     })
 }
 
+/// The value of each udev `MODE=` in `text`, without its quotes or the
+/// backslashes a shell string escapes them with.
+fn udev_modes(text: &str) -> Vec<&str> {
+    let mut modes = Vec::new();
+    let mut parts = text.split("MODE=");
+    let mut before = parts.next().unwrap_or_default();
+    for after in parts {
+        // `MODE=` as a key of its own, not the end of a longer name.
+        let keyed = !before
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if keyed {
+            let value = after.trim_start_matches(['\\', '"']);
+            modes.push(
+                value
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .unwrap_or_default(),
+            );
+        }
+        before = after;
+    }
+    modes
+}
+
 /// `SVBony`'s SDK has no license grant, so its package ships a helper that
 /// downloads it on the target.
 fn svbony_helper(check: &mut Check, service: &Service) {
@@ -740,10 +766,12 @@ fn svbony_helper(check: &mut Check, service: &Service) {
                 )
             },
         );
-        check.require(!helper.contains("MODE=\"0666\""), || {
+        let modes = udev_modes(&helper);
+        check.require(modes.iter().all(|mode| *mode == "0660"), || {
             format!(
-                "{svc}: helper must not install a world-writable udev rule \
-                 (camera access is group-scoped, MODE=\"0660\")"
+                "{svc}: helper's udev rule may set no MODE but \"0660\", never one that \
+                 opens the camera to every user (found {})",
+                modes.join(", ")
             )
         });
     }
@@ -1449,7 +1477,15 @@ fn names_each_mistake_in_svbony_cameras_sdk_helper() {
         ),
         (
             &[Replace(SVBONY_HELPER, "DEV_RULE=90-rusty-photon-svbony-dev.rules\n", "DEV_RULE=90-rusty-photon-svbony-dev.rules\n# MODE=\"0666\"\n")],
-            &["svbony-camera: helper must not install a world-writable udev rule"],
+            &["svbony-camera: helper's udev rule may set no MODE but \"0660\""],
+        ),
+        (
+            &[Replace(SVBONY_HELPER, "MODE=\\\"0660\\\"", "MODE=\\\"0664\\\"")],
+            &["svbony-camera: helper's udev rule may set no MODE but \"0660\""],
+        ),
+        (
+            &[Replace(SVBONY_HELPER, "MODE=\\\"0660\\\"", "MODE=\\\"666\\\"")],
+            &["svbony-camera: helper's udev rule may set no MODE but \"0660\""],
         ),
         (
             &[Replace(

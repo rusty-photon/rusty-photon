@@ -147,16 +147,18 @@ ${runUrl}
 
 ## PR CI
 
-\`pull_request\`-triggered workflows (\`install-astap\`,
-\`plate-solver-smoke\`, etc.) do not run on this PR. GitHub
-Actions suppresses workflows triggered by GITHUB_TOKEN-authored
-events, and this PR was opened by GITHUB_TOKEN — so the M101
-verification above (run on this workflow's own runners) is the
-only ASTAP validation that runs before merge.
+No workflow runs on this PR or its branch: GitHub Actions
+suppresses workflows triggered by GITHUB_TOKEN-authored events,
+and GITHUB_TOKEN opened this PR and pushed its commit. So the
+M101 verification above (run on this workflow's own runners) is
+the only ASTAP validation that runs before merge.
 
 To wake PR CI for a redundant signal, close and reopen this
 PR — a human-authored \`pull_request: reopened\` event is not
-suppressed.
+suppressed. That starts \`install-astap\`, which checks the new
+pins. \`plate-solver-smoke\`, which solves with them, has no
+\`pull_request\` trigger: dispatch it on
+\`${BRANCH}\`.
 `;
 }
 

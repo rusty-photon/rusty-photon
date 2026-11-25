@@ -16,12 +16,13 @@
 # platform, it files a separate tracking issue instead — that case
 # means upstream shipped something broken, and a human needs to look.
 # The M101 verification is the only ASTAP validation that runs before
-# merge — `pull_request`-triggered workflows (`install-astap`,
-# `plate-solver-smoke`) do NOT fire on the auto-PR because GitHub
+# merge — no workflow fires on the auto-PR or its branch, because GitHub
 # Actions suppresses workflows triggered by GITHUB_TOKEN-authored
-# events. A maintainer can close/reopen the auto-PR to wake a redundant
-# PR-CI signal if desired
+# events, and GITHUB_TOKEN opens the one and pushes the other
 # (https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow).
+# A maintainer can close/reopen the auto-PR to wake `install-astap`, and
+# dispatch `plate-solver-smoke`, which has no `pull_request` trigger, on
+# the branch.
 #
 # Windows-ARM64 has no GitHub-hosted runner, so its SHA is refreshed
 # cross-mirror with no verification.

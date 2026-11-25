@@ -316,6 +316,24 @@ test('install refuses an archive that does not match its pin, and leaves nothing
   }
 });
 
+test('install refuses a database that does not match its pin, saying its pin moves by hand', async () => {
+  const { server, cli, database } = await sourceForge(undefined, { [TABLE.database.archive]: '1'.repeat(64) });
+  const workspace = tempDir();
+  try {
+    await inStep(() =>
+      assert.rejects(install({ workspace, cli, database, download: fast }), (err) => {
+        assert.match(err.message, /SHA-256 mismatch: expected 1{64}.* its pin moves by hand, as refresh-astap-shas\.yml never moves it/);
+        assert.doesNotMatch(err.message, /opens a pull request/);
+        return true;
+      }),
+    );
+    assert.equal(server.requests.length, 1 + DATABASE_DOWNLOAD.attempts);
+    assert.deepEqual(readdirSync(workspace), ['astap']);
+  } finally {
+    await server.close();
+  }
+});
+
 test('install tries another mirror after one that answers 404', async () => {
   // A mirror SourceForge sent the first attempt to has not synced the file.
   let answered = 0;

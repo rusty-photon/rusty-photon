@@ -638,10 +638,12 @@ are its preconditions:
   issue by its label, would open another; the action fails the run
   when the label is missing.
 
-GitHub starts no `pull_request` workflow for a pull request that a
-workflow's own token opened, so the M 101 check is the only ASTAP check
-the proposal gets before merge. Closing and reopening it starts the
-pull-request workflows.
+GitHub starts no workflow for a pull request, or a push, that a
+workflow's own token made, so the M 101 check is the only ASTAP check
+the proposal gets before merge. Closing and reopening it starts
+`install-astap`; `plate-solver-smoke` has no `pull_request` trigger,
+so it solves with the new pins only when dispatched on
+`chore/auto-refresh-astap-shas`.
 
 **The manual steps** refresh the D20 database and, whenever the refresh
 itself cannot run, the CLI archives. The refresh never moves the
