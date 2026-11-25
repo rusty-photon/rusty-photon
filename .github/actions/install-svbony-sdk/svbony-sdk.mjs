@@ -225,8 +225,7 @@ export async function fetchWindows([asset], lib, { token, download: options, run
   if (!token) {
     throw new Error(
       'windows-mirror-token is empty. Pass the PRIVATE_MIRROR_TOKEN repository secret, or, in a job that can build ' +
-        'without the real link, such as a fork\'s, skip install-svbony-sdk and set SVBONY_SKIP_NATIVE_LINK=1 instead ' +
-        '(ADR-018 §7)',
+        'without the real link, such as a fork\'s, skip install-svbony-sdk and set SVBONY_SKIP_NATIVE_LINK=1 instead',
     );
   }
   setSecret(token);
@@ -328,7 +327,7 @@ export async function installAt(dir, { runner, assets }, { download: options, ru
   const { suffix, windows } = forRunner(RUNNERS, runner, 'The SVBony SDK');
   if (windows) {
     throw new Error(
-      "the SVBony SDK for Windows comes from the project's private mirror, which developers are not given (ADR-018 §7). " +
+      "the SVBony SDK for Windows comes from the project's private mirror, which developers are not given. " +
         `Download SVBony's SDK for Windows, v${WINDOWS_SDK_VERSION}, from svbony.com, unpack it, and point SVBONY_SDK_LIB_DIR ` +
         `at its ${WINDOWS_LIB.join('\\')} folder, which a binary that loads the DLL also needs on PATH`,
     );

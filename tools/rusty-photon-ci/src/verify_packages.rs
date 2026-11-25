@@ -389,7 +389,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         self.require(
             withheld,
             service,
-            &format!("package ships {sdk} — ADR-018 forbids bundling it"),
+            &format!("package ships {sdk}, which SVBony grants no right to redistribute"),
         )?;
         println!("== {service}: installing the operator-supplied SDK ({SVBONY_SDK_INSTALL})");
         let helper = self.exec(&[SVBONY_SDK_INSTALL]);
@@ -530,7 +530,7 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
             !others.iter().any(|other| ldd.contains(other)),
             service,
             &format!(
-                "binary links SDKs it must not ({}; ADR-014 per-device link)",
+                "binary links SDKs it must not ({}; each service links only its own device's SDK)",
                 others.join(", ")
             ),
         )
@@ -1415,7 +1415,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "FAIL [zwo-camera]: binary links SDKs it must not (libEFWFilter, libEAFFocuser; \
-             ADR-014 per-device link)"
+             each service links only its own device's SDK)"
         );
 
         let elsewhere = "libASICamera2.so => /usr/local/lib/libASICamera2.so (0x7f)\n";
@@ -1456,7 +1456,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error.to_string(),
-            format!("FAIL [svbony-camera]: package ships {sdk} — ADR-018 forbids bundling it")
+            format!(
+                "FAIL [svbony-camera]: package ships {sdk}, which SVBony grants no right to \
+                 redistribute"
+            )
         );
     }
 

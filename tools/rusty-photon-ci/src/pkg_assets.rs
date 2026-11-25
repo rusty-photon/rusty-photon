@@ -741,7 +741,10 @@ fn svbony_helper(check: &mut Check, service: &Service) {
             },
         );
         check.require(!helper.contains("MODE=\"0666\""), || {
-            format!("{svc}: helper must not install a world-writable udev rule (ADR-013 §3)")
+            format!(
+                "{svc}: helper must not install a world-writable udev rule \
+                 (camera access is group-scoped, MODE=\"0660\")"
+            )
         });
     }
     check.require(

@@ -27,8 +27,8 @@
 # cross-mirror with no verification.
 #
 # The logic is the refresh-astap action's (`.github/actions/refresh-astap`).
-# See `docs/decisions/005-plate-solver.md` §"Pinned SHA-256 + refresh
-# procedure" for the manual procedure this workflow automates.
+# See `docs/services/plate-solver.md` § "Refreshing the ASTAP pins" for
+# the manual procedure this workflow automates.
 
 name: refresh-astap-shas
 

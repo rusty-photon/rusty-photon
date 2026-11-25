@@ -120,10 +120,10 @@ test('readTable refuses a table missing what an install needs', () => {
 
 test('resolve gives each runner its archive on SourceForge, with its pin and binary', () => {
   // SourceForge's URLs, folder and all. Windows-ARM64's folder is a path,
-  // since upstream filed its CLI-2026.10.30 archive under `older versions`
-  // (docs/decisions/005-plate-solver.md § Pinned SHA-256 + refresh
-  // procedure), and each part of that path is encoded on its own, so the
-  // slash between them stays one.
+  // since upstream files its archive under `older versions`
+  // (docs/services/plate-solver.md § Refreshing the ASTAP pins), and each
+  // part of that path is encoded on its own, so the slash between them
+  // stays one.
   const urls = {
     'Linux-X64': 'linux_installer/astap_command-line_version_Linux_amd64.zip',
     'Linux-ARM64': 'linux_installer/astap_command-line_version_Linux_aarch64.zip',

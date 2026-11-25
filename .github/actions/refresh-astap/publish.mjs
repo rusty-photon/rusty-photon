@@ -34,8 +34,8 @@ M101 fixture (services/plate-solver/tests/fixtures/m101_known.fits)
 to RA 210.8099° / Dec 54.3469° within 0.01° tolerance, then
 patched the pins in .github/actions/install-astap/assets.json.
 
-See ADR-005 §"Pinned SHA-256 + refresh procedure" for the
-manual procedure this workflow automates.
+See docs/services/plate-solver.md § "Refreshing the ASTAP
+pins" for the manual procedure this workflow automates.
 `;
 
 /** The blocker a failed check opens, found again by its label and exact title. */
@@ -137,10 +137,10 @@ tolerance (matching \`real_astap_smoke.feature\`). The
 checked.
 
 Windows-ARM64 has no GH-hosted runner, so its SHA is refreshed
-cross-mirror with no verification — same posture ADR-005
-documents. If its archive could not be downloaded, its pin stays
-and its row above says why; the table may name a folder upstream
-no longer uses.
+cross-mirror with no verification, and no smoke runs its archive
+either. If its archive could not be downloaded, its pin stays and
+its row above says why; the table may name a folder upstream no
+longer uses.
 
 Full verification logs:
 ${runUrl}

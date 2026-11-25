@@ -332,8 +332,8 @@ jobs:
             Which job failed says what to suspect. For `windows / clippy` /
             `macos / clippy` a *lint* IS the likely cause: those legs exist to
             catch violations in `#[cfg(windows)]` / `#[cfg(target_os =
-            "macos")]` code that the required ubuntu gate never compiles
-            (#984). For the other two a lint is *not* likely: `beta / clippy`
+            "macos")]` code that the required ubuntu gate never compiles.
+            For the other two a lint is *not* likely: `beta / clippy`
             runs with `--cap-lints warn` and files one `beta-clippy`-labeled
             issue per lint instead of failing, so what reached here is more
             likely a compile break, a warning newly emitted by a stable

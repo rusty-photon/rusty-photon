@@ -177,8 +177,8 @@ export function staggerSeconds(text) {
 // under the same name, so a mismatch is most likely a new one.
 const ROTATED =
   'If upstream released a new one, refresh-astap-shas.yml opens a pull request with the new pin; ' +
-  'the pins are in .github/actions/install-astap/assets.json, and ADR-005 §"Pinned SHA-256 + refresh procedure" ' +
-  'has the manual steps.';
+  'the pins are in .github/actions/install-astap/assets.json, and docs/services/plate-solver.md ' +
+  '§ "Refreshing the ASTAP pins" has the manual steps.';
 
 // Downloads, checks and unpacks `asset` into `unpacked`, beside the archive
 // in the work directory `work`, once `check` accepts what it unpacked.

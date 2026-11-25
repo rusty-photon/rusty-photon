@@ -602,6 +602,82 @@ hosted runners show (`.github/actions/plate-solver-times/times.mjs`
 holds those times), the blind one under the scenario's 300 s request
 timeout.
 
+### Refreshing the ASTAP pins
+
+`install-astap`'s table, `.github/actions/install-astap/assets.json`,
+pins a SHA-256 for each runner's ASTAP CLI archive and one for the D20
+star database. ASTAP's SourceForge URLs carry no version, so upstream
+replaces the bytes behind an unchanged URL; the pin turns each
+replacement into a reviewed change rather than a silent one. A download
+that does not match its pin fails the action before anything is
+unpacked, so a rotation shows as a failed smoke: `install-astap`'s for
+a CLI archive, and for either `plate-solver-smoke`'s, the only one that
+downloads the database.
+
+**The CLI archives refresh themselves.** When an `install-astap` run
+on main fails, or on a manual dispatch, `refresh-astap-shas.yml`
+downloads each runner's archive and compares it with its pin. It runs every rotated binary that has a hosted runner
+of its own against the committed M 101 fixture, to the BDD scenario's
+0.01° tolerance; Windows-ARM64 has no hosted runner, so its pin moves
+unverified. When every check passes, it commits the new pins to
+`chore/auto-refresh-astap-shas` and opens, or updates, the
+`chore(install-astap): auto-refresh SHA-256 pins` pull request from
+that branch. When one fails, upstream has shipped a binary that does
+not solve, and the workflow opens, or comments on, an
+`astap-refresh-blocked` issue instead. A dispatch with `dry-run` prints
+what it would write and writes nothing. Two settings of the repository
+are its preconditions:
+
+- Opening the pull request needs "Allow GitHub Actions to create and
+  approve pull requests" at both the organization and the repository
+  level (Settings → Actions → General → Workflow permissions). Without
+  it, the run fails after moving the branch, and a maintainer opens the
+  pull request from `chore/auto-refresh-astap-shas` by hand.
+- The `astap-refresh-blocked` label must exist. GitHub opens an issue
+  without a label it lacks, and every later failure, not finding that
+  issue by its label, would open another; the action fails the run
+  when the label is missing.
+
+GitHub starts no `pull_request` workflow for a pull request that a
+workflow's own token opened, so the M 101 check is the only ASTAP check
+the proposal gets before merge. Closing and reopening it starts the
+pull-request workflows.
+
+**The manual steps** refresh the D20 database, whose rotation the
+refresh only warns about, and the CLI archives whenever the refresh
+itself cannot run. For the CLI archives:
+
+1. Download each runner's archive from SourceForge, from the folder
+   the table names.
+2. Take its SHA-256 (`sha256sum`, or `shasum -a 256` on macOS).
+3. Write it as that runner's `sha256` in `assets.json`, keeping the
+   file's layout: `install_astap_test` checks that the file is in the
+   layout the refresh writes.
+4. Open a pull request. The `install-astap` smoke runs on it and checks
+   the new pins on `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-latest`
+   and `windows-latest`. Nothing runs the Windows-ARM64 archive.
+5. Name in the pull request the ASTAP CLI version the new binaries
+   print in their banner.
+
+For the D20 database:
+
+1. Download `d20_star_database.zip` from SourceForge.
+2. Take its SHA-256.
+3. Write it as `database.sha256` in `assets.json`. The action's cache
+   key carries the pin, so the cache moves with it.
+4. Push the change to a branch. `install-astap` does not download the
+   database; `plate-solver-smoke` does, and runs on a push that touches
+   `.github/actions/install-astap/`, on `ubuntu-latest`, `macos-latest`
+   and `windows-latest`.
+
+The table points Windows-ARM64 at `windows_installer/older versions`,
+where upstream files its current archive; the usual `windows_installer`
+folder answers 404 for it. When upstream moves the archive back, the
+table's folder follows. Should the archive move or go first, the
+refresh still runs: the Windows-ARM64 leg only compares, so an archive
+it cannot download keeps its pin, the proposal says why, and the other
+runners still refresh.
+
 ## Supervision and recovery
 
 The wrapper sits inside a layered supervision design with three
