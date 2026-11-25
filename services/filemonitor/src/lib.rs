@@ -189,13 +189,13 @@ impl Default for Config {
                 rules: vec![
                     ParsingRule {
                         rule_type: RuleType::Contains,
-                        pattern: "OPEN".to_string(),
-                        safe: true,
-                    },
-                    ParsingRule {
-                        rule_type: RuleType::Contains,
                         pattern: "CLOSED".to_string(),
                         safe: false,
+                    },
+                    ParsingRule {
+                        rule_type: RuleType::Regex,
+                        pattern: r"Status:\s*OPEN\b".to_string(),
+                        safe: true,
                     },
                     ParsingRule {
                         rule_type: RuleType::Regex,
@@ -1751,12 +1751,27 @@ mod default_config_tests {
     fn the_default_reads_an_open_roof_safe() {
         let device = FileMonitorDevice::new(Config::default());
         assert!(device.evaluate_safety("2025-12-15 01:20:13AM Roof Status: OPEN"));
+        assert!(device.evaluate_safety("Roof Status: open"));
     }
 
     #[test]
     fn the_default_reads_a_closed_roof_unsafe() {
         let device = FileMonitorDevice::new(Config::default());
         assert!(!device.evaluate_safety("2025-12-15 01:20:13AM Roof Status: CLOSED"));
+    }
+
+    #[test]
+    fn the_default_reads_a_status_that_is_not_exactly_open_unsafe() {
+        let device = FileMonitorDevice::new(Config::default());
+        for content in [
+            "Roof Status: OPENING",
+            "Roof Status: CLOSED (last opened 21:04)",
+            "Roof Status: OPEN, CLOSED at 06:00",
+            "Roof NOT OPEN",
+            "ERROR: could not open COM3, roof status unknown",
+        ] {
+            assert!(!device.evaluate_safety(content), "{content:?} read safe");
+        }
     }
 
     /// Writes `config` to a file in `dir` and loads it back.

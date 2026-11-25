@@ -36,13 +36,13 @@ The service uses a JSON configuration file with the following format:
     "rules": [
       {
         "type": "contains",
-        "pattern": "OPEN",
-        "safe": true
-      },
-      {
-        "type": "contains", 
         "pattern": "CLOSED",
         "safe": false
+      },
+      {
+        "type": "regex",
+        "pattern": "Status:\\s*OPEN\\b",
+        "safe": true
       },
       {
         "type": "regex",
@@ -76,7 +76,7 @@ The `server` block is the shared `AlpacaServerConfig` from
 (default `0.0.0.0`), optional `discovery_port`, and optional `tls`/`auth`.
 Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
-The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons. With `case_sensitive` false, a `contains` rule compares the lowercased text and a `regex` rule is compiled under `(?i)` (`ParsingConfig::compile_regex`, the one compile behind the evaluation and the rule check below).
+The parsing rules are evaluated in order, with the first match determining safety status. If no rules match, the device defaults to unsafe (`false`) for safety reasons. The rules above, which are also the default the service writes on first start, list the unsafe rule first and match the safe status exactly, so any text that is not a plain `Status: OPEN` reads unsafe: a roof still opening, an error that mentions "open", a line that also says CLOSED. With `case_sensitive` false, a `contains` rule compares the lowercased text and a `regex` rule is compiled under `(?i)` (`ParsingConfig::compile_regex`, the one compile behind the evaluation and the rule check below).
 
 Every block (`Config` and each nested config struct — `DeviceConfig`, `FileConfig`, `ParsingConfig`, `ParsingRule`, and the shared `AlpacaServerConfig`) rejects unknown keys at deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema change fails loudly at load instead of being silently ignored.
 
