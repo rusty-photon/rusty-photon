@@ -634,7 +634,7 @@ impl Guider {
             self.status.lock().state,
             State::Guiding | State::StarLost | State::Paused
         ) {
-            return Err(not_guiding());
+            return Err(ApiError::not_guiding());
         }
         let (reply, answer) = oneshot::channel();
         self.send(
@@ -643,7 +643,7 @@ impl Guider {
                 reply,
             },
             &stops,
-            not_guiding,
+            ApiError::not_guiding,
         )?;
         let state = self.answer(answer, &mut stops).await??;
         Ok(StateAnswer { state })
@@ -662,11 +662,11 @@ impl Guider {
             State::Guiding | State::StarLost => Ok(StateAnswer { state }),
             State::Paused => {
                 let (reply, answer) = oneshot::channel();
-                self.send(Command::Resume(reply), &stops, not_guiding)?;
+                self.send(Command::Resume(reply), &stops, ApiError::not_guiding)?;
                 let state = self.answer(answer, &mut stops).await??;
                 Ok(StateAnswer { state })
             }
-            State::Idle | State::Looping | State::Calibrating => Err(not_guiding()),
+            State::Idle | State::Looping | State::Calibrating => Err(ApiError::not_guiding()),
         }
     }
 
@@ -689,9 +689,13 @@ impl Guider {
             turn: self.take_turn(&mut stops).await?,
         };
         if self.status.lock().state != State::Guiding {
-            return Err(not_guiding());
+            return Err(ApiError::not_guiding());
         }
-        self.send(Command::Dither(Box::new(run)), &stops, not_guiding)?;
+        self.send(
+            Command::Dither(Box::new(run)),
+            &stops,
+            ApiError::not_guiding,
+        )?;
         self.answer(answer, &mut stops).await?
     }
 
@@ -1134,14 +1138,6 @@ const fn state_name(state: State) -> &'static str {
 /// is.
 fn alive(running: &Running) -> bool {
     !running.cancel.is_cancelled() && !*running.done.borrow()
-}
-
-/// `not_guiding`.
-fn not_guiding() -> ApiError {
-    ApiError::new(
-        ErrorCode::NotGuiding,
-        "the guider is not in a run that guides",
-    )
 }
 
 /// The device a fresh read found, when it is connected.

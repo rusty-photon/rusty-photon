@@ -41,6 +41,8 @@ pub struct FakeMount {
     /// Cancelled by a read of `Tracking`, as a stop that arrives during
     /// the mount check.
     pub cancels: Option<tokio_util::sync::CancellationToken>,
+    /// A read of `Tracking` answers an error.
+    pub tracking_fails: bool,
 }
 
 impl Default for FakeMount {
@@ -60,6 +62,7 @@ impl Default for FakeMount {
             pulses: AtomicUsize::new(0),
             directions: parking_lot::Mutex::new(Vec::new()),
             cancels: None,
+            tracking_fails: false,
         }
     }
 }
@@ -160,6 +163,9 @@ impl Telescope for FakeMount {
         tokio::time::sleep(self.read_delay).await;
         if let Some(cancels) = &self.cancels {
             cancels.cancel();
+        }
+        if self.tracking_fails {
+            return Err(ASCOMError::invalid_operation("not now"));
         }
         Ok(self.tracking)
     }

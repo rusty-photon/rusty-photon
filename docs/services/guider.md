@@ -230,8 +230,9 @@ reads. `GET /api/v1/devices` and `/health` answer from its results.
   `UniqueID` and the static properties last read of it. A static read
   that fails is tried again at the next poll.
 
-**At a request.** `loop`, `calibrate` and `guiding/start` read
-`Connected` afresh before anything else. A device that does not answer
+**At a request.** `loop`, `calibrate`, and a `guiding/start` that finds
+the guider in `idle` or `looping`, read `Connected` afresh before
+anything else. A device that does not answer
 refuses the request with `device_unreachable`; one that answers and is
 not connected refuses it with `device_not_connected`. When the poll has
 not yet read a connected device's static properties, the request reads
@@ -387,8 +388,11 @@ is what happened.
   ([star-adventurer-gti.md § PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle)).
 - The check does not run in `looping`: no pulse is sent there.
 
-**At a request.** `calibrate` and `guiding/start` run the same check
-before they start, and read `CanPulseGuide`. A mount that fails either
+**At a request.** `calibrate`, and a `guiding/start` that finds the
+guider in `idle` or `looping`, run the same check before they start,
+and read `CanPulseGuide`. A `guiding/start` in a run state guides with
+the mount the run read, and the check of each cycle stands in for one
+at the request. A mount that fails either
 refuses the request with `mount_not_ready`, and the message names what
 failed. A read that fails, rather than answering, refuses the request
 with `device_unreachable`, as a device that does not answer does; a

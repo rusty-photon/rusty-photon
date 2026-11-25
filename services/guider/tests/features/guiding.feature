@@ -17,8 +17,8 @@ Feature: Guiding
   in 4 steps, and settles within 1.5 px for 1 s, in at most 30 s, unless the
   scenario says otherwise. The simulated sky holds still, so a mount that
   does not drift gives the same offset frame after frame; a scenario whose
-  settle must not come has the mount drift 1″ a minute, which keeps the
-  stars off the lock by more than its tolerance. A scenario that has a
+  settle must not come has the seeing move the field 0.5″ a frame, which
+  keeps the stars off the lock by more than its tolerance. A scenario that has a
   stored calibration starts with one for the simulated rig: West moves the
   stars along +x and North along −y, at the rate the guide rates give.
 
@@ -76,7 +76,7 @@ Feature: Guiding
     And the guider's stats report the state "idle"
 
   Scenario: A settle that does not come within its timeout answers settle_timeout, and guiding goes on
-    Given the simulated mount drifts 1″ a minute east
+    Given the simulated sky's seeing moves the field 0.5″ a frame
     And the state directory holds a calibration of the simulated rig
     And the guider is started
     When a client asks the guider to start guiding with the body {"settle": {"pixels": 0.0001, "time": "1s", "timeout": "2s"}}
@@ -163,11 +163,11 @@ Feature: Guiding
     And the guider's stats report the state "idle"
 
   Scenario: A stop while a start waits to settle answers stopped
-    Given the simulated mount drifts 1″ a minute east
+    Given the simulated sky's seeing moves the field 0.5″ a frame
     And the state directory holds a calibration of the simulated rig
     And the guider is started
     And a client asks the guider to start guiding in the background with the body {"settle": {"pixels": 0.0001, "time": "1s", "timeout": "60s"}}
-    And the guider's stats report the state "guiding"
+    And the guider's stats report settling true
     When a client asks the guider to stop
     Then the background request answers 409 with the error "stopped"
     And the guider's last stop has the reason "requested"

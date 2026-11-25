@@ -234,6 +234,33 @@ impl ApiError {
         }
     }
 
+    /// A frame with fewer guide stars than `stars.min`.
+    #[must_use]
+    pub fn no_stars() -> Self {
+        Self::new(
+            ErrorCode::NoStars,
+            "the frame has fewer guide stars than stars.min",
+        )
+    }
+
+    /// A request that needs a run that guides, outside one.
+    #[must_use]
+    pub fn not_guiding() -> Self {
+        Self::new(
+            ErrorCode::NotGuiding,
+            "the guider is not in a run that guides",
+        )
+    }
+
+    /// A `dither/abort` ended the dither the request waited on.
+    #[must_use]
+    pub fn dither_aborted() -> Self {
+        Self::new(
+            ErrorCode::DitherAborted,
+            "a dither/abort arrived while the dither waited to settle",
+        )
+    }
+
     /// A `guiding/stop` arrived while the request waited or queued.
     #[must_use]
     pub fn stopped() -> Self {

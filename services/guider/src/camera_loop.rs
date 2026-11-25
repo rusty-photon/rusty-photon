@@ -24,7 +24,7 @@
 //!
 //! The requests the loop hears during a frame are served after it, from
 //! the next frame on, so that a start selects on a frame exposed after it
-//! was taken up.
+//! was taken up. A `dither/abort` is served as it arrives.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -42,7 +42,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::api::{ApiError, ErrorCode, Stop};
+use crate::api::{ApiError, Stop};
 use crate::calibration_store::{CalibrationStore, Record};
 use crate::config::Config;
 use crate::devices::{
@@ -451,6 +451,8 @@ impl Cycle {
                 devices,
                 sensor,
                 inbox,
+                mode,
+                status,
                 ..
             } = self;
             let frame = exposer.frame();
@@ -459,7 +461,13 @@ impl Cycle {
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => return Err(Stop::requested()),
-                    Some(command) = commands.recv() => inbox.push(command),
+                    Some(command) = commands.recv() => match command {
+                        // An abort never queues: it acts as it arrives.
+                        Command::AbortDither(reply) => {
+                            let _ = reply.send(guiding::abort(mode, status, inbox));
+                        }
+                        command => inbox.push(command),
+                    },
                     Ok(()) = devices.changed() => {
                         if let Some(message) = came_back_changed(devices, sensor) {
                             return Err(Stop::camera_error(message));
@@ -524,12 +532,7 @@ impl Cycle {
         }
         if reselecting {
             if let (Some(reply), Some(selection)) = (self.reselect.take(), selection) {
-                let _ = reply.send(selection.map_err(|()| {
-                    ApiError::new(
-                        ErrorCode::NoStars,
-                        "the frame has fewer guide stars than stars.min",
-                    )
-                }));
+                let _ = reply.send(selection.map_err(|()| ApiError::no_stars()));
             }
         }
         Ok(Took::Measured { offset, selection })
@@ -613,7 +616,7 @@ impl Cycle {
     async fn after_frame(&mut self, took: Took, cancel: &CancellationToken) -> Option<End> {
         match &self.mode {
             Mode::Looping => None,
-            Mode::Starting(_) => self.starting_frame(&took),
+            Mode::Starting(_) => self.starting_frame(&took, cancel).await,
             Mode::Guiding(_) => self.guiding_frame(took, cancel).await,
             Mode::Calibrating(_) => self.calibration_frame(took, cancel).await,
         }
@@ -631,7 +634,7 @@ impl Cycle {
                     selection: Some(Err(())),
                     ..
                 } => {
-                    return self.calibration_ended(Err(guiding::no_stars()), None);
+                    return self.calibration_ended(Err(ApiError::no_stars()), None);
                 }
                 Took::Measured {
                     selection: Some(Ok(_)),
@@ -644,6 +647,10 @@ impl Cycle {
             Took::Measured { offset, .. } if !calibrating.selecting => offset,
             Took::Measured { .. } | Took::Failed(_) => None,
         };
+        // A measured frame of the run with no offset is a star-lost frame.
+        if offset.is_none() && !calibrating.selecting && matches!(took, Took::Measured { .. }) {
+            self.status.lock().star_lost_frame();
+        }
         let frame_offset = offset;
         let calibrator = calibrating.calibrator.take()?;
         let before = calibrator.clone();
@@ -1100,6 +1107,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::api::ErrorCode;
     use crate::test_camera::FakeCamera;
 
     /// A 320 × 240 frame at 2″ a pixel of `stars`, each at `east`, `north`
@@ -1603,6 +1611,23 @@ mod tests {
             panic!("the calibration went on");
         };
         assert_eq!(stop.reason, crate::api::StopReason::MountParked);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_calibration_frame_without_stars_counts_as_star_lost() {
+        let mut cycle = looping_cycle();
+        let (run, _answer, _turns) =
+            run_on(crate::test_mount::FakeMount::default(), Return::Idle).await;
+        cycle.calibrate(run);
+        let cancel = CancellationToken::new();
+        assert!(cycle.after_frame(selected(), &cancel).await.is_none());
+        assert_eq!(cycle.status.lock().totals().star_lost, 0);
+        let lost = Took::Measured {
+            offset: None,
+            selection: None,
+        };
+        assert!(cycle.after_frame(lost, &cancel).await.is_none());
+        assert_eq!(cycle.status.lock().totals().star_lost, 1);
     }
 
     #[tokio::test(start_paused = true)]

@@ -17,7 +17,8 @@ Feature: Dither, its abort, and pausing the corrections
   guider polls them every 100 ms, exposes for 200 ms, and settles within
   1.5 px for 1 s, in at most 30 s. Each scenario starts with a stored
   calibration of the simulated rig. The simulated sky holds still, so a
-  scenario whose settle must not come has the mount drift 1″ a minute.
+  scenario whose settle must not come has the seeing move the field 0.5″
+  a frame.
 
   Background:
     Given the simulated camera and mount, both connected
@@ -60,7 +61,7 @@ Feature: Dither, its abort, and pausing the corrections
     Then the request answers 409 with the error "not_guiding"
 
   Scenario: An abort answers the waiting dither with dither_aborted, and guiding goes on
-    Given the simulated mount drifts 1″ a minute east
+    Given the simulated sky's seeing moves the field 0.5″ a frame
     And the guider is started
     And the guider is guiding
     And a client asks the guider to dither in the background with the body {"amount_px": 4.0, "settle": {"pixels": 0.0001, "time": "1s", "timeout": "60s"}}

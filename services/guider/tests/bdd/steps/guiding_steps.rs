@@ -82,6 +82,11 @@ fn stored_calibration(world: &mut GuiderWorld) {
     .expect("write calibration.json");
 }
 
+#[given(expr = "the simulated sky's seeing moves the field {float}″ a frame")]
+fn image_motion(world: &mut GuiderWorld, arcsec: f64) {
+    world.sim_config().sim.sky.seeing.common_motion_arcsec = arcsec;
+}
+
 #[given(expr = "the simulated mount drifts {float}″ a minute east")]
 fn drifts(world: &mut GuiderWorld, arcsec_per_min: f64) {
     world.sim_config().sim.mount.drift.east_arcsec_per_min = arcsec_per_min;
