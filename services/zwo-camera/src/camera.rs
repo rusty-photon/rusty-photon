@@ -2072,18 +2072,6 @@ mod tests {
         .expect("exposure did not complete");
     }
 
-    /// Lowers the capture gate when the test ends, a failed assertion
-    /// included. A capture still parked at a raised gate would otherwise keep
-    /// the test's runtime from shutting down until the gate's own bound, and
-    /// the failure would be that long in being reported.
-    struct LowerCaptureGate<'a>(&'a MockCameraHandle);
-
-    impl Drop for LowerCaptureGate<'_> {
-        fn drop(&mut self) {
-            self.0.set_capture_gate(false);
-        }
-    }
-
     /// Deadline-bounded wait for the mock to have entered `count` captures.
     async fn wait_captures_started(handle: &MockCameraHandle, count: usize) {
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -2851,7 +2839,7 @@ mod tests {
     #[tokio::test]
     async fn a_gain_or_offset_set_during_an_exposure_is_taken_for_the_next_one() {
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_secs(30));
+        let hold = handle.hold_captures();
         let (device, handle) = connected_device_with_handle(handle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -2884,7 +2872,7 @@ mod tests {
 
         device.stop_exposure().await.unwrap();
         wait_image_ready(&device).await;
-        handle.set_capture_delay(Duration::ZERO);
+        drop(hold);
         expose(&device).await;
         let next = handle.last_capture_request().unwrap();
         assert_eq!((next.gain, next.offset), (Some(300), Some(90)));
@@ -3586,7 +3574,7 @@ mod tests {
     #[tokio::test]
     async fn second_exposure_while_in_flight_is_rejected() {
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         let device = connected_device(handle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -3607,7 +3595,7 @@ mod tests {
     #[tokio::test]
     async fn abort_discards_the_frame() {
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         let device = connected_device(handle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -3636,7 +3624,7 @@ mod tests {
     async fn graceful_stop_preserves_the_frame() {
         // ZWO divergence: StopExposure keeps the frame (E8).
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         let device = connected_device(handle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -3923,7 +3911,6 @@ mod tests {
     async fn a_superseded_capture_does_not_release_the_new_exposures_slot() {
         let handle = Arc::new(MockCameraHandle::default());
         handle.set_capture_gate(true);
-        let _gate = LowerCaptureGate(&handle);
         let device = ZwoCamera::new(handle.clone(), None, MaxAduReporting::default());
         device.connect().unwrap();
         device.set_num_x(64).await.unwrap();
@@ -3938,18 +3925,16 @@ mod tests {
         device.set_connected(true).await.unwrap();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
+        // The second exposure stays in flight while the first drains — held,
+        // not timed, so no stall of the runner can end it under the window.
+        let _hold = handle.hold_captures();
         device
             .start_exposure(Duration::from_secs(5), true)
             .await
             .unwrap();
         wait_captures_started(&handle, 2).await;
 
-        // The second exposure stays in flight while the first drains: the gate
-        // lets the first capture through and holds the second for as long as
-        // this test keeps it raised. A capture delay would not do — it runs on
-        // the wall clock, so a runner that stalls for longer than the delay
-        // lets the second exposure finish and the device, correctly, go idle.
-        handle.pass_capture_gate(1);
+        handle.set_capture_gate(false);
         tokio::time::timeout(Duration::from_secs(30), async {
             while handle.capture_outcomes().first() != Some(&Some(CaptureOutcome::Aborted)) {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -3999,9 +3984,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_abort_reaches_a_capture_the_claim_has_only_just_admitted() {
         let handle = MockCameraHandle::default();
-        // Far longer than the drain wait below, so a pass can only come from
-        // the abort reaching the capture, never from waiting the capture out.
-        handle.set_capture_delay(Duration::from_secs(60));
+        // Held, so a pass can only come from the abort reaching the capture,
+        // never from waiting the capture out.
+        let _hold = handle.hold_captures();
         let cam = connected_device(handle);
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
@@ -4034,9 +4019,8 @@ mod tests {
         .await
         .is_ok();
         assert!(!cam.image_ready().await.unwrap());
-        // A swallowed abort leaves a capture parked for the rest of its delay;
-        // end it here so a failing run reports at once rather than at the
-        // runtime's drop, which waits on the blocking pool.
+        // A swallowed abort leaves the capture held and the device claimed;
+        // end it here so the device is handed back whichever way this went.
         cam.abort_exposure().await.unwrap();
         assert!(
             drained,
@@ -4047,7 +4031,7 @@ mod tests {
     #[tokio::test]
     async fn disconnect_cancels_in_flight_exposure() {
         let handle = Arc::new(MockCameraHandle::default());
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         let device = ZwoCamera::new(
             Arc::<MockCameraHandle>::clone(&handle),
             None,
@@ -4350,7 +4334,7 @@ mod tests {
     #[tokio::test]
     async fn a_capture_whose_camera_leaves_mid_frame_reads_disconnected() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
-        handle.set_capture_delay(Duration::from_millis(300));
+        let hold = handle.hold_captures();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device
@@ -4362,6 +4346,8 @@ mod tests {
         wait_control_writes(&handle, 2).await;
 
         handle.leave_bus();
+        // The integration ends, and its readout finds the camera gone.
+        drop(hold);
 
         wait_captures_finished(&handle, 1).await;
         assert_eq!(

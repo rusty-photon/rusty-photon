@@ -1879,7 +1879,7 @@ mod handle_tests {
 #[cfg(test)]
 pub(crate) mod mock {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     fn default_info() -> CameraInfo {
         CameraInfo {
@@ -1952,6 +1952,19 @@ pub(crate) mod mock {
             ),
             cap("CoolerPower", ControlType::CoolerPower, 0, 100, 0, false),
         ]
+    }
+
+    /// Keeps a [`MockCameraHandle`]'s captures in flight until it is dropped
+    /// (see [`MockCameraHandle::hold_captures`]). Dropping it — at the end of
+    /// the test, a failed assertion included — lets a capture still held run
+    /// on, so the test's runtime is not kept from shutting down.
+    #[must_use = "dropping the hold releases the captures"]
+    pub struct CaptureHold(Arc<AtomicBool>);
+
+    impl Drop for CaptureHold {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
     }
 
     /// Safety bound on the capture gate (see `run_capture`): long enough that
@@ -2077,21 +2090,19 @@ pub(crate) mod mock {
         /// (modeling the SDK open's latency), so a test can hold one
         /// connect transition in-flight while a second races it.
         open_delay: Mutex<Duration>,
-        /// Optional artificial delay before `capture` returns (for in-flight /
-        /// abort-race tests).
-        capture_delay: Mutex<Duration>,
+        /// Raised while a test's [`CaptureHold`] is alive: every capture then
+        /// stays in its integration wait — in flight, and still answering an
+        /// abort, a stop or a departure — until the test drops the hold. The
+        /// integration has no length of its own: a delay would run on the
+        /// wall clock, and a runner that stalls for longer than it ends an
+        /// exposure the test still needs in flight.
+        capture_hold: Arc<AtomicBool>,
         /// While set, every capture parks at a gate placed *before* it reads
         /// its cancel flag, and stays there until the gate is lowered. That
         /// lets a test hold one capture inside the device's "exposure in
         /// flight" window while it drives a disconnect, a reconnect, and a
         /// second exposure — the interleaving a sleep can only approximate.
         capture_gate: AtomicBool,
-        /// How many captures, counted in call order, a raised capture gate
-        /// lets through. A test raises it to release an earlier capture while
-        /// a later one stays parked — in flight for exactly as long as the
-        /// test keeps the gate up, which no capture delay can promise on a
-        /// runner that stalls.
-        capture_gate_passes: AtomicUsize,
         /// While set, `set_camera_mode` — on a trigger camera the connect
         /// handshake's mode select, its last step but the video arm — parks
         /// before reaching the SDK until the gate is lowered, so a test can
@@ -2155,9 +2166,8 @@ pub(crate) mod mock {
                 current_temp_tenths: Mutex::new(200),
                 open_section: Mutex::new(()),
                 open_delay: Mutex::new(Duration::ZERO),
-                capture_delay: Mutex::new(Duration::ZERO),
+                capture_hold: Arc::new(AtomicBool::new(false)),
                 capture_gate: AtomicBool::new(false),
-                capture_gate_passes: AtomicUsize::new(0),
                 mode_select_gate: AtomicBool::new(false),
                 capture_outcomes: Mutex::new(Vec::new()),
                 fail_capture: AtomicBool::new(false),
@@ -2229,19 +2239,17 @@ pub(crate) mod mock {
             self
         }
 
-        pub fn set_capture_delay(&self, delay: Duration) {
-            *self.capture_delay.lock() = delay;
+        /// Keep every capture in flight for as long as the returned hold
+        /// lives. A held capture still ends at once on an abort, a stop or a
+        /// departure, as a real integration does.
+        pub fn hold_captures(&self) -> CaptureHold {
+            self.capture_hold.store(true, Ordering::SeqCst);
+            CaptureHold(Arc::clone(&self.capture_hold))
         }
 
         /// Hold every capture at the gate (or release the held ones).
         pub fn set_capture_gate(&self, closed: bool) {
             self.capture_gate.store(closed, Ordering::SeqCst);
-        }
-
-        /// Let the first `count` captures, in call order, through the raised
-        /// gate; the later ones stay held until it is lowered.
-        pub fn pass_capture_gate(&self, count: usize) {
-            self.capture_gate_passes.store(count, Ordering::SeqCst);
         }
 
         /// Hold every `set_camera_mode` at the gate (or release the held ones).
@@ -2424,7 +2432,7 @@ pub(crate) mod mock {
 
         /// The capture proper; [`CameraHandle::capture`] wraps it to record
         /// how it ended.
-        fn run_capture(&self, call: usize, request: CaptureRequest) -> BackendResult<Vec<u8>> {
+        fn run_capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
             *self.last_capture_request.lock() = Some(request.clone());
             // The production handle's own arm, run through this mock's model
             // of the SDK — its auto-exposure gate, its refusals and its call
@@ -2445,16 +2453,13 @@ pub(crate) mod mock {
             // waits: a gate still closed by then means the test has already
             // failed.
             let gate_start = Instant::now();
-            while self.capture_gate.load(Ordering::SeqCst)
-                && call >= self.capture_gate_passes.load(Ordering::SeqCst)
-                && gate_start.elapsed() < GATE_TIMEOUT
-            {
+            while self.capture_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            // The integration lasts as long as a test holds it, and no longer.
             // Mirror the production handle's sliced wait: an abort/disconnect
             // (request.cancel) drains the capture promptly instead of
-            // sleeping out the whole delay.
-            let deadline = Instant::now() + *self.capture_delay.lock();
+            // waiting the hold out.
             loop {
                 if request.cancel.load(Ordering::SeqCst) {
                     return self.drain(&request);
@@ -2462,11 +2467,10 @@ pub(crate) mod mock {
                 if self.lost.load(Ordering::SeqCst) {
                     return Err(BackendError::departed());
                 }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+                if !self.capture_hold.load(Ordering::SeqCst) {
                     break;
                 }
-                std::thread::sleep(remaining.min(Duration::from_millis(5)));
+                std::thread::sleep(Duration::from_millis(5));
             }
             // The trigger, the first SDK call a capture makes after its wait.
             self.noted(|| self.reach_sdk())?;
@@ -2727,7 +2731,7 @@ pub(crate) mod mock {
                 outcomes.push(None);
                 outcomes.len().saturating_sub(1)
             };
-            let result = self.run_capture(call, request);
+            let result = self.run_capture(request);
             let outcome = match &result {
                 Ok(_) => CaptureOutcome::Frame,
                 Err(e) if e.message() == ABORTED_MESSAGE => CaptureOutcome::Aborted,

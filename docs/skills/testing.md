@@ -2119,13 +2119,17 @@ about *which* state was observed, not about a bare equality.
 
 That holds only while nothing the window depends on is itself on a timer.
 Whatever keeps the watched state alive for the window — here, the second
-exposure that has to stay `Exposing` — is held at a gate the test lowers,
+exposure that has to stay `Exposing` — is held until the test releases it,
 never by a delay. A delay runs on the wall clock, so a runner that stalls for
-longer than it ends the state legitimately and fails a correct build. The test
-above holds its second capture at the mock's capture gate
-(`pass_capture_gate` lets only the first capture through), and a drop guard
-lowers the gate when the test ends, so a failed assertion is reported at once
-instead of after the gate's bound.
+longer than it ends the state legitimately and fails a correct build. The
+camera mocks of `svbony-camera` and `zwo-camera` have no capture delay for
+that reason: `MockCameraHandle::hold_captures()` returns a guard, and while it
+lives a capture stays in its integration, still answering an abort, a stop or
+a departure. Dropping the guard releases the capture, so a failed assertion
+releases it too and is reported at once. A test that proves an abort ended a
+capture keeps the guard alive until it has seen the capture end; dropped
+earlier, the release would end the capture and the test would pass with the
+abort lost.
 
 Prove such a test earns its name: reintroduce the defect it targets and watch
 it fail. For a nap-based test, also delay the code under test (a temporary
