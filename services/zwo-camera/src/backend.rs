@@ -1454,6 +1454,12 @@ pub(crate) mod mock {
         /// while it drives a disconnect, a reconnect, and a second exposure —
         /// the interleaving a sleep can only approximate.
         capture_gate: AtomicBool,
+        /// How many captures, counted in call order, a raised capture gate
+        /// lets through. A test raises it to release an earlier capture while
+        /// a later one stays parked — in flight for exactly as long as the
+        /// test keeps the gate up, which no capture delay can promise on a
+        /// runner that stalls.
+        capture_gate_passes: std::sync::atomic::AtomicUsize,
         /// While set, every `pulse_guide_off` parks before it reaches the camera,
         /// and stays there until the gate is lowered. That lets a test hold a
         /// pulse's stop past the pulse's deadline while it starts the next one.
@@ -1528,6 +1534,7 @@ pub(crate) mod mock {
                 fail_capture: AtomicBool::new(false),
                 capture_delay: Mutex::new(Duration::ZERO),
                 capture_gate: AtomicBool::new(false),
+                capture_gate_passes: std::sync::atomic::AtomicUsize::new(0),
                 pulse_off_gate: AtomicBool::new(false),
                 pulse_offs_begun: std::sync::atomic::AtomicUsize::new(0),
                 pulse_calls: Mutex::new(Vec::new()),
@@ -1584,6 +1591,12 @@ pub(crate) mod mock {
         /// Hold every capture at the gate (or release the held ones).
         pub fn set_capture_gate(&self, closed: bool) {
             self.capture_gate.store(closed, Ordering::SeqCst);
+        }
+
+        /// Let the first `count` captures, in call order, through the raised
+        /// gate; the later ones stay held until it is lowered.
+        pub fn pass_capture_gate(&self, count: usize) {
+            self.capture_gate_passes.store(count, Ordering::SeqCst);
         }
 
         /// Hold every pulse's stop at the gate (or release the held ones).
@@ -1736,7 +1749,11 @@ pub(crate) mod mock {
 
         /// The capture proper; [`CameraHandle::capture`] wraps it to record how
         /// it ended.
-        fn run_capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
+        fn run_capture(
+            &self,
+            call: usize,
+            request: CaptureRequest,
+        ) -> BackendResult<Option<Vec<u8>>> {
             *self.last_capture_request.lock() = Some(request.clone());
             // The gate is read BEFORE the stop signal, so a capture held here has
             // not yet had the chance to observe an abort — exactly the state a
@@ -1749,7 +1766,10 @@ pub(crate) mod mock {
             // failure. The bound matches the tests' own 30 s deadline waits: a
             // gate still closed by then means the test has already failed.
             let gate_start = std::time::Instant::now();
-            while self.capture_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT {
+            while self.capture_gate.load(Ordering::SeqCst)
+                && call >= self.capture_gate_passes.load(Ordering::SeqCst)
+                && gate_start.elapsed() < GATE_TIMEOUT
+            {
                 std::thread::sleep(Duration::from_millis(1));
             }
             // The arm's first SDK call, as on the production handle.
@@ -1903,7 +1923,7 @@ pub(crate) mod mock {
                 outcomes.push(None);
                 outcomes.len().saturating_sub(1)
             };
-            let result = self.run_capture(request);
+            let result = self.run_capture(call, request);
             let outcome = match &result {
                 Ok(Some(_)) => CaptureOutcome::Frame,
                 Ok(None) => CaptureOutcome::Aborted,

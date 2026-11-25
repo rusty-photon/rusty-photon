@@ -1879,7 +1879,7 @@ mod handle_tests {
 #[cfg(test)]
 pub(crate) mod mock {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     fn default_info() -> CameraInfo {
         CameraInfo {
@@ -2086,6 +2086,12 @@ pub(crate) mod mock {
         /// flight" window while it drives a disconnect, a reconnect, and a
         /// second exposure — the interleaving a sleep can only approximate.
         capture_gate: AtomicBool,
+        /// How many captures, counted in call order, a raised capture gate
+        /// lets through. A test raises it to release an earlier capture while
+        /// a later one stays parked — in flight for exactly as long as the
+        /// test keeps the gate up, which no capture delay can promise on a
+        /// runner that stalls.
+        capture_gate_passes: AtomicUsize,
         /// While set, `set_camera_mode` — on a trigger camera the connect
         /// handshake's mode select, its last step but the video arm — parks
         /// before reaching the SDK until the gate is lowered, so a test can
@@ -2151,6 +2157,7 @@ pub(crate) mod mock {
                 open_delay: Mutex::new(Duration::ZERO),
                 capture_delay: Mutex::new(Duration::ZERO),
                 capture_gate: AtomicBool::new(false),
+                capture_gate_passes: AtomicUsize::new(0),
                 mode_select_gate: AtomicBool::new(false),
                 capture_outcomes: Mutex::new(Vec::new()),
                 fail_capture: AtomicBool::new(false),
@@ -2229,6 +2236,12 @@ pub(crate) mod mock {
         /// Hold every capture at the gate (or release the held ones).
         pub fn set_capture_gate(&self, closed: bool) {
             self.capture_gate.store(closed, Ordering::SeqCst);
+        }
+
+        /// Let the first `count` captures, in call order, through the raised
+        /// gate; the later ones stay held until it is lowered.
+        pub fn pass_capture_gate(&self, count: usize) {
+            self.capture_gate_passes.store(count, Ordering::SeqCst);
         }
 
         /// Hold every `set_camera_mode` at the gate (or release the held ones).
@@ -2411,7 +2424,7 @@ pub(crate) mod mock {
 
         /// The capture proper; [`CameraHandle::capture`] wraps it to record
         /// how it ended.
-        fn run_capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
+        fn run_capture(&self, call: usize, request: CaptureRequest) -> BackendResult<Vec<u8>> {
             *self.last_capture_request.lock() = Some(request.clone());
             // The production handle's own arm, run through this mock's model
             // of the SDK — its auto-exposure gate, its refusals and its call
@@ -2432,7 +2445,10 @@ pub(crate) mod mock {
             // waits: a gate still closed by then means the test has already
             // failed.
             let gate_start = Instant::now();
-            while self.capture_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT {
+            while self.capture_gate.load(Ordering::SeqCst)
+                && call >= self.capture_gate_passes.load(Ordering::SeqCst)
+                && gate_start.elapsed() < GATE_TIMEOUT
+            {
                 std::thread::sleep(Duration::from_millis(1));
             }
             // Mirror the production handle's sliced wait: an abort/disconnect
@@ -2711,7 +2727,7 @@ pub(crate) mod mock {
                 outcomes.push(None);
                 outcomes.len().saturating_sub(1)
             };
-            let result = self.run_capture(request);
+            let result = self.run_capture(call, request);
             let outcome = match &result {
                 Ok(_) => CaptureOutcome::Frame,
                 Err(e) if e.message() == ABORTED_MESSAGE => CaptureOutcome::Aborted,

@@ -2146,6 +2146,18 @@ mod tests {
         .expect("exposure did not complete");
     }
 
+    /// Lowers the capture gate when the test ends, a failed assertion
+    /// included. A capture still parked at a raised gate would otherwise keep
+    /// the test's runtime from shutting down until the gate's own bound, and
+    /// the failure would be that long in being reported.
+    struct LowerCaptureGate<'a>(&'a MockCameraHandle);
+
+    impl Drop for LowerCaptureGate<'_> {
+        fn drop(&mut self) {
+            self.0.set_capture_gate(false);
+        }
+    }
+
     /// Deadline-bounded wait for the mock to have entered `count` captures.
     async fn wait_captures_started(handle: &MockCameraHandle, count: usize) {
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -3959,6 +3971,7 @@ mod tests {
         // Hold each capture before it can read its cancel flag, so the
         // interleaving is forced rather than raced.
         handle.set_capture_gate(true);
+        let _gate = LowerCaptureGate(&handle);
         let cam = SvbonyCamera::new(handle.clone(), None);
         cam.connect().unwrap();
         cam.set_num_x(64).await.unwrap();
@@ -3974,14 +3987,17 @@ mod tests {
         // as small as the first.
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
-        // The second exposure stays in flight while the first drains.
-        handle.set_capture_delay(Duration::from_secs(5));
         cam.start_exposure(Duration::from_secs(5), true)
             .await
             .unwrap();
         wait_captures_started(&handle, 2).await;
 
-        handle.set_capture_gate(false);
+        // The second exposure stays in flight while the first drains: the gate
+        // lets the first capture through and holds the second for as long as
+        // this test keeps it raised. A capture delay would not do — it runs on
+        // the wall clock, so a runner that stalls for longer than the delay
+        // lets the second exposure finish and the device, correctly, go idle.
+        handle.pass_capture_gate(1);
         tokio::time::timeout(Duration::from_secs(30), async {
             while handle.capture_outcomes().first() != Some(&Some(CaptureOutcome::Aborted)) {
                 tokio::time::sleep(Duration::from_millis(5)).await;

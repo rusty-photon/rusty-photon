@@ -2117,6 +2117,16 @@ opposite of a nap, which gets weaker as the machine gets slower. Give the
 assertion a message naming the invariant, since the interesting failure is
 about *which* state was observed, not about a bare equality.
 
+That holds only while nothing the window depends on is itself on a timer.
+Whatever keeps the watched state alive for the window — here, the second
+exposure that has to stay `Exposing` — is held at a gate the test lowers,
+never by a delay. A delay runs on the wall clock, so a runner that stalls for
+longer than it ends the state legitimately and fails a correct build. The test
+above holds its second capture at the mock's capture gate
+(`pass_capture_gate` lets only the first capture through), and a drop guard
+lowers the gate when the test ends, so a failed assertion is reported at once
+instead of after the gate's bound.
+
 Prove such a test earns its name: reintroduce the defect it targets and watch
 it fail. For a nap-based test, also delay the code under test (a temporary
 `sleep` right before it) to model a loaded runner — with the bug present and
