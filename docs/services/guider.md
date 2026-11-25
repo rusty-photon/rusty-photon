@@ -281,6 +281,18 @@ for. A failed frame is discarded and no pulse follows it. After
 `camera.max_frame_failures` consecutive failures the guider stops with
 the reason `camera_error`.
 
+- **Each failed attempt takes an exposure.** The guider starts its next
+  attempt no sooner than `camera.exposure` after the failed one began.
+  A call that fails at once, such as a `StartExposure` refused by a
+  camera that is not connected, would otherwise use up
+  `camera.max_frame_failures` in milliseconds. So the failures span
+  about as many exposures, and a camera that drops out for less than
+  that, as when its driver restarts, does not stop the loop. A stop
+  ends the wait.
+- **An exposure of its own that may still run** after a failed frame,
+  one that never became ready or whose start got no answer, is ended
+  before the frame settings are written again, as when the loop stops.
+
 **A camera that comes back changed.** The frame settings, the pixel
 scale and the star positions belong to the sensor the camera had when
 the guider left `idle`, and a run's calibration with them. A camera

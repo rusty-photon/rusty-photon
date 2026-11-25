@@ -39,7 +39,41 @@ fn every_exposure_fails(world: &mut GuiderWorld, fault: String) {
 )]
 async fn next_exposures_fail(world: &mut GuiderWorld, count: usize, fault: String) {
     world.noted_frames = vec![last_frame(world).await.unwrap_or(0)];
+    world.noted_exposure = world.sim().exposures().last().map(|exposure| exposure.at);
     world.sim().fail_frames(fault_named(&fault), Some(count));
+}
+
+#[then(
+    regex = r"^the simulated camera's next exposure starts no sooner than (\d+) s after the last one before the failures$"
+)]
+async fn next_exposure_no_sooner(world: &mut GuiderWorld, seconds: u64) {
+    let before = world
+        .noted_exposure
+        .expect("an exposure was noted before the failures");
+    world
+        .wait_until("an exposure after the failures", || {
+            world
+                .sim()
+                .exposures()
+                .last()
+                .is_some_and(|exposure| exposure.at > before)
+        })
+        .await;
+    let next = world
+        .sim()
+        .exposures()
+        .into_iter()
+        .find(|exposure| exposure.at > before)
+        .expect("the exposure after the failures");
+    // A few milliseconds of slack for the two processes' clocks.
+    let earliest =
+        before.after(Duration::from_secs(seconds).saturating_sub(Duration::from_millis(20)));
+    assert!(
+        next.at >= earliest,
+        "the next exposure started at {:?}, {seconds} s after {before:?} is {:?}",
+        next.at,
+        before.after(Duration::from_secs(seconds))
+    );
 }
 
 #[when(regex = r"^the guider's metrics gain at least (\d+) frames after the failures$")]

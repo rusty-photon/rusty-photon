@@ -164,10 +164,26 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// The body of a request that takes no fields.
+/// The body of a request that takes no fields: an empty JSON object.
+///
+/// It converts from a JSON map rather than deriving a field-less struct with
+/// `deny_unknown_fields`, whose derive expands to an empty enum that
+/// `clippy::empty_enums` denies.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NoFields {}
+#[serde(try_from = "serde_json::Map<String, serde_json::Value>")]
+pub struct NoFields;
+
+impl TryFrom<serde_json::Map<String, serde_json::Value>> for NoFields {
+    type Error = &'static str;
+
+    fn try_from(fields: serde_json::Map<String, serde_json::Value>) -> Result<Self, Self::Error> {
+        if fields.is_empty() {
+            Ok(Self)
+        } else {
+            Err("the request takes no fields")
+        }
+    }
+}
 
 /// `body` read as `T`, an empty body as `{}`.
 ///

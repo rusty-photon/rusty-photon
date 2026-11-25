@@ -32,7 +32,7 @@ use tracing::{debug, info};
 use crate::api::{ApiError, ErrorCode, Stop};
 use crate::config::Config;
 use crate::devices::{
-    call, camera_sensor, CameraKind, CameraSensor, DeviceClient, DevicesState, Found,
+    call, camera_sensor, CallError, CameraKind, CameraSensor, DeviceClient, DevicesState, Found,
 };
 use crate::guider::{FrameSummary, Status};
 use crate::sensor::{changed, FrameSettings, Reading};
@@ -114,6 +114,8 @@ pub async fn run(
         stars: None,
         failures: 0,
         settings_due: Some(Settings::Start),
+        attempt_started: Instant::now(),
+        retry_at: None,
     };
     info!(
         exposure = %humantime::format_duration(cycle.exposer.exposure),
@@ -151,6 +153,10 @@ struct Cycle {
     /// Frames failed in a row.
     failures: u32,
     settings_due: Option<Settings>,
+    /// When the current attempt at a frame began, and when the next may
+    /// begin after a failed one.
+    attempt_started: Instant,
+    retry_at: Option<Instant>,
 }
 
 impl Cycle {
@@ -161,6 +167,14 @@ impl Cycle {
         cancel: &CancellationToken,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Option<Stop> {
+        if let Some(at) = self.retry_at.take() {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Some(Stop::requested()),
+                () = tokio::time::sleep_until(at) => {}
+            }
+        }
+        self.attempt_started = Instant::now();
         if let Some(due) = self.settings_due {
             let written = tokio::select! {
                 biased;
@@ -246,8 +260,7 @@ impl Cycle {
         self.failures = 0;
         let centres = stars
             .as_ref()
-            .map(GuideStars::search_centres)
-            .unwrap_or_default();
+            .map_or_else(Vec::new, GuideStars::search_centres);
         self.stars = stars;
         // A request that is gone has nothing to hear.
         if let Some(first) = self.first.take() {
@@ -267,10 +280,12 @@ impl Cycle {
         None
     }
 
-    /// Count a failed frame, and write the frame settings again before the
-    /// next; the stop once `camera.max_frame_failures` have failed in a row.
+    /// Count a failed frame, write the frame settings again before the next
+    /// and start it no sooner than an exposure after the failed one began;
+    /// the stop once `camera.max_frame_failures` have failed in a row.
     fn failed(&mut self, message: &str) -> Option<Stop> {
         self.settings_due = Some(Settings::AfterFailure);
+        self.retry_at = self.attempt_started.checked_add(self.exposer.exposure);
         count_failure(&mut self.failures, self.max_failures, message)
     }
 }
@@ -325,8 +340,9 @@ enum Rewrite {
     Failed(String),
 }
 
-/// Write the frame settings; after a failure, read the camera's static
-/// properties first, and take up the camera as its server lists it now.
+/// Write the frame settings; after a failure, end an exposure of the
+/// guider's own that may still run, read the camera's static properties,
+/// and take up the camera as its server lists it now.
 async fn write_settings(
     due: Settings,
     client: &DeviceClient,
@@ -334,6 +350,8 @@ async fn write_settings(
     exposer: &mut Exposer,
 ) -> Result<(), Rewrite> {
     if due == Settings::AfterFailure {
+        exposer.end_exposure(sensor.can_abort_exposure).await;
+        exposer.in_flight = None;
         let camera = match client.find::<CameraKind>().await {
             Found::Listed {
                 device,
@@ -439,18 +457,24 @@ impl Exposer {
 
     /// One frame: the exposure, the wait for it, and its fetch.
     async fn frame(&mut self) -> Result<ImageArray, String> {
-        // In flight from the moment it is asked for: a stop while the call
-        // is out may find it started.
+        // In flight from the moment it is asked for, and until its frame
+        // arrives: a start whose call is out, or got no answer, may have
+        // started it, and one whose frame never came may still run.
         self.in_flight = Some(self.in_flight_from(Instant::now()));
-        if let Err(error) = call(self.camera.start_exposure(self.exposure, true)).await {
-            self.in_flight = None;
-            return Err(format!("StartExposure failed: {error}"));
+        match call(self.camera.start_exposure(self.exposure, true)).await {
+            Ok(()) => {}
+            Err(error @ CallError::Failed(_)) => {
+                self.in_flight = None;
+                return Err(format!("StartExposure failed: {error}"));
+            }
+            Err(error @ CallError::Deadline) => {
+                return Err(format!("StartExposure failed: {error}"));
+            }
         }
-        let InFlight { end, deadline } = self.in_flight_from(Instant::now());
-        self.in_flight = Some(InFlight { end, deadline });
-        let fetched = self.fetch(end, deadline).await;
+        let in_flight = self.in_flight_from(Instant::now());
+        self.in_flight = Some(in_flight);
+        let image = self.fetch(in_flight.end, in_flight.deadline).await?;
         self.in_flight = None;
-        let image = fetched?;
         let asked = (
             usize::try_from(self.settings.width).unwrap_or(usize::MAX),
             usize::try_from(self.settings.height).unwrap_or(usize::MAX),
@@ -711,6 +735,10 @@ mod tests {
         assert!(error.contains("no pixels"), "{error}");
     }
 
+    fn camera_of(pixel_size_um: f64) -> CameraSensor {
+        camera(pixel_size_um, 65_535)
+    }
+
     fn camera(pixel_size_um: f64, max_adu: u32) -> CameraSensor {
         CameraSensor {
             sensor_type: ascom_alpaca::api::camera::SensorType::Monochrome,
@@ -799,6 +827,52 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_start_that_gets_no_answer_stays_in_flight() {
+        let camera = Arc::new(FakeCamera {
+            start_hangs: true,
+            ..FakeCamera::default()
+        });
+        let mut exposer = exposer(camera);
+        let error = exposer.frame().await.unwrap_err();
+        assert!(error.contains("no answer within 10s"), "{error}");
+        assert!(
+            exposer.in_flight.is_some(),
+            "a start that got no answer may have started"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_settings_after_a_failure_end_the_exposure_that_may_still_run_first() {
+        let camera = Arc::new(FakeCamera::default());
+        let mut exposer = exposer(Arc::clone(&camera));
+        exposer.in_flight = Some(exposer.in_flight_from(Instant::now()));
+        // A server that does not listen: the read after the ended exposure
+        // fails.
+        let address: crate::config::DeviceAddress =
+            serde_json::from_value(serde_json::json!({ "alpaca_url": "http://127.0.0.1:9" }))
+                .unwrap();
+        let client = DeviceClient::new(&address, None).unwrap();
+        let mut sensor = camera_of(2.0);
+        let written =
+            write_settings(Settings::AfterFailure, &client, &mut sensor, &mut exposer).await;
+        assert!(matches!(written, Err(Rewrite::Failed(_))), "{written:?}");
+        assert_eq!(camera.aborts.load(Ordering::SeqCst), 1);
+        assert!(exposer.in_flight.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_start_leaves_nothing_in_flight() {
+        let camera = Arc::new(FakeCamera {
+            start_refused: true,
+            ..FakeCamera::default()
+        });
+        let mut exposer = exposer(camera);
+        let error = exposer.frame().await.unwrap_err();
+        assert!(error.starts_with("StartExposure failed"), "{error}");
+        assert!(exposer.in_flight.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_frame_of_other_dimensions_fails() {
         let camera = Arc::new(FakeCamera {
             frame: (319, 240),
@@ -820,7 +894,10 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("had not arrived 10s after"), "{error}");
         assert!(started.elapsed() >= Duration::from_secs(12));
-        assert!(exposer.in_flight.is_none());
+        assert!(
+            exposer.in_flight.is_some(),
+            "an exposure whose frame never came may still run"
+        );
     }
 
     #[tokio::test(start_paused = true)]

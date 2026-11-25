@@ -3,8 +3,9 @@ Feature: Frames that fail, and the camera's stop reasons
   `camera.frame_timeout` after its exposure should have ended, or when its
   dimensions are not the ones the guider asked for
   (docs/services/guider.md § The camera loop). A failed frame is
-  discarded. After every failure the guider reads the camera's static
-  properties again and writes the frame settings again. After
+  discarded, and the next attempt begins no sooner than an exposure after
+  the failed one did. After every failure the guider reads the camera's
+  static properties again and writes the frame settings again. After
   `camera.max_frame_failures` failures in a row the loop stops with the
   reason `camera_error`, and so does a camera that comes back with another
   sensor size, pixel size or sensor type than it had when the guider left
@@ -59,6 +60,17 @@ Feature: Frames that fail, and the camera's stop reasons
     And the guider's metrics gain at least 3 frames after the failures
     And the next 2 exposures of the simulated camera fail as a start that fails
     Then the guider's metrics gain at least 3 frames after the failures
+    And the guider's stats report the state "looping"
+
+  Scenario: Each failed attempt takes an exposure before the next begins
+    Given the simulated camera and mount, both connected
+    And a guider configuration naming both devices and a focal length of 206.265 mm
+    And the guider configuration's "/camera/exposure" is the JSON "1s"
+    And the guider configuration's "/camera/max_frame_failures" is the JSON 5
+    And the guider is started
+    And the guider is looping
+    When the next 2 exposures of the simulated camera fail as a start that fails
+    Then the simulated camera's next exposure starts no sooner than 3 s after the last one before the failures
     And the guider's stats report the state "looping"
 
   Scenario: A loop whose first frames all fail answers guide_failed with the stop reason

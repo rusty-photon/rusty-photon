@@ -118,6 +118,9 @@ pub struct GuiderWorld {
     /// The frame numbers the metrics window held at a step that noted
     /// them.
     pub noted_frames: Vec<u64>,
+    /// When the simulated camera's last exposure started, at a step that
+    /// noted it.
+    pub noted_exposure: Option<SimTime>,
     pub tls_auth: TlsAuthState,
     pub doctor_smoke: DoctorSmokeState,
 }
@@ -145,6 +148,7 @@ impl GuiderWorld {
             answered_at: None,
             background: None,
             noted_frames: Vec::new(),
+            noted_exposure: None,
             tls_auth: TlsAuthState::default(),
             doctor_smoke: DoctorSmokeState::default(),
         }

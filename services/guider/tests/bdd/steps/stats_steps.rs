@@ -32,15 +32,12 @@ pub async fn last_frame(world: &GuiderWorld) -> Option<u64> {
 
 /// The frame numbers of a metrics answer, oldest first.
 fn frame_numbers(body: &Value) -> Vec<u64> {
-    body["frames"]
-        .as_array()
-        .map(|frames| {
-            frames
-                .iter()
-                .map(|frame| frame["frame"].as_u64().expect("a frame number"))
-                .collect()
-        })
-        .unwrap_or_default()
+    body["frames"].as_array().map_or_else(Vec::new, |frames| {
+        frames
+            .iter()
+            .map(|frame| frame["frame"].as_u64().expect("a frame number"))
+            .collect()
+    })
 }
 
 /// The frames of a metrics answer.

@@ -526,7 +526,7 @@
           "FILE:@@//services/pa-falcon-rotator/Cargo.toml 1234311dd94c00419f19b6e764f97918fb24b86c883d3ca8fe116dce024b59b9",
           "FILE:@@//services/pa-scops-oag/Cargo.toml a415ad7632748846a031e7c377c38022e3a6a2c4f32c3d4f168835ab7c80e265",
           "FILE:@@//services/planetarium-bridge/Cargo.toml c1f6cd316a982292785c658a3e4c85c24a5f61a05c0066a9152bd45b4661f620",
-          "FILE:@@//services/polar-align/Cargo.toml cd9c93c691fd7de52e761233f2388315dfefb99592ef43d5a84eade339391e7b",
+          "FILE:@@//services/polar-align/Cargo.toml b188d9e8242c303d7b955283e1f2d9d866fb3ed319f64acf7b077d721d9c33b7",
           "FILE:@@//services/ppba-driver/Cargo.toml 586727a003a9ad7cb5bf2bfe43dde22f1bddb34ade68233d99426abc747a39e8",
           "FILE:@@//services/qhy-camera/Cargo.toml 57c685369a3eebbc22e37e13bb51595f544c0edca2ba1119db9c205ea59f8f77",
           "FILE:@@//services/qhy-focuser/Cargo.toml 8f6ef3e6d6e95198cb1621411019fff507a10fdd211a664f12f095c742809090",

@@ -6,13 +6,15 @@ use std::time::Duration;
 
 use ascom_alpaca::api::camera::{ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
-use ascom_alpaca::ASCOMResult;
+use ascom_alpaca::{ASCOMError, ASCOMResult};
 
 /// A 320 × 240 monochrome camera of 2 µm pixels.
 #[derive(Debug)]
 pub struct FakeCamera {
     /// `StartExposure` never answers.
     pub start_hangs: bool,
+    /// `StartExposure` answers `NOT_CONNECTED`.
+    pub start_refused: bool,
     /// What `ImageReady` answers.
     pub ready: AtomicBool,
     /// The frame `ImageArray` answers, as width and height.
@@ -28,6 +30,7 @@ impl Default for FakeCamera {
     fn default() -> Self {
         Self {
             start_hangs: false,
+            start_refused: false,
             ready: AtomicBool::new(true),
             frame: (320, 240),
             pixel_size_um: 2.0,
@@ -138,6 +141,9 @@ impl Camera for FakeCamera {
     async fn start_exposure(&self, _duration: Duration, _light: bool) -> ASCOMResult<()> {
         if self.start_hangs {
             std::future::pending::<()>().await;
+        }
+        if self.start_refused {
+            return Err(ASCOMError::NOT_CONNECTED);
         }
         Ok(())
     }

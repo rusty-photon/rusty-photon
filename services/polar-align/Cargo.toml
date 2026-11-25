@@ -26,9 +26,7 @@ thiserror = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 async-trait = { workspace = true }
-# The one service-local crates.io dep: only the preview endpoint
-# encodes PNGs (workspace Cargo.toml is for deps shared by 2+
-# services, AGENTS.md rule 10).
+# The preview endpoint encodes PNGs.
 png = { workspace = true }
 rp-auth = { workspace = true }
 rp-ephemeris = { workspace = true }
