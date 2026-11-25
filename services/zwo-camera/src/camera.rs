@@ -2839,7 +2839,7 @@ mod tests {
     #[tokio::test]
     async fn a_gain_or_offset_set_during_an_exposure_is_taken_for_the_next_one() {
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_secs(30));
+        let hold = handle.hold_captures();
         let (device, handle) = connected_device_with_handle(handle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -2872,7 +2872,7 @@ mod tests {
 
         device.stop_exposure().await.unwrap();
         wait_image_ready(&device).await;
-        handle.set_capture_delay(Duration::ZERO);
+        drop(hold);
         expose(&device).await;
         let next = handle.last_capture_request().unwrap();
         assert_eq!((next.gain, next.offset), (Some(300), Some(90)));
@@ -3574,7 +3574,7 @@ mod tests {
     #[tokio::test]
     async fn second_exposure_while_in_flight_is_rejected() {
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         let device = connected_device(handle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -3595,7 +3595,7 @@ mod tests {
     #[tokio::test]
     async fn abort_discards_the_frame() {
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         let device = connected_device(handle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -3605,14 +3605,16 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
         device.abort_exposure().await.unwrap();
-        // No fresh frame is ready after an abort. Best-effort, deadline-bounded
-        // wait (not a fixed nap count) for the in-flight flag to clear.
-        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        // No fresh frame is ready after an abort. The capture is held, so
+        // only the abort can end it; once its claim is gone its commit has
+        // run, and what it left behind is what is asserted.
+        tokio::time::timeout(Duration::from_secs(30), async {
             while device.state.exposure_in_flight() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
-        .await;
+        .await
+        .expect("the aborted capture never drained");
         assert!(!device.image_ready().await.unwrap());
         assert_eq!(
             device.image_array().await.unwrap_err().code,
@@ -3624,7 +3626,7 @@ mod tests {
     async fn graceful_stop_preserves_the_frame() {
         // ZWO divergence: StopExposure keeps the frame (E8).
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         let device = connected_device(handle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
@@ -3654,15 +3656,16 @@ mod tests {
     async fn pulse_guide_reports_in_flight() {
         // ASCOM PulseGuide returns promptly instead of blocking for the
         // pulse, and IsPulseGuiding is true while one is in flight (PG2).
-        // The 60 s pulse outlives the test, so the in-flight read races
-        // nothing — a shorter pulse would let a starved runtime delay the
-        // read past the deadline. The pulse never ends: runtime shutdown
-        // drops the detached stop task, and the mock needs no cleanup.
+        // The pulse's deadline is the driver's own, on the wall clock, so
+        // the pulse is a day long: longer than this test target may run at
+        // all, and so longer than any stall the in-flight read can meet.
+        // The pulse never ends: runtime shutdown drops the detached stop
+        // task, and the mock needs no cleanup.
         // PulseGuide returning promptly is implied by the test finishing.
         let device = connected_device(MockCameraHandle::default());
         assert!(!device.is_pulse_guiding().await.unwrap());
         device
-            .pulse_guide(GuideDirection::North, Duration::from_mins(1))
+            .pulse_guide(GuideDirection::North, Duration::from_hours(24))
             .await
             .unwrap();
         assert!(device.is_pulse_guiding().await.unwrap());
@@ -3925,8 +3928,9 @@ mod tests {
         device.set_connected(true).await.unwrap();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
-        // The second exposure stays in flight while the first drains.
-        handle.set_capture_delay(Duration::from_secs(5));
+        // The second exposure stays in flight while the first drains — held,
+        // not timed, so no stall of the runner can end it under the window.
+        let _hold = handle.hold_captures();
         device
             .start_exposure(Duration::from_secs(5), true)
             .await
@@ -3983,9 +3987,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_abort_reaches_a_capture_the_claim_has_only_just_admitted() {
         let handle = MockCameraHandle::default();
-        // Far longer than the drain wait below, so a pass can only come from
-        // the abort reaching the capture, never from waiting the capture out.
-        handle.set_capture_delay(Duration::from_secs(60));
+        // Held, so a pass can only come from the abort reaching the capture,
+        // never from waiting the capture out.
+        let _hold = handle.hold_captures();
         let cam = connected_device(handle);
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
@@ -4018,9 +4022,8 @@ mod tests {
         .await
         .is_ok();
         assert!(!cam.image_ready().await.unwrap());
-        // A swallowed abort leaves a capture parked for the rest of its delay;
-        // end it here so a failing run reports at once rather than at the
-        // runtime's drop, which waits on the blocking pool.
+        // A swallowed abort leaves the capture held and the device claimed;
+        // end it here so the device is handed back whichever way this went.
         cam.abort_exposure().await.unwrap();
         assert!(
             drained,
@@ -4031,7 +4034,7 @@ mod tests {
     #[tokio::test]
     async fn disconnect_cancels_in_flight_exposure() {
         let handle = Arc::new(MockCameraHandle::default());
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         let device = ZwoCamera::new(
             Arc::<MockCameraHandle>::clone(&handle),
             None,
@@ -4334,7 +4337,7 @@ mod tests {
     #[tokio::test]
     async fn a_capture_whose_camera_leaves_mid_frame_reads_disconnected() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
-        handle.set_capture_delay(Duration::from_millis(300));
+        let hold = handle.hold_captures();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device
@@ -4346,6 +4349,8 @@ mod tests {
         wait_control_writes(&handle, 2).await;
 
         handle.leave_bus();
+        // The integration ends, and its readout finds the camera gone.
+        drop(hold);
 
         wait_captures_finished(&handle, 1).await;
         assert_eq!(

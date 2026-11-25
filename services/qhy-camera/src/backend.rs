@@ -1201,10 +1201,11 @@ pub(crate) mod mock {
         /// driver really entered its poll loop rather than passing straight
         /// through on host-side timing alone.
         pub remaining_calls: AtomicU32,
-        /// Microseconds every `get_parameter` blocks for, standing in for the
-        /// USB round-trip a real property read makes. A test uses it to make a
-        /// read demonstrably slow, so where the driver runs it is observable.
-        read_delay_us: AtomicU64,
+        /// Holds every `get_parameter` inside the SDK, standing in for the USB
+        /// round-trip a real property read makes. A test uses it to keep a
+        /// read in flight until something else has run, so where the driver
+        /// runs the read is observable.
+        parameter_reads_held: AtomicBool,
         /// The camera has left the bus (C9): its handle stays open, every SDK
         /// call on it fails, `is_control_available` answers `None` for every
         /// control, and it cannot be opened — the shape a camera whose power or
@@ -1338,7 +1339,7 @@ pub(crate) mod mock {
                 image_size_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
-                read_delay_us: AtomicU64::new(0),
+                parameter_reads_held: AtomicBool::new(false),
                 departed: AtomicBool::new(false),
                 lost: AtomicBool::new(false),
                 presence_checks: AtomicU32::new(0),
@@ -1389,13 +1390,17 @@ pub(crate) mod mock {
         pub fn param(&self, control: ControlType) -> Option<f64> {
             self.params.lock().get(&control).copied()
         }
-        /// Make every `get_parameter` take `delay`, standing in for the USB
-        /// round-trip a real property read makes. A read that takes no time is
-        /// indistinguishable wherever the driver runs it.
-        pub fn with_read_delay(self, delay: Duration) -> Self {
-            let us = u64::try_from(delay.as_micros()).unwrap_or(u64::MAX);
-            self.read_delay_us.store(us, Ordering::SeqCst);
-            self
+        /// Park every `get_parameter` inside the SDK until
+        /// [`release_parameter_reads`](Self::release_parameter_reads). A read
+        /// that takes no time is indistinguishable wherever the driver runs
+        /// it.
+        pub fn hold_parameter_reads(&self) {
+            self.parameter_reads_held.store(true, Ordering::SeqCst);
+        }
+        /// Let the `get_parameter` calls parked by
+        /// [`hold_parameter_reads`](Self::hold_parameter_reads) answer.
+        pub fn release_parameter_reads(&self) {
+            self.parameter_reads_held.store(false, Ordering::SeqCst);
         }
         /// Hold the readout open once it starts, until
         /// [`release_readout`](Self::release_readout). Pair it with
@@ -1861,9 +1866,12 @@ pub(crate) mod mock {
             if self.fail_reads.lock().contains(&control) {
                 return Err(BackendError(format!("simulated {control:?} read failure")));
             }
-            let delay = self.read_delay_us.load(Ordering::SeqCst);
-            if delay > 0 {
-                std::thread::sleep(Duration::from_micros(delay));
+            // Same shape (and same runaway backstop) as the held open above.
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.parameter_reads_held.load(Ordering::SeqCst)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(1));
             }
             self.params
                 .lock()

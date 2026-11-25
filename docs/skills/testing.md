@@ -2117,6 +2117,32 @@ opposite of a nap, which gets weaker as the machine gets slower. Give the
 assertion a message naming the invariant, since the interesting failure is
 about *which* state was observed, not about a bare equality.
 
+That holds only while nothing the window depends on is itself on a timer.
+Whatever keeps the watched state alive for the window — here, the second
+exposure that has to stay `Exposing` — is held until the test releases it,
+never by a delay. A delay runs on the wall clock, so a runner that stalls for
+longer than it ends the state legitimately and fails a correct build. The
+camera mocks of `svbony-camera` and `zwo-camera` have no capture delay for
+that reason: `MockCameraHandle::hold_captures()` returns a guard, and while it
+lives a capture stays in its integration, ending early only on what ends that
+driver's own wait: an abort in both, a stop in `zwo-camera`, a camera found
+gone in `svbony-camera`. A `zwo-camera` capture finds its camera gone at the
+readout, so a test of that drops the guard after the camera leaves. Dropping
+the guard releases the capture, so a failed assertion releases it too and is
+reported at once. A test that proves an abort ended a
+capture keeps the guard alive until it has seen the capture end; dropped
+earlier, the release would end the capture and the test would pass with the
+abort lost.
+
+The camera mocks hold their other calls the same way: `svbony-camera`'s
+`hold_open()` keeps a connect inside the camera's open until a second connect
+has been admitted behind it, and `qhy-camera`'s `hold_parameter_reads()` keeps
+a property read inside the SDK until another task has run. Where the timer is
+the driver's own and cannot be held — a guide pulse ends at its wall-clock
+deadline — the test asks for a pulse longer than its test target may run, so
+no stall the test survives can end it (`pulse_guide_reports_in_flight`,
+`services/zwo-camera/src/camera.rs`).
+
 Prove such a test earns its name: reintroduce the defect it targets and watch
 it fail. For a nap-based test, also delay the code under test (a temporary
 `sleep` right before it) to model a loaded runner — with the bug present and

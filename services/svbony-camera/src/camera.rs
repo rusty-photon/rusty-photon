@@ -3204,7 +3204,7 @@ mod tests {
     #[tokio::test]
     async fn changing_the_readout_mode_during_an_exposure_is_rejected() {
         let handle = Arc::new(MockCameraHandle::default());
-        handle.set_capture_delay(Duration::from_secs(30));
+        let _hold = handle.hold_captures();
         let cam = SvbonyCamera::new(handle.clone(), None);
         cam.connect().unwrap();
         cam.set_num_x(64).await.unwrap();
@@ -3416,21 +3416,36 @@ mod tests {
         // produces exactly this): `handle.open()`'s atomic check-and-open
         // lets exactly one of them own the handshake — the other no-ops
         // instead of running a second handshake whose video-capture arm
-        // fails with the SDK's "video mode active". The open delay holds
-        // the winner inside the open critical section so the two
-        // genuinely overlap.
+        // fails with the SDK's "video mode active". The winner is held
+        // inside the open critical section until the duplicate has been
+        // admitted behind it, so the two overlap on every run.
         let handle = Arc::new(MockCameraHandle::default());
-        handle.set_open_delay(Duration::from_millis(200));
+        let hold = handle.hold_open();
         let cam = SvbonyCamera::new(handle.clone(), None);
-        let racer = cam.clone();
-        let (first, second) = tokio::join!(cam.set_connected(true), async move {
-            // Let the first transition park inside `open()` before the
-            // duplicate arrives, so the duplicate cannot win by ordering.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            racer.set_connected(true).await
-        });
-        first.unwrap();
-        second.unwrap();
+        let first = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(true).await })
+        };
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !handle.is_in_open() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first connect never reached the camera's open");
+        // One poll takes the duplicate past its fast path, which still reads
+        // a closed camera, and queues its transition behind the first's.
+        let mut second = std::pin::pin!(cam.set_connected(true));
+        tokio::select! {
+            biased;
+            answer = &mut second => panic!(
+                "the duplicate connect answered {answer:?} while the first was still opening"
+            ),
+            () = std::future::ready(()) => {}
+        }
+        drop(hold);
+        first.await.unwrap().unwrap();
+        second.await.unwrap();
         assert!(cam.connected().await.unwrap());
         assert_eq!(handle.start_video_capture_call_count(), 1);
     }
@@ -3512,7 +3527,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_exposure_while_one_is_in_flight_is_rejected() {
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_millis(200));
+        let _hold = handle.hold_captures();
         let cam = connected_device(handle);
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
@@ -3637,7 +3652,7 @@ mod tests {
     #[tokio::test]
     async fn aborting_an_in_flight_exposure_leaves_no_image_ready() {
         let handle = MockCameraHandle::default();
-        handle.set_capture_delay(Duration::from_millis(300));
+        let _hold = handle.hold_captures();
         let cam = connected_device(handle);
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
@@ -3650,14 +3665,20 @@ mod tests {
         assert!(!cam.image_ready().await.unwrap());
         // CameraState/PercentCompleted must reflect the abort immediately,
         // not only once the still-running, un-interruptible capture task
-        // happens to drain (the whole injected 300ms capture_delay is still
-        // in flight here).
+        // happens to drain (nothing has yielded to it since the abort).
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
         assert_eq!(cam.percent_completed().await.unwrap(), 0);
         // The late-completing capture task must not resurrect ImageReady or
-        // an Error state once it eventually drains (the generation-counter
-        // guard, E7).
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // an Error state once it has drained (the generation-counter guard,
+        // E7). The claim is released in the same critical section as the
+        // commit, so once it is gone the commit has run.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while cam.state.exposure_in_flight() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the aborted capture never drained");
         assert!(!cam.image_ready().await.unwrap());
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
     }
@@ -3669,7 +3690,7 @@ mod tests {
     #[tokio::test]
     async fn a_new_exposure_is_accepted_promptly_after_an_abort() {
         let handle = Arc::new(MockCameraHandle::default());
-        handle.set_capture_delay(Duration::from_secs(30));
+        let hold = handle.hold_captures();
         let cam = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
         cam.connect().unwrap();
         cam.set_num_x(64).await.unwrap();
@@ -3679,7 +3700,8 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         cam.abort_exposure().await.unwrap();
-        handle.set_capture_delay(Duration::ZERO);
+        // The hold outlives the wait below, so only the abort can have ended
+        // the first capture.
         let accepted_after = std::time::Instant::now();
         loop {
             match cam.start_exposure(Duration::from_millis(10), true).await {
@@ -3693,6 +3715,7 @@ mod tests {
                 ),
             }
         }
+        drop(hold);
         wait_image_ready(&cam).await;
     }
 
@@ -3882,7 +3905,7 @@ mod tests {
     #[tokio::test]
     async fn disconnecting_cancels_an_in_flight_exposure() {
         let handle = Arc::new(MockCameraHandle::default());
-        handle.set_capture_delay(Duration::from_millis(300));
+        let _hold = handle.hold_captures();
         let cam = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
         cam.connect().unwrap();
         cam.set_num_x(64).await.unwrap();
@@ -3928,7 +3951,7 @@ mod tests {
         cam.connect().unwrap();
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
-        handle.set_capture_delay(Duration::from_secs(5));
+        let _hold = handle.hold_captures();
         cam.start_exposure(Duration::from_secs(5), true)
             .await
             .unwrap();
@@ -3974,8 +3997,9 @@ mod tests {
         // as small as the first.
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
-        // The second exposure stays in flight while the first drains.
-        handle.set_capture_delay(Duration::from_secs(5));
+        // The second exposure stays in flight while the first drains — held,
+        // not timed, so no stall of the runner can end it under the window.
+        let _hold = handle.hold_captures();
         cam.start_exposure(Duration::from_secs(5), true)
             .await
             .unwrap();
@@ -4032,9 +4056,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_abort_reaches_a_capture_the_claim_has_only_just_admitted() {
         let handle = MockCameraHandle::default();
-        // Far longer than the drain wait below, so a pass can only come from
-        // the abort reaching the capture, never from waiting the capture out.
-        handle.set_capture_delay(Duration::from_secs(60));
+        // Held, so a pass can only come from the abort reaching the capture,
+        // never from waiting the capture out.
+        let _hold = handle.hold_captures();
         let cam = connected_device(handle);
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
@@ -4067,9 +4091,8 @@ mod tests {
         .await
         .is_ok();
         assert!(!cam.image_ready().await.unwrap());
-        // A swallowed abort leaves a capture parked for the rest of its delay;
-        // end it here so a failing run reports at once rather than at the
-        // runtime's drop, which waits on the blocking pool.
+        // A swallowed abort leaves the capture held and the device claimed;
+        // end it here so the device is handed back whichever way this went.
         cam.abort_exposure().await.unwrap();
         assert!(
             drained,
@@ -4425,7 +4448,7 @@ mod tests {
         device.set_num_x(64).await.unwrap();
         device.set_num_y(64).await.unwrap();
         handle.set_capture_gate(true);
-        handle.set_capture_delay(Duration::from_secs(30));
+        let _hold = handle.hold_captures();
         device
             .start_exposure(Duration::from_secs(30), true)
             .await

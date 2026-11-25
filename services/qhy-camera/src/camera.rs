@@ -6403,19 +6403,20 @@ mod tests {
     /// other task run either way and the test would pass without testing
     /// anything.
     ///
-    /// The mock's read delay is what makes the offloaded case park rather than
-    /// finish on the first poll. A slower machine only makes that more certain,
-    /// so the test cannot weaken under load.
+    /// The mock holds the read inside the SDK until the other task has run and
+    /// released it, so the offloaded case parks rather than finishing on the
+    /// first poll however the two threads are scheduled. Made inline, the read
+    /// can be released by nobody: it sits out the mock's backstop, and returns
+    /// with the flag unset.
     #[tokio::test(flavor = "current_thread")]
     async fn a_property_read_leaves_the_executor_free() {
-        let device = connected_device(
-            MockCameraHandle::default().with_read_delay(Duration::from_millis(200)),
-        )
-        .await;
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.hold_parameter_reads();
         let ran_meanwhile = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&ran_meanwhile);
         let other = tokio::spawn(async move {
             flag.store(true, Ordering::Release);
+            handle.release_parameter_reads();
         });
 
         device.ccd_temperature().await.unwrap();

@@ -1431,6 +1431,19 @@ pub(crate) mod mock {
         }
     }
 
+    /// Keeps a [`MockCameraHandle`]'s captures in flight until it is dropped
+    /// (see [`MockCameraHandle::hold_captures`]). Dropping it — at the end of
+    /// the test, a failed assertion included — lets a capture still held run
+    /// on, so the test's runtime is not kept from shutting down.
+    #[must_use = "dropping the hold releases the captures"]
+    pub struct Hold(Arc<AtomicBool>);
+
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+
     /// Safety bound on the capture gate (see `run_capture`): long enough that no
     /// passing test reaches it, short enough that a wedged one still reports.
     const GATE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1446,8 +1459,14 @@ pub(crate) mod mock {
         cooler_on: AtomicBool,
         /// E9 injection: make the next capture fail at the SDK.
         pub fail_capture: AtomicBool,
-        /// Optional artificial integration time (for in-flight tests).
-        capture_delay: Mutex<Duration>,
+        /// Raised while a test's [`Hold`] is alive: every capture then
+        /// stays in its integration wait — in flight, and still answering an
+        /// abort or a stop — until the test drops the hold. A departure is
+        /// found at the readout, so only once the hold is dropped. The
+        /// integration has no length of its own: a delay would run on the
+        /// wall clock, and a runner that stalls for longer than it ends an
+        /// exposure the test still needs in flight.
+        capture_hold: Arc<AtomicBool>,
         /// While set, every capture parks at a gate placed *before* it reads its
         /// stop signal, and stays there until the gate is lowered. That lets a
         /// test hold one capture inside the device's "exposure in flight" window
@@ -1526,7 +1545,7 @@ pub(crate) mod mock {
                 target_temp: Mutex::new(0),
                 cooler_on: AtomicBool::new(false),
                 fail_capture: AtomicBool::new(false),
-                capture_delay: Mutex::new(Duration::ZERO),
+                capture_hold: Arc::new(AtomicBool::new(false)),
                 capture_gate: AtomicBool::new(false),
                 pulse_off_gate: AtomicBool::new(false),
                 pulse_offs_begun: std::sync::atomic::AtomicUsize::new(0),
@@ -1675,8 +1694,13 @@ pub(crate) mod mock {
             self
         }
 
-        pub fn set_capture_delay(&self, delay: Duration) {
-            *self.capture_delay.lock() = delay;
+        /// Keep every capture in flight for as long as the returned hold
+        /// lives. A held capture still ends at once on an abort or a stop, as
+        /// a real integration does. It does not notice its camera leaving the
+        /// bus: the readout finds that, once the hold is dropped.
+        pub fn hold_captures(&self) -> Hold {
+            self.capture_hold.store(true, Ordering::SeqCst);
+            Hold(Arc::clone(&self.capture_hold))
         }
 
         /// Take the camera off the bus, as a cut cable or power does (C6).
@@ -1761,23 +1785,18 @@ pub(crate) mod mock {
             arm_gain_and_offset(&request, |control, value| {
                 self.set_control_value(control, value)
             })?;
-            let delay = *self.capture_delay.lock();
-            // Mirror the production handle: sleep against a real-clock DEADLINE,
-            // not accumulated *intended* nap time, so the simulated capture can't
-            // drift under a contended runtime.
-            let deadline = std::time::Instant::now() + delay;
-            let step = Duration::from_millis(10);
+            // The integration lasts as long as a test holds it, and no longer;
+            // as on the production handle, an abort or a stop ends it at once.
             loop {
                 match request.stop.load() {
                     StopRequest::Abort => return Ok(None),
                     StopRequest::Preserve => break,
                     StopRequest::None => {}
                 }
-                let now = std::time::Instant::now();
-                if now >= deadline {
+                if !self.capture_hold.load(Ordering::SeqCst) {
                     break;
                 }
-                std::thread::sleep(step.min(deadline.saturating_duration_since(now)));
+                std::thread::sleep(Duration::from_millis(5));
             }
             // The readout poll: the first SDK call after the integration, and
             // so where a camera that left mid-frame is found out.
