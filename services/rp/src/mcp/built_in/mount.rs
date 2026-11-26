@@ -366,13 +366,13 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Read the mount's park state and capabilities: AtPark, CanPark, CanUnpark. Fails loud on the AtPark read error (the load-bearing field)."
+        description = "Read the mount's park state and capabilities: AtPark, CanPark, CanUnpark, and park_matches_power_up_pose: the driver's answer to its read-only ParkMatchesPowerUpPose Action when SupportedActions lists it (whether a power cut and power-up seed the mount where it parks), else the mount entry's power_cut_keeps_pose, else null. Fails loud on the AtPark read error (the load-bearing field) and on a failed Action read."
     )]
     pub(crate) async fn get_park_state(
         &self,
         Parameters(_params): Parameters<GetParkStateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let (_entry, mount) = match self.resolve_mount() {
+        let (entry, mount) = match self.resolve_mount() {
             Ok(p) => p,
             Err(e) => return Ok(tool_error!("{}", e)),
         };
@@ -389,11 +389,18 @@ impl McpHandler {
             Ok(v) => v,
             Err(e) => return Ok(tool_error!("failed to read mount can_unpark: {}", e)),
         };
+        let park_matches_power_up_pose =
+            match crate::equipment::mount::park_matches_power_up_pose(&*mount, &entry.config).await
+            {
+                Ok(v) => v,
+                Err(e) => return Ok(tool_error!("{}", e)),
+            };
 
         Ok(tool_success!({
             "at_park": at_park,
             "can_park": can_park,
             "can_unpark": can_unpark,
+            "park_matches_power_up_pose": park_matches_power_up_pose,
         }))
     }
 

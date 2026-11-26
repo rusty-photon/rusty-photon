@@ -4238,10 +4238,10 @@ which has a held-out device's driver service restart. Four more carry
 a step of the night over every device it touches: `power_up` and
 `power_down`, which power a set of outputs up or down with every device
 on them, `check_camera`, which tests a camera for a wedge, and
-`get_power_map`, which reads the whole map. The first five are built.
-The last four, and `session-runner`'s night schedule that calls them
+`get_power_map`, which reads the whole map. `session-runner`'s night
+schedule, which calls the last four
 ([session-runner.md § Night Schedule](session-runner.md#night-schedule)),
-are designed in the [daily power cycle
+is designed in the [daily power cycle
 plan](../plans/daily-power-cycle.md) and not built yet.
 
 #### The power map
@@ -4521,7 +4521,10 @@ and cuts the outputs:
 1. **Hold out.** Every device the map puts on the outputs is held out,
    as `disconnect_device` holds it out, each close within its 10 s
    deadline. A close that hangs holds the device out all the same.
-2. **Cut.** Each output that reads on is switched off.
+2. **Cut.** Each output that reads on is switched off, as `set_switch`
+   switches it: the hold-out check and the write are one step against
+   `connect_device`'s release, so a device given back to `rp` in between
+   keeps its output on, and the output is reported with an `error`.
 
 The result is `{outputs, devices}`: each output as `{switch_id, output,
 on}`, with an `error` where the write failed, and each device as
@@ -4538,7 +4541,8 @@ and an operator who calls it by hand owns the same checks.
 the power boxes' ids: every mapped output of every `switches[]` entry
 as `{switch_id, output, daily, protected, on, devices}`, `devices` as
 `get_switch` gives them. `on` is `null` for an output whose box `rp`
-cannot read, and the call answers for the other boxes.
+cannot read or reports no switch for, and the call answers for the
+other boxes.
 
 #### Checking a camera for a wedge
 

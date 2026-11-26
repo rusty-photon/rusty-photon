@@ -1582,6 +1582,7 @@ fn mount_registry(
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
                 auth: None,
+                power_cut_keeps_pose: None,
             },
             session: crate::equipment::DeviceSession::connected(mount),
         }),
@@ -1629,6 +1630,7 @@ fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
                 auth: None,
+                power_cut_keeps_pose: None,
             },
             session: crate::equipment::DeviceSession::disconnected(),
         }),
@@ -7081,6 +7083,7 @@ fn handler_with_site_and_mount() -> McpHandler {
         slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
         guiding: None,
         auth: None,
+        power_cut_keeps_pose: None,
     };
     // Skip the connect-time HTTP fetch by hand-building a registry
     // with the mock device wired in directly.
@@ -10186,6 +10189,7 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
                 .unwrap(),
                 guiding: None,
                 auth: None,
+                power_cut_keeps_pose: None,
             },
             session: crate::equipment::DeviceSession::connected(Arc::new(MockTelescope::default())),
         }),
@@ -14668,4 +14672,164 @@ async fn a_failed_guider_read_leaves_guiding_out() {
         .read_rig_state("cam", start, super::internals::auxiliary_read_deadline())
         .await;
     assert_eq!(rig.guiding, None);
+}
+
+// -----------------------------------------------------------------------
+// check_camera (rp.md § Checking a camera for a wedge)
+// -----------------------------------------------------------------------
+
+/// A 2 × 2 frame with one lit pixel: a camera that read out.
+fn lit_frame() -> ndarray::Array3<i32> {
+    let mut frame = ndarray::Array3::<i32>::zeros((2, 2, 1));
+    frame[[1, 0, 0]] = 312;
+    frame
+}
+
+/// A handler whose data directory is a fresh temp dir, so a test can
+/// prove `check_camera` writes nothing there.
+fn check_handler(cam: MockCamera) -> (McpHandler, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(camera_registry(Arc::new(cam)));
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    (handler, tmp)
+}
+
+async fn check(handler: &McpHandler, duration: &str) -> serde_json::Value {
+    ok_json(
+        handler
+            .check_camera_inner(
+                CheckCameraParams {
+                    camera_id: "cam".to_string(),
+                    duration: Some(duration.to_string()),
+                },
+                &Cancel::never(),
+            )
+            .await,
+    )
+}
+
+#[tokio::test]
+async fn a_frame_that_reads_out_in_time_with_light_is_ok_and_keeps_nothing() {
+    let (handler, tmp) = check_handler(MockCamera {
+        frame: Some(lit_frame()),
+        ..Default::default()
+    });
+    let result = check(&handler, "100ms").await;
+    assert_eq!(result["verdict"], "ok", "{result}");
+    assert_eq!(result["camera_id"], "cam", "{result}");
+    assert!(result["elapsed_s"].as_f64().is_some(), "{result}");
+    assert!(result.get("error").is_none(), "{result}");
+    let written: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().collect();
+    assert!(written.is_empty(), "check_camera wrote {written:?}");
+}
+
+#[tokio::test]
+async fn an_all_zero_frame_is_a_wedge() {
+    let (handler, _tmp) = check_handler(MockCamera::default());
+    let result = check(&handler, "100ms").await;
+    assert_eq!(result["verdict"], "wedged", "{result}");
+    assert!(result.get("error").is_none(), "{result}");
+}
+
+/// The default readout estimate is 15 s, so a 1 s frame is late after
+/// 46 s; this one is ready after about 60 s, as a wedged camera's is.
+#[tokio::test(start_paused = true)]
+async fn a_frame_ready_past_the_advisory_maximum_is_a_wedge() {
+    let (handler, _tmp) = check_handler(MockCamera {
+        frame: Some(lit_frame()),
+        not_ready_count: 600,
+        ..Default::default()
+    });
+    let result = check(&handler, "1s").await;
+    assert_eq!(result["verdict"], "wedged", "{result}");
+    let elapsed = result["elapsed_s"].as_f64().unwrap();
+    assert!(elapsed > 46.0, "elapsed {elapsed} s");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_frame_never_ready_by_the_backstop_is_a_wedge_and_its_exposure_is_aborted() {
+    let cam = Arc::new(MockCamera {
+        never_ready: true,
+        ..Default::default()
+    });
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(camera_registry(cam.clone()));
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    let result = check(&handler, "1s").await;
+    assert_eq!(result["verdict"], "wedged", "{result}");
+    assert!(
+        result["elapsed_s"].as_f64().unwrap() >= 121.0,
+        "the wait runs to duration + 120 s: {result}"
+    );
+    assert_eq!(
+        cam.abort_exposure_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the backstop aborts the exposure"
+    );
+}
+
+#[tokio::test]
+async fn a_camera_that_fails_to_start_the_exposure_is_unavailable_not_wedged() {
+    let (handler, _tmp) = check_handler(MockCamera {
+        fail_start_exposure: true,
+        ..Default::default()
+    });
+    let result = check(&handler, "100ms").await;
+    assert_eq!(result["verdict"], "unavailable", "{result}");
+    assert!(result["elapsed_s"].is_null(), "{result}");
+    assert!(
+        result["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("failed to start exposure")),
+        "{result}"
+    );
+}
+
+#[tokio::test]
+async fn a_camera_whose_exposure_fails_is_unavailable() {
+    let (handler, _tmp) = check_handler(MockCamera {
+        never_ready: true,
+        report_error_state: true,
+        ..Default::default()
+    });
+    let result = check(&handler, "100ms").await;
+    assert_eq!(result["verdict"], "unavailable", "{result}");
+}
+
+#[tokio::test]
+async fn check_camera_refuses_a_camera_rp_does_not_know() {
+    let (handler, _tmp) = check_handler(MockCamera::default());
+    let result = handler
+        .check_camera_inner(
+            CheckCameraParams {
+                camera_id: "no-such-cam".to_string(),
+                duration: None,
+            },
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "camera not found: no-such-cam");
+}
+
+#[test]
+fn the_verdict_counts_a_frame_late_only_past_duration_readout_and_margin() {
+    use super::internals::{frame_verdict, CheckVerdict};
+    let (duration, readout) = (Duration::from_secs(1), Duration::from_secs(15));
+    assert_eq!(
+        frame_verdict(Duration::from_secs(46), duration, readout, false),
+        CheckVerdict::Ok
+    );
+    assert_eq!(
+        frame_verdict(Duration::from_millis(46_001), duration, readout, false),
+        CheckVerdict::Wedged
+    );
+    assert_eq!(
+        frame_verdict(Duration::from_secs(2), duration, readout, true),
+        CheckVerdict::Wedged
+    );
 }

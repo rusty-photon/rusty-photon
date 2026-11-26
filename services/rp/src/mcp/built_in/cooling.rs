@@ -35,18 +35,21 @@ impl McpHandler {
 
     #[tool(
         description = "Ramp every camera rp is cooling warm (+5 °C steps) and switch its \
-                       cooler off, in the background; cooler_warmup_started / \
+                       cooler off, in the background, and every camera with a \
+                       cooler_targets_c ladder whose cooler reads running (CoolerOn, or \
+                       CoolerPower above 0) though rp holds no record of cooling it; \
+                       cooler_warmup_started / \
                        cooler_warmup_complete bracket the ramp. A cooldown pass still \
                        running is taken over: it is cancelled and the ramp starts from \
                        the setpoint it had commanded. Returns at once with the camera \
-                       ids being warmed (empty when rp commands none). Idempotent: a \
+                       ids being warmed (empty when there are none). Idempotent: a \
                        running ramp is left alone"
     )]
     pub(crate) async fn start_warmup(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(cooling) = self.cooling.as_ref() else {
             return Ok(tool_error!("camera cooling is not configured"));
         };
-        let cameras = cooling.start_warmup();
+        let cameras = cooling.start_warmup().await;
         debug!(cameras = ?cameras, "start_warmup issued");
         Ok(tool_success!({ "cameras": cameras }))
     }

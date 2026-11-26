@@ -89,6 +89,18 @@ pub struct CameraIdParams {
 /// (rp.md § Capture Tool Details, "Binning").
 pub(crate) const DEFAULT_BINNING: rp_vocabulary::Binning = rp_vocabulary::Binning { x: 1, y: 1 };
 
+/// The test exposure `check_camera` takes when the call names none.
+const DEFAULT_CHECK_DURATION: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CheckCameraParams {
+    /// The camera's roster id.
+    pub camera_id: String,
+    /// The dark test exposure, as a humantime duration (default `1s`).
+    #[serde(default)]
+    pub duration: Option<String>,
+}
+
 /// The error for a `light_source` on a frame no light source can
 /// describe: a `Light` is lit by the sky and a `Dark` or `Bias` by
 /// nothing (rp.md § Capture Tool Details, *Light source*).
@@ -108,6 +120,51 @@ fn misplaced_light_source(
 
 #[tool_router(router = tool_router_camera, vis = "pub")]
 impl McpHandler {
+    #[tool(
+        description = "Test a camera for a wedge: take one dark exposure (duration, default 1s) through the camera's capture slot and the guide camera guard, keep nothing (no FITS file, no exposure document, no exposure events), and say whether the camera is wedged. Returns camera_id, verdict (ok | wedged | unavailable), elapsed_s (from the camera accepting the exposure to the frame ready; null when it never started) and, for unavailable, error. wedged: the frame was ready later than duration + the camera's readout_time_estimate + 30 s, was not ready by duration + 120 s (the exposure is then aborted), or reads all zero"
+    )]
+    pub(crate) async fn check_camera(
+        &self,
+        Parameters(params): Parameters<CheckCameraParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let cancel = Cancel::from_context(&ctx);
+        self.check_camera_inner(params, &cancel).await
+    }
+
+    /// Body of the `check_camera` MCP tool, split out so unit tests can
+    /// call it without an rmcp request context.
+    pub(crate) async fn check_camera_inner(
+        &self,
+        params: CheckCameraParams,
+        cancel: &Cancel,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let duration = match params.duration.as_deref() {
+            None => DEFAULT_CHECK_DURATION,
+            Some(text) => match humantime::parse_duration(text) {
+                Ok(duration) => duration,
+                Err(e) => return Ok(tool_error!("duration {:?} is not a duration: {}", text, e)),
+            },
+        };
+        if self.equipment.find_camera(&params.camera_id).is_none() {
+            return Ok(tool_error!("camera not found: {}", params.camera_id));
+        }
+        let check = self
+            .do_check_camera(&params.camera_id, duration, cancel)
+            .await;
+        let mut result = serde_json::Map::new();
+        result.insert("camera_id".into(), serde_json::json!(params.camera_id));
+        result.insert("verdict".into(), serde_json::json!(check.verdict.as_str()));
+        result.insert(
+            "elapsed_s".into(),
+            serde_json::json!(check.elapsed.map(|elapsed| elapsed.as_secs_f64())),
+        );
+        if let Some(error) = check.error {
+            result.insert("error".into(), serde_json::json!(error));
+        }
+        Ok(tool_success!(result))
+    }
+
     #[tool(
         description = "Capture an image, download image_array, save FITS file. Optional \
                         binning (\"AxB\", default \"1x1\") is written to the camera along with \
@@ -188,7 +245,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Read camera capabilities and current settings: max_adu, exposure limits, sensor dimensions, current binning, the binning envelope (max_bin_x/max_bin_y/can_asymmetric_bin — what a capture may ask for; null when the connect-time read failed), gain and offset (null only when the driver does not implement the property; any other read failure is an error)"
+        description = "Read camera capabilities and current settings: max_adu, exposure limits, sensor dimensions, current binning, the binning envelope (max_bin_x/max_bin_y/can_asymmetric_bin — what a capture may ask for; null when the connect-time read failed), gain and offset, and the cooler's cooler_on, cooler_power_pct and ccd_temperature_c (each null only when the driver does not implement the property; any other read failure is an error), with cooler_running: true when CoolerOn is true or CoolerPower is above 0, false when neither, null when the driver implements neither"
     )]
     pub(crate) async fn get_camera_info(
         &self,
@@ -263,6 +320,25 @@ impl McpHandler {
             }
             Err(e) => return Ok(tool_error!("failed to read offset: {}", e)),
         };
+        // The cooler's state, read on every call like gain: `null` only
+        // for a driver without the property, any other failure an error,
+        // so the night schedule never takes a cooler it could not read
+        // for a stopped one.
+        let cooler_on = match cam.cooler_on().await {
+            Ok(on) => Some(on),
+            Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => None,
+            Err(e) => return Ok(tool_error!("failed to read CoolerOn: {}", e)),
+        };
+        let cooler_power_pct = match cam.cooler_power().await {
+            Ok(power) => Some(power),
+            Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => None,
+            Err(e) => return Ok(tool_error!("failed to read CoolerPower: {}", e)),
+        };
+        let ccd_temperature_c = match cam.ccd_temperature().await {
+            Ok(temperature) => Some(temperature),
+            Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => None,
+            Err(e) => return Ok(tool_error!("failed to read CCDTemperature: {}", e)),
+        };
 
         Ok(tool_success!({
             "camera_id": params.camera_id,
@@ -276,6 +352,10 @@ impl McpHandler {
             "can_asymmetric_bin": invariants.can_asymmetric_bin,
             "gain": gain,
             "offset": offset,
+            "cooler_on": cooler_on,
+            "cooler_power_pct": cooler_power_pct,
+            "ccd_temperature_c": ccd_temperature_c,
+            "cooler_running": crate::cooling::cooler_running(cooler_on, cooler_power_pct),
             "exposure_min": humantime::format_duration(exposure_min).to_string(),
             "exposure_max": humantime::format_duration(exposure_max).to_string(),
         }))

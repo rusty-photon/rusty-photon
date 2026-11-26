@@ -8,6 +8,46 @@ use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
+/// The read-only custom Action a mount driver answers with whether a
+/// power cut and the next power-up leave the mount where it parks
+/// (star-adventurer-gti.md § `ParkMatchesPowerUpPose`).
+pub const PARK_POSE_ACTION: &str = "ParkMatchesPowerUpPose";
+
+/// `get_park_state`'s `park_matches_power_up_pose`: the driver's answer
+/// to [`PARK_POSE_ACTION`] when its `SupportedActions` lists it, else
+/// the mount entry's `power_cut_keeps_pose`, `None` when that is unset.
+///
+/// # Errors
+///
+/// A message naming the read that failed: `SupportedActions`, the
+/// Action, or an answer without a boolean `matches`.
+pub async fn park_matches_power_up_pose(
+    mount: &dyn Telescope,
+    config: &config::MountConfig,
+) -> Result<Option<bool>, String> {
+    let actions = mount
+        .supported_actions()
+        .await
+        .map_err(|e| format!("failed to read the mount's SupportedActions: {e}"))?;
+    if !actions
+        .iter()
+        .any(|action| action.eq_ignore_ascii_case(PARK_POSE_ACTION))
+    {
+        return Ok(config.power_cut_keeps_pose);
+    }
+    let answer = mount
+        .action(PARK_POSE_ACTION.to_string(), String::new())
+        .await
+        .map_err(|e| format!("failed to read the mount's {PARK_POSE_ACTION}: {e}"))?;
+    let matches = serde_json::from_str::<serde_json::Value>(&answer)
+        .ok()
+        .and_then(|value| value.get("matches").and_then(serde_json::Value::as_bool));
+    debug!(?matches, "read the mount's {PARK_POSE_ACTION}");
+    matches.map(Some).ok_or_else(|| {
+        format!("the mount's {PARK_POSE_ACTION} answer carries no boolean matches: {answer}")
+    })
+}
+
 /// Singular mount entry. Piggyback rigs share one mount across multiple
 /// optical trains, so `EquipmentRegistry.mount` is an `Option`, not a
 /// `Vec`. No `id` field — there is nothing to disambiguate.
@@ -77,6 +117,172 @@ mod tests {
         Json, Router,
     };
 
+    /// A mount whose driver lists `actions` in `SupportedActions` and
+    /// answers its custom Action with `answer`.
+    struct PoseMount {
+        actions: Vec<String>,
+        answer: ascom_alpaca::ASCOMResult<String>,
+    }
+
+    impl std::fmt::Debug for PoseMount {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "PoseMount")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ascom_alpaca::api::Device for PoseMount {
+        fn static_name(&self) -> &'static str {
+            "pose-mount"
+        }
+        fn unique_id(&self) -> &'static str {
+            "pose-mount"
+        }
+        async fn connected(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Ok(true)
+        }
+        async fn set_connected(&self, _: bool) -> ascom_alpaca::ASCOMResult<()> {
+            Ok(())
+        }
+        async fn description(&self) -> ascom_alpaca::ASCOMResult<String> {
+            Ok("pose-mount".into())
+        }
+        async fn driver_info(&self) -> ascom_alpaca::ASCOMResult<String> {
+            Ok("pose-mount".into())
+        }
+        async fn driver_version(&self) -> ascom_alpaca::ASCOMResult<String> {
+            Ok("0.0".into())
+        }
+        async fn supported_actions(&self) -> ascom_alpaca::ASCOMResult<Vec<String>> {
+            Ok(self.actions.clone())
+        }
+        async fn action(
+            &self,
+            action: String,
+            _parameters: String,
+        ) -> ascom_alpaca::ASCOMResult<String> {
+            assert_eq!(action, PARK_POSE_ACTION, "rp asked for another Action");
+            self.answer.clone()
+        }
+    }
+
+    /// The required members a pose read never touches.
+    #[async_trait::async_trait]
+    impl Telescope for PoseMount {
+        async fn at_home(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn at_park(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn declination_rate(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn equatorial_system(
+            &self,
+        ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::telescope::EquatorialCoordinateType>
+        {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn right_ascension(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn right_ascension_rate(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn sidereal_time(&self) -> ascom_alpaca::ASCOMResult<f64> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn tracking(&self) -> ascom_alpaca::ASCOMResult<bool> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn tracking_rate(
+            &self,
+        ) -> ascom_alpaca::ASCOMResult<ascom_alpaca::api::telescope::DriveRate> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn axis_rates(
+            &self,
+            _axis: ascom_alpaca::api::telescope::TelescopeAxis,
+        ) -> ascom_alpaca::ASCOMResult<Vec<std::ops::RangeInclusive<f64>>> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+        async fn utc_date(&self) -> ascom_alpaca::ASCOMResult<std::time::SystemTime> {
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        }
+    }
+
+    fn pose_mount(actions: &[&str], answer: ascom_alpaca::ASCOMResult<String>) -> PoseMount {
+        PoseMount {
+            actions: actions.iter().map(|a| (*a).to_string()).collect(),
+            answer,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_driver_that_lists_the_action_answers_for_the_mount() {
+        let mut config = mount_config_for("http://127.0.0.1:1");
+        config.power_cut_keeps_pose = Some(true);
+        let mount = pose_mount(
+            &[PARK_POSE_ACTION],
+            Ok(r#"{"matches": false, "power_up_pose": "ap_park_3"}"#.to_string()),
+        );
+        assert_eq!(
+            park_matches_power_up_pose(&mount, &config).await.unwrap(),
+            Some(false),
+            "the driver's answer wins over the config"
+        );
+        let mount = pose_mount(&[PARK_POSE_ACTION], Ok(r#"{"matches": true}"#.to_string()));
+        assert_eq!(
+            park_matches_power_up_pose(&mount, &config).await.unwrap(),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mount_without_the_action_reads_the_config_and_null_without_it() {
+        let mut config = mount_config_for("http://127.0.0.1:1");
+        let mount = pose_mount(
+            &["SomethingElse"],
+            Err(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED),
+        );
+        assert_eq!(
+            park_matches_power_up_pose(&mount, &config).await.unwrap(),
+            None
+        );
+        config.power_cut_keeps_pose = Some(true);
+        assert_eq!(
+            park_matches_power_up_pose(&mount, &config).await.unwrap(),
+            Some(true)
+        );
+        config.power_cut_keeps_pose = Some(false);
+        assert_eq!(
+            park_matches_power_up_pose(&mount, &config).await.unwrap(),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_or_unreadable_action_answer_is_an_error() {
+        let config = mount_config_for("http://127.0.0.1:1");
+        let mount = pose_mount(
+            &[PARK_POSE_ACTION],
+            Err(ascom_alpaca::ASCOMError::NOT_CONNECTED),
+        );
+        let err = park_matches_power_up_pose(&mount, &config)
+            .await
+            .unwrap_err();
+        assert!(err.contains(PARK_POSE_ACTION), "{err}");
+        let mount = pose_mount(
+            &[PARK_POSE_ACTION],
+            Ok(r#"{"power_up_pose": "ap_park_3"}"#.to_string()),
+        );
+        let err = park_matches_power_up_pose(&mount, &config)
+            .await
+            .unwrap_err();
+        assert!(err.contains("no boolean matches"), "{err}");
+    }
+
     fn mount_config_for(url: &str) -> config::MountConfig {
         config::MountConfig {
             alpaca_url: url.to_string(),
@@ -86,6 +292,7 @@ mod tests {
             slew_rate_arcsec_per_sec: config::mount::SlewRateArcsecPerSec::default(),
             guiding: None,
             auth: None,
+            power_cut_keeps_pose: None,
         }
     }
 

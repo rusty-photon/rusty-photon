@@ -19,9 +19,12 @@ Feature: Camera cooling selects and holds a dark-library setpoint
   re-announcing.
 
   start_warmup answers at once with the cameras it is warming and ramps
-  each setpoint up in +5 °C steps before switching the cooler off; a
-  camera rp never commanded is left alone. rp never touches a cooler on
-  its own — not at startup, not on a safety transition.
+  each setpoint up in +5 °C steps before switching the cooler off. A
+  camera with a ladder whose cooler runs though rp holds no record of
+  cooling it, as after an rp restart in the night, is warmed too, from
+  the setpoint its driver reports; a camera whose cooler is off and that
+  rp never commanded is left alone. rp never touches a cooler on its
+  own — not at startup, not on a safety transition.
 
   Every capture stamps cooler_setpoint_c and sensor_temperature_c on its
   exposure document, and cooler_power_pct from a camera that can report
@@ -99,6 +102,18 @@ Feature: Camera cooling selects and holds a dark-library setpoint
     And an MCP client connected to rp
     When the MCP client calls tool "start_cooldown"
     And the camera cooler becomes on
+    And the MCP client calls tool "start_warmup"
+    Then the tool call should succeed
+    And the tool result cameras should be exactly "main-cam"
+    And the test webhook receiver should receive a "cooler_warmup_started" event
+    And the test webhook receiver should receive a "cooler_warmup_complete" event
+    And the camera cooler should be off
+
+  Scenario: start_warmup warms a laddered camera whose cooler runs though rp never commanded it
+    Given a test webhook receiver subscribed to "cooler_warmup_started" and "cooler_warmup_complete"
+    And rp is running with a camera with cooler targets "5" on the simulator
+    And an MCP client connected to rp
+    When another client switches the simulator camera's cooler on
     And the MCP client calls tool "start_warmup"
     Then the tool call should succeed
     And the tool result cameras should be exactly "main-cam"

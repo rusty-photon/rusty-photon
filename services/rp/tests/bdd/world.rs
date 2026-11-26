@@ -75,6 +75,8 @@ pub struct RpWorld {
     pub optical_trains: Vec<OpticalTrainConfig>,
     /// Singular mount config — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
+    /// `equipment.mount.power_cut_keeps_pose`, when a scenario sets it.
+    pub mount_power_cut_keeps_pose: Option<bool>,
     /// Optional plate-solver service config emitted into rp's
     /// `plate_solver` block. Set by the BDD `Given a stub plate
     /// solver returning ...` steps after spawning the stub.
@@ -489,6 +491,9 @@ impl RpWorld {
         }
         if let Some(mount) = &self.mount {
             builder.with_mount(mount.clone());
+        }
+        if let Some(keeps_pose) = self.mount_power_cut_keeps_pose {
+            builder.with_mount_power_cut_keeps_pose(keeps_pose);
         }
         if let Some(ps) = &self.plate_solver {
             builder.with_plate_solver(ps.clone());

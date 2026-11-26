@@ -1139,6 +1139,7 @@ mod tests {
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
                 auth: None,
+                power_cut_keeps_pose: None,
             }),
             ..Default::default()
         };
@@ -1212,6 +1213,7 @@ mod tests {
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
                 auth: None,
+                power_cut_keeps_pose: None,
             }),
             ..Default::default()
         };

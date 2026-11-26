@@ -56,6 +56,21 @@ fn map_protects_output(world: &mut RpWorld, output: String, reason: String) {
     add_output(world, json!({ "name": output, "protected": reason }));
 }
 
+#[given(expr = "rp's power map marks the stub power box's {string} output daily")]
+fn map_marks_output_daily(world: &mut RpWorld, output: String) {
+    let entry = world
+        .switches
+        .iter_mut()
+        .find(|s| s.id == POWER_BOX_ID)
+        .expect("no power box entry — map an output on it first");
+    let mapped = entry
+        .outputs
+        .iter_mut()
+        .find(|o| o["name"] == output.as_str())
+        .unwrap_or_else(|| panic!("the power map lists no {output:?} output"));
+    mapped["daily"] = json!(true);
+}
+
 // --- When steps ---
 
 /// Any tool, any arguments: a regex step so the arguments can be any

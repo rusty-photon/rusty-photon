@@ -18,6 +18,27 @@ Feature: Mount tools
   the CanSetTracking capability; it fails loud if the Tracking read
   errors (no half-success).
 
+  get_park_state reports park_matches_power_up_pose: the driver's answer
+  to its read-only ParkMatchesPowerUpPose Action when SupportedActions
+  lists it, else the mount entry's power_cut_keeps_pose, else null.
+
+  Scenario: A mount whose driver offers no pose check reads null without the operator's word
+    Given a running Alpaca simulator
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    And the tool result at "/park_matches_power_up_pose" should be the JSON null
+
+  Scenario: The operator's power_cut_keeps_pose answers for a mount without the pose check
+    Given a running Alpaca simulator
+    And the mount entry sets power_cut_keeps_pose to true
+    And rp is running with a mount on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "get_park_state"
+    Then the tool call should succeed
+    And the tool result at "/park_matches_power_up_pose" should be the JSON true
+
   Scenario: Tool catalog includes Mount tools
     Given a running Alpaca simulator
     And rp is running with a mount on the simulator

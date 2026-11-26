@@ -20,11 +20,21 @@ Feature: Power switching
   service's next process to answer. A service that takes no restart
   requests is reported, not waited on.
 
+  An output marked daily is one the night switches. power_down holds out
+  every device the map puts on its outputs and cuts them; power_up
+  switches its outputs on, waits settle once something went on, restarts
+  once each service with a device on them, and connects every device on
+  those services. Both take every daily output when the call names none,
+  and nothing for an empty list. power_down refuses the whole call for a
+  protected output, and both refuse one the map does not list.
+  get_power_map reads every mapped output of every power box.
+
   Background:
     Given a stub power box with the outputs "Camera Power", "Dew Heater", "Host Power" and "Spare Output", all on
     And a stub Alpaca service hosting a camera
     And rp is configured with a camera on the stub service
     And rp's power map puts "main-cam" on the stub power box's "Camera Power" output
+    And rp's power map marks the stub power box's "Camera Power" output daily
     And rp's power map lists the stub power box's "Dew Heater" output with no devices
     And rp's power map protects the stub power box's "Host Power" output because "the host runs off it"
     And an equipment reconnect interval of 300 milliseconds
@@ -131,3 +141,66 @@ Feature: Power switching
     And the MCP client calls "restart_service" with the JSON {"device_id": "power-box"}
     Then the tool call should return an error
     And the error message should contain "takes no restart requests"
+
+  Scenario: An output reads back with its daily mark
+    When the MCP client calls "get_switch" with the JSON {"switch_id": "power-box", "output": "Camera Power"}
+    Then the tool result at "/outputs/0/daily" should be the JSON true
+    When the MCP client calls "get_switch" with the JSON {"switch_id": "power-box", "output": "Dew Heater"}
+    Then the tool result at "/outputs/0/daily" should be the JSON false
+
+  Scenario: The power map reads whole, every mapped output with its devices
+    When the MCP client calls "get_power_map" with the JSON {}
+    Then the tool result at "/outputs" should be the JSON [{"switch_id": "power-box", "output": "Camera Power", "daily": true, "protected": null, "on": true, "devices": [{"device_id": "main-cam", "kind": "camera", "connected": true, "held_out": false}]}, {"switch_id": "power-box", "output": "Dew Heater", "daily": false, "protected": null, "on": true, "devices": []}, {"switch_id": "power-box", "output": "Host Power", "daily": false, "protected": "the host runs off it", "on": true, "devices": []}]
+
+  Scenario: power_down holds out every device on the daily outputs and cuts them
+    When the MCP client calls "power_down" with the JSON {}
+    Then the tool result at "/outputs" should be the JSON [{"switch_id": "power-box", "output": "Camera Power", "on": false}]
+    And the tool result at "/devices" should be the JSON [{"device_id": "main-cam", "kind": "camera", "close": "closed"}]
+    And the stub power box's "Camera Power" output should be off
+    And the stub power box's "Dew Heater" output should be on
+    And the stub camera should read disconnected
+    And the equipment status should show the camera "main-cam" held out
+
+  Scenario: power_down refuses a protected output and switches nothing
+    When the MCP client calls "power_down" with the JSON {"outputs": [{"switch_id": "power-box", "output": "Camera Power"}, {"switch_id": "power-box", "output": "Host Power"}]}
+    Then the tool call should return an error
+    And the error message should contain "the host runs off it"
+    And the stub power box's "Camera Power" output should be on
+    And the stub camera should read connected
+
+  Scenario: An empty list of outputs switches nothing
+    When the MCP client calls "power_down" with the JSON {"outputs": []}
+    Then the tool result at "/outputs" should be the JSON []
+    And the tool result at "/devices" should be the JSON []
+    And the stub power box's "Camera Power" output should be on
+    And the stub camera should read connected
+
+  Scenario: power_up switches an output back on, restarts its device's service once and connects the device
+    When the MCP client calls "power_down" with the JSON {}
+    And the MCP client calls "power_up" with the JSON {"settle": "100ms"}
+    Then the tool result at "/outputs" should be the JSON [{"switch_id": "power-box", "output": "Camera Power", "on": true, "switched": true}]
+    And the tool result at "/services/0/devices" should be the JSON ["main-cam"]
+    And the tool result at "/services/0/restart" should be the JSON "restarted"
+    And the tool result at "/devices" should be the JSON [{"device_id": "main-cam", "kind": "camera", "connected": true}]
+    And the stub power box's "Camera Power" output should be on
+    And the stub camera's service should have been asked to restart 1 time
+    And the stub camera should read connected
+    And the equipment status should show the camera "main-cam" connected and not held out
+
+  Scenario: power_up restarts the service of a device whose output was already on
+    When the MCP client calls "power_up" with the JSON {"settle": "100ms"}
+    Then the tool result at "/outputs/0/switched" should be the JSON false
+    And the tool result at "/services/0/restart" should be the JSON "restarted"
+    And the tool result at "/devices/0/connected" should be the JSON true
+    And the stub camera's service should have been asked to restart 1 time
+
+  Scenario: power_up refuses an output the power map does not list
+    When the MCP client calls "power_up" with the JSON {"outputs": [{"switch_id": "power-box", "output": "Spare Output"}]}
+    Then the tool call should return an error
+    And the error message should contain "power map"
+    And the stub camera's service should have been asked to restart 0 times
+
+  Scenario: power_up refuses a settle longer than five minutes
+    When the MCP client calls "power_up" with the JSON {"settle": "6m"}
+    Then the tool call should return an error
+    And the error message should contain "longer than"

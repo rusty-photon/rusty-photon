@@ -69,6 +69,47 @@ async fn camera_cooler_becomes_on(world: &mut RpWorld) {
     panic!("the simulator camera cooler did not turn on within timeout");
 }
 
+/// Another Alpaca client switches the simulator camera's cooler, as a
+/// client outside rp does, so rp holds no record of it.
+#[when(expr = "another client switches the simulator camera's cooler {word}")]
+async fn another_client_switches_cooler(world: &mut RpWorld, state: String) {
+    let on = match state.as_str() {
+        "on" => true,
+        "off" => false,
+        other => panic!("the cooler switches on or off, not {other:?}"),
+    };
+    let base = world.omnisim_url();
+    let client = reqwest::Client::new();
+    client
+        .put(format!("{base}/api/v1/camera/0/connected"))
+        .form(&[("Connected", "true"), ("ClientID", "9090")])
+        .send()
+        .await
+        .expect("failed to connect to the simulator camera");
+    let body: serde_json::Value = client
+        .put(format!("{base}/api/v1/camera/0/cooleron"))
+        .form(&[
+            ("CoolerOn", if on { "true" } else { "false" }),
+            ("ClientID", "9090"),
+        ])
+        .send()
+        .await
+        .expect("failed to write CoolerOn to the simulator")
+        .json()
+        .await
+        .expect("CoolerOn write response is not JSON");
+    assert_eq!(
+        body.get("ErrorNumber").and_then(serde_json::Value::as_i64),
+        Some(0),
+        "CoolerOn write failed: {body}"
+    );
+    assert_eq!(
+        omnisim_cooler_on(world).await,
+        on,
+        "the simulator cooler did not switch {state}"
+    );
+}
+
 // --- Then steps ---
 
 /// The `cameras` list both cooling tools answer with: the ladder cameras
