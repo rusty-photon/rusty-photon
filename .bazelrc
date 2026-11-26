@@ -626,8 +626,11 @@ build:macos --remote_max_connections=0
 # the download-mode override does.
 #
 # If the build phase becomes too slow, raise the multiplier rather than
-# reverting to 64. If the wedge survives at this ceiling, the concurrency axis
-# is exhausted and the next move is diagnostics, not a smaller number.
+# reverting to 64. The wedge survives this ceiling too, so the concurrency axis
+# is exhausted and a smaller number is not the next move. bazel.yml's macOS
+# build runs under the bazel-stall-probe action instead, which dumps the
+# server's threads and logs, its connections to the cache and the kernel's
+# network buffers when the build goes silent.
 build:macos --jobs=HOST_CPUS*2
 
 # --- Conformu config -------------------------------------------------------

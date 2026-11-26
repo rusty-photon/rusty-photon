@@ -509,7 +509,8 @@ stream's log as a group.
   unless given an environment). So does a program the action runs in
   place of a `run:` step, so that it gets nothing a `run:` step's program
   would not: `bazel-coverage` and `rules-rust-patches` run Bazel so, which
-  runs the build's repository rules, `uncovered-diff-lines` runs pip,
+  runs the build's repository rules, `bazel-stall-probe` runs bazel.yml's
+  macOS build so, `uncovered-diff-lines` runs pip,
   diff-cover and the coverage scripts' poster so, `cargo-workspace` runs
   Cargo and cargo-msrv so, `conformu-run` runs each service's `cargo
   test` so, `beta-clippy` runs clippy and the census script so,
