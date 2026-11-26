@@ -14,7 +14,7 @@ import path from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
 
 import { command, describe, group, io, withoutRunnerVariables } from '../lib/helpers.mjs';
-import { ended } from '../lib/processes.mjs';
+import { ended, kill } from '../lib/processes.mjs';
 
 /** What Bazel prints when the kernel runs out of socket buffers (ENOBUFS). */
 export const ENOBUFS = 'No buffer space available';
@@ -22,8 +22,14 @@ export const ENOBUFS = 'No buffer space available';
 /** The most dumps one command gets, so a build that keeps stalling cannot flood the log. */
 export const MAX_DUMPS = 3;
 
-/** How many lines of each server log a dump prints. */
+/** How many lines of java.log a dump prints, and of jvm.out when it holds no thread dump. */
 export const LOG_LINES = 600;
+
+/** The most lines of jvm.out's last thread dump a dump prints: all of it, short of a runaway. */
+export const THREAD_DUMP_LINES = 10_000;
+
+/** What the JVM prints at the top of a thread dump. */
+const THREAD_DUMP = 'Full thread dump';
 
 // Bazel's own log and a JVM thread dump can carry the request headers Bazel
 // sent; the runner masks the registered secrets, and this is the second line.
@@ -48,12 +54,13 @@ function every(ms, fn) {
  * enobufs })`, where `enobufs` is the last line that named ENOBUFS and how
  * long before the dump it came, or null; at most MAX_DUMPS times in all.
  * When `signal` aborts, the command gets SIGTERM, at its process group on
- * Linux and macOS. Resolves to how the command ended, `{ code, signal }`,
+ * Linux and macOS (lib/processes.mjs's `kill`), and SIGKILL if it is still
+ * running `graceMs` later. Resolves to how the command ended, `{ code, signal }`,
  * once any dump in progress is printed; rejects when it cannot start.
  */
-export async function watch({ args, silenceMs, diagnose, spawn = nodeSpawn, now = Date.now, repeat = every, signal, env = withoutRunnerVariables(process.env) }) {
-  const leader = process.platform !== 'win32';
-  const child = spawn('bazel', args, { env, stdio: ['ignore', 'pipe', 'pipe'], detached: leader });
+export async function watch({ args, silenceMs, diagnose, spawn = nodeSpawn, now = Date.now, repeat = every, signal, graceMs = 5000, env = withoutRunnerVariables(process.env) }) {
+  // A group leader on Linux and macOS, so that a stop reaches what Bazel started.
+  const child = spawn('bazel', args, { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
   const end = ended(child);
   let last = now();
   let enobufs = null;
@@ -99,12 +106,8 @@ export async function watch({ args, silenceMs, diagnose, spawn = nodeSpawn, now 
   const cancel = repeat(Math.min(15_000, Math.max(1, Math.floor(silenceMs / 4))), check);
 
   const stop = () => {
-    try {
-      if (leader) process.kill(-child.pid, 'SIGTERM');
-      else child.kill('SIGTERM');
-    } catch {
-      // Already gone.
-    }
+    kill(child, 'SIGTERM');
+    setTimeout(() => kill(child, 'SIGKILL'), graceMs).unref();
   };
   signal?.addEventListener('abort', stop, { once: true });
   try {
@@ -132,13 +135,31 @@ export function connections(netstat) {
   return [header, ...https.filter((line) => !/\bTIME_WAIT\b/.test(line)), `(${waiting} in TIME_WAIT left out)`].filter((line) => line !== undefined).join('\n');
 }
 
-/** The last `lines` lines of the file at `file`, or null when it cannot be read. */
-function tail(file, lines) {
+/** The text of the file at `file`, or null when it cannot be read. */
+function read(file) {
   try {
-    return readFileSync(file, 'utf8').split('\n').slice(-lines - 1).join('\n');
+    return readFileSync(file, 'utf8');
   } catch {
     return null;
   }
+}
+
+/** The last `lines` lines of `text`. */
+function last(text, lines) {
+  return text.split('\n').slice(-lines - 1).join('\n');
+}
+
+/**
+ * jvm.out's last thread dump, from its first line to the end of the file, at
+ * most THREAD_DUMP_LINES lines; or, when it holds none, its last LOG_LINES
+ * lines. A server's dump runs to hundreds of lines at idle and more mid-build,
+ * and its threads come in no useful order, so a tail would cut it anywhere.
+ */
+export function threadDump(jvmOut) {
+  const at = jvmOut.lastIndexOf(THREAD_DUMP);
+  if (at < 0) return { title: `last ${LOG_LINES} lines of server/jvm.out`, text: last(jvmOut, LOG_LINES) };
+  const start = jvmOut.lastIndexOf('\n', at) + 1;
+  return { title: 'server/jvm.out from its last thread dump', text: jvmOut.slice(start).split('\n').slice(0, THREAD_DUMP_LINES).join('\n') };
 }
 
 /**
@@ -149,7 +170,8 @@ function tail(file, lines) {
  * kernel's network buffers (`netstat -m`) and memory (`vm_stat`); and, when
  * `outputBase` is known and its server alive, the server's threads (jstack,
  * then SIGQUIT, which makes the JVM print them into server/jvm.out and flush
- * java.log, and works where jstack cannot attach) and the tails of both logs.
+ * java.log, and works where jstack cannot attach), jvm.out's last thread dump
+ * whole (`threadDump`) and java.log's tail.
  * A command that fails is reported and the dump goes on. The server gets no
  * signal but 0 and SIGQUIT.
  */
@@ -180,7 +202,7 @@ export async function diagnose({ silentForMs, enobufs, outputBase, platform = pr
       io.stdout('The output base is unknown, so the server is not dumped.\n');
       return;
     }
-    const pid = Number(tail(path.join(outputBase, 'server', 'server.pid.txt'), 1)?.trim());
+    const pid = Number(read(path.join(outputBase, 'server', 'server.pid.txt'))?.trim());
     let alive = false;
     try {
       alive = Number.isInteger(pid) && pid > 0 && kill(pid, 0);
@@ -199,9 +221,11 @@ export async function diagnose({ silentForMs, enobufs, outputBase, platform = pr
         io.stdout(`(${describe(err)})\n`);
       }
     }
-    for (const log of [path.join('server', 'jvm.out'), 'java.log']) {
-      io.stdout(`--- last ${LOG_LINES} lines of ${log} ---\n`);
-      const text = tail(path.join(outputBase, log), LOG_LINES);
+    const jvmOut = read(path.join(outputBase, 'server', 'jvm.out'));
+    const dump = jvmOut === null ? { title: 'server/jvm.out', text: null } : threadDump(jvmOut);
+    const javaLog = read(path.join(outputBase, 'java.log'));
+    for (const { title, text } of [dump, { title: `last ${LOG_LINES} lines of java.log`, text: javaLog === null ? null : last(javaLog, LOG_LINES) }]) {
+      io.stdout(`--- ${title} ---\n`);
       io.stdout(text === null ? '(cannot be read)\n' : `${redact(text)}\n`);
     }
   });

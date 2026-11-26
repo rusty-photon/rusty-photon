@@ -536,7 +536,10 @@ jobs:
             Likely causes: the known macOS remote-cache wedge
             (https://github.com/rusty-photon/rusty-photon/issues/765), in which
             `bazel build` hangs in the remote cache's download tail until the
-            step's 30-minute timeout, with nothing in the log to say why; or a
-            build or test failure on macOS alone. Inspect the failed job in the
-            linked run: a `bazel build` step that ran to its timeout points at
-            the wedge, a failing target at a genuine break.
+            step's 30-minute timeout; or a build or test failure on macOS
+            alone. Inspect the failed job in the linked run: a `bazel build
+            (macOS, watched for a stall)` step that ran to its timeout points at
+            the wedge, a failing target at a genuine break. That step's
+            `bazel-stall-probe: no output for N s` log groups hold what the
+            wedge left to read: the Bazel server's threads and logs, its
+            connections to the cache and the kernel's network buffers.

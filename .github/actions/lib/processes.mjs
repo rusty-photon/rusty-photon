@@ -40,7 +40,12 @@ export function exitText({ code, signal, error }) {
 // Windows, which has no group a signal reaches, the program is killed.
 const GROUPS = process.platform !== 'win32';
 
-function kill(child, signal) {
+/**
+ * Sends `signal` to `child`'s process group on Linux and macOS, where it
+ * leads one, and kills it on Windows; nothing when it never started or has
+ * ended.
+ */
+export function kill(child, signal) {
   // A program that never started has no pid. One that has ended may have
   // given its pid to another process: Node sets exitCode or signalCode as it
   // reaps it, before any other JavaScript runs.

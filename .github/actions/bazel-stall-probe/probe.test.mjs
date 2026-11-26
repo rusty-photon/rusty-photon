@@ -6,7 +6,7 @@ import { afterEach, test } from 'node:test';
 
 import { io } from '../lib/helpers.mjs';
 import { capture } from '../lib/testing.mjs';
-import { connections, diagnose, ENOBUFS, MAX_DUMPS, redact, watch } from './probe.mjs';
+import { connections, diagnose, ENOBUFS, LOG_LINES, MAX_DUMPS, redact, THREAD_DUMP_LINES, threadDump, watch } from './probe.mjs';
 
 function tempDir() {
   const base = process.env.TEST_TMPDIR ?? path.join(process.cwd(), '.tmp');
@@ -32,6 +32,7 @@ afterEach(() => {
 // when it is ready, then prints and exits as the test's messages tell it.
 const FAKE = `
 process.on('message', (m) => {
+  if (m.ignoreTerm) process.on('SIGTERM', () => {});
   if (m.out !== undefined) process.stdout.write(m.out);
   if (m.err !== undefined) process.stderr.write(m.err);
   if (m.exit !== undefined) process.exit(m.exit);
@@ -231,6 +232,19 @@ test('watch stops bazel when the step is stopped', { timeout: 30_000 }, async ()
   assert.notEqual(ended.code, 0);
 });
 
+// Bounded like the test above: a stop that never escalates fails by name.
+test('watch kills bazel when it outlives the stop’s grace', { timeout: 30_000 }, async () => {
+  const stop = new AbortController();
+  const run = await started({ signal: stop.signal, graceMs: 50 });
+  run.send({ ignoreTerm: true, out: 'ignoring SIGTERM\n' });
+  await run.log.seen('ignoring SIGTERM');
+  stop.abort();
+  const ended = await run.result;
+  // Windows has no SIGTERM to ignore: the first stop kills it.
+  if (process.platform !== 'win32') assert.equal(ended.signal, 'SIGKILL');
+  assert.notEqual(ended.code, 0);
+});
+
 test('watch rejects when bazel cannot start', async () => {
   const cancelled = { value: false };
   await assert.rejects(
@@ -299,7 +313,8 @@ function fakes({ answers = ANSWERS, alive = true } = {}) {
 
 test('diagnose dumps the processes, the connections to the cache, the network buffers, the server threads and its logs, in a group', async () => {
   const f = fakes();
-  const dir = outputBase({ jvm: 'thread dump\nAuthorization: Bearer abc123\n' });
+  const threads = Array.from({ length: LOG_LINES + 100 }, (_, i) => `"thread-${i}" WAITING`).join('\n');
+  const dir = outputBase({ jvm: `JVM warning\nFull thread dump (an earlier one)\n"old" WAITING\n2026-11-26 16:22:38\nFull thread dump OpenJDK\n${threads}\nAuthorization: Bearer abc123\n` });
   const { stdout } = await capture(() =>
     diagnose({ silentForMs: SILENCE, enobufs: { line: 'WARNING: No buffer space available', agoMs: 12_000 }, outputBase: dir, platform: 'darwin', ...f }),
   );
@@ -312,7 +327,10 @@ test('diagnose dumps the processes, the connections to the cache, the network bu
   assert.match(stdout, /512 mbufs in use/);
   assert.match(stdout, /Pages free: 1234\./);
   assert.match(stdout, /"netty-event-loop-1" RUNNABLE/);
-  assert.match(stdout, /thread dump/);
+  // jvm.out's last thread dump, whole: its first thread and its last.
+  assert.match(stdout, /--- server\/jvm\.out from its last thread dump ---\nFull thread dump OpenJDK\n"thread-0" WAITING\n/);
+  assert.match(stdout, new RegExp(`"thread-${LOG_LINES + 99}" WAITING`));
+  assert.doesNotMatch(stdout, /an earlier one/);
   assert.match(stdout, /log line/);
   assert.doesNotMatch(stdout, /s3cret|abc123/);
   assert.match(stdout, /Authorization=Bearer \[REDACTED\]/);
@@ -379,6 +397,20 @@ test('connections keeps the column header and the live connections to port 443, 
       '(2 in TIME_WAIT left out)',
     ].join('\n'),
   );
+});
+
+test('threadDump gives jvm.out’s last thread dump from its first line, or the file’s tail when it holds none', () => {
+  assert.deepEqual(threadDump('warning\nFull thread dump A\n"a"\nFull thread dump B\n"b"\n'), {
+    title: 'server/jvm.out from its last thread dump',
+    text: 'Full thread dump B\n"b"\n',
+  });
+  const lines = Array.from({ length: LOG_LINES + 5 }, (_, i) => `line ${i}`).join('\n');
+  const tail = threadDump(lines);
+  assert.equal(tail.title, `last ${LOG_LINES} lines of server/jvm.out`);
+  assert.equal(tail.text.split('\n').length, LOG_LINES + 1);
+  assert.match(tail.text, new RegExp(`^line 4\n`));
+  const runaway = `Full thread dump\n${Array.from({ length: THREAD_DUMP_LINES + 10 }, () => 'x').join('\n')}`;
+  assert.equal(threadDump(runaway).text.split('\n').length, THREAD_DUMP_LINES);
 });
 
 test('redact hides a bearer credential in either spelling', () => {
