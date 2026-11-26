@@ -525,6 +525,26 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
       would be cut until someone noticed.
     - **Not a required key.** It would add a load error for every rig
       whose mount sits on no daily output.
+18. **Dusk warms a running cooler before its power-up** (settled
+    2026-11-26). `power_up` restarts and reconnects every service with a
+    device on its outputs, an output that was already on included, and a
+    `zwo-camera` connect runs `ASIInitCamera`, which stops a running TEC
+    abruptly: the shock decision 15 guards dawn against. So before dusk's
+    `power_up`, the schedule calls `start_warmup` when a camera on a daily
+    output reads its cooler running, and waits for those coolers to stop,
+    for at most `warmup_timeout`. No cooler runs again before the
+    cooldown, so a wedge retry needs no warm-up of its own.
+    - **Not leaving the camera's service out of the power-up.**
+      `power_up` restarts by service and the schedule sees outputs, so
+      another output's device on the same service would restart it all
+      the same.
+19. **rp reports a cover's moves** (settled 2026-11-26). `open_cover` and
+    `close_cover` emit lifecycle events, as every blocking operation of
+    rp's does, and dusk's retry of a cover that failed to open stops once
+    the cover has moved: a night run that closed it for darks or panel
+    flats keeps it closed.
+    - **Not stopping every retry when the first run starts.** A cover
+      that failed to open at dusk would get no retry during the runs.
 
 ## Implementation Status
 
@@ -534,8 +554,8 @@ by switching the Gemini Advanced 3's `USB A` and rig2's UPBv2 12 V output 1.
 | P1 | rp and the shared transport log a powered-off device once, not every pass or retry (decision 6) | Merged | [#1723](https://github.com/rusty-photon/rusty-photon/pull/1723) |
 | P2 | Services restart on request (decision 5): every driver service takes the request on its own API, closes its devices within a fixed deadline (decision 11) and exits with a code the service managers restart on; rp's `restart_service` sends the requests | Merged. PHD2's restart, its Linux units and rp's `restart_guider` were built with it. `restart_guider` left `rp` with stage G6's code on 2026-11-16, and PHD2's restart and its units left the tree with PHD2 on 2026-11-17 (decision 10) | [#1734](https://github.com/rusty-photon/rusty-photon/pull/1734) |
 | P3 | rp tools: `disconnect_device` and `connect_device`, where a device disconnected through rp is held out of the reconnect supervisor until it is connected through rp (decision 3), and a disconnect holds the device out once its deadline passes even if the driver's close has not returned (decision 11); `get_switch` and `set_switch`, addressing a power-box output by its name or label, `get_switch` answering with the devices the power map puts on the output, and `set_switch` refusing to switch one off while a device on it is still connected through rp, or ever when the power map marks it protected: an output that feeds the rig's own links (the power box's serial bridge, the hub to the host, the host's network gear), the host itself (pier1's Pi runs off its PPBA's Adjustable Output: Validation), or a safety monitor. The power map lives in rp's `switches[]` entries (decision 8) | Merged | [#1730](https://github.com/rusty-photon/rusty-photon/pull/1730) |
-| P4a | rp's power tools for the night (decision 12): the power map's `daily` mark (decision 14); `power_up`, `power_down`, `check_camera` and `get_power_map`; `get_camera_info`'s cooler state and `cooler_running`, and `start_warmup` for every laddered camera whose cooler reads running (decision 15); `get_park_state`'s `park_matches_power_up_pose`, over `star-adventurer-gti`'s `ParkMatchesPowerUpPose` Action or the mount entry's `power_cut_keeps_pose` (decisions 16 and 17) | In review: rp's tools, and `star-adventurer-gti`'s Action in its own pull request | [#1909](https://github.com/rusty-photon/rusty-photon/pull/1909), [#1910](https://github.com/rusty-photon/rusty-photon/pull/1910) |
-| P4b | `session-runner`'s night schedule (decisions 7, 11, 12, 13 and 15). Dusk, from an offset from civil twilight once the roof is open: `power_up`, a test frame per camera with one power-cycle retry on a wedge, the covers dawn closes opened, `start_cooldown`, then the configured runs in turn. Dawn, every morning: the active run ended, `start_warmup`, the park and the covers closed while it ramps, a wait for the coolers to stop, and `power_down` over the daily outputs the cut rules allow, with the outputs left on checked again every 5 minutes until dusk. A state file a restart carries on from, at any time of day | Designed; needs P4a. Owed in its build, from the design's last review: a wedge retry at dusk skips `at_park` only on an output that did not read on before dusk; the dusk cover-open retry stops once a run has moved the cover; dusk leaves alone, or warms first, a service whose camera's TEC runs, since a `zwo-camera` connect runs `ASIInitCamera` and stops the TEC (zwo-camera.md C5); and phase `runs` is written only after the covers and the cooldown | |
+| P4a | rp's power tools for the night (decision 12): the power map's `daily` mark (decision 14); `power_up`, `power_down`, `check_camera` and `get_power_map`; `get_camera_info`'s cooler state and `cooler_running`, and `start_warmup` for every laddered camera whose cooler reads running (decision 15); `get_park_state`'s `park_matches_power_up_pose`, over `star-adventurer-gti`'s `ParkMatchesPowerUpPose` Action or the mount entry's `power_cut_keeps_pose` (decisions 16 and 17) | Merged: rp's tools, and `star-adventurer-gti`'s Action in its own pull request | [#1909](https://github.com/rusty-photon/rusty-photon/pull/1909), [#1910](https://github.com/rusty-photon/rusty-photon/pull/1910) |
+| P4b | `session-runner`'s night schedule (decisions 7, 11, 12, 13, 15, 18 and 19). Dusk, from an offset from civil twilight once the roof is open: `power_up`, a test frame per camera with one power-cycle retry on a wedge, the covers dawn closes opened, `start_cooldown`, then the configured runs in turn. Dawn, every morning: the active run ended, `start_warmup`, the park and the covers closed while it ramps, a wait for the coolers to stop, and `power_down` over the daily outputs the cut rules allow, with the outputs left on checked again every 5 minutes until dusk. A state file a restart carries on from, at any time of day | In progress, in three slices: the `night` configuration, `night.json`, the night's clock, `GET /night` and the cut rules; dawn and the after-dawn checks; then dusk, the camera check, the covers, the cooldown and the runs, which need rp's cover events (decision 19) | [#1916](https://github.com/rusty-photon/rusty-photon/pull/1916) (slice 1), [#1918](https://github.com/rusty-photon/rusty-photon/pull/1918) (rp's cover events) |
 | P5 | doctor reads a device's output before it reports the device absent (decision 9) | Not started; needs P3's power map | |
 
 P0, P1 and P2 depend on nothing else, P4a needs P2 and P3, P4b needs P4a,

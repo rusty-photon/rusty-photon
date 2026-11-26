@@ -51,6 +51,7 @@ pub mod error;
 pub mod events;
 pub mod expr;
 pub mod mcp_client;
+pub mod night;
 pub mod routes;
 pub mod runs;
 
@@ -94,6 +95,14 @@ impl ServerBuilder {
                     .to_owned(),
             )
         })?;
+        if let Some(night) = &config.night {
+            if config.mcp_server_url.is_none() {
+                return Err(SessionRunnerError::Config(
+                    "a night block needs mcp_server_url: the night runs through rp".to_owned(),
+                ));
+            }
+            night::check(night, &config.workflows_dir).map_err(SessionRunnerError::Config)?;
+        }
         let server = config.server.clone();
         let resume_on_start = config.resume_on_start;
         let state = Arc::new(runs::AppState::new(config));
@@ -131,9 +140,14 @@ impl ServerBuilder {
         // nothing — and a `POST /runs` can never take the slot before
         // the leftover run has it: the server is not serving yet.
         if resume_on_start {
-            runs::resume_on_start(state).await;
+            runs::resume_on_start(state.clone()).await;
         } else {
             debug!("resume_on_start is off; run manifests are left in place");
+        }
+        // The schedule starts after the resume, so a night run the
+        // previous process left is in the registry before it looks.
+        if state.config.night.is_some() {
+            tokio::spawn(night::run(state));
         }
 
         Ok(BoundServer {

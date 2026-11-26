@@ -967,7 +967,11 @@ POST /runs ─► running ──(safety: cancelled / SafetyUnsafe)──► paus
 
 ## Night Schedule
 
-**Designed and not yet built** (stage P4b of the
+The `night` configuration, `night.json`, the night's clock and
+`GET /night` are built: the schedule keeps `night.json` on the night
+ahead, in phase `day`, and acts at neither dusk nor dawn. Dusk, dawn
+and the after-dawn checks, which § A night and § The cut rules
+describe, are designed and not yet built (stage P4b of the
 [daily power cycle plan](../plans/daily-power-cycle.md)).
 
 With a `night` block in its configuration, `session-runner` runs the
@@ -1012,14 +1016,16 @@ decision 12).
 | `dusk_offset` | signed duration | `"0s"` | When dusk starts, from the evening end of civil twilight (`get_twilight`'s `begin_utc`, the Sun sinking below −6°). A leading `-` is earlier: sky flats need dusk before that end |
 | `dawn_offset` | signed duration | `"0s"` | When dawn starts, from the morning end of civil twilight (`get_twilight`'s `end_utc`) |
 | `settle` | duration | `"30s"` | Passed to `power_up`: the time the devices get between their outputs going on and their services restarting |
-| `warmup_timeout` | duration | `"45m"` | How long dawn waits for the cameras' coolers to stop before it applies the cut rules, and how long an output whose camera cannot be read stays on after dawn's `start_warmup` |
+| `warmup_timeout` | duration | `"45m"` | How long dawn waits for the cameras' coolers to stop before it applies the cut rules, how long an output whose camera cannot be read stays on after dawn's `start_warmup`, and how long dusk waits for a cooler left running to stop before its power-up |
 | `runs` | array | `[]` | The documents the night runs, in order, each `{ "workflow", "params" }` as in a `POST /runs` body |
 
 The block is checked at load as far as `session-runner` can check it
-without `rp`: each offset lies within ±6 h, every `runs` entry's
+without `rp`: each offset lies within ±6 h, `settle` is at most `5m`
+(the longest `power_up` takes), every `runs` entry's
 `workflow` resolves in `workflows_dir` and passes the schema layer, and
 its `params` bind to the document's declarations. A bad block fails the
-start, naming the field. The catalog layer runs when the run starts,
+start, naming the field, and so does a `night` block without
+`mcp_server_url`: the night runs through `rp`. The catalog layer runs when the run starts,
 against the live `rp`.
 
 ### A night
@@ -1046,7 +1052,15 @@ with no civil darkness that night) is skipped with a `warn!`.
    `get_power_map` and records in `night.json` the daily outputs that do
    not read on, those whose box it cannot read among them: those are the
    outputs this dusk powers up, whatever a later `power_up` reports after
-   a crash in the middle of this one. Then `power_up {settle}` switches every daily output on,
+   a crash in the middle of this one. A camera on a daily output that
+   reads its cooler running (`get_camera_info`'s `cooler_running`) is
+   warmed first: `start_warmup`, and a wait until no such camera reads
+   its cooler running, polled every 30 s and woken early by
+   `cooler_warmup_complete`, for at most `warmup_timeout`. A power-up
+   restarts and reconnects a service whose output was already on, and a
+   `zwo-camera` connect runs `ASIInitCamera`, which stops a running TEC
+   abruptly ([zwo-camera.md](zwo-camera.md), C5). No cooler runs again
+   before the cooldown, so a wedge retry finds none running. Then `power_up {settle}` switches every daily output on,
    restarts each service with a device on them and connects every
    device. A device that fails to connect is logged at `warn!` and the
    night goes on without it, while `rp`'s reconnect supervisor goes on
@@ -1065,8 +1079,11 @@ with no civil darkness that night) is skipped with a `warn!`.
    waited for the roof to read safe. A cover that fails to open (refused
    while the roof reads unsafe again, or a cover that does not answer)
    is logged at `warn!` once and tried again every 5 minutes while
-   `get_cover_state` does not read it open, until dawn. The night goes on
-   meanwhile.
+   `get_cover_state` does not read it open, until dawn, or until `rp`
+   reports the cover moved (`open_cover_complete` or
+   `close_cover_complete` for it, [rp.md § Events](rp.md#events)): a run
+   that closed it for darks or panel flats keeps it closed. The night
+   goes on meanwhile.
 5. **Cooldown.** `start_cooldown`.
 6. **Runs.** Each `runs` entry starts in turn, as a `POST /runs` with its
    `workflow` and `params` would start it, under the session id
@@ -1170,15 +1187,16 @@ For a wedge retry at dusk, an output `night.json` records as not
 reading on before dusk's first `power_up` feeds no running cooler and no camera
 that warmed by day, since every camera on it was unpowered all day, so
 only the mount's and the cover's rules can hold it; the camera rules,
-the unreadable camera's among them, do not apply to it. On an output that was already
-on, the camera rules apply as at dawn, except that an unreadable camera
-holds the output outright: no warm-up has run tonight to time it from,
-and the camera is given up. That rule then
+the unreadable camera's among them, do not apply to it. On such an output the mount's rule
 skips `at_park`: the night has not moved the mount since dusk's power-up
 seeded it, and a driver restarted by the power-up need not remember that
 it was parked (`star-adventurer-gti` reads `AtPark` false in a new
 process); `park_matches_power_up_pose` reading anything but `true`, or
-a failed read, still holds the output. Each output left on is
+a failed read, still holds the output. On an output that was already
+on, the mount may have been left away from its park by day, so every
+rule applies as at dawn, except that an unreadable camera holds the
+output outright: no warm-up has run tonight to time it from, and the
+camera is given up. Each output left on is
 logged at `warn!` once, with its reason, the re-checks that follow at
 `debug!`, and the cut that ends it at `info!`.
 The rules are the schedule's, not `power_down`'s, which cuts what it is
@@ -1191,7 +1209,9 @@ mount cut away from its power-up pose comes back with its position lost.
 The schedule keeps its place in `<state_dir>/night.json`, written with
 the workspace atomic-write pattern at every change: the night's date,
 dusk and dawn, its phase (`day`, `dusk`, `power_up`, `camera_check`,
-`runs`, `dawn`, `after_dawn`), the daily outputs that did not read on before
+`runs`, `dawn`, `after_dawn`; `camera_check` lasts through the covers
+and the cooldown, and `runs` is written once the cooldown has begun),
+the daily outputs that did not read on before
 dusk's first `power_up`, the index of the next run to start (moved on as each run ends), the
 covers still to open, the cameras it gave up, the
 time of dawn's `start_warmup`, and the outputs dawn left on. A start reads it and
@@ -1267,7 +1287,9 @@ block.
 ```
 
 `phase` is `off` without a `night` block, and the other fields are then
-absent.
+absent. `night`, `dusk` and `dawn` are `null` until the schedule knows
+its night, from the `night.json` the last process left or from `rp`'s
+twilight.
 
 ### Errors
 
@@ -1402,9 +1424,9 @@ rejected — it names the blackboard file.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `server` | object | `{ "port": 11171 }` | The HTTP server for `/runs`, `/validate`, `/health` |
+| `server` | object | `{ "port": 11171 }` | The HTTP server for `/runs`, `/night`, `/validate`, `/health` |
 | `workflows_dir` | path | required | Directory of workflow documents; first-party documents ship in the package |
-| `state_dir` | path | required | Blackboard + run-manifest persistence directory |
+| `state_dir` | path | required | Blackboard + run-manifest persistence directory, and the night schedule's `night.json` |
 | `mcp_server_url` | string or null | null | `rp`'s MCP endpoint — every `POST /runs` run and standalone `/validate` use it (a run cannot start without it). Doctor `--fix` moves it to `https://` once `rp` serves TLS ([doctor.md](doctor.md) §Client-target joins) |
 | `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe`. When set, doctor judges and fixes it as it does `mcp_server_url` |
 | `rp_outage_grace` | duration | `"10m"` | How long a paused run keeps reconnecting after `rp` becomes unreachable before it fails (§ Safety Behavior). Startup self-resume waits unbounded |
@@ -1927,8 +1949,10 @@ services/session-runner/
                        three-way error mapping
     runs.rs            Run registry + supervisor: the POST /runs lifecycle,
                        pause/resume waits, run manifests, self-resume on startup
-    night.rs           The night schedule: dusk, the runs in turn, dawn and the
-                       cut rules, night.json (§ Night Schedule; designed)
+    night/             The night schedule (§ Night Schedule): the `night`
+                       block and its load checks, night.json, the night's
+                       clock over rp's civil twilight, the cut rules, and
+                       the loop that keeps night.json on the night ahead
     routes.rs          Axum router: POST /runs, GET /runs[/{id}], POST /runs/{id}/stop,
                        GET /night, POST /validate, GET /health
 ```
@@ -1975,7 +1999,7 @@ workspace `target/`, so build both first.
 | Deep-sky document | `deep_sky.feature` | the shipped `deep_sky.json` against a computed night sky (site + planner targets placed so a candidate is viable at test time): the full cycle completes (unpark → start_cooldown → slew → center → capture ×N → park → start_warmup); the planner's exposure plan drives the capture duration (a 2 s plan finishes a session the 300 s parameter default could not); a target whose integration goal is met ends the session through rp's derived progress (the frames `capture` wrote) → exhaustion → `end_of_session`, with exactly the goal's frame count and no `max_frames` budget; a session started after dawn (a computed morning site — Sun risen and climbing) ends on the planner's `end_of_session` with zero slews and zero frames; a target sinking below its per-target altitude floor switches the dispatch loop to the second target (a second slew, frames on both sides of it); `refocus_every` fires `focus_train` from the trigger overlay (rp's focus bracket around the provider call: the `focus_started` count proves it); a due meridian flip re-slews between exposures, never during one; a safety interruption resumes with re-acquisition (two `centering_complete`); a guided session (`guide: true` against the harness guider stub) starts guiding after acquisition, dithers on the `dither_every` cadence, and stops guiding before the park (`guide_settled` / `dither_settled` / `guide_stopped` counts prove it); rp's Guide Focus Watch escalating over a degrading stub HFD script fires the document's `refocus-on-escalation` trigger end-to-end. Its guiding train shares no focuser, so the plan holds only the guide step and the escalation runs the metric `auto_focus`; a second `focus_started` after `guide_focus_escalation`, beyond the one `guide-af-on-degraded` emitted, proves the wiring (sweep success is not asserted, per the OmniSim flat-HFR rule). With the guiding train's only focuser shared with the imaging train, the plan starts with a capture step, and the escalation walks `focus_train {shared: true}`: rp refuses the guide-only metric `auto_focus` there before any sweep starts, so the `focus_started` after the escalation is the walk's bracket. The guide-only scenario counts exactly two `focus_started`, one per trigger, since `guide-af-on-degraded`'s can run after the escalation. Every deep-sky scenario runs the real `focus-model` beside `rp`, registered with the `focus_tools` bracket and a starless `trains.main` block (`bdd-infra`), because a run's catalog check needs `focus_train`. The guider stub's device report names the simulator's mount and, on a rig with a guiding train, that train's camera, which an in-process Alpaca camera serves (the simulator has one camera, and the imaging train holds it), so `rp`'s check of the guider's devices passes before the document's `start_guiding`. The full guided call cadence, the `guide-af-on-degraded` wiring, the start-guiding retry-then-fail posture, the `rotate` cadence (train-addressed `get_next_target`, `move_rotator` at the recommendation's angle between slew and capture, off by default, failure non-fatal), and the `refocus-on-temperature` rule (fires only for the imaging train's terminal focuser, only past the delta, only once a focus has recorded a temperature, `0` disables, a null `temperature_c` keeps the baseline, a failed `get_train_info` leaves the rule off) are pinned by the engine exec tests against scripted tool results — a sweep never succeeds against OmniSim's starless frames, so the temperature baseline the rule needs cannot be seeded end to end. Mid-plan filter rotation is pinned by `rp`'s own planner BDD plus the engine golden tests (no simulated filter wheel or rotator in the deep-sky harness) |
 | Guide-run rules | `guide_run_rules.feature` | the shipped `deep_sky.json`'s two guide-run rules against `bdd-infra`'s guider stub, with `rp`'s `star_lost_after` shortened to 2 s: a lost star gets one more `start_guiding`, with no slew and no centring, and the session runs to its last frame; a star the guider cannot find again is asked for at each `guide_star_lost` while the frames go on, and the run completes; a run the guider stopped by itself is acquired again from the slew on; a stop `rp` was asked for starts no re-acquisition. The count of re-acquisitions that fails the session, a re-acquisition whose three starts fail, and an event drained after the run has recovered or stopped are pinned by the engine exec tests against scripted tool results: a trigger lands between exposures, so whether a frame resets the count before the next stop depends on engine ordering that a process-level scenario cannot hold still |
 | Sky-flat document | `sky_flat.feature` | the shipped `sky_flat.json` end-to-end against OmniSim: a computed night site with the mount taught the site and synced near the zenith → the session slews to the zenith from live LST, captures exactly the plan's flats through both filters, and parks (a 0.5 target fraction with 1.0 tolerance makes every OmniSim frame in-band, so the counts are deterministic — the simulator's image content does not track exposure). The adaptation math (rescale-always, discard-and-recapture, both window closures, the budget fallback) is pinned by engine exec tests running the shipped document against scripted medians |
-| Night schedule | `night.feature` | a `night` block against OmniSim's Switch as the power box, with a computed site whose dusk has just passed and a daily output mapped to the simulator's camera: the roof reading safe, the schedule switches the output on, connects the camera, checks it and runs the configured document to its end; a site whose dawn has just passed, with the output on, ends the active run, parks and cuts the output; a roof that reads unsafe until dawn powers nothing and starts no run. The cut rules are pinned by the unit tests, the service restarts inside `power_up` are `rp`'s, pinned in `rp`'s own power BDD against restart stubs, and a restart of `session-runner` from each phase of `night.json` by the unit tests too |
+| Night schedule | `night.feature` | without a `night` block `GET /night` reports phase `off` and nothing else; with one and a site in `rp`, the schedule reports the night ahead in phase `day`, its dusk and dawn the night's civil twilight ends moved by the offsets, and writes the same to `night.json`; a run that names no document fails the start. With dusk and dawn built: a `night` block against OmniSim's Switch as the power box, with a computed site whose dusk has just passed and a daily output mapped to the simulator's camera: the roof reading safe, the schedule switches the output on, connects the camera, checks it and runs the configured document to its end; a site whose dawn has just passed, with the output on, ends the active run, parks and cuts the output; a roof that reads unsafe until dawn powers nothing and starts no run. The cut rules are pinned by the unit tests, the service restarts inside `power_up` are `rp`'s, pinned in `rp`'s own power BDD against restart stubs, and a restart of `session-runner` from each phase of `night.json` by the unit tests too |
 
 Every scenario starts its run with `POST /runs` on session-runner and
 observes it through `GET /runs/{id}`; nothing registers with rp. The

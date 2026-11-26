@@ -63,6 +63,10 @@ pub struct Config {
     /// that decision continuing — not actuation on a service start.
     #[serde(default = "default_true")]
     pub resume_on_start: bool,
+    /// The night schedule (design § Night Schedule); `None` schedules
+    /// nothing.
+    #[serde(default)]
+    pub night: Option<crate::night::NightConfig>,
 }
 
 const fn default_rp_outage_grace() -> Duration {
@@ -181,6 +185,20 @@ mod tests {
         assert_eq!(config.rp_outage_grace, Duration::from_mins(10));
         assert_eq!(config.safety_poll_interval, Duration::from_secs(10));
         assert!(config.resume_on_start);
+        assert!(config.night.is_none());
+    }
+
+    #[test]
+    fn test_a_night_block_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(
+            &dir,
+            r#"{ "workflows_dir": "w", "state_dir": "s",
+                 "night": { "dusk_offset": "-30m", "warmup_timeout": "1h" } }"#,
+        );
+        let night = load_config(&path).unwrap().night.unwrap();
+        assert_eq!(night.dusk_offset.0, chrono::TimeDelta::minutes(-30));
+        assert_eq!(night.warmup_timeout, Duration::from_hours(1));
     }
 
     #[test]

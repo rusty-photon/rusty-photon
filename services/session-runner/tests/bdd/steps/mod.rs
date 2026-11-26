@@ -6,6 +6,7 @@ pub mod event_steps;
 pub mod guider_steps;
 pub mod infrastructure;
 pub mod mcp_client_auth_steps;
+pub mod night_steps;
 pub mod observation;
 pub mod recovery_steps;
 pub mod run_steps;

@@ -47,11 +47,18 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/runs/{run_id}", get(get_run))
         .route("/runs/{run_id}/stop", post(stop_run))
         .route("/validate", post(validate))
+        .route("/night", get(night))
         .with_state(state)
 }
 
 async fn health() -> &'static str {
     "session-runner healthy"
+}
+
+/// `GET /night`: the night schedule's place (design § Night Schedule →
+/// `GET /night`).
+async fn night(State(state): State<Arc<AppState>>) -> Json<Value> {
+    Json(state.night.report(state.config.night.is_some()))
 }
 
 fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
@@ -432,6 +439,7 @@ mod tests {
             rp_outage_grace: Duration::from_secs(1),
             safety_poll_interval: Duration::from_millis(50),
             resume_on_start: false,
+            night: None,
         }
     }
 

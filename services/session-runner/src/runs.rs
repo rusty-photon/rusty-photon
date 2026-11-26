@@ -29,11 +29,12 @@ use crate::engine::{
 use crate::events;
 use crate::mcp_client::McpClient;
 
-/// The service state behind every route: the configuration and the run
-/// registry.
+/// The service state behind every route: the configuration, the run
+/// registry and the night schedule's place.
 pub struct AppState {
     pub config: Config,
     pub runs: RunRegistry,
+    pub night: crate::night::NightStatus,
 }
 
 impl AppState {
@@ -42,6 +43,7 @@ impl AppState {
         Self {
             config,
             runs: RunRegistry::default(),
+            night: crate::night::NightStatus::default(),
         }
     }
 }
@@ -741,7 +743,7 @@ async fn connect_and_validate(
     Ok((document, mcp))
 }
 
-fn issue_messages(issues: &[crate::document::ValidationIssue]) -> String {
+pub(crate) fn issue_messages(issues: &[crate::document::ValidationIssue]) -> String {
     issues
         .iter()
         .map(|i| {
@@ -1065,6 +1067,7 @@ mod tests {
             rp_outage_grace: Duration::from_secs(1),
             safety_poll_interval: Duration::from_millis(50),
             resume_on_start: false,
+            night: None,
         });
         let manifest = RunManifest {
             run_id: "run-1".into(),
