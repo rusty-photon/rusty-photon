@@ -445,7 +445,7 @@ optional.
 - **SDK quality is the ambient risk.** The complaints in the field (gain
   changes, cooler quirks, early-revision banding) live below any driver we
   write. Budget hardware-validation time à la
-  [`zwo-real-hardware-validation.md`](../zwo-real-hardware-validation.md),
+  [`zwo-real-hardware-validation.md`](zwo-real-hardware-validation.md),
   including a dark-frame banding check to confirm the delivered unit is the
   fixed revision.
 - **Thread safety is undocumented** — assume none: every SDK call funnels
@@ -617,7 +617,7 @@ Bazel files all port). The exposure-model difference concentrates in Phase B
 ## References
 
 - Template plan: [`zwo-driver.md`](../zwo-driver.md); hardware-validation
-  template: [`zwo-real-hardware-validation.md`](../zwo-real-hardware-validation.md)
+  template: [`zwo-real-hardware-validation.md`](zwo-real-hardware-validation.md)
 - Precedent services: [`zwo-camera.md`](../../services/zwo-camera.md) ·
   [`qhy-camera.md`](../../services/qhy-camera.md)
 - ADRs: [008](../../decisions/008-zwo-camera-native-sdk-ffi.md) ·
