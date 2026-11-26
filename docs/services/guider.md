@@ -409,11 +409,11 @@ guide rates it does not implement are no guide rates.
 duration. The pulse has ended when the call has returned, the duration
 has passed and `IsPulseGuiding` reads false. A pulse still in progress
 `mount.pulse_timeout` after its duration stops the run with
-`pulse_timeout`. Only `IsPulseGuiding` reading true shows a pulse in
-progress, and only a read asked once that time has passed shows it in
-progress then; a read asked before it is asked again. A read that has
-not answered is a call like any other, held to the call deadline: a
-slow link is not a stuck pulse.
+`pulse_timeout`. Once the call has returned, only `IsPulseGuiding`
+reading true shows a pulse in progress, and only a read asked once that
+time has passed shows it in progress then; a read asked before it is
+asked again. A read that has not answered is a call like any other,
+held to the call deadline: a slow read is not a stuck pulse.
 
 **Bounds.**
 
