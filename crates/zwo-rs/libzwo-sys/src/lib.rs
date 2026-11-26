@@ -11,33 +11,35 @@
 //! wrapper instead.
 //!
 //! [`bindgen`]: https://crates.io/crates/bindgen
-#![allow(
-    non_upper_case_globals,
-    non_camel_case_types,
-    non_snake_case,
-    dead_code
-)]
-// Generated bindings are not idiomatic Rust; do not lint them. The groups
-// cover the warn-level surface; the named restriction lints are the
-// workspace's denied set (root Cargo.toml [workspace.lints.clippy]), which
-// no group contains — bindgen output indexes, casts, and unwraps freely.
-#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::unreachable,
-    clippy::panic,
-    clippy::todo,
-    clippy::unimplemented,
-    clippy::panic_in_result_fn,
-    clippy::unchecked_time_subtraction,
-    clippy::string_slice,
-    clippy::as_conversions,
-    clippy::arithmetic_side_effects,
-    clippy::indexing_slicing
-)]
+pub use bindings::*;
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+/// The bindings bindgen generates from the vendored headers, re-exported at
+/// the crate root. Their lint suppressions sit on this module rather than on
+/// the crate, so the hand-written code below is linted like any other.
+mod bindings {
+    #![allow(
+        non_upper_case_globals,
+        non_camel_case_types,
+        non_snake_case,
+        dead_code
+    )]
+    // Generated bindings are not idiomatic Rust, so the warn-level groups
+    // stay off. Of the workspace's denied restriction lints (root Cargo.toml
+    // [workspace.lints.clippy]), which no group contains, the bindings trip
+    // two, and only in bindgen's layout checks. Each `const _: () = { .. }`
+    // indexes one-element arrays by a type's `size_of` or `align_of`, or a
+    // field's `offset_of!`, minus the value bindgen took from clang's layout
+    // of the header. A wrong layout underflows the subtraction or indexes
+    // past the array, and either fails the build.
+    #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
+    #![expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "bindgen's layout checks, evaluated at compile time: a wrong layout fails the build"
+    )]
+
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
 
 /// Keeps `libudev` in the consumer binary's `DT_NEEDED`.
 ///
