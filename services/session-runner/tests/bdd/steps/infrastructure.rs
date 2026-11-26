@@ -126,7 +126,27 @@ pub async fn start_session_runner_service_with(world: &mut SessionRunnerWorld, e
     if world.session_runner.is_some() {
         return;
     }
+    let config_path = session_runner_config_path(world, extra).await;
+    world.session_runner = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
+}
 
+/// Start session-runner as [`start_session_runner_service_with`] does,
+/// for a configuration the service is expected to refuse: the error
+/// when it exits without binding.
+pub async fn try_start_session_runner_with(
+    world: &mut SessionRunnerWorld,
+    extra: Value,
+) -> Result<(), String> {
+    let config_path = session_runner_config_path(world, extra).await;
+    let handle = ServiceHandle::try_start(env!("CARGO_PKG_NAME"), &config_path).await?;
+    world.session_runner = Some(handle);
+    Ok(())
+}
+
+/// Write the scenario's session-runner configuration and return its
+/// path: the directories (created once per scenario), rp's MCP endpoint
+/// when rp is running, and `extra`'s top-level fields.
+async fn session_runner_config_path(world: &mut SessionRunnerWorld, extra: Value) -> String {
     if world.workflows_dir.is_none() {
         let cwd = std::env::current_dir().expect("cannot read the cwd");
         let workflows_dir = tempfile::tempdir().expect("cannot create a workflows_dir");
@@ -166,9 +186,7 @@ pub async fn start_session_runner_service_with(world: &mut SessionRunnerWorld, e
             map.insert(key, value);
         }
     }
-    let config_path = write_temp_config_file("session-runner-config", &config).await;
-
-    world.session_runner = Some(ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await);
+    write_temp_config_file("session-runner-config", &config).await
 }
 
 /// Stage the `POST /runs` body — the workflow document and its

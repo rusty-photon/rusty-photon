@@ -112,6 +112,12 @@ pub struct SessionRunnerWorld {
     // --- REST API state ---
     pub last_api_status: Option<u16>,
     pub last_api_body: Option<Value>,
+
+    // --- Night schedule (`night.feature`) ---
+    /// The last `GET /night` body.
+    pub night_report: Option<Value>,
+    /// Why session-runner refused to start, when a scenario expects it to.
+    pub start_error: Option<String>,
 }
 
 impl TlsAuthSmokeWorld for SessionRunnerWorld {
