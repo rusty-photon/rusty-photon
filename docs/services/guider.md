@@ -147,14 +147,14 @@ reports the state.
 
 `calibrating`, `guiding`, `paused` and `star_lost` are the **run
 states**. A **run** begins when a `calibrate` or `guiding/start`
-request is accepted and ends when the state returns to `idle` or
-`looping`.
+request takes the guider into a run state, and ends when the state
+returns to `idle` or `looping`.
 
 | From | Trigger | To |
 |---|---|---|
 | `idle` | `loop` | `looping` |
 | `idle`, `looping` | `calibrate` | `calibrating`, then the state it came from |
-| `idle`, `looping` | `guiding/start` | `calibrating` when no stored calibration can be used, then `guiding` |
+| `idle`, `looping` | `guiding/start` | `calibrating` when no stored calibration can be used; otherwise `looping` until its fresh frame selects guide stars. Then `guiding` |
 | `guiding` | A star-lost frame | `star_lost` |
 | `star_lost` | A frame with the stars back | `guiding` |
 | `guiding`, `star_lost` | `guiding/pause` | `paused` |
@@ -165,7 +165,9 @@ request is accepted and ends when the state returns to `idle` or
 
 Settling is not a state. While a `guiding/start` or a `dither` waits
 for the stars to settle, the state is `guiding` and `stats` reports
-`settling: true`.
+`settling: true`. A `guiding/start` from `idle` that guides with a
+stored calibration reads `looping` while it waits for its fresh frame:
+`idle` means no exposure, and `guiding` that the guide loop is closed.
 
 ### Starting idle
 

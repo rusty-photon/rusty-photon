@@ -237,12 +237,15 @@ fn calibrated_first(world: &mut GuiderWorld) {
     );
 }
 
-#[then("the guider's stats report guiding true and settling false")]
-async fn guiding_not_settling(world: &mut GuiderWorld) {
+#[then(regex = r"^the guider's stats report guiding (true|false) and settling (true|false)$")]
+async fn guiding_and_settling(world: &mut GuiderWorld, guiding: String, settling: String) {
     let body = stats(world).await;
     assert_eq!(
         (&body["guiding"], &body["settling"]),
-        (&Value::Bool(true), &Value::Bool(false)),
+        (
+            &Value::Bool(guiding == "true"),
+            &Value::Bool(settling == "true")
+        ),
         "{body}"
     );
 }

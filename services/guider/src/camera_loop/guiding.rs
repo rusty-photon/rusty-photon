@@ -312,8 +312,9 @@ impl Cycle {
         };
         match stored {
             Some(calibration) => {
+                // The state stays the one the start found, `looping` from
+                // `idle`, until guiding begins on the fresh selection.
                 info!("guiding starts with the stored calibration");
-                self.status.lock().set_state(State::Guiding);
                 self.mode = super::Mode::Starting(Box::new(Starting {
                     mount: RunMount::new(
                         Arc::clone(&telescope),
@@ -1653,6 +1654,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_start_from_looping_with_a_stored_calibration_guides_after_a_fresh_selection() {
         let mut cycle = looping_cycle();
+        cycle.status.lock().set_state(State::Looping);
         cycle
             .store
             .put(Record {
@@ -1665,6 +1667,7 @@ mod tests {
         cycle.begin_start(run, Found::Looping);
         assert!(matches!(cycle.mode, Mode::Starting(_)));
         assert!(cycle.select_next);
+        assert_eq!(state(&cycle), State::Looping);
         assert!(cycle
             .starting_frame(&selection(Ok(3)), &CancellationToken::new())
             .await

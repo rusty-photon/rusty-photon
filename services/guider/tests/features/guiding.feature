@@ -39,6 +39,15 @@ Feature: Guiding
     And the guider's stats report the state "guiding"
     And the guider's stats report guiding true and settling false
 
+  Scenario: A start from idle reads looping while it waits for its fresh frame
+    Given the state directory holds a calibration of the simulated rig
+    And the guider configuration's "/camera/exposure" is the JSON "2m"
+    And the guider is started
+    And a client asks the guider to start guiding in the background with the body {}
+    And the simulated camera has started an exposure
+    Then the guider's stats report the state "looping"
+    And the guider's stats report guiding false and settling false
+
   Scenario: A start with no stored calibration calibrates first, then guides
     Given the guider is started
     When a client asks the guider to start guiding

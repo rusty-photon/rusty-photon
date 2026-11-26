@@ -598,7 +598,7 @@ impl Guider {
             Some(devices) => self.spawn(
                 self.setup(devices, None, None, Some(run)),
                 stops,
-                State::Guiding,
+                State::Looping,
                 false,
             )?,
         }
