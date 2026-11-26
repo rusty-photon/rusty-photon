@@ -13,7 +13,7 @@ use std::time::Duration;
 use bdd_infra::rp_harness::{
     AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig,
     GuiderConfig, GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlateSolverConfig,
-    PlateSolverStub, RpConfigBuilder, SafetyMonitorConfig, SseClient,
+    PlateSolverStub, PowerBoxStub, RpConfigBuilder, SafetyMonitorConfig, SseClient, SwitchConfig,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -118,6 +118,11 @@ pub struct SessionRunnerWorld {
     pub night_report: Option<Value>,
     /// Why session-runner refused to start, when a scenario expects it to.
     pub start_error: Option<String>,
+    /// The scenario's stub power box and rp's `switches[]` entries.
+    pub power_box: Option<PowerBoxStub>,
+    pub switches: Vec<SwitchConfig>,
+    /// The run a scenario left in `state_dir` for the self-resume.
+    pub left_run_id: Option<String>,
 }
 
 impl TlsAuthSmokeWorld for SessionRunnerWorld {
@@ -203,6 +208,9 @@ impl SessionRunnerWorld {
         }
         for sm in &self.safety_monitors {
             builder.add_safety_monitor(sm.clone());
+        }
+        for switch in &self.switches {
+            builder.add_switch(switch.clone());
         }
         if let Some(interval) = self.safety_poll_interval {
             builder.with_safety_poll_interval(interval);

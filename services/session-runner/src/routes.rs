@@ -37,7 +37,7 @@ use crate::document::{
 use crate::mcp_client::McpClient;
 use crate::runs::{
     self, completion_result, mint_run_id, mint_session_id, valid_session_id, AppState, Launch,
-    RunManifest, StopError,
+    RunManifest, SlotTaken, StopError,
 };
 
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -204,7 +204,10 @@ async fn start_run(
     // A fast refusal before any validation work; the reserving call
     // below is the authoritative one.
     if let Some(active) = state.runs.active() {
-        return run_conflict(&active);
+        return run_conflict(&SlotTaken::Run(active));
+    }
+    if state.runs.held_for_night() {
+        return run_conflict(&SlotTaken::Night);
     }
     let Some(mcp_url) = config.mcp_server_url.clone() else {
         return error_response(
@@ -262,7 +265,7 @@ async fn start_run(
         .start(&run_id, &session_id, &request.workflow, now)
     {
         Ok(stop) => stop,
-        Err(active) => return run_conflict(&active),
+        Err(taken) => return run_conflict(&taken),
     };
     let manifest = RunManifest {
         run_id: run_id.clone(),
@@ -310,14 +313,18 @@ fn body_rejected(rejection: &JsonRejection) -> (StatusCode, Json<Value>) {
     )
 }
 
-fn run_conflict(active: &str) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::CONFLICT,
-        Json(json!({
+fn run_conflict(taken: &SlotTaken) -> (StatusCode, Json<Value>) {
+    let body = match taken {
+        SlotTaken::Run(active) => json!({
             "error": format!("run `{active}` is still active; one run at a time"),
             "active_run_id": active,
-        })),
-    )
+        }),
+        SlotTaken::Night => json!({
+            "error": "the night schedule holds the run slot for its power steps; try again once they are done",
+            "active_run_id": null,
+        }),
+    };
+    (StatusCode::CONFLICT, Json(body))
 }
 
 fn record_json(record: &runs::RunRecord) -> Value {
@@ -745,5 +752,23 @@ mod tests {
         assert_eq!(response["state"], json!("stopped"));
         assert_eq!(response["outcome"]["outcome"], json!("stopped"));
         assert!(response["ended_at"].is_string());
+    }
+
+    #[tokio::test]
+    async fn test_a_run_is_refused_while_the_night_holds_the_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base, state) = spawn_app_with_state(test_config(&dir)).await;
+        assert!(state.runs.hold_for_night());
+        let (status, response) =
+            post_json(&format!("{base}/runs"), json!({ "workflow": "x" })).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{response}");
+        assert_eq!(response["active_run_id"], Value::Null);
+        assert!(
+            response["error"]
+                .as_str()
+                .unwrap()
+                .contains("night schedule"),
+            "{response}"
+        );
     }
 }

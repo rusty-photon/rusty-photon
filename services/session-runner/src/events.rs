@@ -18,6 +18,8 @@
 //! `stream` cargo feature — and a hand-rolled parser for the
 //! `id:`/`event:`/`data:` line protocol.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -60,7 +62,21 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// failed first attempt is retried there too — a dead stream never
 /// blocks the session.
 pub async fn subscribe(events_url: String, connection: &RpConnection) -> EventIntake {
+    subscribe_counting(events_url, connection).await.0
+}
+
+/// [`subscribe`], with the number of times the stream has connected.
+///
+/// The count is 1 after the first connect, and one more for each
+/// reconnect. The night
+/// schedule reads a reconnect as `rp` back from a restart (design § Night
+/// Schedule → A night, step 8).
+pub async fn subscribe_counting(
+    events_url: String,
+    connection: &RpConnection,
+) -> (EventIntake, Arc<AtomicU64>) {
     let (tx, rx) = mpsc::channel(EVENT_BUFFER);
+    let connects = Arc::new(AtomicU64::new(0));
     let (client, auth) = event_client(connection);
     let auth_header = rp_mcp_client::basic_authorization(&events_url, auth, connection.ca_path())
         .unwrap_or_else(|e| {
@@ -68,8 +84,15 @@ pub async fn subscribe(events_url: String, connection: &RpConnection) -> EventIn
             None
         });
     let first = connect(&client, &events_url, None, auth_header.as_ref()).await;
-    tokio::spawn(client_loop(client, events_url, tx, first, auth_header));
-    EventIntake::new(rx)
+    tokio::spawn(client_loop(
+        client,
+        events_url,
+        tx,
+        first,
+        auth_header,
+        connects.clone(),
+    ));
+    (EventIntake::new(rx), connects)
 }
 
 /// The subscription's HTTP client and the credential it may present —
@@ -138,11 +161,13 @@ async fn client_loop(
     tx: mpsc::Sender<EngineEvent>,
     first: Option<reqwest::Response>,
     auth: Option<reqwest::header::HeaderValue>,
+    connects: Arc<AtomicU64>,
 ) {
     let mut last_seq: Option<u64> = None;
     let mut connection = first;
     loop {
         if let Some(response) = connection.take() {
+            connects.fetch_add(1, Ordering::SeqCst);
             read_stream(response, &tx, &mut last_seq).await;
         }
         tokio::select! {
@@ -423,10 +448,15 @@ mod tests {
         ])
         .await;
 
-        let mut intake = subscribe(url, &RpConnection::default()).await;
+        let (mut intake, connects) = subscribe_counting(url, &RpConnection::default()).await;
         for n in 1..=3 {
             assert_eq!(next_event(&mut intake).await.payload, json!({ "n": n }));
         }
+        assert_eq!(
+            connects.load(Ordering::SeqCst),
+            2,
+            "the first connect and one reconnect"
+        );
         let first_head = heads.recv().await.unwrap().to_lowercase();
         assert!(
             !first_head.contains("last-event-id"),
