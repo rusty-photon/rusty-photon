@@ -80,24 +80,17 @@ pub fn parse_side_of_pier(s: &str) -> Result<SideOfPier, String> {
     }
 }
 
-/// Validate ra (hours) ∈ [0, 24) and dec (degrees) ∈ [-90, 90].
+/// Validate ra (hours) ∈ [0, 24) and dec (degrees) ∈ [-90, 90] with the
+/// plan coordinate's own check, [`rp_vocabulary::IcrsCoord::try_new`].
 ///
 /// # Errors
 ///
-/// Returns a message naming the out-of-range coordinate.
+/// Returns the [`rp_vocabulary::CoordError`] message naming the
+/// out-of-range coordinate.
 pub fn validate_icrs(ra_hours: f64, dec_degrees: f64) -> Result<IcrsCoord, String> {
-    if !(0.0..24.0).contains(&ra_hours) {
-        return Err(format!("ra_hours must be in [0, 24); got {ra_hours}"));
-    }
-    if !(-90.0..=90.0).contains(&dec_degrees) {
-        return Err(format!(
-            "dec_degrees must be in [-90, 90]; got {dec_degrees}"
-        ));
-    }
-    Ok(IcrsCoord {
-        ra_hours,
-        dec_degrees,
-    })
+    rp_vocabulary::IcrsCoord::try_new(ra_hours, dec_degrees)
+        .map(IcrsCoord::from)
+        .map_err(|e| e.to_string())
 }
 
 /// Common error: a tool that needs a configured site was called when
@@ -284,7 +277,20 @@ mod tests {
         assert!(validate_icrs(-1.0, 0.0).is_err());
         assert!(validate_icrs(24.0, 0.0).is_err());
         assert!(validate_icrs(0.0, 91.0).is_err());
-        validate_icrs(0.7123, 41.27).unwrap();
+        let c = validate_icrs(0.7123, 41.27).unwrap();
+        assert_eq!((c.ra_hours, c.dec_degrees), (0.7123, 41.27));
+    }
+
+    #[test]
+    fn icrs_validation_names_the_coordinate_as_the_plan_type_does() {
+        assert_eq!(
+            validate_icrs(25.0, 0.0).unwrap_err(),
+            "ra_hours 25 is outside [0, 24)"
+        );
+        assert_eq!(
+            validate_icrs(0.0, -91.0).unwrap_err(),
+            "dec_degrees -91 is outside [-90, 90]"
+        );
     }
 
     #[test]
