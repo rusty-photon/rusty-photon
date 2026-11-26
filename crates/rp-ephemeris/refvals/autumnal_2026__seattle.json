@@ -1,4 +1,10 @@
 {
+  "moon": {
+    "alt_az": {
+      "altitude_degrees": -15.101800807607317,
+      "azimuth_degrees": 100.36598145984088
+    }
+  },
   "site": {
     "label": "seattle",
     "latitude_degrees": 47.6062,

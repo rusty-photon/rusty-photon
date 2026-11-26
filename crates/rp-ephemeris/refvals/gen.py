@@ -9,11 +9,19 @@ file per (time, site) pair, holding every object's alt/az, under
 ``alt_az`` matches within 1e-4°. Disagreement is a wrapping bug, not an
 algorithmic one.
 
+Each file also holds the Moon's topocentric alt/az, from Astropy's
+``get_body`` over JPL's DE440s ephemeris, which the test compares with
+the trait's ``moon_position`` within 10″. There the disagreement is
+algorithmic: ``Moon98`` is a truncated lunar theory, and agrees with
+DE440s to about 4″ at these times.
+
 Run by hand, not in CI. Re-run after upgrading erfars or astropy.
 
 Requirements:
 
-    pip install 'astropy>=6' numpy
+    pip install 'astropy>=6' numpy jplephem
+
+The first run downloads DE440s (about 32 MB) into Astropy's cache.
 
 Provenance is the commit message + this file: commit the generated
 JSONs alongside it, and a reviewer re-runs the script and diffs to
@@ -36,13 +44,15 @@ try:
         AltAz,
         EarthLocation,
         SkyCoord,
+        get_body,
+        solar_system_ephemeris,
     )
     from astropy.table import QTable
     from astropy.time import Time
     from astropy.utils import iers
 except ImportError as exc:  # pragma: no cover - tooling
     raise SystemExit(
-        "astropy is required: pip install 'astropy>=6' numpy"
+        "astropy is required: pip install 'astropy>=6' numpy jplephem"
     ) from exc
 
 REFVALS_DIR = pathlib.Path(__file__).resolve().parent
@@ -50,7 +60,8 @@ REFVALS_DIR = pathlib.Path(__file__).resolve().parent
 # Targets: name, ICRS RA (hours), Dec (deg). A deep-sky mix, a polar
 # object (Polaris) and southern objects. The Sun and the Moon are not
 # among them: their ICRS place is barycentric, which `alt_az`, built for a
-# star's catalog place, cannot take as given.
+# star's catalog place, cannot take as given. The Moon has its own entry
+# in each file instead.
 TARGETS = {
     "polaris": (2.5301944, 89.2641111),
     "m31": (0.71223, 41.26878),
@@ -69,6 +80,14 @@ SITES = {
     "santiago": (-33.4489, -70.6693),
     "quito": (-0.1807, -78.4678),
 }
+
+# The Moon's ephemeris: JPL's DE440s, not Astropy's "builtin", which
+# takes the Moon from ERFA's own `moon98` and so would check the crate
+# against itself. It is set as the session's ephemeris, not passed as
+# `get_body`'s `ephemeris` argument: that argument covers the Moon alone,
+# and the transform inside `get_body` would take the Earth from
+# "builtin", which moves the Moon by about half an arcminute.
+MOON_EPHEMERIS = "de440s"
 
 # Times: solstices and an equinox (UTC). 2026 epoch.
 TIMES = {
@@ -143,7 +162,12 @@ def main() -> None:
                     "alt_az": _serialise_alt_az(coord, location, when),
                 }
 
+            with solar_system_ephemeris.set(MOON_EPHEMERIS):
+                moon = get_body("moon", when, location)
+                moon_alt_az = _serialise_alt_az(moon, location, when)
+
             output = {
+                "moon": {"alt_az": moon_alt_az},
                 "site": {
                     "label": site_label,
                     "latitude_degrees": lat,
