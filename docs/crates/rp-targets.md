@@ -706,8 +706,7 @@ as good rather than as not-good.
 **This crate:** the `Target` + `AcquisitionGoal` model, the
 `TargetSlug` newtype, the `TargetStore` trait, `RedbTargetStore`
 (two-table layout, transaction-per-op, ACID), the `schema_version`
-migration scaffold, and override storage for scheduling + grading. An
-in-memory test double for consumer tests.
+migration scaffold, and override storage for scheduling + grading.
 
 **rp-side:** target CRUD MCP tools (resolve via
 `rp-catalog` → derive slug → `upsert`), the round-trippable naming
