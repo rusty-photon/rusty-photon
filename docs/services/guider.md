@@ -1448,12 +1448,17 @@ change.
     count down the pulses left to go, to 0. The
     West and North legs are each followed by
     `<West|North> calibration complete. Angle = <deg> deg, Rate = <px/s> px/sec, Parity = N/A`,
-    the angle the way the mount moved. A calibration that passes ends
+    the angle the way the mount moved. Each leg after `West` opens, as
+    PHD2's do, with the frame that ended the leg before it: `East` and
+    `South` at the leg's full count, and `Backlash` and `North` at
+    step 0 with no displacement. A calibration that passes ends
     with `Calibration complete, mount = <mount>.`, and one that fails
     or stops with a note that says why.
   - A guiding run opens with a blank line and
     `Guiding Begins at <time>`, its header and PHD2's 18-column
-    heading, and ends with `Guiding Ends at <time>`. Each guide step is
+    heading, and ends with `Guiding Ends at <time>`; a run that
+    calibrates again ends its section where the calibration's begins,
+    so a stop before then is a note of the run. Each guide step is
     a `"Mount"` row: the frame number and the seconds since the run
     began, the offset from the lock on the sensor, the error on each
     axis and the distance its correction covers, each pulse's duration

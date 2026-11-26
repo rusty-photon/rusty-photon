@@ -173,6 +173,44 @@ fn calibration_passed(world: &mut GuiderWorld, legs: String) {
     );
 }
 
+#[then("the guide log's calibration opens each leg after West with the frame that ended the leg before it")]
+fn legs_open(world: &mut GuiderWorld) {
+    let calibration = the_calibration(world);
+    let mut opened = Vec::new();
+    for pair in calibration.rows.windows(2) {
+        let [ended, opening] = pair else {
+            continue;
+        };
+        if ended.direction == opening.direction {
+            continue;
+        }
+        assert_eq!(
+            (opening.x, opening.y),
+            (ended.x, ended.y),
+            "the {} leg opens on another frame than the {} leg's last",
+            opening.direction,
+            ended.direction
+        );
+        match opening.direction.as_str() {
+            // East and South go back from where West and North ended.
+            "East" | "South" => assert_eq!(
+                (opening.step, opening.dx, opening.dy),
+                (ended.step, ended.dx, ended.dy),
+                "the {} leg's first row",
+                opening.direction
+            ),
+            _ => assert_eq!(
+                (opening.step, opening.dx, opening.dy),
+                (0, 0.0, 0.0),
+                "the {} leg's first row",
+                opening.direction
+            ),
+        }
+        opened.push(opening.direction.clone());
+    }
+    assert_eq!(opened, ["East", "Backlash", "North", "South"]);
+}
+
 #[then(
     regex = r"^the guide log's (East|South) rows count down to 0, back to where the (West|North) leg began$"
 )]

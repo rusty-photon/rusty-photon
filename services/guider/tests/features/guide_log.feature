@@ -32,6 +32,7 @@ Feature: The guide log
     Then the state directory holds 1 guide log, named for the time it was opened
     And the guide log parses as PHD2's format
     And the guide log holds a calibration that passed, with rows of the legs West, East, Backlash, North and South
+    And the guide log's calibration opens each leg after West with the frame that ended the leg before it
     And the guide log's East rows count down to 0, back to where the West leg began
     And the guide log's South rows count down to 0, back to where the North leg began
 

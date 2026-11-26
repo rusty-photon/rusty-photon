@@ -279,20 +279,16 @@ impl Cycle {
         let telescope = guiding.mount.telescope();
         let start = guiding.start;
         // In `star_lost` the run calibrates again only once its fresh frame
-        // has selected guide stars, and counts the interruption and ends
-        // its section of the guide log then: a fresh frame with too few
-        // stars leaves the run as it was.
+        // has selected guide stars, and counts the interruption then: a
+        // fresh frame with too few stars leaves the run as it was. Its
+        // section of the guide log ends where the calibration's begins.
         let reselect = guiding.sub == Sub::StarLost;
-        {
-            let mut status = self.status.lock();
-            status.start_accepted();
-            if !reselect {
-                status.interruption();
-            }
-        }
+        let mut status = self.status.lock();
+        status.start_accepted();
         if !reselect {
-            self.guide_log.lock().guiding_ends(self.epoch.elapsed());
+            status.interruption();
         }
+        drop(status);
         let after = StartAfter {
             settle,
             reply,
@@ -1779,16 +1775,54 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_recalibrate_in_a_run_ends_the_runs_section_of_the_guide_log() {
+    async fn a_recalibrate_in_a_run_ends_the_runs_section_where_the_calibrations_begins() {
         let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
         let (run, _answer, _turns) = start_in_a_run(true).await;
         cycle.start(run);
+        assert!(!guide_log_text(&cycle).contains("Guiding Ends"));
+        // The test's loop holds no guide stars, so the calibration selects
+        // on its first frame.
+        assert!(cycle
+            .after_frame(selection(Ok(3)), &CancellationToken::new())
+            .await
+            .is_none());
         let text = guide_log_text(&cycle);
-        let begins = text.find("Guiding Begins at").expect("a run's section");
         let ends = text
             .find("Guiding Ends at")
             .expect("the run's section ended");
-        assert!(begins < ends, "{text}");
+        let calibration = text
+            .find("Calibration Begins at")
+            .expect("the calibration's section");
+        assert!(ends < calibration, "{text}");
+    }
+
+    /// The guide log of a run that calibrates again and stops with `stop`
+    /// before the calibration's first frame.
+    async fn stopped_before_the_calibration_began(stop: &Stop) -> String {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        cycle.log_stop(stop);
+        guide_log_text(&cycle)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_that_stops_before_its_calibration_begins_ends_its_section_with_the_stop() {
+        for (stop, note) in [
+            (Stop::requested(), "INFO: Server received guiding/stop"),
+            (
+                Stop::new(StopReason::MountSlewing, "the mount is slewing"),
+                "INFO: GUIDING STOPPED, mount_slewing: the mount is slewing",
+            ),
+        ] {
+            let text = stopped_before_the_calibration_began(&stop).await;
+            let noted = text.find(note).expect("the stop's note");
+            let ends = text
+                .find("Guiding Ends at")
+                .expect("the run's section ended");
+            assert!(noted < ends, "{text}");
+            assert!(!text.contains("Calibration Begins"), "{text}");
+        }
     }
 
     #[tokio::test(start_paused = true)]
