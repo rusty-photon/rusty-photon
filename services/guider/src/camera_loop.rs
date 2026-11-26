@@ -1012,11 +1012,12 @@ fn leg_result(
         return None;
     }
     let (angle_deg, rate) = match before.leg() {
-        // The RA rate at the declination, the rate the leg measured.
+        // The rate the leg measured: the axis's rate is it divided by the
+        // calibration's scaling cosine.
         rp_guiding::Leg::West => next.ra_axis().map(|ra| {
             (
                 ra.angle_deg,
-                ra.rate_px_per_s * declination_deg.to_radians().cos(),
+                ra.rate_px_per_s * rp_guiding::scaling_cosine(declination_deg),
             )
         })?,
         rp_guiding::Leg::North => next
@@ -1853,6 +1854,43 @@ mod tests {
             .unwrap()
             .matches("West calibration complete")
             .count()
+    }
+
+    #[test]
+    fn the_west_legs_result_is_the_rate_it_measured_close_to_the_pole() {
+        let setup = rp_guiding::Setup {
+            pier_side: rp_guiding::PierSide::East,
+            camera: rp_guiding::CameraGeometry {
+                pixel_size_um: 2.0,
+                width: 320,
+                height: 240,
+                binning: 1,
+            },
+            focal_length_mm: 200.0,
+            guide_rates: None,
+        };
+        let params = rp_guiding::CalibrationParams::default();
+        let declination_deg = 89.7;
+        let west = Calibrator::new(setup, declination_deg, params, Duration::ZERO);
+        let Ok(Progress::Pulse(west, _)) = west.frame(Some(Offset::default()), Duration::ZERO)
+        else {
+            panic!("the West leg sent no step");
+        };
+        let moved = params.distance_px + 1.0;
+        let far = Offset { x: moved, y: 0.0 };
+        let Ok(Progress::Pulse(next, _) | Progress::Wait(next)) =
+            west.clone().frame(Some(far), Duration::from_secs(1))
+        else {
+            panic!("the calibration ended");
+        };
+        let (leg, _, rate) = leg_result(&west, &next, declination_deg).unwrap();
+        // One step went out.
+        let measured = moved / west.ra_step().as_secs_f64();
+        assert_eq!(leg, rp_guiding::Leg::West);
+        assert!(
+            (rate - measured).abs() < 1e-9 * measured,
+            "{rate} against {measured}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

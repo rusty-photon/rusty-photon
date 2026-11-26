@@ -649,9 +649,7 @@ impl Cycle {
                 guiding.controller.star_lost();
                 self.status.lock().star_lost_frame();
                 self.guide_log.lock().star_lost(flux, snr, now);
-                if let Some(end) = self.settle_frame(None, now) {
-                    return Some(end);
-                }
+                self.settle_frame(None, now);
             }
             (Sub::Guiding | Sub::StarLost, Some(offset)) => {
                 if guiding.sub == Sub::StarLost {
@@ -687,22 +685,20 @@ impl Cycle {
         let super::Mode::Guiding(guiding) = &mut self.mode else {
             return None;
         };
-        let sent = send_pulses(&guiding.mount, &mut pulses, cancel).await;
+        let end = match send_pulses(&guiding.mount, &mut pulses, cancel).await {
+            Err(stop) => Some(End::Stop(stop)),
+            Ok(failed) => guiding.mount.cycle(failed.as_deref()).map(End::Stop),
+        };
         if let Some((mut row, distance)) = stepped_frame {
             // The row gives the pulses that went out, as PHD2's does.
             [row.ra, row.dec] = pulses;
             self.guide_log.lock().guide_step(&row, now);
-            if let Some(end) = self.settle_frame(Some(distance), now) {
-                return Some(end);
+            // A run that stopped answers its waiting settle with the stop.
+            if end.is_none() {
+                self.settle_frame(Some(distance), now);
             }
         }
-        let super::Mode::Guiding(guiding) = &mut self.mode else {
-            return None;
-        };
-        match sent {
-            Err(stop) => Some(End::Stop(stop)),
-            Ok(failed) => guiding.mount.cycle(failed.as_deref()).map(End::Stop),
-        }
+        end
     }
 
     /// A frame of a guiding run that selected guide stars, the first guide
@@ -757,15 +753,20 @@ impl Cycle {
 
     /// Judge a settle that waits, with a frame's distance from the lock:
     /// answer it once settled or timed out.
-    fn settle_frame(&mut self, distance: Option<f64>, now: std::time::Duration) -> Option<End> {
+    fn settle_frame(&mut self, distance: Option<f64>, now: std::time::Duration) {
         let super::Mode::Guiding(guiding) = &mut self.mode else {
-            return None;
+            return;
         };
-        let settling = guiding.settle.as_mut()?.settle.frame(distance, now);
+        let Some(waiting) = guiding.settle.as_mut() else {
+            return;
+        };
+        let settling = waiting.settle.frame(distance, now);
         if settling == Settling::Settling {
-            return None;
+            return;
         }
-        let wait = guiding.settle.take()?;
+        let Some(wait) = guiding.settle.take() else {
+            return;
+        };
         if wait.dither {
             guiding.controller.dither_ended();
         }
@@ -794,7 +795,6 @@ impl Cycle {
         };
         drop(status);
         let _ = wait.reply.send(answer);
-        None
     }
 
     /// A cycle of a full pause: no frame, the mount checked once an
@@ -1232,6 +1232,31 @@ mod tests {
         assert_eq!(settled.sample_count, 3);
         assert!(!cycle.status.lock().settling());
         assert!(turns.try_lock().is_ok(), "the turn is still held");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_that_stops_on_the_frame_that_would_settle_leaves_the_settle_to_the_stop() {
+        let (mut cycle, mut answer, _turns) = guiding_on(Arc::new(FakeMount::default())).await;
+        for _ in 0..2 {
+            assert!(guide(&mut cycle, at(0.5, 0.0)).await.is_none());
+            tokio::time::advance(Duration::from_millis(600)).await;
+        }
+        let Mode::Guiding(guiding) = &mut cycle.mode else {
+            panic!("the loop is not guiding");
+        };
+        guiding.mount = run_mount(Arc::new(FakeMount {
+            slewing: true,
+            ..FakeMount::default()
+        }));
+        let Some(End::Stop(stop)) = guide(&mut cycle, at(0.5, 0.0)).await else {
+            panic!("the run went on");
+        };
+        assert_eq!(stop.reason, StopReason::MountSlewing);
+        assert!(
+            matches!(answer.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "the settle was answered"
+        );
+        assert!(!guide_log_text(&cycle).contains("Settling complete"));
     }
 
     #[tokio::test(start_paused = true)]

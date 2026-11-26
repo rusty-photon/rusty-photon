@@ -57,8 +57,9 @@ mod test_support;
 
 pub use background::{sampled_background, MIN_SAMPLE};
 pub use calibration::{
-    Axis, Calibration, CalibrationError, CalibrationParams, Calibrator, CameraGeometry, Check,
-    DecAxis, Direction, ExpectedRates, GuideRates, Leg, PierSide, Progress, Pulse, Setup, Warning,
+    scaling_cosine, Axis, Calibration, CalibrationError, CalibrationParams, Calibrator,
+    CameraGeometry, Check, DecAxis, Direction, ExpectedRates, GuideRates, Leg, PierSide, Progress,
+    Pulse, Setup, Warning,
 };
 pub use control::{
     AxisOffset, ControlError, ControlParams, Controller, DecMode, GuideAxis, GuideStep,

@@ -17,7 +17,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, Days, FixedOffset, Local, NaiveTime};
+use chrono::{DateTime, Days, FixedOffset, Local, NaiveDateTime, NaiveTime};
 use rp_guiding::{
     AxisOffset, Calibration, Direction, GuideRates, Leg, Offset, PierSide, Position, Pulse,
 };
@@ -51,8 +51,8 @@ pub struct GuideLog {
     config: GuideLogConfig,
     clock: Clock,
     file: Option<Open>,
-    /// After a failure, the time the next file may open.
-    off_until: Option<DateTime<FixedOffset>>,
+    /// After a failure, the local time the next file may open.
+    off_until: Option<NaiveDateTime>,
     /// Whether the service has closed the log, which opens no file after.
     closed: bool,
 }
@@ -63,7 +63,7 @@ struct Open {
     file: File,
     /// The first local noon after the file opened, from which the next
     /// calibration or guiding run opens a new file.
-    next_noon: DateTime<FixedOffset>,
+    next_noon: NaiveDateTime,
     /// The calibrations passed, the runs ended and the seconds they guided.
     calibrations: u32,
     runs: u32,
@@ -478,12 +478,19 @@ impl GuideLog {
             return false;
         }
         let now = (self.clock)();
-        if self.file.as_ref().is_some_and(|open| now >= open.next_noon) {
+        // Local times, in the clock's offset now: the night turns at local
+        // noon on a night the clocks change too.
+        let local = now.naive_local();
+        if self
+            .file
+            .as_ref()
+            .is_some_and(|open| local >= open.next_noon)
+        {
             self.close_file();
         }
         // After the close, so that a close that fails keeps the log off.
         if let Some(until) = self.off_until {
-            if now < until {
+            if local < until {
                 return false;
             }
             self.off_until = None;
@@ -740,19 +747,18 @@ fn mount_angle(stars_deg: f64) -> f64 {
 }
 
 /// The first local noon after `now`.
-fn next_noon(now: DateTime<FixedOffset>) -> DateTime<FixedOffset> {
+fn next_noon(now: DateTime<FixedOffset>) -> NaiveDateTime {
     let noon = NaiveTime::from_hms_opt(12, 0, 0).unwrap_or_default();
-    let day = if now.time() < noon {
-        now.date_naive()
+    let local = now.naive_local();
+    let day = if local.time() < noon {
+        local.date()
     } else {
-        now.date_naive()
+        local
+            .date()
             .checked_add_days(Days::new(1))
-            .unwrap_or_else(|| now.date_naive())
+            .unwrap_or_else(|| local.date())
     };
     day.and_time(noon)
-        .and_local_timezone(*now.offset())
-        .single()
-        .unwrap_or(now)
 }
 
 /// `YYYY-MM-DD HH:MM:SS`.
@@ -780,20 +786,67 @@ mod tests {
         DateTime::parse_from_rfc3339(text).unwrap()
     }
 
+    /// The local time of `text`.
+    fn local(text: &str) -> NaiveDateTime {
+        at(text).naive_local()
+    }
+
     #[test]
     fn a_night_turns_at_the_first_local_noon_after_its_file_opened() {
         assert_eq!(
             next_noon(at("2026-11-25T21:00:00+01:00")),
-            at("2026-11-26T12:00:00+01:00")
+            local("2026-11-26T12:00:00+01:00")
         );
         assert_eq!(
             next_noon(at("2026-11-26T03:00:00+01:00")),
-            at("2026-11-26T12:00:00+01:00")
+            local("2026-11-26T12:00:00+01:00")
         );
         assert_eq!(
             next_noon(at("2026-11-26T12:00:00+01:00")),
-            at("2026-11-27T12:00:00+01:00")
+            local("2026-11-27T12:00:00+01:00")
         );
+    }
+
+    /// Whether the night of a file opened at `opened` has turned at `now`,
+    /// on a clock that reads `opened` and then `now`.
+    fn turned(opened: &str, now: &str) -> bool {
+        let state = tempfile::tempdir().unwrap();
+        let reads = std::sync::Arc::new(parking_lot::Mutex::new(at(opened)));
+        let clock = std::sync::Arc::clone(&reads);
+        let mut log = GuideLog::with_clock(
+            state.path(),
+            GuideLogConfig::default(),
+            Box::new(move || *clock.lock()),
+        );
+        assert!(log.ready());
+        let first = log.path().unwrap().to_owned();
+        *reads.lock() = at(now);
+        assert!(log.ready());
+        log.path().unwrap() != first
+    }
+
+    #[test]
+    fn on_a_night_the_clocks_change_the_night_turns_at_local_noon() {
+        // Forward an hour: 12:30 local is past noon, though it is 11:00
+        // in the offset the file opened in.
+        assert!(turned(
+            "2027-03-27T21:00:00+01:00",
+            "2027-03-28T12:30:00+02:00"
+        ));
+        assert!(!turned(
+            "2027-03-27T21:00:00+01:00",
+            "2027-03-28T11:30:00+02:00"
+        ));
+        // Back an hour: 11:30 local is before noon, though it is 12:30 in
+        // the offset the file opened in.
+        assert!(!turned(
+            "2026-10-24T21:00:00+02:00",
+            "2026-10-25T11:30:00+01:00"
+        ));
+        assert!(turned(
+            "2026-10-24T21:00:00+02:00",
+            "2026-10-25T12:30:00+01:00"
+        ));
     }
 
     // `/dev/full` takes no write, so the night's file cannot be closed.
@@ -810,7 +863,7 @@ mod tests {
         log.file = Some(Open {
             path: PathBuf::from("/dev/full"),
             file: OpenOptions::new().write(true).open("/dev/full").unwrap(),
-            next_noon: at("2026-11-26T12:00:00+01:00"),
+            next_noon: local("2026-11-26T12:00:00+01:00"),
             calibrations: 0,
             runs: 0,
             guided: Duration::ZERO,

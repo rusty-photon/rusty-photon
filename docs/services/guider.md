@@ -1448,7 +1448,7 @@ change.
     count down the pulses left to go, to 0. The
     West and North legs are each followed by
     `<West|North> calibration complete. Angle = <deg> deg, Rate = <px/s> px/sec, Parity = N/A`,
-    the angle the way the mount moved. Each leg after `West` opens, as
+    the angle the way the mount moved and the rate the leg measured. Each leg after `West` opens, as
     PHD2's do, with the frame that ended the leg before it: `East` and
     `South` at the leg's full count, and `Backlash` and `North` at
     step 0 with no displacement. A calibration that passes ends

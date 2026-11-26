@@ -718,8 +718,10 @@ impl Calibrator {
 }
 
 /// The cosine a run scales the RA rate by: of the declination, held to
-/// 89° from the equator.
-fn scaling_cosine(declination_deg: f64) -> f64 {
+/// 89° from the equator. A calibration's RA rate is the rate measured at
+/// its declination divided by it.
+#[must_use]
+pub fn scaling_cosine(declination_deg: f64) -> f64 {
     declination_deg
         .abs()
         .min(MAX_SCALED_DEC_DEG)
