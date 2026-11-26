@@ -409,7 +409,11 @@ guide rates it does not implement are no guide rates.
 duration. The pulse has ended when the call has returned, the duration
 has passed and `IsPulseGuiding` reads false. A pulse still in progress
 `mount.pulse_timeout` after its duration stops the run with
-`pulse_timeout`.
+`pulse_timeout`. Only `IsPulseGuiding` reading true shows a pulse in
+progress, and only a read asked once that time has passed shows it in
+progress then; a read asked before it is asked again. A read that has
+not answered is a call like any other, held to the call deadline: a
+slow link is not a stuck pulse.
 
 **Bounds.**
 
@@ -1709,7 +1713,11 @@ clients as they cover `rp`'s.
   and hold it to this document
   section by section: the states, starting idle, the mount
   check and each stop reason, the calibration and its store, each
-  endpoint and each error code.
+  endpoint and each error code. Each scenario that loops renders and
+  measures five frames a second, so the suite runs at most two
+  scenarios at once for each CPU it may run on: more would starve the
+  simulated devices, and every bound a scenario configures would race
+  the machine.
 - **The guide log.** Fixture tests, as [Guide log](#guide-log) says.
 - **Not ConformU.** The guider is no Alpaca device, so there is nothing
   for ConformU to check.

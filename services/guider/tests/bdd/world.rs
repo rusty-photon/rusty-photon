@@ -48,6 +48,14 @@ const SEEING_ARCSEC: f64 = 6.0;
 /// sets its own.
 pub const EXPOSURE: &str = "200ms";
 
+/// How long after its duration a pulse may still be in progress in every
+/// scenario, unless the scenario sets its own: the call deadline's ten
+/// seconds rather than the default two. The bound counts from the
+/// `PulseGuide` call, and the simulated devices of every scenario that
+/// runs share one process, so on a loaded machine the call itself can take
+/// seconds to come back.
+pub const PULSE_TIMEOUT: &str = "10s";
+
 /// What a start the guider refused printed.
 #[derive(Debug)]
 pub struct Refusal {
@@ -465,13 +473,15 @@ async fn send(request: reqwest::RequestBuilder, body: Option<&str>) -> reqwest::
 
 /// The configuration every scenario starts from: the listener on port 0
 /// of the loopback address, the state directory in the scratch directory,
-/// a poll every [`POLL_INTERVAL`] and exposures of [`EXPOSURE`].
+/// a poll every [`POLL_INTERVAL`], exposures of [`EXPOSURE`] and a pulse
+/// timeout of [`PULSE_TIMEOUT`].
 fn base_config(scratch: &TempDir) -> Value {
     json!({
         "server": { "port": 0, "bind_address": "127.0.0.1" },
         "state_dir": scratch.path().join("state"),
         "devices": { "poll_interval": POLL_INTERVAL },
-        "camera": { "exposure": EXPOSURE }
+        "camera": { "exposure": EXPOSURE },
+        "mount": { "pulse_timeout": PULSE_TIMEOUT }
     })
 }
 

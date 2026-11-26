@@ -247,19 +247,22 @@ impl RunMount {
             Ok(Ok(())) => {}
         }
         tokio::time::sleep_until(ends).await;
+        // Only `IsPulseGuiding` reading true shows a pulse in progress, and
+        // only a read asked once the deadline has passed shows it in
+        // progress then: one asked before it is asked again. A read that
+        // has not answered is a call like any other, held to the call
+        // deadline, and not a pulse in progress.
         loop {
-            match tokio::time::timeout_at(deadline, member(self.mount.is_pulse_guiding())).await {
-                Err(_) => return Err(timed_out()),
-                Ok(Err(error)) => {
+            let asked = Instant::now();
+            match member(self.mount.is_pulse_guiding()).await {
+                Err(error) => {
                     return Err(Fault::Unconfirmed(format!(
                         "reading IsPulseGuiding failed: {error}"
                     )))
                 }
-                Ok(Ok(false)) => break,
-                // A timeout polls its call before it looks at the clock, so
-                // a mount that answers at once is held to the deadline here.
-                Ok(Ok(true)) if Instant::now() >= deadline => return Err(timed_out()),
-                Ok(Ok(true)) => tokio::time::sleep(PULSE_POLL).await,
+                Ok(false) => break,
+                Ok(true) if asked >= deadline => return Err(timed_out()),
+                Ok(true) => tokio::time::sleep(PULSE_POLL).await,
             }
         }
         debug!(?pulse, "pulse ended");
@@ -456,10 +459,62 @@ mod tests {
             pulse_guiding: true.into(),
             ..FakeMount::default()
         });
+        let started = Instant::now();
         let Err(Fault::Stop(stop)) = run.pulse(west(300)).await else {
             panic!("the pulse ended");
         };
         assert_eq!(stop.reason, StopReason::PulseTimeout);
+        // The first read asked once the 1.3 s deadline has passed stops it.
+        assert!(
+            started.elapsed() < Duration::from_millis(1_400),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pulse_stops_the_run_only_on_a_read_asked_after_the_pulse_timeout() {
+        let (_, run) = run(FakeMount {
+            pulse_guiding: true.into(),
+            pulse_guiding_delay: Duration::from_millis(700),
+            ..FakeMount::default()
+        });
+        let started = Instant::now();
+        let Err(Fault::Stop(stop)) = run.pulse(west(300)).await else {
+            panic!("the pulse ended");
+        };
+        assert_eq!(stop.reason, StopReason::PulseTimeout);
+        // Reads asked at 0.3 s and about 1.0 s answer true before the 1.3 s
+        // deadline is behind them; the one asked at about 1.75 s stops it
+        // as it answers, at about 2.45 s.
+        assert!(
+            (Duration::from_millis(2_400)..Duration::from_millis(2_500))
+                .contains(&started.elapsed()),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_read_that_finds_the_pulse_ended_ends_it() {
+        let (_, run) = run(FakeMount {
+            pulse_guiding_delay: Duration::from_secs(5),
+            ..FakeMount::default()
+        });
+        run.pulse(west(300)).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_with_no_answer_is_a_failed_call_not_a_pulse_in_progress() {
+        let (_, run) = run(FakeMount {
+            pulse_guiding: true.into(),
+            pulse_guiding_delay: Duration::from_secs(60),
+            ..FakeMount::default()
+        });
+        let Err(Fault::Unconfirmed(message)) = run.pulse(west(300)).await else {
+            panic!("the unanswered read was taken for a pulse in progress");
+        };
+        assert!(message.contains("no answer within 10s"), "{message}");
     }
 
     #[tokio::test(start_paused = true)]
