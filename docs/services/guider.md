@@ -1423,8 +1423,9 @@ change.
   ascension, declination, hour angle, pier side, altitude, azimuth) and
   the control parameters; one row for each guide step, with the
   measured offset, the error on each axis, the pulses sent and the
-  star's flux and signal-to-noise ratio; and a note for each dither,
-  settle, pause, resume, star-lost frame and stop.
+  star's flux and signal-to-noise ratio, and a `"DROP"` row for each
+  star-lost frame; and a note for each dither, settle, pause, resume
+  and stop.
 - **The lines, in PHD2's words.** Where PHD2 has a line for something,
   the guider writes that line, with the same punctuation and precision:
   - A file is one block. It opens with
@@ -1439,9 +1440,12 @@ change.
     `Direction,Step,dx,dy,x,y,Dist`. Each frame of a leg is a row: the
     leg (`West`, `East`, `Backlash` for the North leg that clears the
     backlash, `North`, `South`), the leg's pulses so far, the stars'
-    displacement since the leg began as PHD2 gives it (the leg's start
-    less where the stars are, which is the way the mount moved), the
-    first guide star's position on the sensor and the distance. The
+    displacement as PHD2 gives it (the leg's start less where the stars
+    are, which is the way the mount moved), the first guide star's
+    position on the sensor and the distance. The `East` and `South`
+    legs go back over the `West` and `North` legs as PHD2's do: their
+    rows are measured from where the `West` and `North` legs began, and
+    count down the pulses left to go, to 0. The
     West and North legs are each followed by
     `<West|North> calibration complete. Angle = <deg> deg, Rate = <px/s> px/sec, Parity = N/A`,
     the angle the way the mount moved. A calibration that passes ends
@@ -1467,8 +1471,10 @@ change.
     the guide rates, the pointing, and the lock and star positions.
     The pointing is read when the run starts; a read that fails or
     is not implemented makes it `RA/Dec = Unknown`, as PHD2 writes it.
-  - The notes are PHD2's `INFO:` lines: `DITHER by <dx>, <dy>, new lock pos = <x>, <y>`,
-    `SET LOCK POSITION, new lock pos = <x>, <y>` for an aborted
+  - The notes are PHD2's `INFO:` lines:
+    `DITHER by <RA>, <Dec>, new lock pos = <x>, <y>`, the lock's move
+    along the axes, signed so that the next row's distances are the
+    move turned around, `SET LOCK POSITION, new lock pos = <x>, <y>` for an aborted
     dither, `SETTLING STATE CHANGE, Settling started` (and
     `complete`, `failed`), and
     `STAR LOST during calibration, Mass= <flux>, SNR= <snr>, Error= 5, Status=Too few guide stars usable`,
@@ -1480,7 +1486,7 @@ change.
     `Server received guiding/resume` and
     `Server received guiding/stop` in that form, a stop of its own as
     `GUIDING STOPPED, <reason>: <message>` (`CALIBRATION STOPPED` in a
-    calibration), and a calibration that fails as
+    calibration's section), and a calibration that fails as
     `CALIBRATION FAILED, <message>`.
 - **How it is kept true to the format.** Logs that PHD2 itself wrote
   are test fixtures, in `services/guider/tests/fixtures/guide-logs/`

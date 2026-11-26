@@ -407,7 +407,7 @@ mod writer {
         log.note("Server received guiding/pause, full = false");
         log.note("Server received guiding/resume");
         now.fetch_add(60, Ordering::SeqCst);
-        log.stopped("Server received guiding/stop", at(160.0));
+        log.stop_requested(at(160.0));
         log.begin_calibration(&common(), Duration::from_millis(200), 6.0);
         log.calibration_row(&row(Leg::West, 0, 0.0));
         log.calibration_failed(
@@ -583,6 +583,20 @@ mod writer {
         now.fetch_add(16 * 3_600, Ordering::SeqCst);
         log.begin_calibration(&common(), Duration::from_millis(200), 6.0);
         assert!(log.path().is_some(), "the next night's file did not open");
+    }
+
+    #[test]
+    fn a_log_the_service_closed_opens_no_file_after() {
+        let state = tempfile::tempdir().unwrap();
+        let mut log = GuideLog::new(state.path(), GuideLogConfig::default());
+        log.begin_calibration(&common(), Duration::from_millis(200), 6.0);
+        log.close();
+        log.begin_calibration(&common(), Duration::from_millis(200), 6.0);
+        assert!(log.path().is_none());
+        assert_eq!(
+            std::fs::read_dir(state.path().join(DIR)).unwrap().count(),
+            1
+        );
     }
 
     #[test]

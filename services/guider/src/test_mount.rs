@@ -28,6 +28,8 @@ pub struct FakeMount {
     pub pulse_hangs: bool,
     /// `PulseGuide` answers an error.
     pub pulse_refused: bool,
+    /// `PulseGuide` answers an error once it has answered this many calls.
+    pub pulses_refused_after: Option<usize>,
     /// `IsPulseGuiding` reads true.
     pub pulse_guiding: AtomicBool,
     /// `IsPulseGuiding` answers an error.
@@ -61,6 +63,7 @@ impl Default for FakeMount {
             guide_rate: Some(0.002),
             pulse_hangs: false,
             pulse_refused: false,
+            pulses_refused_after: None,
             pulse_guiding: AtomicBool::new(false),
             pulse_guiding_fails: false,
             pulse_guiding_delay: Duration::ZERO,
@@ -210,12 +213,16 @@ impl Telescope for FakeMount {
     }
 
     async fn pulse_guide(&self, direction: GuideDirection, _duration: Duration) -> ASCOMResult<()> {
-        self.pulses.fetch_add(1, Ordering::SeqCst);
+        let answered = self.pulses.fetch_add(1, Ordering::SeqCst);
         self.directions.lock().push(direction);
         if self.pulse_hangs {
             std::future::pending::<()>().await;
         }
-        if self.pulse_refused {
+        if self.pulse_refused
+            || self
+                .pulses_refused_after
+                .is_some_and(|after| answered >= after)
+        {
             return Err(ASCOMError::invalid_operation("not now"));
         }
         Ok(())

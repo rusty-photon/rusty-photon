@@ -215,9 +215,8 @@ struct Calibrating {
     /// from `idle`, on the next from a loop that holds none, and on a fresh
     /// frame for a start.
     selecting: bool,
-    /// Whether the guide log's section has begun, which it does on the
-    /// first frame with an offset after the selection.
-    logged: bool,
+    /// What the guide log holds of the calibration.
+    logged: CalibrationLog,
     /// The request's turn, held until the guider is back in the state the
     /// request found, or has settled.
     turn: Turn,
@@ -232,12 +231,15 @@ enum Selection {
     Ended(Option<Box<End>>),
 }
 
-/// A calibration's frame as the guide log takes it: whether it was
-/// measured, its offset, and what the calibrator made of it.
-struct Logged<'a> {
-    measured: bool,
-    offset: Option<Offset>,
-    progress: Option<&'a Progress>,
+/// What the guide log holds of a calibration: whether its section has
+/// begun, which it does on the first frame with an offset after the
+/// selection, and where the West and the North legs began, which PHD2
+/// measures the East and the South legs' rows from.
+#[derive(Debug, Clone, Copy, Default)]
+struct CalibrationLog {
+    begun: bool,
+    west: Option<Offset>,
+    north: Option<Offset>,
 }
 
 /// What a cycle's frame gave.
@@ -637,7 +639,7 @@ impl Cycle {
             ),
             start,
             selecting: reselect || self.stars.is_none(),
-            logged: false,
+            logged: CalibrationLog::default(),
             turn,
             then,
         }));
@@ -708,42 +710,16 @@ impl Cycle {
     }
 
     /// Write a run's stop to the guide log: what the server received, or the
-    /// guider's own reason, as a calibration's or a guiding run's.
+    /// guider's own reason.
     fn log_stop(&self, stop: &Stop) {
-        let note = if stop.reason == StopReason::Requested {
-            "Server received guiding/stop".to_owned()
-        } else if matches!(self.mode, Mode::Calibrating(_)) {
-            format!(
-                "CALIBRATION STOPPED, {}: {}",
-                stop.reason.as_str(),
-                stop.message
-            )
+        let at = self.now();
+        if stop.reason == StopReason::Requested {
+            self.guide_log.lock().stop_requested(at);
         } else {
-            format!(
-                "GUIDING STOPPED, {}: {}",
-                stop.reason.as_str(),
-                stop.message
-            )
-        };
-        self.guide_log.lock().stopped(&note, self.now());
-    }
-
-    /// Write a calibration's frame to the guide log, beginning its section
-    /// on the first frame with an offset, and the result of a leg the frame
-    /// ended; whether the section has begun.
-    fn log_calibration(
-        &self,
-        start: &MountStart,
-        logged: bool,
-        before: &Calibrator,
-        frame: &Logged<'_>,
-    ) -> bool {
-        let logged =
-            self.log_calibration_frame(start, logged, before, frame.offset, frame.measured);
-        if let Some(progress) = frame.progress {
-            self.log_leg_change(before, progress, start.declination_deg);
+            self.guide_log
+                .lock()
+                .stopped_by(stop.reason.as_str(), &stop.message, at);
         }
-        logged
     }
 
     /// Write a calibration's frame to the guide log, beginning its section
@@ -751,17 +727,17 @@ impl Cycle {
     fn log_calibration_frame(
         &self,
         start: &MountStart,
-        logged: bool,
+        mut logged: CalibrationLog,
         before: &Calibrator,
         offset: Option<Offset>,
         measured: bool,
-    ) -> bool {
+    ) -> CalibrationLog {
         if !measured {
             return logged;
         }
         let mut log = self.guide_log.lock();
         let Some(offset) = offset else {
-            if logged {
+            if logged.begun {
                 let summary = self.last_summary;
                 log.calibration_star_lost(
                     summary.and_then(|summary| summary.flux),
@@ -771,50 +747,37 @@ impl Cycle {
             return logged;
         };
         let leg_start = before.leg_start().unwrap_or(offset);
-        if !logged {
+        if !logged.begun {
             log.begin_calibration(
                 &self.log_common(start, leg_start, offset),
                 before.ra_step(),
                 self.config.calibration.distance_px.get(),
             );
+            logged.begun = true;
         }
+        // PHD2 measures the East and the South rows from where the West and
+        // the North legs began, and counts down the pulses left to go back.
+        let back = |origin: Option<Offset>, axis: Option<rp_guiding::Axis>| {
+            (
+                origin.unwrap_or(leg_start),
+                axis.map_or(0, |axis| axis.steps.saturating_sub(before.steps())),
+            )
+        };
+        let (from, step) = match before.leg() {
+            rp_guiding::Leg::West => (*logged.west.get_or_insert(leg_start), before.steps()),
+            rp_guiding::Leg::North => (*logged.north.get_or_insert(leg_start), before.steps()),
+            rp_guiding::Leg::East => back(logged.west, before.ra_axis()),
+            rp_guiding::Leg::South => back(logged.north, before.dec_axis()),
+            rp_guiding::Leg::ClearBacklash => (leg_start, before.steps()),
+        };
         log.calibration_row(&guide_log::CalibrationRow {
             leg: before.leg(),
-            step: before.steps(),
-            start: leg_start,
+            step,
+            start: from,
             now: offset,
             star: self.star_at(offset),
         });
-        true
-    }
-
-    /// Write the result of the West or the North leg to the guide log, as
-    /// the calibration leaves it.
-    fn log_leg_change(&self, before: &Calibrator, progress: &Progress, declination_deg: f64) {
-        let (Progress::Pulse(next, _) | Progress::Wait(next)) = progress else {
-            return;
-        };
-        if next.leg() == before.leg() {
-            return;
-        }
-        let measured = match before.leg() {
-            rp_guiding::Leg::West => next.ra_axis().map(|ra| {
-                // The RA rate at the declination, the rate the leg measured.
-                (
-                    ra.angle_deg,
-                    ra.rate_px_per_s * declination_deg.to_radians().cos(),
-                )
-            }),
-            rp_guiding::Leg::North => next
-                .dec_axis()
-                .map(|dec| (dec.angle_deg, dec.rate_px_per_s)),
-            _ => None,
-        };
-        if let Some((angle_deg, rate)) = measured {
-            self.guide_log
-                .lock()
-                .leg_complete(before.leg(), angle_deg, rate);
-        }
+        logged
     }
 
     /// The time on the loop's clock.
@@ -855,12 +818,8 @@ impl Cycle {
         let before = calibrator.clone();
         let (start, logged) = (calibrating.start, calibrating.logged);
         let progress = calibrator.frame(offset, now);
-        let frame = Logged {
-            measured: matches!(took, Took::Measured { .. }),
-            offset,
-            progress: progress.as_ref().ok(),
-        };
-        let logged = self.log_calibration(&start, logged, &before, &frame);
+        let measured = matches!(took, Took::Measured { .. });
+        let logged = self.log_calibration_frame(&start, logged, &before, offset, measured);
         let Mode::Calibrating(calibrating) = &mut self.mode else {
             return None;
         };
@@ -887,6 +846,7 @@ impl Cycle {
             Progress::Wait(next) => (next, None),
             Progress::Pulse(next, pulse) => (next, Some(pulse)),
         };
+        let leg = leg_result(&before, &next, start.declination_deg);
         // A stop ends the cycle before any pulse goes out: the check is
         // raced against it, and looked at again before the pulse.
         let checked = tokio::select! {
@@ -902,24 +862,28 @@ impl Cycle {
             }
             (Ok(()), Some(pulse)) => calibrating.mount.pulse(pulse).await.err(),
         };
-        let failed = match fault {
+        let (failed, kept) = match fault {
             Some(Fault::Stop(stop)) => return Some(End::Stop(stop)),
             Some(Fault::Failed(message)) => {
                 // The step was not sent: the next frame is judged as if it
                 // had not been asked for.
                 calibrating.calibrator = Some(before);
-                Some(message)
+                (Some(message), false)
             }
             Some(Fault::Unconfirmed(message)) => {
                 // The step went out, and counts.
                 calibrating.calibrator = Some(next);
-                Some(message)
+                (Some(message), true)
             }
             None => {
                 calibrating.calibrator = Some(next);
-                None
+                (None, true)
             }
         };
+        // A leg's result stands once the frame that ended it is kept.
+        if let (Some((leg, angle_deg, rate)), true) = (leg, kept) {
+            self.guide_log.lock().leg_complete(leg, angle_deg, rate);
+        }
         calibrating.mount.cycle(failed.as_deref()).map(End::Stop)
     }
 
@@ -1023,6 +987,33 @@ impl Cycle {
         self.retry_at = self.attempt_started.checked_add(self.exposer.exposure);
         count_failure(&mut self.failures, self.max_failures, message)
     }
+}
+
+/// The result of the West or the North leg, when the calibration leaves it
+/// between `before` and `next`: the leg, the angle the stars moved and the
+/// rate the leg measured.
+fn leg_result(
+    before: &Calibrator,
+    next: &Calibrator,
+    declination_deg: f64,
+) -> Option<(rp_guiding::Leg, f64, f64)> {
+    if next.leg() == before.leg() {
+        return None;
+    }
+    let (angle_deg, rate) = match before.leg() {
+        // The RA rate at the declination, the rate the leg measured.
+        rp_guiding::Leg::West => next.ra_axis().map(|ra| {
+            (
+                ra.angle_deg,
+                ra.rate_px_per_s * declination_deg.to_radians().cos(),
+            )
+        })?,
+        rp_guiding::Leg::North => next
+            .dec_axis()
+            .map(|dec| (dec.angle_deg, dec.rate_px_per_s))?,
+        _ => return None,
+    };
+    Some((before.leg(), angle_deg, rate))
 }
 
 /// Count a failed frame in `failures`; the stop once `max` have failed in a
@@ -1790,6 +1781,43 @@ mod tests {
             .await
             .is_none());
         assert_eq!(leg_steps(&cycle), "steps: 0");
+    }
+
+    /// The guide log's results of the West leg after a calibration's first
+    /// step and two frames past its distance, on a mount that answers
+    /// `pulses` pulses, if any.
+    async fn west_results_with_pulses_answered(pulses: Option<usize>) -> usize {
+        let mut cycle = looping_cycle();
+        let mount = crate::test_mount::FakeMount {
+            pulses_refused_after: pulses,
+            ..crate::test_mount::FakeMount::default()
+        };
+        let (run, _answer, _turns) = run_on(mount, Return::Idle).await;
+        cycle.calibrate(run);
+        let past = |cycle: &Cycle| Took::Measured {
+            offset: Some(Offset {
+                x: -cycle.config.calibration.distance_px.get() - 1.0,
+                y: 0.0,
+            }),
+            selection: None,
+        };
+        for took in [selected(), past(&cycle), past(&cycle)] {
+            assert!(cycle
+                .after_frame(took, &CancellationToken::new())
+                .await
+                .is_none());
+        }
+        let path = cycle.guide_log.lock().path().unwrap().to_owned();
+        std::fs::read_to_string(path)
+            .unwrap()
+            .matches("West calibration complete")
+            .count()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_legs_result_is_logged_once_the_step_that_ended_it_is_kept() {
+        assert_eq!(west_results_with_pulses_answered(None).await, 1);
+        assert_eq!(west_results_with_pulses_answered(Some(1)).await, 0);
     }
 
     #[tokio::test(start_paused = true)]

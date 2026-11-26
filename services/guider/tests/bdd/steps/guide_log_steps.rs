@@ -133,6 +133,19 @@ fn parses(world: &mut GuiderWorld) {
     );
 }
 
+/// The guide log's first calibration.
+fn the_calibration(world: &GuiderWorld) -> phd2_log::Calibration {
+    the_log(world)
+        .blocks
+        .into_iter()
+        .flat_map(|block| block.sections)
+        .find_map(|section| match section {
+            Section::Calibration(calibration) => Some(calibration),
+            _ => None,
+        })
+        .expect("the guide log holds a calibration")
+}
+
 #[then(regex = r"^the guide log holds a calibration that passed, with rows of the legs (.+)$")]
 fn calibration_passed(world: &mut GuiderWorld, legs: String) {
     let wanted: Vec<String> = legs
@@ -140,16 +153,7 @@ fn calibration_passed(world: &mut GuiderWorld, legs: String) {
         .split(", ")
         .map(str::to_owned)
         .collect();
-    let log = the_log(world);
-    let calibration = log
-        .blocks
-        .iter()
-        .flat_map(|block| &block.sections)
-        .find_map(|section| match section {
-            Section::Calibration(calibration) => Some(calibration),
-            _ => None,
-        })
-        .expect("the guide log holds a calibration");
+    let calibration = the_calibration(world);
     let mut seen: Vec<String> = Vec::new();
     for row in &calibration.rows {
         if seen.last() != Some(&row.direction) {
@@ -166,6 +170,37 @@ fn calibration_passed(world: &mut GuiderWorld, legs: String) {
     assert!(
         calibration.complete.is_some(),
         "the calibration did not complete"
+    );
+}
+
+#[then(
+    regex = r"^the guide log's (East|South) rows count down to 0, back to where the (West|North) leg began$"
+)]
+fn rows_back(world: &mut GuiderWorld, back: String, out: String) {
+    let calibration = the_calibration(world);
+    let rows = |leg: &str| -> Vec<phd2_log::CalibrationRow> {
+        calibration
+            .rows
+            .iter()
+            .filter(|row| row.direction == leg)
+            .cloned()
+            .collect()
+    };
+    let (out_rows, back_rows) = (rows(&out), rows(&back));
+    let steps: Vec<u32> = back_rows.iter().map(|row| row.step).collect();
+    assert!(
+        steps.windows(2).all(|pair| pair[0] > pair[1]) && steps.last() == Some(&0),
+        "the {back} rows' steps: {steps:?}"
+    );
+    let farthest = out_rows
+        .iter()
+        .map(|row| row.dx.hypot(row.dy))
+        .fold(0.0, f64::max);
+    let last = back_rows.last().expect("rows of the leg back");
+    assert!(
+        farthest >= 6.0 && last.dx.hypot(last.dy) < 1.5,
+        "the {out} leg went {farthest:.3} px from its start, and the {back} leg ended {:.3} px from it",
+        last.dx.hypot(last.dy)
     );
 }
 

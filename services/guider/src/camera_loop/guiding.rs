@@ -559,16 +559,18 @@ impl Cycle {
         }
         let scale = guiding.pixel_scale();
         let amount_px = run.amount.pixels(scale);
-        let was = guide_log::to_sensor(&guiding.calibration, guiding.controller.lock());
+        let was = guiding.controller.lock();
         let lock = guiding
             .controller
             .dither(amount_px, run.ra_only, &mut self.rng);
         info!(amount_px, ?lock, "dither");
         let now = guide_log::to_sensor(&guiding.calibration, lock);
+        // The lock's move on the axes, signed as PHD2 signs its raw
+        // distances: the next frame's are the move turned around.
         self.guide_log.lock().note(&format!(
             "DITHER by {:.3}, {:.3}, new lock pos = {:.3}, {:.3}",
-            now.x - was.x,
-            now.y - was.y,
+            was.ra - lock.ra,
+            lock.dec - was.dec,
             reference.x + guiding.home.x + now.x,
             reference.y + guiding.home.y + now.y
         ));
@@ -1787,6 +1789,51 @@ mod tests {
             .find("Calibration Begins")
             .expect("the calibration's section");
         assert!(ends < calibration, "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dither_note_gives_the_locks_move_on_the_axes_as_the_next_rows_raw_distances_turned_around(
+    ) {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        let (run, _answer, _given_up) = dither_run(4.0);
+        cycle.dither(run);
+        assert!(guide(&mut cycle, at(0.0, 0.0)).await.is_none());
+        let text = guide_log_text(&cycle);
+        let note = text
+            .lines()
+            .find_map(|line| line.strip_prefix("INFO: DITHER by "))
+            .expect("a dither note");
+        let by: Vec<f64> = note
+            .split(", ")
+            .take(2)
+            .map(|amount| amount.parse().unwrap())
+            .collect();
+        let row = text.lines().last().unwrap();
+        let fields: Vec<&str> = row.split(',').collect();
+        let raw: Vec<f64> = fields[5..7]
+            .iter()
+            .map(|field| field.parse().unwrap())
+            .collect();
+        assert!(by[0].abs() + by[1].abs() > 1.0, "{note}");
+        assert!(
+            (by[0] + raw[0]).abs() < 0.002 && (by[1] + raw[1]).abs() < 0.002,
+            "{note} / {row}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_of_its_own_in_a_recalibration_still_in_the_runs_section_is_a_runs_note() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        assert!(guide(&mut cycle, lost()).await.is_none());
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        cycle.log_stop(&Stop::new(StopReason::MountSlewing, "the mount is slewing"));
+        let text = guide_log_text(&cycle);
+        assert!(
+            text.contains("INFO: GUIDING STOPPED, mount_slewing: the mount is slewing"),
+            "{text}"
+        );
+        assert!(text.contains("Guiding Ends at"), "{text}");
     }
 
     #[tokio::test(start_paused = true)]

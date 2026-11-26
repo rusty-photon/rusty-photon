@@ -53,6 +53,8 @@ pub struct GuideLog {
     file: Option<Open>,
     /// After a failure, the time the next file may open.
     off_until: Option<DateTime<FixedOffset>>,
+    /// Whether the service has closed the log, which opens no file after.
+    closed: bool,
 }
 
 /// The file being written.
@@ -185,6 +187,7 @@ impl GuideLog {
             clock,
             file: None,
             off_until: None,
+            closed: false,
         }
     }
 
@@ -425,8 +428,24 @@ impl GuideLog {
         self.write(&[line]);
     }
 
+    /// The run in progress stopped at `at`, as a client asked.
+    pub fn stop_requested(&mut self, at: Duration) {
+        self.stopped("Server received guiding/stop", at);
+    }
+
+    /// The run in progress stopped at `at` for the guider's own `reason`,
+    /// written as the stop of the section it ends.
+    pub fn stopped_by(&mut self, reason: &str, message: &str, at: Duration) {
+        let run = if self.is_in(|section| section == Section::Calibration) {
+            "CALIBRATION"
+        } else {
+            "GUIDING"
+        };
+        self.stopped(&format!("{run} STOPPED, {reason}: {message}"), at);
+    }
+
     /// The run in progress stopped at `at`, with `note` saying why.
-    pub fn stopped(&mut self, note: &str, at: Duration) {
+    fn stopped(&mut self, note: &str, at: Duration) {
         self.note(note);
         match self.file.as_ref().map(|open| open.section) {
             Some(Section::Guiding { .. }) => self.guiding_ends(at),
@@ -439,9 +458,10 @@ impl GuideLog {
         }
     }
 
-    /// Close the file, as the service stops.
+    /// Close the file, as the service stops; the log opens no file after.
     pub fn close(&mut self) {
         self.close_file();
+        self.closed = true;
     }
 
     /// The path of the file being written.
@@ -453,18 +473,19 @@ impl GuideLog {
     /// Whether a section may begin: the log is on and a file is open, a new
     /// one opened when the night has turned.
     fn ready(&mut self) -> bool {
-        if !self.config.enabled {
+        if !self.config.enabled || self.closed {
             return false;
         }
         let now = (self.clock)();
+        if self.file.as_ref().is_some_and(|open| now >= open.next_noon) {
+            self.close_file();
+        }
+        // After the close, so that a close that fails keeps the log off.
         if let Some(until) = self.off_until {
             if now < until {
                 return false;
             }
             self.off_until = None;
-        }
-        if self.file.as_ref().is_some_and(|open| now >= open.next_noon) {
-            self.close_file();
         }
         if self.file.is_none() {
             self.open_file(now);
@@ -772,6 +793,31 @@ mod tests {
             next_noon(at("2026-11-26T12:00:00+01:00")),
             at("2026-11-27T12:00:00+01:00")
         );
+    }
+
+    // `/dev/full` takes no write, so the night's file cannot be closed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_close_that_fails_at_the_turn_of_the_night_keeps_the_log_off_until_the_next() {
+        let state = tempfile::tempdir().unwrap();
+        let now = at("2026-11-26T12:30:00+01:00");
+        let mut log = GuideLog::with_clock(
+            state.path(),
+            GuideLogConfig::default(),
+            Box::new(move || now),
+        );
+        log.file = Some(Open {
+            path: PathBuf::from("/dev/full"),
+            file: OpenOptions::new().write(true).open("/dev/full").unwrap(),
+            next_noon: at("2026-11-26T12:00:00+01:00"),
+            calibrations: 0,
+            runs: 0,
+            guided: Duration::ZERO,
+            section: Section::None,
+        });
+        assert!(!log.ready(), "a file opened after the close failed");
+        assert!(log.file.is_none());
+        assert!(!state.path().join(DIR).exists());
     }
 
     #[test]
