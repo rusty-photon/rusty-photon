@@ -15,7 +15,9 @@ use tracing::{debug, info, warn};
 use super::clock::NightWindow;
 use super::dawn::later;
 use super::dusk::COVER_RETRY;
-use super::schedule::{until, RunSlot, Schedule, INITIAL_BACKOFF, MAX_BACKOFF, TWILIGHT_RETRY};
+use super::schedule::{
+    until, KnownRun, RunSlot, Schedule, INITIAL_BACKOFF, MAX_BACKOFF, TWILIGHT_RETRY,
+};
 use super::state::NightState;
 use crate::engine::{Clock, ToolClient};
 use crate::runs::{RunManifest, StartRefused};
@@ -56,14 +58,6 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
                 state.next_run = state.next_run.saturating_add(1);
                 self.save(&state).await;
             }
-            if let Some(active) = self.slot.active_run() {
-                if self.memory.logged_wait_for.as_deref() != Some(active.as_str()) {
-                    info!(run_id = %active, "waiting for the active run to end before the night's next run");
-                    self.memory.logged_wait_for = Some(active);
-                }
-                self.clock.sleep(RUN_POLL.min(until(now, dawn))).await;
-                continue;
-            }
             let Some(run) = self.night.runs.get(state.next_run) else {
                 // Every run was refused while the schedule held the slot.
                 if self.slot.held() {
@@ -82,6 +76,14 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
                 }
                 return wait;
             };
+            if let Some(active) = self.slot.active_run() {
+                if self.memory.logged_wait_for.as_deref() != Some(active.as_str()) {
+                    info!(run_id = %active, "waiting for the active run to end before the night's next run");
+                    self.memory.logged_wait_for = Some(active);
+                }
+                self.clock.sleep(RUN_POLL.min(until(now, dawn))).await;
+                continue;
+            }
             let session_id = session_id(&state, state.next_run);
             let from_night = self.slot.held();
             match self.slot.start_run(run, &session_id, from_night).await {
@@ -116,35 +118,41 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
     /// run of this night the self-resume picked up is waited for, and the
     /// night goes on from the run after it, whatever `night.json`'s index
     /// says; a run's manifest left in place (`resume_on_start: false`)
-    /// moves the night past that run.
+    /// moves the night past that run. A run counts as the night's when
+    /// its session id names this night and an index whose configured run
+    /// is its workflow.
     async fn take_up_runs(&self, state: &mut NightState) {
         let prefix = format!("night-{}-", state.night);
-        let index = |session_id: &str| {
+        let index = |session_id: &str, workflow: &str| {
             session_id
                 .strip_prefix(prefix.as_str())
                 .and_then(|n| n.parse::<usize>().ok())
+                .filter(|n| {
+                    self.night
+                        .runs
+                        .get(*n)
+                        .is_some_and(|r| r.workflow == workflow)
+                })
         };
-        let known = self
+        let known: Vec<(usize, KnownRun)> = self
             .slot
             .runs()
             .into_iter()
-            .filter_map(|run| Some((index(&run.session_id)?, run)))
-            .max_by_key(|(n, _)| *n);
-        if let Some((n, run)) = &known {
-            if run.active {
-                info!(run_id = %run.run_id, session_id = %run.session_id, "the night's run the previous process left goes on; the schedule waits for it");
-                state.next_run = *n;
-                self.save(state).await;
-                self.status.set_run(Some(run.run_id.clone()));
-                return;
-            }
+            .filter_map(|run| Some((index(&run.session_id, &run.workflow)?, run)))
+            .collect();
+        if let Some((n, run)) = known.iter().find(|(_, run)| run.active) {
+            info!(run_id = %run.run_id, session_id = %run.session_id, "the night's run the previous process left goes on; the schedule waits for it");
+            state.next_run = *n;
+            self.save(state).await;
+            self.status.set_run(Some(run.run_id.clone()));
+            return;
         }
         let left = RunManifest::scan(self.state_dir)
             .await
             .iter()
-            .filter_map(|m| index(&m.session_id))
+            .filter_map(|m| index(&m.session_id, &m.workflow))
             .max();
-        if let Some(last) = known.map(|(n, _)| n).max(left) {
+        if let Some(last) = known.iter().map(|(n, _)| *n).max().max(left) {
             let next = state.next_run.max(last.saturating_add(1));
             if next != state.next_run {
                 debug!(
@@ -220,7 +228,6 @@ mod tests {
     use super::super::test_rig::{at, date, done_up_to, Harness};
     use super::*;
     use crate::engine::EngineEvent;
-    use crate::night::schedule::KnownRun;
 
     fn state(h: &Harness) -> NightState {
         h.status.snapshot().unwrap()
@@ -440,6 +447,7 @@ mod tests {
         h.slot.known.lock().unwrap().push(KnownRun {
             run_id: "run-resumed".into(),
             session_id: sessions(&[1])[0].clone(),
+            workflow: "deep_sky".into(),
             active: true,
         });
         h.slot.operator_run("run-resumed", 3);
@@ -500,6 +508,7 @@ mod tests {
         h.slot.known.lock().unwrap().push(KnownRun {
             run_id: "run-old".into(),
             session_id: "night-2026-11-22-0".into(),
+            workflow: "deep_sky".into(),
             active: false,
         });
         let mut schedule = h.schedule();
@@ -507,6 +516,46 @@ mod tests {
         schedule.tick().await;
 
         assert_eq!(h.slot.sessions(), sessions(&[0]));
+    }
+
+    #[tokio::test]
+    async fn an_operators_run_under_a_night_session_id_is_no_run_of_the_night() {
+        let h = Harness::with_runs(at(24, 3), &["sky_flat", "deep_sky"]);
+        left_in_runs(&h, 0);
+        h.slot.known.lock().unwrap().push(KnownRun {
+            run_id: "run-operator".into(),
+            session_id: sessions(&[1])[0].clone(),
+            workflow: "my_flats".into(),
+            active: false,
+        });
+        RunManifest {
+            run_id: "run-operator-left".into(),
+            session_id: "night-2026-11-23-7".into(),
+            workflow: "deep_sky".into(),
+            params: json!({}),
+            started_at: at(24, 2),
+        }
+        .write(h.dir.path())
+        .await
+        .unwrap();
+        let mut schedule = h.schedule();
+
+        schedule.tick().await;
+
+        assert_eq!(h.slot.sessions(), sessions(&[0, 1]));
+    }
+
+    #[tokio::test]
+    async fn with_the_list_done_an_operators_run_is_not_waited_for() {
+        let h = Harness::with_runs(at(24, 3), &["deep_sky"]);
+        left_in_runs(&h, 1);
+        h.slot.operator_run("operator-run", u32::MAX);
+        let mut schedule = h.schedule();
+
+        let wait = schedule.tick().await;
+
+        assert_eq!(wait, TWILIGHT_RETRY);
+        assert_eq!(h.clock.now(), at(24, 3), "no poll for the operator's run");
     }
 
     #[tokio::test]

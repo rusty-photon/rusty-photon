@@ -142,6 +142,10 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
         first: bool,
     ) -> Duration {
         let dawn = ahead.dawn;
+        // No run starts before phase `runs`: an index past the list here
+        // is an earlier power-up's, refused as a whole, and this one may
+        // go through.
+        state.next_run = 0;
         let map = self.power_map(dawn).await;
         if first {
             state.outputs_off_before_dusk = map
@@ -622,6 +626,25 @@ mod tests {
         assert_eq!(h.rp.called("start_cooldown"), 1, "the night goes on");
         assert_eq!(h.slot.sessions(), Vec::<String>::new());
         assert!(!h.slot.held.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_power_up_taken_up_again_after_one_refused_starts_the_runs() {
+        let h = Harness::with_runs(at(24, 1), &["deep_sky"]);
+        h.rp.rig.lock().unwrap().power_up_refused = true;
+        let mut schedule = h.schedule();
+        schedule.tick().await;
+        let mut restarted = state(&h);
+        assert_eq!(restarted.next_run, 1, "no run is left to start");
+
+        h.rp.rig.lock().unwrap().power_up_refused = false;
+        restarted.phase = Phase::CameraCheck;
+        h.status.publish(restarted);
+        let mut schedule = h.schedule();
+        schedule.tick().await;
+        schedule.tick().await;
+
+        assert_eq!(h.slot.sessions(), ["night-2026-11-23-0"]);
     }
 
     #[tokio::test]

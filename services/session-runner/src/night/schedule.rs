@@ -36,6 +36,7 @@ pub(super) const TWILIGHT_RETRY: Duration = Duration::from_hours(1);
 pub struct KnownRun {
     pub run_id: String,
     pub session_id: String,
+    pub workflow: String,
     /// Running or paused.
     pub active: bool,
 }
@@ -294,14 +295,18 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'a, C, K, S
         Ok(nights)
     }
 
-    /// Point `night.json` at `ahead` unless it already names that night,
-    /// that dusk and that dawn.
+    /// Point `night.json` at `ahead` unless it already names that night.
+    /// A file on that night whose dusk or dawn differs, after an offset
+    /// or the site changed, takes the new times and keeps its place in
+    /// the night.
     pub(super) async fn keep_on(&mut self, ahead: NightWindow) {
-        let current = self.status.snapshot();
-        let on_it = current.as_ref().is_some_and(|s| {
-            s.night == ahead.night && s.dusk == ahead.dusk && s.dawn == ahead.dawn
-        });
-        if on_it {
+        if let Some(mut current) = self.status.snapshot().filter(|s| s.night == ahead.night) {
+            if current.dusk != ahead.dusk || current.dawn != ahead.dawn {
+                current.dusk = ahead.dusk;
+                current.dawn = ahead.dawn;
+                self.save(&current).await;
+                debug!(night = %ahead.night, dusk = %ahead.dusk, dawn = %ahead.dawn, phase = ?current.phase, "night.json takes the night's new dusk and dawn");
+            }
             return;
         }
         self.memory = NightMemory::default();
@@ -339,6 +344,7 @@ pub(super) fn until(now: DateTime<Utc>, then: DateTime<Utc>) -> Duration {
 mod tests {
     use chrono::TimeZone;
 
+    use super::super::config::SignedDuration;
     use super::super::test_rig::{at, date, done_up_to, Harness};
     use super::*;
 
@@ -448,6 +454,30 @@ mod tests {
         }
         assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30]);
         assert_eq!(h.status.snapshot(), None);
+    }
+
+    #[tokio::test]
+    async fn a_new_offset_moves_the_nights_dusk_and_keeps_its_place() {
+        let mut h = Harness::with_runs(at(24, 3), &["sky_flat", "deep_sky"]);
+        h.night.dusk_offset = SignedDuration::parse("-45m").unwrap();
+        let mut runs = done_up_to(23);
+        runs.phase = Phase::Runs;
+        runs.next_run = 1;
+        runs.cameras_given_up.push("main-cam".into());
+        h.status.publish(runs);
+        let mut schedule = h.schedule();
+
+        schedule.tick().await;
+
+        let state = h.status.snapshot().unwrap();
+        assert_eq!(
+            state.dusk,
+            Utc.with_ymd_and_hms(2026, 11, 24, 0, 43, 0).unwrap()
+        );
+        assert_eq!(state.phase, Phase::Runs);
+        assert_eq!(state.cameras_given_up, ["main-cam"]);
+        assert_eq!(h.rp.called("power_up"), 0, "dusk did not run again");
+        assert_eq!(h.slot.sessions(), ["night-2026-11-23-1"]);
     }
 
     #[tokio::test]

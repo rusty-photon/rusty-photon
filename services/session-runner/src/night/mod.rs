@@ -181,6 +181,7 @@ impl RunSlot for ServiceSlot {
                 active: r.state.is_active(),
                 run_id: r.run_id,
                 session_id: r.session_id,
+                workflow: r.workflow,
             })
             .collect()
     }

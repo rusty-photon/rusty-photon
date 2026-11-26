@@ -565,6 +565,7 @@ impl RunSlot for FakeSlot {
         self.known.lock().unwrap().push(KnownRun {
             run_id: run_id.clone(),
             session_id: session_id.to_owned(),
+            workflow: run.workflow.clone(),
             active: reads.is_some(),
         });
         if reads.is_some() {

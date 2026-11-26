@@ -1212,8 +1212,9 @@ the daily outputs that did not read on before
 dusk's first `power_up`, the index of the next run to start (moved on as each run ends), the
 covers still to open, the cameras it gave up, the
 time of dawn's `start_warmup`, and the outputs dawn left on. A start reads it and
-carries on, at any time of day. A configured night is the operator's
-standing decision to run every night, power, cooling, runs and dawn
+carries on, at any time of day. A start whose offsets or site move the
+night's dusk or dawn keeps its place in that night, with the new times.
+A configured night is the operator's standing decision to run every night, power, cooling, runs and dawn
 alike, which
 [tenet 3](../workspace.md#project-tenets) names beside `rp`'s safety
 response ([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
@@ -1251,8 +1252,9 @@ taken in order, and the first that matches decides:
    retry still treats them as powered up this dusk.
 6. **`runs`:** a run the self-resume picks up
    ([Self-resume on startup](#self-resume-on-startup)) names its own
-   index in its session id, `night-<date>-<n>`: the schedule waits for it
-   and goes on from run n+1, whatever `night.json`'s index says, so a
+   index in its session id, `night-<date>-<n>`, and counts as the
+   night's only when the configured run at that index is its workflow:
+   the schedule waits for it and goes on from run n+1, whatever `night.json`'s index says, so a
    crash between a run's start and the file's next write neither repeats
    nor skips a run. With no such run, the schedule starts the run
    `night.json` names. A crash in the moment between a run's end and the
