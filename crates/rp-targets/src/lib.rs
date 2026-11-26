@@ -3,7 +3,7 @@
 //! list, per-sub-spec acquisition quotas, and per-target overrides for
 //! grading thresholds and scheduling constraints.
 //!
-//! Pure storage behind one mockable trait ([`TargetStore`]) — no
+//! Pure storage behind one trait ([`TargetStore`]) — no
 //! filesystem scanning, no ephemeris, no policy. The *actuals* (how many
 //! frames exist, which are good) are derived by `rp` from the filesystem
 //! and per-frame sidecars; they are deliberately not in this crate. See

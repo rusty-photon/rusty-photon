@@ -3,7 +3,7 @@
 A [`redb`](https://crates.io/crates/redb)-backed store for the imaging
 **plan**: the operator's target list, the per-sub-spec acquisition
 quotas, and the per-target overrides for grading thresholds and
-scheduling constraints. Pure storage behind one mockable trait — no
+scheduling constraints. Pure storage behind one trait — no
 filesystem scanning, no ephemeris, no policy.
 
 This is a workspace library, not a service. The `rp` orchestrator
@@ -257,7 +257,7 @@ One async trait — the single seam between the plan store and `rp`.
 work on the Tokio blocking pool (`spawn_blocking`), exactly as
 `rp-fits`/`persistence::document` already wrap blocking sidecar I/O. The
 async surface keeps the consumer ergonomic inside `rp`'s async planner,
-and a mock impl needs no blocking pool at all.
+and any other implementation needs no blocking pool at all.
 
 ```text
 upsert_target(target)            -> Result<(), TargetStoreError>
@@ -856,7 +856,7 @@ resolution and ephemeris evaluation happen in `rp`, which passes already
   verdict is computed from per-frame sidecar metrics + dynamic
   thresholds, so it is reversible and never baked into disk layout.
 - **Pure plan repository, not a progress/selection engine.** Keeps the
-  crate clock-free, filesystem-free, and mockable, consistent with the
+  crate clock-free and filesystem-free, consistent with the
   `rp-ephemeris` / `rp-catalog` / `rp-fits` split.
 - **Targets denormalize catalog coordinates.** Self-contained rows that
   also represent non-catalog targets (comets, custom framings, mosaic
