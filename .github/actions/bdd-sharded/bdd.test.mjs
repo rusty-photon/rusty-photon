@@ -24,11 +24,12 @@ const WORKSPACE = [
 ];
 
 // The workspace the tests that run every suite start: the sharded suites,
-// HEAVY's two and two more for the rest stream. Each suite is a process, and
-// a stream starts its suites one after another; on a loaded 4-core Windows
-// runner a process takes about a second to start, so the whole workspace's
-// rest stream, 21 suites in a row, would put this file past its 60 s budget.
-const SMALL = ['calibrator-flats', 'doctor', 'filemonitor', 'polar-align', 'rp', 'session-runner'];
+// HEAVY's two and three more for the rest stream, so that it has a suite
+// between its first and its last. Each suite is a process, and a stream
+// starts its suites one after another; on a loaded 4-core Windows runner a
+// process takes about a second to start, so the whole workspace's rest
+// stream, 21 suites in a row, would put this file past its 60 s budget.
+const SMALL = ['calibrator-flats', 'doctor', 'dsd-fp2', 'filemonitor', 'polar-align', 'rp', 'session-runner'];
 
 // What `cargo test --no-run --message-format=json` prints for `artifacts`:
 // a bdd test binary per `{ name, exe }`, among messages of the kinds cargo
@@ -353,8 +354,11 @@ test('each stream’s output is printed as a group of its own, its suites in ord
   assert.deepEqual(groups.map(([name]) => name), ['rp-0', 'rp-1', 'rp-2', 'rp-3', 'session-runner-0', 'session-runner-1', 'heavy', 'rest']);
   assert.equal(groups[1][1], 'rp in /w/services/rp, 1/4\n');
   assert.equal(groups[6][1], 'filemonitor in /w/services/filemonitor, whole\npolar-align in /w/services/polar-align, whole\n');
-  assert.equal(groups[7][1], 'calibrator-flats in /w/services/calibrator-flats, whole\ndoctor in /w/services/doctor, whole\n');
-  assert.match(stdout, /^built 6 bdd binaries$/m);
+  assert.equal(
+    groups[7][1],
+    'calibrator-flats in /w/services/calibrator-flats, whole\ndoctor in /w/services/doctor, whole\ndsd-fp2 in /w/services/dsd-fp2, whole\n',
+  );
+  assert.match(stdout, /^built 7 bdd binaries$/m);
 });
 
 test('a stopped run stops every suite, starts no other, and still prints what each printed', async () => {
