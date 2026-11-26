@@ -3,7 +3,7 @@
 //! list, per-sub-spec acquisition quotas, and per-target overrides for
 //! grading thresholds and scheduling constraints.
 //!
-//! Pure storage behind one mockable trait ([`TargetStore`]) — no
+//! Pure storage behind one trait ([`TargetStore`]) — no
 //! filesystem scanning, no ephemeris, no policy. The *actuals* (how many
 //! frames exist, which are good) are derived by `rp` from the filesystem
 //! and per-frame sidecars; they are deliberately not in this crate. See
@@ -40,12 +40,7 @@ mod migrate;
 mod model;
 mod redb_store;
 
-#[cfg(any(test, feature = "mock"))]
-mod memory;
-
 pub use error::TargetStoreError;
-#[cfg(any(test, feature = "mock"))]
-pub use memory::InMemoryTargetStore;
 pub use migrate::CURRENT_SCHEMA_VERSION;
 pub use model::{
     validate_goals, AcquisitionGoal, GradingThresholds, SchedulingConstraints, Target, TargetSlug,
@@ -62,7 +57,6 @@ use async_trait::async_trait;
 /// The seam between the plan store and its consumer, `rp`. See
 /// `docs/crates/rp-targets.md` "The `TargetStore` trait" for the full
 /// contract, including upsert precedence and goal-set validation.
-#[cfg_attr(any(test, feature = "mock"), mockall::automock)]
 #[async_trait]
 pub trait TargetStore: Send + Sync {
     /// Writes `target`, creating it or overwriting an existing row with the

@@ -4625,7 +4625,6 @@ dependencies = [
  "async-trait",
  "derive_more",
  "humantime-serde",
- "mockall",
  "redb",
  "rp-vocabulary",
  "serde",
