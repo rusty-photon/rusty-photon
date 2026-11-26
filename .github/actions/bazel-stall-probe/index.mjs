@@ -19,10 +19,12 @@ await run(async () => {
   } catch (err) {
     warning(`bazel info output_base failed, so a dump will not reach the server: ${err.message}`);
   }
+  // How much of jvm.out the dumps have printed, so each prints only what it gained.
+  const printed = { jvmOut: 0 };
   const ended = await watch({
     args,
     silenceMs: Number(seconds) * 1000,
-    diagnose: (seen) => diagnose({ ...seen, outputBase }),
+    diagnose: (seen) => diagnose({ ...seen, outputBase, printed }),
     signal: stop.signal,
   });
   if (ended.code !== 0) {
