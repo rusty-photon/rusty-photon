@@ -231,6 +231,7 @@ impl Cycle {
                     guiding.controller.resume();
                     guiding.sub = Sub::Guiding;
                     self.status.lock().set_state(State::Guiding);
+                    self.guide_log.lock().note("Server received guiding/start");
                 }
                 if guiding.sub == Sub::StarLost {
                     guiding.select = Some(SelectWait {
@@ -670,10 +671,7 @@ impl Cycle {
                 self.status.lock().guide_step(error.ra, dec);
                 let lock = guide_log::to_sensor(&guiding.calibration, guiding.controller.lock());
                 let stepped = guiding.controller.step(offset);
-                let sent = stepped
-                    .as_ref()
-                    .map_or((None, None), |step| (step.ra, step.dec));
-                let row = guide_row(guiding, offset, lock, error, sent, (flux, snr));
+                let row = guide_row(guiding, offset, lock, error, (flux, snr));
                 let step = match stepped {
                     Ok(step) => step,
                     Err(ControlError::Runaway { axis }) => {
@@ -845,14 +843,14 @@ impl Cycle {
 }
 
 /// A guide step's row for the guide log: the stars at `offset` with the
-/// lock at `lock` on the sensor, the controller's `error`, the pulses `sent`
-/// and the frame's flux and signal-to-noise ratio.
+/// lock at `lock` on the sensor, the controller's `error` and the frame's
+/// flux and signal-to-noise ratio, with no pulse until the step's pulses
+/// have gone out.
 fn guide_row(
     guiding: &Guiding,
     offset: Offset,
     lock: Offset,
     error: rp_guiding::AxisOffset,
-    sent: (Option<rp_guiding::Pulse>, Option<rp_guiding::Pulse>),
     (flux, snr): (Option<f64>, Option<f64>),
 ) -> guide_log::GuideRow {
     guide_log::GuideRow {
@@ -861,8 +859,8 @@ fn guide_row(
             y: offset.y - guiding.home.y - lock.y,
         },
         error,
-        ra: sent.0,
-        dec: sent.1,
+        ra: None,
+        dec: None,
         ra_rate_px_per_s: guiding
             .calibration
             .ra_rate_at(guiding.start.declination_deg),
@@ -1983,6 +1981,19 @@ mod tests {
         cycle.start(run);
         assert_eq!(state(&cycle), State::Guiding);
         assert!(!cycle.full_paused());
+        let text = guide_log_text(&cycle);
+        let [.., paused, started, settling] = text.lines().collect::<Vec<_>>()[..] else {
+            panic!("{text}");
+        };
+        assert_eq!(
+            (paused, started, settling),
+            (
+                "INFO: Server received guiding/pause, full = true",
+                "INFO: Server received guiding/start",
+                "INFO: SETTLING STATE CHANGE, Settling started"
+            ),
+            "{text}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

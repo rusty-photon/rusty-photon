@@ -1487,8 +1487,9 @@ change.
     and writes what its
     server receives as `Server received <command>`: the guider writes
     `Server received guiding/pause, full = <true|false>`,
-    `Server received guiding/resume` and
-    `Server received guiding/stop` in that form, a stop of its own as
+    `Server received guiding/resume`,
+    `Server received guiding/start` for a start that resumes a pause,
+    and `Server received guiding/stop` in that form, a stop of its own as
     `GUIDING STOPPED, <reason>: <message>` (`CALIBRATION STOPPED` in a
     calibration's section), and a calibration that fails as
     `CALIBRATION FAILED, <message>`.
