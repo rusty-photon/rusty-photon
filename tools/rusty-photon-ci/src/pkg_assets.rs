@@ -20,9 +20,9 @@
 //!   `SupplementaryGroups=dialout plugdev` and an rpm unit with `dialout`
 //!   alone, the same otherwise, and its `Cargo.toml` ships each flavor's. A
 //!   camera-class package ([`CAMERAS`]) gives its devices to the
-//!   `rusty-photon` group in its udev rules, never plugdev, and its unit
-//!   adds no group. No rpm scriptlet creates plugdev, a Debian group, and
-//!   no rpm unit names it.
+//!   `rusty-photon` group in its udev rules, never plugdev, with MODE 0660
+//!   and no other, and its unit adds no group. No rpm scriptlet creates
+//!   plugdev, a Debian group, and no rpm unit names it.
 //! - **Maintainer scripts.** `pkg/postrm` is `packaging/postrm.common`.
 //!   `pkg/postinst` is `packaging/postinst.common`, with
 //!   `packaging/postinst.udev-stanza` before `#DEBHELPER#` for
@@ -521,6 +521,27 @@ fn groups(check: &mut Check, service: &Service) {
             check.require(!text.contains("GROUP=\"plugdev\""), || {
                 format!("{svc}: {rule} must not assign plugdev")
             });
+            // The rule's comments name the vendors' `MODE="0666"`, which
+            // is no assignment.
+            let modes: Vec<&str> = text
+                .lines()
+                .filter(|line| !line.trim_start().starts_with('#'))
+                .flat_map(udev_modes)
+                .collect();
+            check.require(
+                !modes.is_empty() && modes.iter().all(|mode| *mode == "0660"),
+                || {
+                    format!(
+                        "{svc}: {rule} must set MODE=\"0660\" and no other MODE, never one \
+                         that opens the device to every user (found {})",
+                        if modes.is_empty() {
+                            "none".to_owned()
+                        } else {
+                            modes.join(", ")
+                        }
+                    )
+                },
+            );
         }
         if let Ok(unit) = check.repo.read(&format!("{pkg}/{package}.service")) {
             check.require(!has_line_starting(&unit, "SupplementaryGroups="), || {
@@ -1282,6 +1303,57 @@ fn names_each_mistake_in_a_unit() {
                 "[Service]\nSupplementaryGroups=video\n",
             )],
             &["zwo-camera: camera unit needs no SupplementaryGroups"],
+        ),
+    ]);
+}
+
+#[test]
+fn names_each_mistake_in_a_camera_udev_rules_mode() {
+    use Change::Replace;
+    assert_named(&[
+        (
+            &[Replace(ZWO_RULE, "MODE=\"0660\"", "MODE=\"0666\"")],
+            &["zwo-camera: 90-rusty-photon-zwo.rules must set MODE=\"0660\" and no other MODE, never one that opens the device to every user (found 0666)"],
+        ),
+        (
+            &[Replace(ZWO_RULE, "MODE=\"0660\"", "MODE:=\"0664\"")],
+            &["zwo-camera: 90-rusty-photon-zwo.rules must set MODE=\"0660\" and no other MODE"],
+        ),
+        (
+            &[Replace(ZWO_RULE, "MODE=\"0660\"", "MODE=\"0660\", MODE = \"666\"")],
+            &["zwo-camera: 90-rusty-photon-zwo.rules must set MODE=\"0660\" and no other MODE, never one that opens the device to every user (found 0660, 666)"],
+        ),
+        (
+            &[Replace(ZWO_RULE, ", MODE=\"0660\"", "")],
+            &["zwo-camera: 90-rusty-photon-zwo.rules must set MODE=\"0660\" and no other MODE, never one that opens the device to every user (found none)"],
+        ),
+        (
+            &[Replace(ZWO_RULE, "MODE=\"0660\"", "MODE=\"0660\"\n  # MODE=\"0666\"")],
+            &[],
+        ),
+        (
+            &[Replace(
+                "services/qhy-camera/pkg/90-rusty-photon-qhy.rules",
+                "MODE=\"0660\"",
+                "MODE=\"0666\"",
+            )],
+            &["qhy-camera: 90-rusty-photon-qhy.rules must set MODE=\"0660\""],
+        ),
+        (
+            &[Replace(
+                "services/svbony-camera/pkg/90-rusty-photon-svbony.rules",
+                "MODE=\"0660\"",
+                "MODE=\"0666\"",
+            )],
+            &["svbony-camera: 90-rusty-photon-svbony.rules must set MODE=\"0660\""],
+        ),
+        (
+            &[Replace(
+                "services/zwo-focuser/pkg/90-rusty-photon-zwo-focuser.rules",
+                "MODE=\"0660\"",
+                "MODE=\"0666\"",
+            )],
+            &["zwo-focuser: 90-rusty-photon-zwo-focuser.rules must set MODE=\"0660\""],
         ),
     ]);
 }
