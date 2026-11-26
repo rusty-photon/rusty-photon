@@ -1242,9 +1242,10 @@ taken in order, and the first that matches decides:
 3. **`day`, or `after_dawn`:** the schedule waits for dusk, running the
    after-dawn checks meanwhile.
 4. **`dusk`:** back to the safety wait.
-5. **`power_up` or `camera_check`:** after dusk's wait for a run an
-   operator started (a self-resumed one included) to end, the schedule
-   takes the slot again and runs `power_up` from the top, then the camera
+5. **`power_up` or `camera_check`:** after dusk's safety wait, and its
+   wait for a run an operator started (a self-resumed one included) to
+   end, the schedule takes the slot again and runs `power_up` from the
+   top, then the camera
    check of every camera not already given up, and the steps that follow
    it. A second round of service restarts at dusk costs seconds, and
    leaves no service on an SDK that saw its device go. The outputs

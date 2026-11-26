@@ -47,59 +47,57 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
             self.save(&state).await;
         }
         info!(night = %ahead.night, "dusk: waiting for the roof to read safe");
-        if !self.wait_for_roof_and_slot(ahead.dawn, true).await {
+        if !self.wait_for_roof_and_slot(ahead.dawn).await {
             info!(night = %ahead.night, "dusk: the roof did not read safe, or a run held the run slot, until dawn; the night powered nothing and started no run");
             return Duration::ZERO;
         }
         self.power_up(ahead, state, true).await
     }
 
-    /// Dusk after a restart in phase `power_up` or `camera_check`: once a
-    /// run an operator started has ended, the power-up from the top and
-    /// the steps that follow it. The outputs recorded before the first
-    /// power-up stay recorded.
+    /// Dusk after a restart in phase `power_up` or `camera_check`: once
+    /// the roof reads safe again and a run an operator started has ended,
+    /// the power-up from the top and the steps that follow it. The outputs
+    /// recorded before the first power-up stay recorded.
     pub(super) async fn power_up_again(
         &mut self,
         ahead: NightWindow,
         state: NightState,
     ) -> Duration {
-        info!(night = %ahead.night, phase = ?state.phase, "dusk: taking the power-up up again from the top");
-        if !self.wait_for_roof_and_slot(ahead.dawn, false).await {
-            info!(night = %ahead.night, "dusk: a run held the run slot until dawn; the power-up did not run again and no run started");
+        info!(night = %ahead.night, phase = ?state.phase, "dusk: taking the power-up up again from the top, once the roof reads safe");
+        if !self.wait_for_roof_and_slot(ahead.dawn).await {
+            info!(night = %ahead.night, "dusk: the roof did not read safe, or a run held the run slot, until dawn; the power-up did not run again and no run started");
             return Duration::ZERO;
         }
         self.power_up(ahead, state, false).await
     }
 
-    /// Wait until the roof reads safe, when `roof`, and the schedule
-    /// holds the run slot, until `dawn`: `get_safety_status` every
+    /// Wait until the roof reads safe and the schedule holds the run
+    /// slot, until `dawn`: `get_safety_status` every
     /// `safety_poll_interval`, woken early by `safety_changed` to `safe`,
     /// and the slot every [`SLOT_POLL`] while a run holds it. Whether
     /// the schedule holds the slot.
-    async fn wait_for_roof_and_slot(&mut self, dawn: DateTime<Utc>, roof: bool) -> bool {
+    async fn wait_for_roof_and_slot(&mut self, dawn: DateTime<Utc>) -> bool {
         let mut logged_wait_for: Option<String> = None;
         loop {
             let now = self.clock.now();
             if now >= dawn {
                 return false;
             }
-            if roof {
-                let overall = self
-                    .call("get_safety_status", json!({}), dawn)
-                    .await
-                    .map(|status| {
-                        status
-                            .get("overall")
-                            .and_then(Value::as_str)
-                            .unwrap_or("unknown")
-                            .to_owned()
-                    });
-                if overall.as_deref() != Ok("safe") {
-                    debug!(?overall, "dusk: the roof does not read safe");
-                    self.sleep_or_safe_again(self.safety_poll.min(until(now, dawn)))
-                        .await;
-                    continue;
-                }
+            let overall = self
+                .call("get_safety_status", json!({}), dawn)
+                .await
+                .map(|status| {
+                    status
+                        .get("overall")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_owned()
+                });
+            if overall.as_deref() != Ok("safe") {
+                debug!(?overall, "dusk: the roof does not read safe");
+                self.sleep_or_safe_again(self.safety_poll.min(until(now, dawn)))
+                    .await;
+                continue;
             }
             if self.slot.hold() {
                 debug!("dusk: the schedule holds the run slot");
@@ -829,10 +827,10 @@ mod tests {
         assert_eq!(h.rp.called("power_up"), 1);
     }
 
-    #[tokio::test]
-    async fn a_restart_in_the_power_up_runs_it_from_the_top_with_the_record_kept() {
-        let h = at_dusk();
-        h.rp.rig.lock().unwrap().unsafe_reads = u32::MAX;
+    /// night.json as a crash in night 23's power-up left it, with every
+    /// output the power-up switched on, and Camera Power recorded as off
+    /// before it.
+    fn left_in_the_power_up(h: &Harness) -> NightState {
         for output in &mut h.rp.rig.lock().unwrap().outputs {
             output.on = Some(true);
         }
@@ -843,16 +841,42 @@ mod tests {
             output: "Camera Power".into(),
         }];
         h.status.publish(power_up.clone());
+        power_up
+    }
+
+    #[tokio::test]
+    async fn a_restart_in_the_power_up_waits_for_the_roof_and_runs_it_from_the_top() {
+        let h = at_dusk();
+        let power_up = left_in_the_power_up(&h);
+        h.rp.rig.lock().unwrap().unsafe_reads = 1;
         let mut schedule = h.schedule();
 
         schedule.tick().await;
 
-        assert_eq!(h.rp.called("get_safety_status"), 0, "no safety wait");
+        assert_eq!(
+            h.rp.steps()[..2],
+            ["get_safety_status", "get_safety_status"]
+        );
         assert_eq!(h.rp.called("power_up"), 1);
         assert_eq!(
             state(&h).outputs_off_before_dusk,
-            power_up.outputs_off_before_dusk
+            power_up.outputs_off_before_dusk,
+            "the record of the first power-up is kept"
         );
         assert_eq!(state(&h).night, date(23));
+    }
+
+    #[tokio::test]
+    async fn a_restart_in_the_power_up_under_a_roof_shut_until_dawn_powers_nothing_more() {
+        let h = at_dusk();
+        left_in_the_power_up(&h);
+        h.rp.rig.lock().unwrap().unsafe_reads = u32::MAX;
+        let mut schedule = h.schedule();
+
+        schedule.tick().await;
+
+        assert_eq!(h.rp.called("power_up"), 0);
+        assert_eq!(state(&h).phase, Phase::PowerUp);
+        assert!(!h.slot.held.load(Ordering::SeqCst));
     }
 }
