@@ -277,9 +277,10 @@ impl Cycle {
         } = run;
         let telescope = guiding.mount.telescope();
         let start = guiding.start;
-        self.guide_log.lock().guiding_ends(self.epoch.elapsed());
         // In `star_lost` the run calibrates again only once its fresh frame
-        // has selected guide stars, and counts the interruption then.
+        // has selected guide stars, and counts the interruption and ends
+        // its section of the guide log then: a fresh frame with too few
+        // stars leaves the run as it was.
         let reselect = guiding.sub == Sub::StarLost;
         {
             let mut status = self.status.lock();
@@ -287,6 +288,9 @@ impl Cycle {
             if !reselect {
                 status.interruption();
             }
+        }
+        if !reselect {
+            self.guide_log.lock().guiding_ends(self.epoch.elapsed());
         }
         let after = StartAfter {
             settle,
@@ -899,11 +903,15 @@ pub(super) fn abort(
     if !guiding.settle.as_ref().is_some_and(|wait| wait.dither) {
         return unaborted;
     }
-    let at = guiding.last_offset.unwrap_or_default();
-    guiding.controller.lock_at(at);
+    guiding
+        .controller
+        .lock_at(guiding.last_offset.unwrap_or_default());
+    // The lock the controller holds, which the guide log's rows measure
+    // from: with Dec off, the stars' place on the RA axis.
+    let lock = guide_log::to_sensor(&guiding.calibration, guiding.controller.lock());
     guide_log.lock().note(&lock_note(Position {
-        x: reference.x + at.x,
-        y: reference.y + at.y,
+        x: reference.x + guiding.home.x + lock.x,
+        y: reference.y + guiding.home.y + lock.y,
     }));
     if let Some(wait) = guiding.settle.take() {
         let _ = wait.reply.send(Err(ApiError::dither_aborted()));
@@ -1471,6 +1479,51 @@ mod tests {
             "{lock:?}"
         );
         assert!(!cycle.status.lock().settling());
+        assert!(
+            guide_log_text(&cycle)
+                .contains("INFO: SET LOCK POSITION, new lock pos = 0.250, -0.500"),
+            "{}",
+            guide_log_text(&cycle)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_dec_off_an_abort_notes_the_lock_on_the_ra_axis_the_rows_measure_from() {
+        let mut cycle = looping_cycle();
+        cycle.config = Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "optics": { "focal_length_mm": 200.0 },
+                "control": { "dec": { "mode": "off" } }
+            }))
+            .unwrap(),
+        );
+        let calibration = calibration(&cycle);
+        let (after, mut started) = after(Found::Looping);
+        let (turn, _turns) = turn().await;
+        cycle.begin_guiding(
+            run_mount(Arc::new(FakeMount::default())),
+            mount_start(),
+            calibration,
+            Offset::default(),
+            after,
+            turn,
+        );
+        for _ in 0..3 {
+            assert!(guide(&mut cycle, at(0.0, 0.0)).await.is_none());
+            tokio::time::advance(Duration::from_millis(600)).await;
+        }
+        started.try_recv().unwrap().unwrap();
+        let (run, _answer, _given_up) = dither_run(4.0);
+        cycle.dither(run);
+        assert!(guide(&mut cycle, at(0.25, -0.5)).await.is_none());
+        assert!(cycle.abort_dither().aborted);
+        // West moves the stars along +x: the lock is where they stand along
+        // that axis.
+        let text = guide_log_text(&cycle);
+        assert!(
+            text.contains("INFO: SET LOCK POSITION, new lock pos = 0.250, 0.000"),
+            "{text}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1692,6 +1745,67 @@ mod tests {
             .find("Guiding Ends at")
             .expect("the run's section ended");
         assert!(begins < ends, "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recalibrate_in_star_lost_refused_for_too_few_stars_goes_on_logging_the_run() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        assert!(guide(&mut cycle, lost()).await.is_none());
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        let refused = Took::Measured {
+            offset: None,
+            selection: Some(Err(())),
+        };
+        assert!(cycle
+            .after_frame(refused, &CancellationToken::new())
+            .await
+            .is_none());
+        assert!(guide(&mut cycle, at(0.25, 0.0)).await.is_none());
+        let text = guide_log_text(&cycle);
+        assert!(!text.contains("Guiding Ends"), "{text}");
+        assert!(
+            text.lines().last().unwrap().contains(",\"Mount\","),
+            "{text}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recalibrate_in_star_lost_ends_the_runs_section_once_its_fresh_frame_selects() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        assert!(guide(&mut cycle, lost()).await.is_none());
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        assert!(!guide_log_text(&cycle).contains("Guiding Ends"));
+        assert!(cycle
+            .after_frame(selection(Ok(3)), &CancellationToken::new())
+            .await
+            .is_none());
+        let text = guide_log_text(&cycle);
+        let ends = text.find("Guiding Ends").expect("the run's section ended");
+        let calibration = text
+            .find("Calibration Begins")
+            .expect("the calibration's section");
+        assert!(ends < calibration, "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_of_its_own_in_a_calibration_is_a_calibrations_note() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        // The test's loop holds no guide stars, so the calibration selects
+        // on its first frame.
+        assert!(cycle
+            .after_frame(selection(Ok(3)), &CancellationToken::new())
+            .await
+            .is_none());
+        cycle.log_stop(&Stop::new(StopReason::MountSlewing, "the mount is slewing"));
+        let text = guide_log_text(&cycle);
+        assert!(
+            text.contains("INFO: CALIBRATION STOPPED, mount_slewing: the mount is slewing"),
+            "{text}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

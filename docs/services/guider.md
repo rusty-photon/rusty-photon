@@ -1479,8 +1479,9 @@ change.
     `Server received guiding/pause, full = <true|false>`,
     `Server received guiding/resume` and
     `Server received guiding/stop` in that form, a stop of its own as
-    `GUIDING STOPPED, <reason>: <message>`, and a calibration that
-    fails as `CALIBRATION FAILED, <message>`.
+    `GUIDING STOPPED, <reason>: <message>` (`CALIBRATION STOPPED` in a
+    calibration), and a calibration that fails as
+    `CALIBRATION FAILED, <message>`.
 - **How it is kept true to the format.** Logs that PHD2 itself wrote
   are test fixtures, in `services/guider/tests/fixtures/guide-logs/`
   with a README that says what each one holds. The guider's writer is

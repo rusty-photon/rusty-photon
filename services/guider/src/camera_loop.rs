@@ -708,10 +708,16 @@ impl Cycle {
     }
 
     /// Write a run's stop to the guide log: what the server received, or the
-    /// guider's own reason.
+    /// guider's own reason, as a calibration's or a guiding run's.
     fn log_stop(&self, stop: &Stop) {
         let note = if stop.reason == StopReason::Requested {
             "Server received guiding/stop".to_owned()
+        } else if matches!(self.mode, Mode::Calibrating(_)) {
+            format!(
+                "CALIBRATION STOPPED, {}: {}",
+                stop.reason.as_str(),
+                stop.message
+            )
         } else {
             format!(
                 "GUIDING STOPPED, {}: {}",
@@ -948,6 +954,7 @@ impl Cycle {
                 }) = calibrating.then
                 {
                     self.status.lock().interruption();
+                    self.guide_log.lock().guiding_ends(self.epoch.elapsed());
                 }
                 Selection::Steps
             }
