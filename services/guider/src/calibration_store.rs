@@ -287,6 +287,14 @@ struct Slots {
 }
 
 impl Slots {
+    const fn get(&self, side: PierSide) -> Option<&Record> {
+        match side {
+            PierSide::East => self.east.as_ref(),
+            PierSide::West => self.west.as_ref(),
+            PierSide::Unknown => self.unknown.as_ref(),
+        }
+    }
+
     const fn slot(&mut self, side: PierSide) -> &mut Option<Record> {
         match side {
             PierSide::East => &mut self.east,
@@ -355,6 +363,12 @@ impl CalibrationStore {
     #[must_use]
     pub fn body(&self) -> StoreBody {
         self.slots.lock().body()
+    }
+
+    /// The record in the slot of `side`.
+    #[must_use]
+    pub fn get(&self, side: PierSide) -> Option<Record> {
+        self.slots.lock().get(side).cloned()
     }
 
     /// Keep `record` in the slot of its pier side, when it is storable.

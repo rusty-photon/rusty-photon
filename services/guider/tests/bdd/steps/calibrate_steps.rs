@@ -104,6 +104,7 @@ fn cannot_pulse_guide_now(world: &mut GuiderWorld) {
 }
 
 #[given(expr = "the simulated mount's pulses move it at {float} of their rate")]
+#[when(expr = "the simulated mount's pulses move it at {float} of their rate")]
 fn rate_factor(world: &mut GuiderWorld, factor: f64) {
     world
         .sim()
@@ -337,7 +338,7 @@ fn answers_with_check(
     );
 }
 
-#[then(regex = r"^the guider's metrics gain at least (\d+) frames after the calibration$")]
+#[then(regex = r"^the guider's metrics gain at least (\d+) more frames$")]
 async fn gain_after_calibration(world: &mut GuiderWorld, count: u64) {
     let after = crate::steps::stats_steps::last_frame(world)
         .await

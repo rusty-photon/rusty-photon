@@ -11,6 +11,14 @@
 //!   (a directory made read-only with `chmod`).
 //!
 //! Every filter accepts the tag with or without a leading `@`.
+//!
+//! The suite runs at most two scenarios at once for each CPU it may run
+//! on, and no more than cucumber's default of 64. A scenario that loops
+//! renders and measures five frames a second, about a third of a CPU in a
+//! debug build, so 64 at once on a small machine starve each other's
+//! simulated devices: a call that should take a millisecond takes seconds,
+//! and every bound the scenarios configure turns into a race with the
+//! machine.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -55,6 +63,7 @@ bdd_infra::bdd_main! {
         // step passes: the scenario reports green having asserted nothing.
         // Fail the run on it instead (docs/skills/testing.md section 2.9).
         .fail_on_skipped()
+        .max_concurrent_scenarios(scenario_concurrency())
         .after(|_feature, _rule, _scenario, _finished, maybe_world| {
             Box::pin(async move {
                 if let Some(world) = maybe_world {
@@ -71,4 +80,10 @@ bdd_infra::bdd_main! {
             !tagged("wip") && (!tagged("unix") || cfg!(unix))
         })
         .await;
+}
+
+/// How many scenarios run at once: two for each CPU the suite may run on,
+/// at most cucumber's default of 64.
+fn scenario_concurrency() -> usize {
+    std::thread::available_parallelism().map_or(64, |cpus| cpus.get().saturating_mul(2).min(64))
 }

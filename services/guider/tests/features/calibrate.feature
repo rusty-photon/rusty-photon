@@ -18,7 +18,9 @@ Feature: Calibrating
   side of the pier at declination 0° that guides at the sidereal rate,
   7.5 px/s at the guider's 2″ a pixel. The guider polls them every 100 ms,
   exposes for 200 ms, and calibrates over 6 px in 4 steps of 200 ms, with 1
-  px of backlash to clear and at most 8 steps to a leg.
+  px of backlash to clear and at most 8 steps to a leg. A pulse may be in
+  progress 10 s after its duration, unless the scenario says otherwise:
+  the simulated devices of every running scenario share one process.
 
   Background:
     Given the simulated camera and mount, both connected
@@ -45,7 +47,7 @@ Feature: Calibrating
     When a client asks the guider to calibrate
     Then the request answers 200 with the state "looping"
     And the guider's stats report the state "looping"
-    And the guider's metrics gain at least 3 frames after the calibration
+    And the guider's metrics gain at least 3 more frames
 
   Scenario: A calibration with Dec off measures the RA axis alone
     Given the guider configuration's "/control/dec/mode" is the JSON "off"

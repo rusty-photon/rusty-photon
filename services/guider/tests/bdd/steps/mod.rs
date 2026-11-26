@@ -13,6 +13,7 @@ pub mod devices_steps;
 pub mod doctor_steps;
 pub mod frame_latest_steps;
 pub mod frames_steps;
+pub mod guiding_steps;
 pub mod health_steps;
 pub mod loop_steps;
 pub mod star_reselect_steps;

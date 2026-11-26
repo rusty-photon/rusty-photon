@@ -15,12 +15,13 @@ use axum::{Json, Router};
 use serde::Serialize;
 use tokio::sync::watch;
 
-use crate::api::{read_body, ApiError, ErrorCode, NoFields};
+use crate::api::{read_body, ApiError, DitherBody, ErrorCode, NoFields, PauseBody, StartBody};
 use crate::calibration_store::StoreBody;
 use crate::config::Config;
 use crate::devices::{CameraState, DevicesState, MountState, Reach};
 use crate::guider::{
-    CalibrateAnswer, Guider, MetricsBody, SelectionAnswer, StateAnswer, StatsBody,
+    AbortAnswer, CalibrateAnswer, Guider, MetricsBody, SelectionAnswer, SettledAnswer, StateAnswer,
+    StatsBody,
 };
 use crate::preview;
 use crate::sensor::{effective_binning, sensor_type_name};
@@ -56,6 +57,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/calibration", get(calibration))
         .route("/api/v1/calibration/clear", post(clear_calibration))
         .route("/api/v1/star/reselect", post(reselect))
+        .route("/api/v1/guiding/start", post(start_guiding))
+        .route("/api/v1/guiding/pause", post(pause))
+        .route("/api/v1/guiding/resume", post(resume))
+        .route("/api/v1/dither", post(dither))
+        .route("/api/v1/dither/abort", post(abort_dither))
         .route("/api/v1/guiding/stop", post(stop))
         .route("/api/v1/guiding/stats", get(stats))
         .route("/api/v1/guiding/metrics", get(metrics))
@@ -104,6 +110,45 @@ async fn reselect(
 ) -> Result<Json<SelectionAnswer>, ApiError> {
     read_body::<NoFields>(&body)?;
     state.guider.reselect().await.map(Json)
+}
+
+/// `POST /api/v1/guiding/start`.
+async fn start_guiding(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<SettledAnswer>, ApiError> {
+    let body = read_body::<StartBody>(&body)?;
+    state.guider.start_guiding(body).await.map(Json)
+}
+
+/// `POST /api/v1/guiding/pause`.
+async fn pause(State(state): State<AppState>, body: Bytes) -> Result<Json<StateAnswer>, ApiError> {
+    let body = read_body::<PauseBody>(&body)?;
+    state.guider.pause(body).await.map(Json)
+}
+
+/// `POST /api/v1/guiding/resume`.
+async fn resume(State(state): State<AppState>, body: Bytes) -> Result<Json<StateAnswer>, ApiError> {
+    read_body::<NoFields>(&body)?;
+    state.guider.resume().await.map(Json)
+}
+
+/// `POST /api/v1/dither`.
+async fn dither(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<SettledAnswer>, ApiError> {
+    let body = read_body::<DitherBody>(&body)?;
+    state.guider.dither(body).await.map(Json)
+}
+
+/// `POST /api/v1/dither/abort`: takes no turn.
+async fn abort_dither(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<AbortAnswer>, ApiError> {
+    read_body::<NoFields>(&body)?;
+    Ok(Json(state.guider.abort_dither().await))
 }
 
 /// `POST /api/v1/guiding/stop`.

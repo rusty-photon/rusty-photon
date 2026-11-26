@@ -14,9 +14,10 @@ and its validation, the lifecycle and the state directory, the device
 clients and their poll, the camera loop and the sensor handling,
 `loop`, `star/reselect` and `guiding/stop`, the requests' turns, the
 metrics window, `stats`, `frame/latest`, the mount check and the pulses,
-`calibrate` and the calibration store, `GET /api/v1/devices`, `/health`
-and `guider doctor` are built; guiding, the guide log, the setup page
-and the packages are not yet. Of the guiding core,
+`calibrate` and the calibration store, guiding with its pause, dither
+and settling, the statistics and the running totals, `GET
+/api/v1/devices`, `/health` and `guider doctor` are built; the guide
+log, the setup page and the packages are not yet. Of the guiding core,
 `crates/rp-guiding`, the star selection, the measurement, the
 calibration, the control, dither and settling are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
@@ -73,10 +74,10 @@ guider serves nothing for it, and refuses no request on its account.
 
 | Piece | Kind | Holds |
 |---|---|---|
-| `rp-guiding` | Library crate | The guiding core: star selection, measurement, calibration, control, dither, settle, statistics and the state machine. Frames and timestamps in, pulse requests and statistics out. No I/O; time and randomness are passed in, so a whole night runs under test in simulated time |
+| `rp-guiding` | Library crate | The guiding core: star selection, measurement, calibration, control, dither and settle. Frames and timestamps in, pulse requests and each step's error out. No I/O; time and randomness are passed in, so a whole night runs under test in simulated time |
 | `rp-image-analysis` | Library crate | The image kernels `rp` and the guider share: background, star detection, centroid, half-flux diameter, signal-to-noise ratio |
 | `rp-guider` | Library crate | The HTTP contract of this document: request and response types, the error codes, and the client `rp` uses |
-| `guider` | Service, port 11129 | The Alpaca clients, the loop that drives the core, the HTTP API, the setup page, the calibration store and the guide log |
+| `guider` | Service, port 11129 | The Alpaca clients, the loop that drives the core, the states and the statistics, the HTTP API, the setup page, the calibration store and the guide log. The states sequence frames, pulses and requests, which is I/O, and the statistics are a window and running sums over the core's step errors |
 | `guide-simulator` | Test-infrastructure crate | A mount model and a star renderer in simulated time: drift, periodic error, backlash, pulse granularity and seeing, with the stars moving as the pulses say |
 | `guide-simulator-alpaca` | Test-infrastructure crate | `guide-simulator` behind an Alpaca Camera and an Alpaca Telescope on the wall clock, scripted by the service's scenarios |
 
@@ -146,14 +147,14 @@ reports the state.
 
 `calibrating`, `guiding`, `paused` and `star_lost` are the **run
 states**. A **run** begins when a `calibrate` or `guiding/start`
-request is accepted and ends when the state returns to `idle` or
-`looping`.
+request takes the guider into a run state, and ends when the state
+returns to `idle` or `looping`.
 
 | From | Trigger | To |
 |---|---|---|
 | `idle` | `loop` | `looping` |
 | `idle`, `looping` | `calibrate` | `calibrating`, then the state it came from |
-| `idle`, `looping` | `guiding/start` | `calibrating` when no stored calibration can be used, then `guiding` |
+| `idle`, `looping` | `guiding/start` | `calibrating` when no stored calibration can be used; otherwise `looping` until its fresh frame selects guide stars. Then `guiding` |
 | `guiding` | A star-lost frame | `star_lost` |
 | `star_lost` | A frame with the stars back | `guiding` |
 | `guiding`, `star_lost` | `guiding/pause` | `paused` |
@@ -164,7 +165,9 @@ request is accepted and ends when the state returns to `idle` or
 
 Settling is not a state. While a `guiding/start` or a `dither` waits
 for the stars to settle, the state is `guiding` and `stats` reports
-`settling: true`.
+`settling: true`. A `guiding/start` from `idle` that guides with a
+stored calibration reads `looping` while it waits for its fresh frame:
+`idle` means no exposure, and `guiding` that the guide loop is closed.
 
 ### Starting idle
 
@@ -229,8 +232,9 @@ reads. `GET /api/v1/devices` and `/health` answer from its results.
   `UniqueID` and the static properties last read of it. A static read
   that fails is tried again at the next poll.
 
-**At a request.** `loop`, `calibrate` and `guiding/start` read
-`Connected` afresh before anything else. A device that does not answer
+**At a request.** `loop`, `calibrate`, and a `guiding/start` that finds
+the guider in `idle` or `looping`, read `Connected` afresh before
+anything else. A device that does not answer
 refuses the request with `device_unreachable`; one that answers and is
 not connected refuses it with `device_not_connected`. When the poll has
 not yet read a connected device's static properties, the request reads
@@ -360,8 +364,9 @@ camera's frame depends on `SensorType`:
 never slews, parks, unparks, sets tracking or writes a guide rate.
 
 **The mount check.** Before every pulse, and once in every cycle of a
-run state that sends none, the guider reads `Tracking`, `Slewing`,
-`AtPark` and `SideOfPier`. The run continues only while the mount is
+run state that sends none or of a `guiding/start` that waits for its
+fresh frame, the guider reads `Tracking`, `Slewing`, `AtPark` and
+`SideOfPier`. The run continues only while the mount is
 tracking, not slewing, not parked and on the pier side the run started
 on. Otherwise the run stops, with the reason `mount_not_tracking`,
 `mount_slewing`, `mount_parked` or `pier_side_changed`. The guider does
@@ -384,10 +389,16 @@ is what happened.
 - The check is the guider's because a driver's is not enough: the Star
   Adventurer GTi driver accepts a pulse while tracking is off
   ([star-adventurer-gti.md § PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle)).
-- The check does not run in `looping`: no pulse is sent there.
+- The check does not run in `looping`, where no pulse is sent, but for
+  the cycles of a `guiding/start` that waits there for its fresh frame:
+  the next cycle pulses, and a selection taken while the mount slews
+  must not become the run's home. A failure then stops the loop.
 
-**At a request.** `calibrate` and `guiding/start` run the same check
-before they start, and read `CanPulseGuide`. A mount that fails either
+**At a request.** `calibrate`, and a `guiding/start` that finds the
+guider in `idle` or `looping`, run the same check before they start,
+and read `CanPulseGuide`. A `guiding/start` in a run state guides with
+the mount the run read, and the check of each cycle stands in for one
+at the request. A mount that fails either
 refuses the request with `mount_not_ready`, and the message names what
 failed. A read that fails, rather than answering, refuses the request
 with `device_unreachable`, as a device that does not answer does; a
@@ -398,7 +409,11 @@ guide rates it does not implement are no guide rates.
 duration. The pulse has ended when the call has returned, the duration
 has passed and `IsPulseGuiding` reads false. A pulse still in progress
 `mount.pulse_timeout` after its duration stops the run with
-`pulse_timeout`.
+`pulse_timeout`. Once the call has returned, only `IsPulseGuiding`
+reading true shows a pulse in progress, and only a read asked once that
+time has passed shows it in progress then; a read asked before it is
+asked again. A read that has not answered is a call like any other,
+held to the call deadline: a slow read is not a stuck pulse.
 
 **Bounds.**
 
@@ -847,9 +862,9 @@ guider does not hold Dec.
   one that `guiding/stop` ends answers it with `stopped`.
 
 **Aborting a dither.** `dither/abort` sets the lock offset to where the
-stars are in the latest frame, so that the controller stops steering to
-the abandoned point, and answers the waiting `dither` with
-`dither_aborted`. Guiding continues.
+stars are in the latest frame that showed them, so that the controller
+stops steering to the abandoned point, and answers the waiting `dither`
+with `dither_aborted`. Guiding continues.
 
 ### Stopping on its own
 
@@ -1034,7 +1049,10 @@ does depends on the state it finds:
 | `star_lost` | Selects guide stars on a fresh frame and takes a new lock, then settles |
 
 - `recalibrate: true` runs a calibration first in each of these states.
-  A calibration is always followed by a new lock.
+  A calibration is always followed by a new lock, taken where the stars
+  stand in the frame after its last step.
+- A fresh frame is the first frame exposed after the request is taken
+  up. Selecting on it replaces the guide stars a loop held.
 - A frame with fewer guide stars than `stars.min` answers `no_stars` and
   leaves the state, the guide stars and the lock as they were.
 - A calibration that fails answers `calibration_failed`. The guider
@@ -1328,7 +1346,9 @@ of its interval and subtracts.
 - `interruptions` counts each time a run stops, is paused, calibrates
   again (`guiding/start` with `recalibrate: true` in a run state) or
   selects stars again (`star/reselect`, or `guiding/start` in
-  `star_lost`). With `guiding` true at both readings and the count
+  `star_lost`). A run stops when the guider stops it on its own or a
+  `guiding/stop` does; a `calibrate` that returns to `idle` or `looping`
+  has ended, not stopped, and is not counted. With `guiding` true at both readings and the count
   unchanged, the run was not stopped, paused or calibrated again in the
   interval, and it kept its stars. The frames in it that had no usable
   star are the change in `star_lost`, and no correction followed them.
@@ -1343,9 +1363,10 @@ Each axis's count and sum is a `SquareSums` from
   `star/reselect` serialize behind a single-flight mutex. Overlapping
   requests queue; they are not refused. One guider has one mount, and
   two settle waits at once mean nothing. A `calibrate` keeps its turn
-  until the calibration ends, even when its client has stopped waiting,
-  so that nothing queued behind it runs in the middle of the
-  calibration.
+  until the calibration ends, and a `guiding/start` or a `dither` until
+  it has settled or timed out, even when its client has stopped
+  waiting, so that nothing queued behind it runs in the middle of what
+  it waits for.
 - **`guiding/stop` and `dither/abort` never queue.** They act at once,
   whatever is waiting. `guiding/stop` answers every waiting and queued
   mutating request with `stopped`.
@@ -1692,7 +1713,11 @@ clients as they cover `rp`'s.
   and hold it to this document
   section by section: the states, starting idle, the mount
   check and each stop reason, the calibration and its store, each
-  endpoint and each error code.
+  endpoint and each error code. Each scenario that loops renders and
+  measures five frames a second, so the suite runs at most two
+  scenarios at once for each CPU it may run on: more would starve the
+  simulated devices, and every bound a scenario configures would race
+  the machine.
 - **The guide log.** Fixture tests, as [Guide log](#guide-log) says.
 - **Not ConformU.** The guider is no Alpaca device, so there is nothing
   for ConformU to check.

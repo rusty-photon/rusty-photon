@@ -190,9 +190,8 @@ status frame that carried it and asks at `tokio::time::Instant::now()`, both
 through `into_std`.
 
 `rp` rebuilds two readings of the guider's running totals with `from_parts`
-and subtracts them into the guiding over an exposure. The `guider` service,
-designed and not yet built, keeps the totals as a `SquareSums` per axis of its
-guide error. See [`docs/services/guider.md` §
+and subtracts them into the guiding over an exposure. The `guider` service
+keeps the totals as a `SquareSums` per axis of its guide error. See [`docs/services/guider.md` §
 Statistics](../services/guider.md#statistics) and [`docs/services/rp.md`
 § Rig state](../services/rp.md#rig-state). See
 [`docs/services/ppba-driver.md`](../services/ppba-driver.md),
