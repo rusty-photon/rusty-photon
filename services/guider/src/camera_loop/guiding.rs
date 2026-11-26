@@ -577,6 +577,11 @@ impl Cycle {
             }
             Took::Failed(_) => (None, true),
         };
+        // Every measured frame with an offset, paused or rehomed, is where
+        // an aborted dither sets the lock.
+        if offset.is_some() {
+            guiding.last_offset = offset;
+        }
         let mut pulses = [None, None];
         match (guiding.sub, offset) {
             (Sub::Paused { .. }, offset) => {
@@ -605,7 +610,6 @@ impl Cycle {
                     self.status.lock().set_state(State::Guiding);
                     debug!("stars back");
                 }
-                guiding.last_offset = Some(offset);
                 let distance = guiding.controller.distance_from_lock(offset);
                 // A guide step whether or not a pulse follows it, the step
                 // that runs away included.
@@ -1503,6 +1507,22 @@ mod tests {
             panic!("the start went on");
         };
         assert_eq!(stop.reason, StopReason::MountUnreachable);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_abort_sets_the_lock_where_a_paused_frame_saw_the_stars() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        cycle.pause(false).unwrap();
+        assert!(guide(&mut cycle, at(3.0, 1.0)).await.is_none());
+        cycle.resume().unwrap();
+        let (run, _answer, _given_up) = dither_run(4.0);
+        cycle.dither(run);
+        assert!(cycle.abort_dither().aborted);
+        let lock = guiding(&cycle).controller.lock();
+        assert!(
+            (lock.ra - 3.0).abs() < 1e-9 && (lock.dec - 1.0).abs() < 1e-9,
+            "{lock:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

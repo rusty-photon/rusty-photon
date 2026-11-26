@@ -1482,8 +1482,7 @@ identical to MCP clients:
    image analysis, planner, V-curve auto-focus, iterative centering).
 2. **rp-managed service tools** — built-in tool surface that proxies to a
    separate process Sentinel supervises: the plate solver, and the guider,
-   whose service is designed and not built (§ [Guider
-   Service](#guider-service)). The MCP tool itself lives in `rp`; the
+   whose service is being built (§ [Guider Service](#guider-service)). The MCP tool itself lives in `rp`; the
    wrapped logic runs in the supervised service.
 3. **Third-party plugin tools** — aggregated from plugins running their own
    MCP servers. Discovered at startup via `tools/list` and proxied through
