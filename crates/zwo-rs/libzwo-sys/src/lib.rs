@@ -17,24 +17,17 @@
     non_snake_case,
     dead_code
 )]
-// Generated bindings are not idiomatic Rust; do not lint them. The groups
-// cover the warn-level surface; the named restriction lints are the
-// workspace's denied set (root Cargo.toml [workspace.lints.clippy]), which
-// no group contains — bindgen output indexes, casts, and unwraps freely.
+// Generated bindings are not idiomatic Rust, so the warn-level groups stay
+// off. Of the workspace's denied restriction lints (root Cargo.toml
+// [workspace.lints.clippy]), which no group contains, the bindings trip two,
+// and only in bindgen's layout checks: each indexes a one-element array by
+// `size_of::<T>() - <expected>` inside a `const _: () = { .. }`, so a wrong
+// size, alignment or offset fails the build instead of panicking.
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::unreachable,
-    clippy::panic,
-    clippy::todo,
-    clippy::unimplemented,
-    clippy::panic_in_result_fn,
-    clippy::unchecked_time_subtraction,
-    clippy::string_slice,
-    clippy::as_conversions,
+#![expect(
+    clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
-    clippy::indexing_slicing
+    reason = "bindgen's layout checks, evaluated at compile time: a wrong layout fails the build"
 )]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
