@@ -586,6 +586,22 @@ mod writer {
     }
 
     #[test]
+    fn a_runs_header_gives_the_ra_rate_at_the_runs_declination() {
+        let state = tempfile::tempdir().unwrap();
+        let mut log = GuideLog::new(state.path(), GuideLogConfig::default());
+        let at_60 = Common {
+            declination_deg: 60.0,
+            ..common()
+        };
+        log.begin_guiding(&at_60, &calibration(), &control(), Duration::ZERO);
+        log.close();
+        let (_, parsed) = only_log(state.path());
+        let run = super::runs(&parsed)[0];
+        // The calibration's 7.52 px/s at 0°, at 60°.
+        assert_eq!(header_value(&run.header, "xRate"), Some("3.760"));
+    }
+
+    #[test]
     fn a_log_the_service_closed_opens_no_file_after() {
         let state = tempfile::tempdir().unwrap();
         let mut log = GuideLog::new(state.path(), GuideLogConfig::default());

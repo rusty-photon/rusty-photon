@@ -365,7 +365,7 @@ impl Cycle {
         let super::Mode::Starting(starting) = &mut self.mode else {
             return None;
         };
-        let failed = match send_pulses(&starting.mount, [None, None], cancel).await {
+        let failed = match send_pulses(&starting.mount, &mut [None, None], cancel).await {
             Err(stop) => return Some(End::Stop(stop)),
             Ok(failed) => failed,
         };
@@ -631,6 +631,9 @@ impl Cycle {
             guiding.last_offset = offset;
         }
         let mut pulses = [None, None];
+        // A guide step's row and its distance from the lock, written and
+        // judged once its pulses have gone out.
+        let mut stepped_frame = None;
         match (guiding.sub, offset) {
             (Sub::Paused { .. }, offset) => {
                 if offset.is_none() && !failed {
@@ -671,10 +674,10 @@ impl Cycle {
                     .as_ref()
                     .map_or((None, None), |step| (step.ra, step.dec));
                 let row = guide_row(guiding, offset, lock, error, sent, (flux, snr));
-                self.guide_log.lock().guide_step(&row, now);
                 let step = match stepped {
                     Ok(step) => step,
                     Err(ControlError::Runaway { axis }) => {
+                        self.guide_log.lock().guide_step(&row, now);
                         return Some(End::Stop(Stop::new(
                             StopReason::Runaway,
                             format!(
@@ -684,15 +687,25 @@ impl Cycle {
                     }
                 };
                 pulses = [step.ra, step.dec];
-                if let Some(end) = self.settle_frame(Some(distance), now) {
-                    return Some(end);
-                }
+                stepped_frame = Some((row, distance));
             }
         }
         let super::Mode::Guiding(guiding) = &mut self.mode else {
             return None;
         };
-        match send_pulses(&guiding.mount, pulses, cancel).await {
+        let sent = send_pulses(&guiding.mount, &mut pulses, cancel).await;
+        if let Some((mut row, distance)) = stepped_frame {
+            // The row gives the pulses that went out, as PHD2's does.
+            [row.ra, row.dec] = pulses;
+            self.guide_log.lock().guide_step(&row, now);
+            if let Some(end) = self.settle_frame(Some(distance), now) {
+                return Some(end);
+            }
+        }
+        let super::Mode::Guiding(guiding) = &mut self.mode else {
+            return None;
+        };
+        match sent {
             Err(stop) => Some(End::Stop(stop)),
             Ok(failed) => guiding.mount.cycle(failed.as_deref()).map(End::Stop),
         }
@@ -816,7 +829,7 @@ impl Cycle {
         let super::Mode::Guiding(guiding) = &mut self.mode else {
             return None;
         };
-        match send_pulses(&guiding.mount, [None, None], cancel).await {
+        match send_pulses(&guiding.mount, &mut [None, None], cancel).await {
             Err(stop) => Some(End::Stop(stop)),
             Ok(failed) => guiding.mount.cycle(failed.as_deref()).map(End::Stop),
         }
@@ -929,32 +942,34 @@ pub(super) fn abort(
 /// Send `pulses`, RA then Dec, each after the mount check raced against
 /// `cancel`; with none to send, check the mount once. The message of the
 /// first failed mount call, after which no further pulse goes out; the stop
-/// when the run stops.
+/// when the run stops. `pulses` is left holding the pulses that went out:
+/// each `PulseGuide` asked for and not refused.
 pub(super) async fn send_pulses(
     mount: &RunMount,
-    pulses: [Option<rp_guiding::Pulse>; 2],
+    pulses: &mut [Option<rp_guiding::Pulse>; 2],
     cancel: &CancellationToken,
 ) -> Result<Option<String>, Stop> {
-    let mut sent = false;
-    for pulse in pulses.into_iter().flatten() {
-        sent = true;
-        let checked = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(Stop::requested()),
-            checked = mount.check() => checked,
+    let mut asked = false;
+    let mut ended = None;
+    for slot in pulses.iter_mut() {
+        let Some(pulse) = *slot else {
+            continue;
         };
-        let fault = match checked {
-            Err(fault) => Some(fault),
-            Ok(()) if cancel.is_cancelled() => return Err(Stop::requested()),
-            Ok(()) => mount.pulse(pulse).await.err(),
-        };
-        match fault {
-            None => {}
-            Some(Fault::Stop(stop)) => return Err(stop),
-            Some(Fault::Failed(message) | Fault::Unconfirmed(message)) => return Ok(Some(message)),
+        asked = true;
+        if ended.is_some() {
+            *slot = None;
+            continue;
         }
+        let (went_out, end) = send_pulse(mount, pulse, cancel).await;
+        if !went_out {
+            *slot = None;
+        }
+        ended = end;
     }
-    if sent {
+    if let Some(end) = ended {
+        return end;
+    }
+    if asked {
         return Ok(None);
     }
     let checked = tokio::select! {
@@ -962,10 +977,41 @@ pub(super) async fn send_pulses(
         () = cancel.cancelled() => return Err(Stop::requested()),
         checked = mount.check() => checked,
     };
-    match checked {
-        Ok(()) => Ok(None),
-        Err(Fault::Stop(stop)) => Err(stop),
-        Err(Fault::Failed(message) | Fault::Unconfirmed(message)) => Ok(Some(message)),
+    checked.map_or_else(fault_end, |()| Ok(None))
+}
+
+/// Send `pulse` after the mount check raced against `cancel`: whether it
+/// went out, and how the cycle ends, if it ends with this pulse.
+async fn send_pulse(
+    mount: &RunMount,
+    pulse: rp_guiding::Pulse,
+    cancel: &CancellationToken,
+) -> (bool, Option<Result<Option<String>, Stop>>) {
+    let checked = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return (false, Some(Err(Stop::requested()))),
+        checked = mount.check() => checked,
+    };
+    let fault = match checked {
+        Err(fault) => return (false, Some(fault_end(fault))),
+        Ok(()) if cancel.is_cancelled() => return (false, Some(Err(Stop::requested()))),
+        Ok(()) => mount.pulse(pulse).await.err(),
+    };
+    match fault {
+        None => (true, None),
+        Some(Fault::Failed(message)) => (false, Some(Ok(Some(message)))),
+        // `PulseGuide` took the pulse; only its end was not seen.
+        Some(Fault::Unconfirmed(message)) => (true, Some(Ok(Some(message)))),
+        Some(Fault::Stop(stop)) => (true, Some(Err(stop))),
+    }
+}
+
+/// How a cycle ends on a mount `fault`: the stop, or the failed call's
+/// message.
+fn fault_end(fault: Fault) -> Result<Option<String>, Stop> {
+    match fault {
+        Fault::Stop(stop) => Err(stop),
+        Fault::Failed(message) | Fault::Unconfirmed(message) => Ok(Some(message)),
     }
 }
 
@@ -1592,15 +1638,13 @@ mod tests {
             cancels: Some(cancel.clone()),
             ..FakeMount::default()
         });
-        let stop = send_pulses(
-            &run_mount(Arc::clone(&mount)),
-            [Some(pulse(Direction::West)), None],
-            &cancel,
-        )
-        .await
-        .unwrap_err();
+        let mut pulses = [Some(pulse(Direction::West)), None];
+        let stop = send_pulses(&run_mount(Arc::clone(&mount)), &mut pulses, &cancel)
+            .await
+            .unwrap_err();
         assert_eq!(stop.reason, StopReason::Requested);
         assert_eq!(mount.pulses.load(Ordering::SeqCst), 0);
+        assert_eq!(pulses, [None, None]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1818,6 +1862,45 @@ mod tests {
         assert!(
             (by[0] + raw[0]).abs() < 0.002 && (by[1] + raw[1]).abs() < 0.002,
             "{note} / {row}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_settles_note_follows_the_row_of_the_frame_that_settled() {
+        let (mut cycle, mut answer, _turns) = guiding_on(Arc::new(FakeMount::default())).await;
+        for _ in 0..3 {
+            assert!(guide(&mut cycle, at(0.5, 0.0)).await.is_none());
+            tokio::time::advance(Duration::from_millis(600)).await;
+        }
+        answer.try_recv().unwrap().unwrap();
+        let text = guide_log_text(&cycle);
+        let lines: Vec<&str> = text.lines().collect();
+        let [.., row, note] = lines[..] else {
+            panic!("{text}");
+        };
+        assert_eq!(
+            note, "INFO: SETTLING STATE CHANGE, Settling complete",
+            "{text}"
+        );
+        assert!(row.contains(",\"Mount\","), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_guide_steps_row_gives_no_pulse_the_mount_refused() {
+        let mount = Arc::new(FakeMount {
+            pulse_refused: true,
+            ..FakeMount::default()
+        });
+        let mut cycle = settled_guiding(mount).await;
+        assert!(guide(&mut cycle, at(0.5, 0.0)).await.is_none());
+        let text = guide_log_text(&cycle);
+        let row = text.lines().last().unwrap();
+        let fields: Vec<&str> = row.split(',').collect();
+        // RAGuideDistance, RADuration and RADirection.
+        assert_eq!(
+            (fields[7], fields[9], fields[10]),
+            ("0.000", "0", ""),
+            "{row}"
         );
     }
 
@@ -2186,9 +2269,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_pulses_go_out_ra_first() {
         let mount = Arc::new(FakeMount::default());
+        let both = [Some(pulse(Direction::West)), Some(pulse(Direction::North))];
+        let mut pulses = both;
         let sent = send_pulses(
             &run_mount(Arc::clone(&mount)),
-            [Some(pulse(Direction::West)), Some(pulse(Direction::North))],
+            &mut pulses,
             &CancellationToken::new(),
         )
         .await;
@@ -2197,6 +2282,7 @@ mod tests {
             *mount.directions.lock(),
             [GuideDirection::West, GuideDirection::North]
         );
+        assert_eq!(pulses, both);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2205,14 +2291,47 @@ mod tests {
             pulse_refused: true,
             ..FakeMount::default()
         });
+        let mut pulses = [Some(pulse(Direction::West)), Some(pulse(Direction::North))];
         let sent = send_pulses(
             &run_mount(Arc::clone(&mount)),
-            [Some(pulse(Direction::West)), Some(pulse(Direction::North))],
+            &mut pulses,
             &CancellationToken::new(),
         )
         .await;
         assert!(sent.unwrap().is_some(), "the failure was not reported");
         assert_eq!(*mount.directions.lock(), [GuideDirection::West]);
+        assert_eq!(pulses, [None, None], "a refused pulse went out");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pulse_the_mount_check_held_back_did_not_go_out() {
+        let mount = Arc::new(FakeMount {
+            at_park: true,
+            ..FakeMount::default()
+        });
+        let mut pulses = [Some(pulse(Direction::West)), None];
+        let stop = send_pulses(&run_mount(mount), &mut pulses, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(stop.reason, StopReason::MountParked);
+        assert_eq!(pulses, [None, None]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pulse_whose_end_could_not_be_read_went_out_and_the_next_did_not() {
+        let mount = Arc::new(FakeMount {
+            pulse_guiding_fails: true,
+            ..FakeMount::default()
+        });
+        let mut pulses = [Some(pulse(Direction::West)), Some(pulse(Direction::North))];
+        let sent = send_pulses(
+            &run_mount(Arc::clone(&mount)),
+            &mut pulses,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(sent.unwrap().is_some(), "the failure was not reported");
+        assert_eq!(pulses, [Some(pulse(Direction::West)), None]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2221,9 +2340,13 @@ mod tests {
             at_park: true,
             ..FakeMount::default()
         });
-        let stop = send_pulses(&run_mount(mount), [None, None], &CancellationToken::new())
-            .await
-            .unwrap_err();
+        let stop = send_pulses(
+            &run_mount(mount),
+            &mut [None, None],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(stop.reason, StopReason::MountParked);
     }
 
@@ -2232,15 +2355,13 @@ mod tests {
         let mount = Arc::new(FakeMount::default());
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let stop = send_pulses(
-            &run_mount(Arc::clone(&mount)),
-            [Some(pulse(Direction::West)), None],
-            &cancel,
-        )
-        .await
-        .unwrap_err();
+        let mut pulses = [Some(pulse(Direction::West)), None];
+        let stop = send_pulses(&run_mount(Arc::clone(&mount)), &mut pulses, &cancel)
+            .await
+            .unwrap_err();
         assert_eq!(stop.reason, StopReason::Requested);
         assert_eq!(mount.pulses.load(Ordering::SeqCst), 0);
+        assert_eq!(pulses, [None, None]);
     }
 
     #[test]

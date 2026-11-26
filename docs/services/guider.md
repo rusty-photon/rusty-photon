@@ -1458,7 +1458,10 @@ change.
     began, the offset from the lock on the sensor, the error on each
     axis and the distance its correction covers, each pulse's duration
     in milliseconds and its direction, and the usable stars' flux and
-    signal-to-noise ratio. The distances are signed as PHD2 signs
+    signal-to-noise ratio. The row is written once the step's pulses
+    have gone out, and gives only those that did: a pulse the mount
+    refused, or that a stop or an earlier failure kept back, is written
+    as none, as PHD2 writes it. The distances are signed as PHD2 signs
     them: a positive RA distance is corrected West, and a positive Dec
     distance South. A star-lost frame is a `"DROP"` row, error code 5,
     `"Too few guide stars usable"`.
@@ -1466,11 +1469,12 @@ change.
     pixel scale, the binning and the focal length, the stars' search
     region and how many are selected, the camera's size and pixel
     size, the exposure, the mount with its calibrated angles and
-    rates, the controllers' parameters (`Hysteresis` on RA and
+    rates (the RA rate at the run's declination, which it guides with), the controllers' parameters (`Hysteresis` on RA and
     `Resist Switch` on Dec, which is what they are), the pulse bounds,
     the guide rates, the pointing, and the lock and star positions.
-    The pointing is read when the run starts; a read that fails or
-    is not implemented makes it `RA/Dec = Unknown`, as PHD2 writes it.
+    The pointing is read when the run starts, and a recalibration
+    inside the run gives that same reading; a read that fails or is
+    not implemented makes it `RA/Dec = Unknown`, as PHD2 writes it.
   - The notes are PHD2's `INFO:` lines:
     `DITHER by <RA>, <Dec>, new lock pos = <x>, <y>`, the lock's move
     along the axes, signed so that the next row's distances are the

@@ -306,7 +306,8 @@ impl GuideLog {
             format!(
                 "Mount = {mount}, connected, guiding enabled, xAngle = {:.1}, xRate = {:.3}{y}, parity = N/A",
                 mount_angle(calibration.ra.angle_deg),
-                calibration.ra_rate_at(calibration.declination_deg)
+                // The rate at the run's declination, which it guides with.
+                calibration.ra_rate_at(common.declination_deg)
             )
         });
         // After the mount line come the rates, the controllers, the pulse
