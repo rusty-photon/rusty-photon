@@ -789,8 +789,7 @@ crates/rp-targets/src/
 │                 #   come from rp-vocabulary)
 ├── error.rs      # TargetStoreError (thiserror)
 ├── redb_store.rs # RedbTargetStore: tables, transaction-per-op, spawn_blocking
-├── migrate.rs    # schema_version constant + ordered migration steps
-└── memory.rs     # InMemoryTargetStore test double (cfg(any(test, feature = "mock")))
+└── migrate.rs    # schema_version constant + ordered migration steps
 ```
 
 Crate-root attributes match the sibling crates:
@@ -807,12 +806,8 @@ Crate-root attributes match the sibling crates:
   database a newer build wrote. Tests use `.unwrap()` per
   [testing.md](../skills/testing.md), which the workspace `clippy.toml`
   allows in test scope.
-- **Test doubles:** `InMemoryTargetStore` (a `BTreeMap<String, Target>`
-  behind the same trait) is a working store for a test that wants one
-  without a temp database, and `MockTargetStore` (`mockall::automock`)
-  serves tests that want call-assertions. Both are behind
-  `cfg(any(test, feature = "mock"))`, which no consumer enables: `rp`'s
-  tests use `RedbTargetStore` over a temporary directory.
+- **No test double:** the crate's tests and `rp`'s use
+  `RedbTargetStore` over a temporary directory.
 - **BDD (rp-side):** target CRUD via MCP; progress derivation
   over a fixture `data_directory` (total from filenames, good/rejected
   from fixture sidecars + thresholds); naming-pattern validation

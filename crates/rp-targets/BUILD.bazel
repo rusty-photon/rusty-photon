@@ -14,15 +14,6 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-vocabulary:rp-vocabulary",
 ]
 
-# Production-clean library: no `mock` feature, no mockall in the linked
-# binary. No consumer enables rp-targets' `mock` feature, so crate_universe
-# leaves the optional `mockall` out of the "normal" bucket and this package
-# needs no `_with_mock` testonly variant (rp-guider's BUILD.bazel holds that
-# pattern, for a crate whose consumer does enable `mock`). `rust_test` below
-# recompiles this target's sources directly (`cfg(test)` alone satisfies
-# `cfg(any(test, feature = "mock"))`), so the crate's own unit tests
-# exercise `MockTargetStore`/automock via the plain normal_dev dependency
-# on `mockall`.
 rust_library(
     name = "rp-targets",
     srcs = glob(["src/**/*.rs"]),
