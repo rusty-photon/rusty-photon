@@ -26,7 +26,9 @@ use tracing::{debug, info, warn};
 pub use config::{check, NightConfig, NightRun, SignedDuration};
 pub use state::{NightState, Phase};
 
-use crate::engine::SystemClock;
+use tokio::sync::Notify;
+
+use crate::engine::{EventIntake, SystemClock};
 use crate::events;
 use crate::mcp_client::McpClient;
 use crate::runs::{self, AppState};
@@ -86,6 +88,20 @@ impl NightStatus {
     }
 }
 
+/// Read `rp`'s events for the life of the service and notify
+/// `warmup_done` at each `cooler_warmup_complete`.
+///
+/// Read without pause, the stream never backs up into a consumer `rp`
+/// cuts loose for lagging, whose reconnect would read as `rp` back from
+/// a restart.
+async fn drain_events(mut events: EventIntake, warmup_done: Arc<Notify>) {
+    loop {
+        if events.next().await.event == "cooler_warmup_complete" {
+            warmup_done.notify_one();
+        }
+    }
+}
+
 /// First and longest wait between two connect attempts to `rp`.
 const CONNECT_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_CONNECT_BACKOFF: Duration = Duration::from_secs(30);
@@ -128,6 +144,8 @@ pub async fn run(state: Arc<AppState>) {
     };
     let (events, connects) =
         events::subscribe_counting(runs::events_url(&state.config, mcp_url), &connection).await;
+    let warmup_done = Arc::new(Notify::new());
+    tokio::spawn(drain_events(events, warmup_done.clone()));
     info!("night schedule started");
     schedule::Schedule::new(schedule::Seams {
         rp: &rp,
@@ -136,7 +154,7 @@ pub async fn run(state: Arc<AppState>) {
         night,
         state_dir: &state.config.state_dir,
         status: &state.night,
-        events,
+        warmup_done,
         connects,
     })
     .run()
@@ -148,6 +166,26 @@ pub async fn run(state: Arc<AppState>) {
 mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc};
+
+    #[tokio::test]
+    async fn the_drain_notifies_at_each_cooler_warmup_complete_and_at_nothing_else() {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let notify = Arc::new(Notify::new());
+        tokio::spawn(drain_events(EventIntake::new(rx), notify.clone()));
+        let event = |name: &str| crate::engine::EngineEvent {
+            event: name.to_owned(),
+            payload: json!({}),
+        };
+
+        tx.send(event("exposure_complete")).await.unwrap();
+        let early = tokio::time::timeout(Duration::from_millis(100), notify.notified()).await;
+        assert!(early.is_err(), "another event woke the wait");
+
+        tx.send(event("cooler_warmup_complete")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), notify.notified())
+            .await
+            .expect("cooler_warmup_complete wakes the wait");
+    }
 
     #[test]
     fn without_a_night_block_the_report_is_off_and_nothing_else() {

@@ -18,7 +18,7 @@ use super::dawn::RunSlot;
 use super::schedule::{Schedule, Seams};
 use super::state::NightState;
 use super::NightStatus;
-use crate::engine::{Clock, EventIntake, ToolCallError, ToolClient};
+use crate::engine::{Clock, ToolCallError, ToolClient};
 
 pub fn date(day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 11, day).unwrap()
@@ -415,7 +415,7 @@ impl Harness {
             night: &self.night,
             state_dir: self.dir.path(),
             status: &self.status,
-            events: EventIntake::disconnected(),
+            warmup_done: Arc::new(tokio::sync::Notify::new()),
             connects: self.connects.clone(),
         })
     }

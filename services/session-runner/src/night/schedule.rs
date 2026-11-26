@@ -16,7 +16,9 @@ use super::config::NightConfig;
 use super::dawn::RunSlot;
 use super::state::{NightState, OutputRef, Phase};
 use super::NightStatus;
-use crate::engine::{Clock, EventIntake, ToolCallError, ToolClient};
+use tokio::sync::Notify;
+
+use crate::engine::{Clock, ToolCallError, ToolClient};
 
 /// First retry after `rp` fails at the request level; doubles up to
 /// [`MAX_BACKOFF`] (design § Night Schedule → Errors).
@@ -57,6 +59,9 @@ pub(super) struct NightMemory {
     /// The outputs left on until dusk: the mount's after its last
     /// re-park, or a cover's after its last re-close.
     pub(super) until_dusk: BTreeSet<OutputRef>,
+    /// The outputs left on because their cut failed or their box could
+    /// not be read: a check connects their held-out devices first.
+    pub(super) reconnect_first: BTreeSet<OutputRef>,
 }
 
 /// The loop over nights, with what it has logged so far.
@@ -67,8 +72,9 @@ pub struct Schedule<'a, C, K, S> {
     pub(super) night: &'a NightConfig,
     pub(super) state_dir: &'a Path,
     pub(super) status: &'a NightStatus,
-    /// `rp`'s events: `cooler_warmup_complete` wakes the cooler wait.
-    pub(super) events: EventIntake,
+    /// Notified at each `cooler_warmup_complete`: it wakes the cooler
+    /// wait.
+    pub(super) warmup_done: Arc<Notify>,
     /// How often the event stream has connected; a reconnect reads as
     /// `rp` back from a restart.
     pub(super) connects: Arc<AtomicU64>,
@@ -93,7 +99,7 @@ pub struct Seams<'a, C, K, S> {
     pub night: &'a NightConfig,
     pub state_dir: &'a Path,
     pub status: &'a NightStatus,
-    pub events: EventIntake,
+    pub warmup_done: Arc<Notify>,
     pub connects: Arc<AtomicU64>,
 }
 
@@ -107,7 +113,7 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'a, C, K, S
             night: seams.night,
             state_dir: seams.state_dir,
             status: seams.status,
-            events: seams.events,
+            warmup_done: seams.warmup_done,
             connects: seams.connects,
             seen_connects: 0,
             rp_was_down: false,
@@ -136,6 +142,10 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'a, C, K, S
             Ok(nights) => {
                 self.backoff = INITIAL_BACKOFF;
                 self.logged_tool_error = None;
+                if self.rp_was_down {
+                    self.rp_was_down = false;
+                    self.rp_came_back = true;
+                }
                 nights
             }
             Err(ReadFailure::Tool(message)) => {

@@ -127,7 +127,7 @@ pub(super) fn parse_power_map(answer: &Value) -> Result<Vec<MapOutput>, String> 
             let devices = o
                 .get("devices")
                 .and_then(Value::as_array)
-                .map(|devices| {
+                .map_or_default(|devices| {
                     devices
                         .iter()
                         .filter_map(|d| {
@@ -140,8 +140,7 @@ pub(super) fn parse_power_map(answer: &Value) -> Result<Vec<MapOutput>, String> 
                             })
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             Ok(MapOutput {
                 output: OutputRef {
                     switch_id: text("switch_id")?,
@@ -175,6 +174,11 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
             _ => NightState::ahead(latest.night, latest.dusk, latest.dawn),
         };
         self.memory = NightMemory::default();
+        // A comeback counts from this dawn on: one noticed on an earlier
+        // day says nothing about the coolers this dawn leaves running.
+        self.rp_came_back = false;
+        self.rp_was_down = false;
+        self.seen_connects = self.connects.load(std::sync::atomic::Ordering::SeqCst);
         state.phase = Phase::Dawn;
         state.outputs_left_on.clear();
         self.save(&state).await;
@@ -260,7 +264,12 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
                 })
             });
         let mut candidates = self.watched_outputs(&watched, deadline).await;
-        if self.reconnect_held_out(&candidates, deadline).await {
+        let reconnect: Vec<MapOutput> = candidates
+            .iter()
+            .filter(|o| self.memory.reconnect_first.contains(&o.output))
+            .cloned()
+            .collect();
+        if self.reconnect_held_out(&reconnect, deadline).await {
             candidates = self.watched_outputs(&watched, deadline).await;
         }
         self.retry_park_and_covers(&candidates, deadline).await;
@@ -315,9 +324,10 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
             .collect()
     }
 
-    /// Connect again every held-out device on `outputs`: `power_down`
-    /// held them out before a cut that failed, and a mount still held out
-    /// fails every park and every pose read. Whether any was connected.
+    /// Connect again every held-out device on `outputs`, the outputs whose
+    /// cut failed or whose box could not be read: `power_down` held their
+    /// devices out before the cut, and a mount still held out fails every
+    /// park and every pose read. Whether any was connected.
     async fn reconnect_held_out(&mut self, outputs: &[MapOutput], deadline: DateTime<Utc>) -> bool {
         let held_out: BTreeSet<String> = outputs
             .iter()
@@ -464,28 +474,16 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
                 return;
             }
             debug!(cameras = ?running, "dawn: waiting for the coolers to stop");
-            self.sleep_or_event(
-                COOLER_POLL.min(until(now, warmed_by)),
-                "cooler_warmup_complete",
-            )
-            .await;
+            self.sleep_or_warmup_done(COOLER_POLL.min(until(now, warmed_by)))
+                .await;
         }
     }
 
-    /// Sleep `wait`, or less if `event` arrives first.
-    async fn sleep_or_event(&mut self, wait: Duration, event: &str) {
-        let clock = self.clock;
-        let sleep = clock.sleep(wait);
-        tokio::pin!(sleep);
-        loop {
-            tokio::select! {
-                () = &mut sleep => return,
-                arrived = self.events.next() => {
-                    if arrived.event == event {
-                        return;
-                    }
-                }
-            }
+    /// Sleep `wait`, or less if a `cooler_warmup_complete` arrives first.
+    async fn sleep_or_warmup_done(&self, wait: Duration) {
+        tokio::select! {
+            () = self.clock.sleep(wait) => {}
+            () = self.warmup_done.notified() => {}
         }
     }
 
@@ -515,6 +513,7 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
         let mut allowed = Vec::new();
         for output in outputs {
             if output.on.is_none() {
+                self.memory.reconnect_first.insert(output.output.clone());
                 left_on.push(leave(
                     &output.output,
                     format!("the power box `{}` cannot be read", output.output.switch_id),
@@ -548,21 +547,27 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
                         match reported {
                             Some(o) if o.get("error").is_some_and(|e| !e.is_null()) => {
                                 let error = o["error"].as_str().unwrap_or("an error");
+                                self.memory.reconnect_first.insert(output.clone());
                                 left_on.push(leave(output, format!("its cut failed: {error}")));
                             }
                             Some(o) if o.get("on") == Some(&Value::Bool(false)) => {
                                 self.memory.logged_left_on.remove(output);
+                                self.memory.reconnect_first.remove(output);
                                 info!(switch_id = %output.switch_id, output = %output.output, "cut a daily output");
                             }
-                            _ => left_on.push(leave(
-                                output,
-                                "it does not read off after its cut".to_owned(),
-                            )),
+                            _ => {
+                                self.memory.reconnect_first.insert(output.clone());
+                                left_on.push(leave(
+                                    output,
+                                    "it does not read off after its cut".to_owned(),
+                                ));
+                            }
                         }
                     }
                 }
                 Err(e) => {
                     for output in &allowed {
+                        self.memory.reconnect_first.insert(output.clone());
                         left_on.push(leave(output, format!("power_down failed: {e}")));
                     }
                 }
@@ -1066,6 +1071,77 @@ mod tests {
         assert_eq!(
             h.rp.rig.lock().unwrap().output("Mount Power").on,
             Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_held_out_on_an_output_held_for_another_reason_stays_held_out() {
+        let h = morning();
+        {
+            let mut rig = h.rp.rig.lock().unwrap();
+            rig.pose_kept = None;
+            rig.held_out.insert("mount".into());
+        }
+        let mut schedule = h.schedule();
+        schedule.tick().await;
+        assert_eq!(left_on(&h).len(), 1, "{:?}", left_on(&h));
+
+        for _ in 0..3 {
+            let wait = schedule.tick().await;
+            h.clock.sleep(wait).await;
+        }
+
+        assert!(
+            !h.rp
+                .args_of("connect_device")
+                .contains(&json!({ "device_id": "mount" })),
+            "{:?}",
+            h.rp.args_of("connect_device")
+        );
+        assert!(h.rp.rig.lock().unwrap().held_out.contains("mount"));
+    }
+
+    #[tokio::test]
+    async fn a_comeback_noticed_one_morning_warms_nothing_the_next() {
+        let h = morning();
+        h.rp.rig
+            .lock()
+            .unwrap()
+            .unavailable_for
+            .insert("start_warmup".into(), 1);
+        let mut schedule = h.schedule();
+        schedule.tick().await;
+        assert_eq!(left_on(&h), [], "the first morning cuts everything");
+        assert_eq!(
+            h.rp.called("start_warmup"),
+            2,
+            "one failed call and its retry"
+        );
+
+        // The next morning, with the rig powered again overnight, a
+        // cooler keeps running past warmup_timeout.
+        {
+            let mut rig = h.rp.rig.lock().unwrap();
+            for output in &mut rig.outputs {
+                output.on = Some(true);
+            }
+            rig.held_out.clear();
+            rig.reads_to_cool = None;
+            rig.warming = false;
+            rig.coolers.insert("main-cam".into(), Some(true));
+        }
+        h.clock.sleep(until(h.clock.now(), at(25, 15))).await;
+        schedule.tick().await;
+        assert_eq!(left_on(&h).len(), 1);
+        assert_eq!(h.rp.called("start_warmup"), 3, "the second dawn's own");
+
+        let wait = schedule.tick().await;
+        h.clock.sleep(wait).await;
+        schedule.tick().await;
+        assert_eq!(
+            h.rp.called("start_warmup"),
+            3,
+            "no rp restart since that dawn"
         );
     }
 
