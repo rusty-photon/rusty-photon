@@ -1,7 +1,3 @@
-// No step constructs `MountStubBehavior::NoTelescope` or reads the
-// `last_image_dimensions` and `last_error` fields.
-#![allow(dead_code)]
-
 use ascom_alpaca::api::{Camera, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
 use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
@@ -52,15 +48,11 @@ pub enum MountStubBehavior {
     /// Serve `ErrorNumber=1024` ("driver-specific") on every read —
     /// drives F2.
     AscomError,
-    /// `/management/v1/configureddevices` returns an empty list, so
-    /// device resolution fails with `DeviceNotFound`. No step selects it.
-    NoTelescope,
 }
 
 #[derive(Debug)]
 pub struct MountStubState {
     pub behavior: Arc<RwLock<MountStubBehavior>>,
-    pub read_count: Arc<AtomicU32>,
 }
 
 /// Behaviour the in-test ASCOM Rotator stub serves on each `position`
@@ -77,7 +69,6 @@ pub enum RotatorStubBehavior {
 #[derive(Debug)]
 pub struct RotatorStubState {
     pub behavior: Arc<RwLock<RotatorStubBehavior>>,
-    pub read_count: Arc<AtomicU32>,
 }
 
 /// Build a minimal valid FITS payload of the given dimensions filled
@@ -116,9 +107,6 @@ pub struct SkySurveyCameraWorld {
 
     /// Temp dir holding config.json + cache dir for the running scenario.
     pub temp_dir: Option<TempDir>,
-
-    /// Path to the config.json the service was started with.
-    pub config_path: Option<PathBuf>,
 
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
@@ -184,8 +172,6 @@ pub struct SkySurveyCameraWorld {
     pub last_http_status: Option<u16>,
     pub last_http_body: Option<String>,
     pub last_ascom_error: Option<u32>,
-    pub last_image_dimensions: Option<(u32, u32)>,
-    pub last_error: Option<String>,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
@@ -412,7 +398,6 @@ impl SkySurveyCameraWorld {
     pub async fn spawn_mount_stub(&mut self, behavior: MountStubBehavior) {
         let state = Arc::new(MountStubState {
             behavior: Arc::new(RwLock::new(behavior)),
-            read_count: Arc::new(AtomicU32::new(0)),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -457,7 +442,6 @@ impl SkySurveyCameraWorld {
     pub async fn spawn_rotator_stub(&mut self, behavior: RotatorStubBehavior) {
         let state = Arc::new(RotatorStubState {
             behavior: Arc::new(RwLock::new(behavior)),
-            read_count: Arc::new(AtomicU32::new(0)),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -544,12 +528,7 @@ impl SkySurveyCameraWorld {
             .to_str()
             .expect("temp config path must be valid UTF-8 for ServiceHandle::start");
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path_str).await;
-        setup_pages::adopt_plain(
-            &mut self.setup_pages,
-            handle.bound_port(),
-            config_path.clone(),
-        );
-        self.config_path = Some(config_path);
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
         self.service = Some(handle);
     }
 
@@ -870,21 +849,14 @@ async fn handle_stub(
     }
 }
 
-async fn handle_configured_devices(
-    axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
-) -> axum::Json<Value> {
-    let behavior = state.behavior.read().expect("mount stub rwlock").clone();
-    let devices = match behavior {
-        MountStubBehavior::NoTelescope => Vec::new(),
-        _ => vec![serde_json::json!({
+async fn handle_configured_devices() -> axum::Json<Value> {
+    axum::Json(serde_json::json!({
+        "Value": [{
             "DeviceName": "Telescope 0",
             "DeviceType": "Telescope",
             "DeviceNumber": 0,
             "UniqueID": "test-mount-uid"
-        })],
-    };
-    axum::Json(serde_json::json!({
-        "Value": devices,
+        }],
         "ErrorNumber": 0,
         "ErrorMessage": ""
     }))
@@ -893,7 +865,6 @@ async fn handle_configured_devices(
 async fn handle_right_ascension(
     axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
 ) -> axum::Json<Value> {
-    state.read_count.fetch_add(1, Ordering::Relaxed);
     let behavior = state.behavior.read().expect("mount stub rwlock").clone();
     match behavior {
         MountStubBehavior::Ok { ra_hours, .. } => axum::Json(serde_json::json!({
@@ -906,18 +877,12 @@ async fn handle_right_ascension(
             "ErrorNumber": 1024,
             "ErrorMessage": "simulated mount read failure"
         })),
-        MountStubBehavior::NoTelescope => axum::Json(serde_json::json!({
-            "Value": 0.0,
-            "ErrorNumber": 0,
-            "ErrorMessage": ""
-        })),
     }
 }
 
 async fn handle_declination(
     axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
 ) -> axum::Json<Value> {
-    state.read_count.fetch_add(1, Ordering::Relaxed);
     let behavior = state.behavior.read().expect("mount stub rwlock").clone();
     match behavior {
         MountStubBehavior::Ok { dec_deg, .. } => axum::Json(serde_json::json!({
@@ -929,11 +894,6 @@ async fn handle_declination(
             "Value": 0.0,
             "ErrorNumber": 1024,
             "ErrorMessage": "simulated mount read failure"
-        })),
-        MountStubBehavior::NoTelescope => axum::Json(serde_json::json!({
-            "Value": 0.0,
-            "ErrorNumber": 0,
-            "ErrorMessage": ""
         })),
     }
 }
@@ -956,7 +916,6 @@ async fn handle_rotator_configured_devices(
 async fn handle_rotator_position(
     axum::extract::State(state): axum::extract::State<Arc<RotatorStubState>>,
 ) -> axum::Json<Value> {
-    state.read_count.fetch_add(1, Ordering::Relaxed);
     let behavior = state.behavior.read().expect("rotator stub rwlock").clone();
     match behavior {
         RotatorStubBehavior::Ok { position_angle } => axum::Json(serde_json::json!({
