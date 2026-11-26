@@ -1,0 +1,83 @@
+{
+  "site": {
+    "label": "santiago",
+    "latitude_degrees": -33.4489,
+    "longitude_degrees": -70.6693
+  },
+  "targets": {
+    "antares": {
+      "alt_az": {
+        "altitude_degrees": 30.546005506560864,
+        "azimuth_degrees": 256.6355838578979
+      },
+      "dec_degrees": -26.432,
+      "ra_hours": 16.49013
+    },
+    "ic1396": {
+      "alt_az": {
+        "altitude_degrees": -1.1313290544999943,
+        "azimuth_degrees": 4.133988292149508
+      },
+      "dec_degrees": 57.50833,
+      "ra_hours": 21.65083
+    },
+    "m31": {
+      "alt_az": {
+        "altitude_degrees": 0.4497578004909495,
+        "azimuth_degrees": 37.253295377333004
+      },
+      "dec_degrees": 41.26878,
+      "ra_hours": 0.71223
+    },
+    "m42": {
+      "alt_az": {
+        "altitude_degrees": -26.44040653563888,
+        "azimuth_degrees": 117.13667709389206
+      },
+      "dec_degrees": -5.39119,
+      "ra_hours": 5.58809
+    },
+    "m81": {
+      "alt_az": {
+        "altitude_degrees": -53.80481595807838,
+        "azimuth_degrees": 352.5880521016132
+      },
+      "dec_degrees": 69.06529,
+      "ra_hours": 9.92577
+    },
+    "ngc891": {
+      "alt_az": {
+        "altitude_degrees": -14.481397146539305,
+        "azimuth_degrees": 48.41032320599777
+      },
+      "dec_degrees": 42.34917,
+      "ra_hours": 2.375
+    },
+    "polaris": {
+      "alt_az": {
+        "altitude_degrees": -33.32268222599885,
+        "azimuth_degrees": 0.7415143901613687
+      },
+      "dec_degrees": 89.2641111,
+      "ra_hours": 2.5301944
+    },
+    "sirius": {
+      "alt_az": {
+        "altitude_degrees": -29.244265247655576,
+        "azimuth_degrees": 140.19241439523327
+      },
+      "dec_degrees": -16.71611,
+      "ra_hours": 6.7525
+    },
+    "vega": {
+      "alt_az": {
+        "altitude_degrees": 9.791913193914267,
+        "azimuth_degrees": 331.0373206864527
+      },
+      "dec_degrees": 38.78367,
+      "ra_hours": 18.61567
+    }
+  },
+  "time_label": "winter_2026",
+  "time_utc": "2026-12-21T19:50:00Z"
+}

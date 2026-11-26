@@ -1,0 +1,83 @@
+{
+  "site": {
+    "label": "seattle",
+    "latitude_degrees": 47.6062,
+    "longitude_degrees": -122.3321
+  },
+  "targets": {
+    "antares": {
+      "alt_az": {
+        "altitude_degrees": 12.511368976365429,
+        "azimuth_degrees": 203.1984610945099
+      },
+      "dec_degrees": -26.432,
+      "ra_hours": 16.49013
+    },
+    "ic1396": {
+      "alt_az": {
+        "altitude_degrees": 57.92181136462825,
+        "azimuth_degrees": 52.33534893301523
+      },
+      "dec_degrees": 57.50833,
+      "ra_hours": 21.65083
+    },
+    "m31": {
+      "alt_az": {
+        "altitude_degrees": 24.8481988773932,
+        "azimuth_degrees": 54.942150092376174
+      },
+      "dec_degrees": 41.26878,
+      "ra_hours": 0.71223
+    },
+    "m42": {
+      "alt_az": {
+        "altitude_degrees": -46.98366963437189,
+        "azimuth_degrees": 13.331325383565586
+      },
+      "dec_degrees": -5.39119,
+      "ra_hours": 5.58809
+    },
+    "m81": {
+      "alt_az": {
+        "altitude_degrees": 33.697897158819465,
+        "azimuth_degrees": 338.9758604366081
+      },
+      "dec_degrees": 69.06529,
+      "ra_hours": 9.92577
+    },
+    "ngc891": {
+      "alt_az": {
+        "altitude_degrees": 13.310240608182264,
+        "azimuth_degrees": 39.55843775967346
+      },
+      "dec_degrees": 42.34917,
+      "ra_hours": 2.375
+    },
+    "polaris": {
+      "alt_az": {
+        "altitude_degrees": 47.19089313954851,
+        "azimuth_degrees": 0.6764391371719441
+      },
+      "dec_degrees": 89.2641111,
+      "ra_hours": 2.5301944
+    },
+    "sirius": {
+      "alt_az": {
+        "altitude_degrees": -58.34779199779779,
+        "azimuth_degrees": 344.60422619248556
+      },
+      "dec_degrees": -16.71611,
+      "ra_hours": 6.7525
+    },
+    "vega": {
+      "alt_az": {
+        "altitude_degrees": 80.10247998303586,
+        "azimuth_degrees": 150.4642263359374
+      },
+      "dec_degrees": 38.78367,
+      "ra_hours": 18.61567
+    }
+  },
+  "time_label": "summer_2026",
+  "time_utc": "2026-06-21T08:24:00Z"
+}

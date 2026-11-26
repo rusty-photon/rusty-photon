@@ -221,10 +221,13 @@ pairs:
 - `tt1, tt2` — TT JD pair via `eraUtctai → eraTaitt`.
 - `ut11, ut12` — UT1 JD pair, treated as identical to UTC.
 
-ΔUT1 = 0 is the only simplification (UT1 ≈ UTC, error ≤ 0.9 s = ≤ 13″
-of LST). This is well inside what plate-solving refines on a real
-frame, and well below the positional accuracy any amateur rig
-delivers without refinement.
+ΔUT1 = 0 is the only time-scale simplification (UT1 ≈ UTC, error
+≤ 0.9 s = ≤ 13″ of LST). The observed-place transforms, `Atco13` and
+`Atoc13`, also get no polar motion (`xp = yp = 0`) and the site at sea
+level (`hm = 0`), each worth well under an arcsecond of alt/az. These
+are well inside what plate-solving refines on a real frame, and well
+below the positional accuracy any amateur rig delivers without
+refinement.
 
 The leapsecond table inside `erfars` is whatever shipped with the
 pinned crate version. Beyond the table's release year + 5, `eraDat`
@@ -299,9 +302,9 @@ re-exports keeps the crate root self-explanatory.
 
 - Unit tests live next to the code under `#[cfg(test)] mod tests`.
 - `tests/reference_values.rs` compares `alt_az` against Astropy's
-  values in `refvals/*.json`, within 1e-4°. `refvals/gen.py`, run by
-  hand, writes those files; none is committed, so the test finds no
-  file and passes without checking anything
+  values in `refvals/*.json`, within 1e-4°, for nine fixed objects at
+  three sites and four times. `refvals/gen.py`, run by hand, writes
+  those files, which are committed; the test fails when it finds none
   ([`refvals/README.md`](../../crates/rp-ephemeris/refvals/README.md)).
 - `tests/leap_second_init_race.rs` is a standalone-binary
   concurrency regression test for the ERFA leap-second lazy-init race

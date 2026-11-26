@@ -68,9 +68,9 @@ rust_test(
 )
 
 # Integration test: cross-check ErfarsEphemeris against the Astropy
-# reference values in `refvals/`, when any is present (none is
-# committed). The CARGO_MANIFEST_DIR env var is set so the test can
-# locate `refvals/`; its JSON files are staged via `data`.
+# reference values committed in `refvals/`. The CARGO_MANIFEST_DIR env
+# var is set so the test can locate `refvals/`; its JSON files are
+# staged via `data`.
 rust_test(
     name = "reference_values",
     size = "small",
@@ -79,10 +79,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    data = glob(
-        ["refvals/*.json"],
-        allow_empty = True,
-    ),
+    data = glob(["refvals/*.json"]),
     edition = "2021",
     env = {
         "CARGO_MANIFEST_DIR": "crates/rp-ephemeris",

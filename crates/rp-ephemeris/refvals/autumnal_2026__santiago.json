@@ -1,0 +1,83 @@
+{
+  "site": {
+    "label": "santiago",
+    "latitude_degrees": -33.4489,
+    "longitude_degrees": -70.6693
+  },
+  "targets": {
+    "antares": {
+      "alt_az": {
+        "altitude_degrees": 63.5065541236679,
+        "azimuth_degrees": 277.28489157026326
+      },
+      "dec_degrees": -26.432,
+      "ra_hours": 16.49013
+    },
+    "ic1396": {
+      "alt_az": {
+        "altitude_degrees": -9.27159165047449,
+        "azimuth_degrees": 23.615403550948766
+      },
+      "dec_degrees": 57.50833,
+      "ra_hours": 21.65083
+    },
+    "m31": {
+      "alt_az": {
+        "altitude_degrees": -23.708027252686264,
+        "azimuth_degrees": 54.918027575632486
+      },
+      "dec_degrees": 41.26878,
+      "ra_hours": 0.71223
+    },
+    "m42": {
+      "alt_az": {
+        "altitude_degrees": -49.13790113686018,
+        "azimuth_degrees": 159.5589156345693
+      },
+      "dec_degrees": -5.39119,
+      "ra_hours": 5.58809
+    },
+    "m81": {
+      "alt_az": {
+        "altitude_degrees": -44.256641142248576,
+        "azimuth_degrees": 336.66535868087647
+      },
+      "dec_degrees": 69.06529,
+      "ra_hours": 9.92577
+    },
+    "ngc891": {
+      "alt_az": {
+        "altitude_degrees": -41.76482562840982,
+        "azimuth_degrees": 60.3506522097381
+      },
+      "dec_degrees": 42.34917,
+      "ra_hours": 2.375
+    },
+    "polaris": {
+      "alt_az": {
+        "altitude_degrees": -33.72504266300069,
+        "azimuth_degrees": 0.5818547011553906
+      },
+      "dec_degrees": 89.2641111,
+      "ra_hours": 2.5301944
+    },
+    "sirius": {
+      "alt_az": {
+        "altitude_degrees": -39.55209418001575,
+        "azimuth_degrees": 185.2066820555406
+      },
+      "dec_degrees": -16.71611,
+      "ra_hours": 6.7525
+    },
+    "vega": {
+      "alt_az": {
+        "altitude_degrees": 17.76507384739574,
+        "azimuth_degrees": 1.6841707132891877
+      },
+      "dec_degrees": 38.78367,
+      "ra_hours": 18.61567
+    }
+  },
+  "time_label": "autumnal_2026",
+  "time_utc": "2026-09-22T23:05:00Z"
+}
