@@ -14833,3 +14833,118 @@ fn the_verdict_counts_a_frame_late_only_past_duration_readout_and_margin() {
         CheckVerdict::Wedged
     );
 }
+
+// -----------------------------------------------------------------------
+// power_up
+// -----------------------------------------------------------------------
+
+/// A power box with one output, "Camera Power", off, whose `GetSwitch`
+/// fails once a write has gone through.
+struct ReadBackFailingSwitch {
+    on: std::sync::atomic::AtomicBool,
+    written: std::sync::atomic::AtomicBool,
+}
+
+impl_mock_device!(ReadBackFailingSwitch);
+
+#[async_trait::async_trait]
+impl ascom_alpaca::api::Switch for ReadBackFailingSwitch {
+    async fn max_switch(&self) -> ascom_alpaca::ASCOMResult<usize> {
+        Ok(1)
+    }
+    async fn can_write(&self, _id: usize) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(true)
+    }
+    async fn get_switch(&self, _id: usize) -> ascom_alpaca::ASCOMResult<bool> {
+        if self.written.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(ASCOMError::invalid_operation("serial read timed out"));
+        }
+        Ok(self.on.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    async fn get_switch_description(&self, _id: usize) -> ascom_alpaca::ASCOMResult<String> {
+        Ok("camera".to_string())
+    }
+    async fn get_switch_name(&self, _id: usize) -> ascom_alpaca::ASCOMResult<String> {
+        Ok("Camera Power".to_string())
+    }
+    async fn get_switch_value(&self, _id: usize) -> ascom_alpaca::ASCOMResult<f64> {
+        Err(ASCOMError::NOT_IMPLEMENTED)
+    }
+    async fn min_switch_value(&self, _id: usize) -> ascom_alpaca::ASCOMResult<f64> {
+        Ok(0.0)
+    }
+    async fn max_switch_value(&self, _id: usize) -> ascom_alpaca::ASCOMResult<f64> {
+        Ok(1.0)
+    }
+    async fn set_switch(&self, _id: usize, state: bool) -> ascom_alpaca::ASCOMResult<()> {
+        self.on.store(state, std::sync::atomic::Ordering::SeqCst);
+        self.written
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    async fn state_change_complete(&self, _id: usize) -> ascom_alpaca::ASCOMResult<bool> {
+        Ok(true)
+    }
+    async fn switch_step(&self, _id: usize) -> ascom_alpaca::ASCOMResult<f64> {
+        Ok(1.0)
+    }
+}
+
+fn switch_registry(sw: Arc<dyn ascom_alpaca::api::Switch>) -> crate::equipment::EquipmentRegistry {
+    crate::equipment::EquipmentRegistry {
+        switches: vec![crate::equipment::SwitchEntry {
+            id: "power-box".to_string(),
+            config: crate::config::SwitchConfig {
+                id: "power-box".to_string(),
+                name: None,
+                alpaca_url: "http://localhost:1".to_string(),
+                device_number: 0,
+                unique_id: None,
+                auth: None,
+                outputs: vec![crate::config::OutputConfig {
+                    name: "Camera Power".to_string(),
+                    devices: Vec::new(),
+                    protected: None,
+                    daily: true,
+                }],
+            },
+            session: crate::equipment::DeviceSession::connected(sw),
+        }],
+        ..Default::default()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_write_whose_read_back_fails_still_counts_as_switched_and_settles() {
+    let sw = Arc::new(ReadBackFailingSwitch {
+        on: std::sync::atomic::AtomicBool::new(false),
+        written: std::sync::atomic::AtomicBool::new(false),
+    });
+    let handler = test_handler(switch_registry(sw.clone()));
+    let started = tokio::time::Instant::now();
+    let result = handler
+        .power_up(Parameters(super::built_in::power::PowerUpParams {
+            outputs: None,
+            settle: Some("20s".to_string()),
+        }))
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let json = success_json(result);
+    let output = &json["outputs"][0];
+    assert_eq!(output["output"], "Camera Power");
+    assert_eq!(output["switched"], true, "{json}");
+    assert_eq!(output["on"], serde_json::Value::Null, "{json}");
+    assert!(
+        output["error"]
+            .as_str()
+            .unwrap()
+            .contains("could not read it back"),
+        "{json}"
+    );
+    assert!(sw.on.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(
+        elapsed >= std::time::Duration::from_secs(20),
+        "power_up returned after {elapsed:?}, before its 20 s settle"
+    );
+}

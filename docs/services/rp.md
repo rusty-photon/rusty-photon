@@ -1601,7 +1601,7 @@ block is absent.
 | `get_switch` | Ungated | switch_id, output (optional) | switch_id, outputs: \[{name, index, can_write, on, value, mapped, protected, daily, devices: \[{device_id, kind, connected, held_out}\]}\], unmatched | Read one output of a power box, or all of them, with the power map's devices, protection and `daily` mark beside each |
 | `set_switch` | Ungated | switch_id, output, on | switch_id, output, on | Switch a mapped output on or off; off is refused on a protected output and while a device on it is not held out |
 | `restart_service` | Ungated | device_id (a roster id, or `mount`) | device_id, service, devices, restart (`restarted` \| `timed_out`) | Have the driver service that serves the device restart, once every device `rp` has on it is held out, and wait up to 60 s for its new process to answer |
-| `get_power_map` | Ungated | — | outputs: \[{switch_id, output, daily, protected, on, devices: \[{device_id, kind, connected, held_out}\]}\] | Read every mapped output of every power box; `on` is `null` for a box `rp` cannot read |
+| `get_power_map` | Ungated | — | outputs: \[{switch_id, output, daily, protected, on, devices: \[{device_id, kind, connected, held_out}\]}\] | Read every mapped output of every power box; `on` is `null` for a box `rp` cannot read or one that reports no switch for the output |
 | `power_up` | Ungated | outputs (optional: \[{switch_id, output}\]; absent, every `daily` output; `[]`, none), settle (optional humantime, default `30s`, at most `5m`) | outputs: \[{switch_id, output, on, switched, error}\], services: \[{service, devices, restart, error}\], devices: \[{device_id, kind, connected, error}\] | Switch the outputs on, wait `settle`, restart once each service with a device on them and connect every device on those services; a failed step is reported and the call goes on |
 | `power_down` | Ungated | outputs (optional: \[{switch_id, output}\]; absent, every `daily` output; `[]`, none) | outputs: \[{switch_id, output, on, error}\], devices: \[{device_id, kind, close}\] | Hold out every device on the outputs, then switch them off; reads no cooler and no park state |
 | `check_camera` | Ungated | camera_id, duration (optional humantime, default `1s`) | camera_id, verdict (`ok` \| `wedged` \| `unavailable`), elapsed_s, error (when `unavailable`) | Take one dark test exposure, keep nothing, and say whether the camera is wedged: late past `capture`'s advisory maximum, not ready by its readout backstop, or all zero |
@@ -4504,7 +4504,9 @@ service processes:
 The result is `{outputs, services, devices}`. `outputs` lists each
 output as `{switch_id, output, on, switched}`, `on` read back after any
 write and `switched` true for an output this call switched on, with an
-`error` where the write failed. `services` lists each restart
+`error` where the write failed. A write that went through and failed
+only its read-back is still `switched`, with `on` `null`, so the settle
+wait follows it all the same. `services` lists each restart
 as `{service, devices, restart}`, `restart` being `restarted`,
 `timed_out` or `failed` with an `error`. `devices` lists each device as
 `{device_id, kind, connected}`, with an `error` where its connect
@@ -5773,8 +5775,9 @@ path — startup, a safety transition, a config reload — calls them.
 `start_warmup` (ungated — it secures, like `park`) starts a warm-up ramp
 per camera `rp` is cooling, and per camera with a setpoint ladder whose
 cooler reads running (`CoolerOn` true, or `CoolerPower` above 0) though
-`rp` holds no record of cooling it, and
-returns at once with those cameras (`{"cameras": [...]}` — empty when
+`rp` holds no record of cooling it. It starts the ramps it holds a
+record for first, then reads the cooler of each laddered camera it
+holds none for, and returns with those cameras (`{"cameras": [...]}` — empty when
 there are none). The second kind is a camera whose cooling an `rp`
 restart in the night left without a record, or whose driver's own
 restart left `CoolerOn` reading false while the TEC regulated on: dawn

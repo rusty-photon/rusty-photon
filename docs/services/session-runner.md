@@ -1086,7 +1086,8 @@ with no civil darkness that night) is skipped with a `warn!`.
    schedule holds the run slot itself, so that no run starts under
    dawn. Every
    step of dawn is an ungated tool, so dawn runs whatever the weather:
-   1. `start_warmup`, which returns at once and ramps in the background;
+   1. `start_warmup`, which returns without waiting for a ramp and ramps
+      in the background;
    2. `park`, with the warm-up under way, so that the mount never waits
       out the warm-up away from its park;
    3. `close_cover` for each calibrator the power map lists, a daily

@@ -311,7 +311,12 @@ impl CoolingController {
             }
             to_spawn
         };
-        let mut to_spawn = to_spawn;
+        // The ramps rp holds a record for start before any device is read
+        // for the cameras it holds none for, so a camera whose reads hang
+        // holds up no other camera's warm-up.
+        for (camera_id, from_c) in to_spawn {
+            self.spawn_warmup(&camera_id, from_c);
+        }
         for (camera_id, _ladder) in self.ladder_cameras() {
             if warming.contains(&camera_id) {
                 continue;
@@ -321,17 +326,18 @@ impl CoolingController {
                     .entry(camera_id.clone())
                     .or_default()
                     .rung_c = None;
-                warming.push(camera_id.clone());
-                to_spawn.push((camera_id, from_c));
+                self.spawn_warmup(&camera_id, from_c);
+                warming.push(camera_id);
             }
         }
-        for (camera_id, from_c) in to_spawn {
-            let ctrl = Arc::clone(self);
-            let id = camera_id.clone();
-            let handle = tokio::spawn(async move { ctrl.run_warmup(&id, from_c).await });
-            self.store_task(&camera_id, TaskKind::Warmup, handle);
-        }
         warming
+    }
+
+    fn spawn_warmup(self: &Arc<Self>, camera_id: &str, from_c: f64) {
+        let ctrl = Arc::clone(self);
+        let id = camera_id.to_string();
+        let handle = tokio::spawn(async move { ctrl.run_warmup(&id, from_c).await });
+        self.store_task(camera_id, TaskKind::Warmup, handle);
     }
 
     /// The setpoint to ramp a camera warm from when its cooler reads

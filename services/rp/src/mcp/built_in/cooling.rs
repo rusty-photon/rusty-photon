@@ -2,8 +2,8 @@
 //!
 //! The workflow decides when to cool and when to warm, rp decides which
 //! rung. Both are ungated (a cooler setpoint is indoor work; a warm-up
-//! secures), return at once with the cameras they drive, and are
-//! idempotent — the bodies live in [`crate::cooling::CoolingController`].
+//! secures), return with the cameras they drive without waiting for a
+//! ramp, and are idempotent — the bodies live in [`crate::cooling::CoolingController`].
 
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
@@ -41,9 +41,10 @@ impl McpHandler {
                        cooler_warmup_started / \
                        cooler_warmup_complete bracket the ramp. A cooldown pass still \
                        running is taken over: it is cancelled and the ramp starts from \
-                       the setpoint it had commanded. Returns at once with the camera \
-                       ids being warmed (empty when there are none). Idempotent: a \
-                       running ramp is left alone"
+                       the setpoint it had commanded. Returns, once it has read the \
+                       cooler of each laddered camera rp holds no record for, with the \
+                       camera ids being warmed (empty when there are none). Idempotent: \
+                       a running ramp is left alone"
     )]
     pub(crate) async fn start_warmup(&self) -> Result<CallToolResult, rmcp::ErrorData> {
         let Some(cooling) = self.cooling.as_ref() else {

@@ -154,7 +154,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Read a power box's outputs: the one named output, or every switch the box reports. Each comes back with name, index, can_write, on and value, beside the power map's mapped, protected and devices ({device_id, kind, connected, held_out}); unmatched lists map outputs the box reports no switch for"
+        description = "Read a power box's outputs: the one named output, or every switch the box reports. Each comes back with name, index, can_write, on and value, beside the power map's mapped, protected, daily and devices ({device_id, kind, connected, held_out}); unmatched lists map outputs the box reports no switch for"
     )]
     pub(crate) async fn get_switch(
         &self,
@@ -315,7 +315,7 @@ impl McpHandler {
     }
 
     #[tool(
-        description = "Read every mapped output of every power box: switch_id, output, daily, protected, on (null for a box rp cannot read) and devices ({device_id, kind, connected, held_out})"
+        description = "Read every mapped output of every power box: switch_id, output, daily, protected, on (null for a box rp cannot read or one that reports no switch for the output) and devices ({device_id, kind, connected, held_out})"
     )]
     pub(crate) async fn get_power_map(
         &self,
@@ -580,9 +580,10 @@ impl McpHandler {
                 outcome.on = Some(read_back);
                 outcome.switched = switched;
             }
-            Err((read, e)) => {
-                outcome.on = read;
-                outcome.error = Some(e);
+            Err(failure) => {
+                outcome.on = failure.read;
+                outcome.switched = failure.written;
+                outcome.error = Some(failure.error);
             }
         }
         outcome
@@ -650,6 +651,26 @@ impl McpHandler {
     }
 }
 
+/// Why switching one output failed, and what it came to.
+struct SwitchFailure {
+    /// The state last read, `None` when none was.
+    read: Option<bool>,
+    /// The write went through, and only reading it back failed.
+    written: bool,
+    error: String,
+}
+
+impl SwitchFailure {
+    /// A failure before anything was written.
+    const fn unwritten(read: Option<bool>, error: String) -> Self {
+        Self {
+            read,
+            written: false,
+            error,
+        }
+    }
+}
+
 /// How a `disconnect_device` close is reported.
 const fn close_word(close: &Close) -> &'static str {
     match close {
@@ -668,37 +689,40 @@ const fn close_word(close: &Close) -> &'static str {
 ///
 /// # Errors
 ///
-/// The state read before the failure, if any, and the reason.
+/// What the output came to, as [`SwitchFailure`] gives it.
 async fn switch_one(
     equipment: &crate::equipment::EquipmentRegistry,
     entry: &SwitchEntry,
     output: &str,
     on: bool,
-) -> Result<(bool, bool), (Option<bool>, String)> {
+) -> Result<(bool, bool), SwitchFailure> {
     let Some(device) = entry.device() else {
-        return Err((None, format!("switch not connected: {}", entry.id)));
+        return Err(SwitchFailure::unwritten(
+            None,
+            format!("switch not connected: {}", entry.id),
+        ));
     };
     let names = power::switch_names(&*device)
         .await
-        .map_err(|e| (None, format!("switch {}: {e}", entry.id)))?;
-    let index = power::index_of(&entry.id, &names, output).map_err(|e| (None, e))?;
-    let current = device
-        .get_switch(index)
-        .await
-        .map_err(|e| (None, format!("could not read the state of '{output}': {e}")))?;
+        .map_err(|e| SwitchFailure::unwritten(None, format!("switch {}: {e}", entry.id)))?;
+    let index = power::index_of(&entry.id, &names, output)
+        .map_err(|e| SwitchFailure::unwritten(None, e))?;
+    let current = device.get_switch(index).await.map_err(|e| {
+        SwitchFailure::unwritten(None, format!("could not read the state of '{output}': {e}"))
+    })?;
     if current == on {
         return Ok((current, false));
     }
     match device.can_write(index).await {
         Ok(true) => {}
         Ok(false) => {
-            return Err((
+            return Err(SwitchFailure::unwritten(
                 Some(current),
                 format!("output '{output}' of switch '{}' is read-only", entry.id),
             ))
         }
         Err(e) => {
-            return Err((
+            return Err(SwitchFailure::unwritten(
                 Some(current),
                 format!("could not read CanWrite of '{output}': {e}"),
             ))
@@ -710,20 +734,21 @@ async fn switch_one(
             power::switchable(&entry.config, output, false, |id| {
                 equipment.entry(id).is_some_and(EntryRef::is_held_out)
             })
-            .map_err(|e| (Some(current), e))?;
+            .map_err(|e| SwitchFailure::unwritten(Some(current), e))?;
         }
         device.set_switch(index, on).await.map_err(|e| {
-            (
+            SwitchFailure::unwritten(
                 Some(current),
                 format!("could not switch '{output}' of switch '{}': {e}", entry.id),
             )
         })?;
     }
-    let read_back = device.get_switch(index).await.map_err(|e| {
-        (
-            None,
-            format!("switched '{output}' but could not read it back: {e}"),
-        )
+    // The write went through: a read-back that fails still counts it, so
+    // a power_up waits its settle for the output it switched on.
+    let read_back = device.get_switch(index).await.map_err(|e| SwitchFailure {
+        read: None,
+        written: true,
+        error: format!("switched '{output}' but could not read it back: {e}"),
     })?;
     debug!(switch_id = %entry.id, output, requested = on, on = read_back, "switched an output");
     Ok((read_back, true))
