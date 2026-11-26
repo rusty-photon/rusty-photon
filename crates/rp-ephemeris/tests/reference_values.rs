@@ -76,11 +76,10 @@ fn refvals_dir() -> PathBuf {
 fn alt_az_matches_astropy_within_tight_tolerance() {
     // Astropy uses ERFA internally and `gen.py` passes the same
     // 1013.25 mbar / 10 °C / 50 % / 0.55 µm refraction model, and the same
-    // zero ΔUT1 and polar motion, that `ErfarsEphemeris` hard-codes, so
-    // end-to-end agreement should be near-perfect. 1e-4 ° = 0.36″ is well below any meaningful
-    // pointing tolerance and far above the f64 numerical noise the
-    // two paths could plausibly accumulate; tighter than this would
-    // start tripping on the last bit of double-precision rounding.
+    // zero ΔUT1 and polar motion, that `ErfarsEphemeris` hard-codes; the
+    // committed values agree with ERFA to about 1e-11°. 1e-4° = 0.36″ is
+    // far below any pointing tolerance, and its margin over that agreement
+    // is room for an Astropy or ERFA point release to move the last digits.
     const ALT_TOL_DEG: f64 = 1e-4;
     const AZ_TOL_DEG: f64 = 1e-4;
 

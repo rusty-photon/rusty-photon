@@ -221,10 +221,13 @@ pairs:
 - `tt1, tt2` — TT JD pair via `eraUtctai → eraTaitt`.
 - `ut11, ut12` — UT1 JD pair, treated as identical to UTC.
 
-ΔUT1 = 0 is the only simplification (UT1 ≈ UTC, error ≤ 0.9 s = ≤ 13″
-of LST). This is well inside what plate-solving refines on a real
-frame, and well below the positional accuracy any amateur rig
-delivers without refinement.
+ΔUT1 = 0 is the only time-scale simplification (UT1 ≈ UTC, error
+≤ 0.9 s = ≤ 13″ of LST). The observed-place transforms, `Atco13` and
+`Atoc13`, also get no polar motion (`xp = yp = 0`) and the site at sea
+level (`hm = 0`), each worth well under an arcsecond of alt/az. These
+are well inside what plate-solving refines on a real frame, and well
+below the positional accuracy any amateur rig delivers without
+refinement.
 
 The leapsecond table inside `erfars` is whatever shipped with the
 pinned crate version. Beyond the table's release year + 5, `eraDat`
