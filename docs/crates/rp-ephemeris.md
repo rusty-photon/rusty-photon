@@ -222,10 +222,12 @@ pairs:
 - `ut11, ut12` — UT1 JD pair, treated as identical to UTC.
 
 ΔUT1 = 0 is the only time-scale simplification (UT1 ≈ UTC, error
-≤ 0.9 s = ≤ 13″ of LST). The observed-place transforms, `Atco13` and
-`Atoc13`, also get no polar motion (`xp = yp = 0`) and the site at sea
-level (`hm = 0`), each worth well under an arcsecond of alt/az. These
-are well inside what plate-solving refines on a real frame, and well
+≤ 0.9 s = ≤ 13″ of LST). The observed-place transforms, `Atco13`,
+`Atoc13` and `Atio13`, and `Pvtob`, which places the observer for the
+Moon's parallax, also get no polar motion (`xp = yp = 0`) and the site
+at sea level (`hm = 0`), each worth well under an arcsecond of alt/az,
+except sea level for the Moon from a high site: about 2″ at 4000 m.
+These are well inside what plate-solving refines on a real frame, and well
 below the positional accuracy any amateur rig delivers without
 refinement.
 
@@ -252,9 +254,26 @@ accumulated leapsecond count; bumping `erfars` resyncs it.
   pointing; our alt/az is for "is the target above the horizon"
   decisions, where refraction at the horizon (~34′) matters but
   the exact micro-modelling doesn't.
+- **The Moon's topocentric alt/az** moves the Moon from the geocentre
+  to the site first: its parallax, 54′–61′ at the horizon with its
+  distance, is too large to leave out. `moon_alt_az_at` subtracts the
+  observer's position (`eraPvtob`) from the Moon's (`eraMoon98`,
+  rotated into CIRS by `eraC2i06a`) and hands the direction between
+  them to `eraAtio13`, which takes a CIRS place as given and applies
+  the same refraction. The result carries neither light-time, which
+  `Moon98` omits, nor annual aberration, which `Atio13` does not apply:
+  the Moon shares the Earth's orbital motion, so the two together move
+  it by about an arcsecond, where aberration alone, as `Atco13` applies
+  it to a star, would move it by about 20″.
+- **The Moon's `coords` and `moon_separation`** stay geocentric, the
+  same from every site; `moon_separation` takes no site. It differs
+  from the separation seen at a site by up to the Moon's parallax,
+  about 1°, which is small beside the tens of degrees a
+  moon-separation limit asks for.
 
-Annual aberration is not applied to the Sun (sub-arcmin effect;
-below the resolution that matters for "is the Sun up?").
+Annual aberration is not applied to the Sun's coordinates (sub-arcmin
+effect; below the resolution that matters for "is the Sun up?"), nor
+is the Sun's parallax (8.8″) applied to its alt/az.
 
 ### `IcrsCoord` vs the validated plan coordinate
 
@@ -287,7 +306,8 @@ crates/rp-ephemeris/src/
 │                   #   EphemerisError
 ├── site.rs         # Site + tzf-rs timezone resolution, night_date
 ├── erfars_impl.rs  # ErfarsEphemeris, time_jds, alt_az_at, sun_icrs,
-│                   #   moon_icrs, run_with_guard, NaN-fallback ctors
+│                   #   moon_icrs, moon_alt_az_at, run_with_guard,
+│                   #   NaN-fallback ctors
 ├── vocabulary.rs   # From/TryFrom bridge between the computed IcrsCoord
 │                   #   and the validated rp_vocabulary::IcrsCoord
 └── derived.rs      # bisect_dt, transit, rise_set, meridian_flip,
@@ -303,7 +323,10 @@ re-exports keeps the crate root self-explanatory.
 - Unit tests live next to the code under `#[cfg(test)] mod tests`.
 - `tests/reference_values.rs` compares `alt_az` against Astropy's
   values in `refvals/*.json`, within 1e-4°, for nine fixed objects at
-  three sites and four times. `refvals/gen.py`, run by hand, writes
+  three sites and four times, and `moon_position`'s alt/az against
+  Astropy's topocentric Moon from JPL's DE440s, within 10″, at the same
+  sites and times. `Moon98`, a truncated lunar theory, agrees with
+  DE440s to about 4″ there. `refvals/gen.py`, run by hand, writes
   those files, which are committed; the test fails when it finds none
   ([`refvals/README.md`](../../crates/rp-ephemeris/refvals/README.md)).
 - `tests/leap_second_init_race.rs` is a standalone-binary
@@ -318,7 +341,8 @@ re-exports keeps the crate root self-explanatory.
 - `ErfarsEphemeris` tests cover normal-case math (GMST at the J2000
   epoch; Polaris altitude at Seattle ≈ latitude; Sun on the vernal
   equinox ≈ RA 0/Dec 0; Sun below horizon at Seattle midnight in
-  winter), the kept `Dtf2d` Err path via year=-10000, end-to-end
+  winter; the Moon's topocentric altitude below its geocentric one by
+  its parallax), the kept `Dtf2d` Err path via year=-10000, end-to-end
   NaN/None degradation across all trait methods for an out-of-range
   year,
   and the [panic-safety contract](#panic-safety-and-degradation):

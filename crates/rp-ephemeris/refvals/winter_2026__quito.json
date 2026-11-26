@@ -1,4 +1,10 @@
 {
+  "moon": {
+    "alt_az": {
+      "altitude_degrees": -14.896573825348025,
+      "azimuth_degrees": 64.48384530199678
+    }
+  },
   "site": {
     "label": "quito",
     "latitude_degrees": -0.1807,

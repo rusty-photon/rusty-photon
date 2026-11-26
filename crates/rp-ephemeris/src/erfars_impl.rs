@@ -3,10 +3,11 @@ use std::panic::{self, UnwindSafe};
 use std::sync::Once;
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
-use erfars::astrometry::{Atco13, Atoc13};
-use erfars::constants::{ERFA_DD2R, ERFA_DPI, ERFA_DR2D};
+use erfars::astrometry::{Atco13, Atio13, Atoc13, Pvtob};
+use erfars::constants::{ERFA_DAU, ERFA_DD2R, ERFA_DPI, ERFA_DR2D};
 use erfars::ephemerides::{Epv00, Moon98};
-use erfars::rotationtime::Gst06a;
+use erfars::precnutpolar::{C2i06a, Sp00};
+use erfars::rotationtime::{Era00, Gst06a};
 use erfars::timescales::{Dtf2d, Taitt, Utctai};
 use erfars::ERFAResult;
 
@@ -319,12 +320,16 @@ pub fn alt_az_conditions_at(
     )
     .map_err(EphemerisError::InvalidAltAzInputs)?;
     let (aob, zob, _hob, _dob, _rob, _eo) = result.0;
-    let altitude_degrees = (ERFA_DPI / 2.0 - zob) * ERFA_DR2D;
-    let azimuth_degrees = (aob * ERFA_DR2D).rem_euclid(360.0);
-    Ok(AltAz {
-        altitude_degrees,
-        azimuth_degrees,
-    })
+    Ok(observed_alt_az(aob, zob))
+}
+
+/// Alt/az, in degrees, from ERFA's observed azimuth and zenith distance,
+/// in radians.
+fn observed_alt_az(aob: f64, zob: f64) -> AltAz {
+    AltAz {
+        altitude_degrees: (ERFA_DPI / 2.0 - zob) * ERFA_DR2D,
+        azimuth_degrees: (aob * ERFA_DR2D).rem_euclid(360.0),
+    }
 }
 
 /// ICRS coordinates whose observed position at `site` is the given
@@ -396,6 +401,65 @@ fn epv00_heliocentric(result: ERFAResult<([f64; 6], [f64; 6])>, jds: &TimeJds) -
 pub fn moon_icrs(jds: &TimeJds) -> IcrsCoord {
     let pv = Moon98(jds.tt1, jds.tt2);
     cartesian_to_icrs(pv[0], pv[1], pv[2])
+}
+
+/// Topocentric alt/az of the Moon at `site`, under the default refraction
+/// conditions documented on the trait.
+///
+/// A star's catalog place is the same from anywhere on Earth, but the
+/// Moon's is not: seen from the site rather than the geocentre, it sits
+/// lower, by its horizontal parallax (54′–61′, with its distance) at the
+/// horizon and by less higher up. So this takes the direction from the
+/// observer to the Moon, both positions geocentric and in CIRS — the
+/// Moon's from `Moon98` rotated by `C2i06a`, the observer's from
+/// `Pvtob` — and hands it to `Atio13`, which takes a CIRS place as given.
+/// The result carries neither light-time, which `Moon98` omits, nor
+/// annual aberration, which `Atio13` does not apply: the Moon shares the
+/// Earth's orbital motion, so the two together move it by about an
+/// arcsecond, where aberration alone would move it by about 20″.
+pub fn moon_alt_az_at(site: &Site, jds: &TimeJds) -> Result<AltAz, EphemerisError> {
+    let pv = Moon98(jds.tt1, jds.tt2);
+    let mut rc2i = [0.0; 9];
+    C2i06a(jds.tt1, jds.tt2, &mut rc2i);
+    let moon_m = rxp(
+        &rc2i,
+        [pv[0] * ERFA_DAU, pv[1] * ERFA_DAU, pv[2] * ERFA_DAU],
+    );
+    let elong = site.longitude_degrees * ERFA_DD2R;
+    let phi = site.latitude_degrees * ERFA_DD2R;
+    let observer_m = Pvtob(
+        elong,
+        phi,
+        0.0,
+        0.0,
+        0.0,
+        Sp00(jds.tt1, jds.tt2),
+        Era00(jds.ut11, jds.ut12),
+    );
+    let x = moon_m[0] - observer_m[0];
+    let y = moon_m[1] - observer_m[1];
+    let z = moon_m[2] - observer_m[2];
+    let ri = y.atan2(x).rem_euclid(2.0 * ERFA_DPI);
+    let di = z.atan2(x.hypot(y));
+    let (phpa, tc, rh, wl) = erfa_refraction_inputs(Some(RefractionConditions::default()));
+    let result = Atio13(
+        ri, di, jds.utc1, jds.utc2, 0.0, elong, phi, 0.0, 0.0, 0.0, phpa, tc, rh, wl,
+    )
+    .map_err(EphemerisError::InvalidAltAzInputs)?;
+    let (aob, zob, _hob, _dob, _rob) = result.0;
+    Ok(observed_alt_az(aob, zob))
+}
+
+/// `matrix · vector` for a 3×3 matrix stored row-major, as ERFA returns
+/// it.
+fn rxp(matrix: &[f64; 9], vector: [f64; 3]) -> [f64; 3] {
+    let [r00, r01, r02, r10, r11, r12, r20, r21, r22] = *matrix;
+    let [vx, vy, vz] = vector;
+    [
+        r00.mul_add(vx, r01.mul_add(vy, r02 * vz)),
+        r10.mul_add(vx, r11.mul_add(vy, r12 * vz)),
+        r20.mul_add(vx, r21.mul_add(vy, r22 * vz)),
+    ]
 }
 
 #[expect(
@@ -525,7 +589,7 @@ impl Ephemeris for ErfarsEphemeris {
             || {
                 let jds = time_jds(time);
                 let coords = moon_icrs(&jds);
-                let alt_az = alt_az_at(site, coords, &jds).unwrap_or_else(|_| nan_alt_az());
+                let alt_az = moon_alt_az_at(site, &jds).unwrap_or_else(|_| nan_alt_az());
                 let sun = sun_icrs(&jds);
                 let phase_degrees = angular_separation_degrees(coords, sun);
                 // phase_degrees here is the Sun-Earth-Moon elongation:
@@ -735,6 +799,41 @@ mod tests {
         assert!((0.0..=1.0).contains(&m.illumination_fraction));
     }
 
+    /// Seen from the site, the Moon sits lower than seen from the
+    /// geocentre, by its horizontal parallax times the cosine of its
+    /// altitude: here, about 0.6° at about 50°, where refraction barely
+    /// differs between the two places. The geocentric place, run through
+    /// the star transform, also carries annual aberration (about 20″), so
+    /// the tolerance is an arcminute.
+    #[test]
+    fn moon_alt_az_sits_below_the_geocentric_by_its_parallax() {
+        const EARTH_EQUATORIAL_RADIUS_M: f64 = 6_378_137.0;
+        let eph = ErfarsEphemeris::new();
+        let santiago = Site::new(-33.4489, -70.6693).unwrap();
+        let t = Utc.with_ymd_and_hms(2026, 9, 22, 23, 5, 0).unwrap();
+        let moon = eph.moon_position(&santiago, t);
+        let geocentric = eph.alt_az(&santiago, moon.coords, t).unwrap();
+
+        let jds = time_jds(t);
+        let pv = Moon98(jds.tt1, jds.tt2);
+        let distance_m = (pv[0] * pv[0] + pv[1] * pv[1] + pv[2] * pv[2]).sqrt() * ERFA_DAU;
+        let horizontal_parallax_deg = (EARTH_EQUATORIAL_RADIUS_M / distance_m).asin() * ERFA_DR2D;
+        let expected_drop_deg =
+            horizontal_parallax_deg * (geocentric.altitude_degrees * ERFA_DD2R).cos();
+
+        let drop_deg = geocentric.altitude_degrees - moon.alt_az.altitude_degrees;
+        assert!(
+            (40.0..60.0).contains(&moon.alt_az.altitude_degrees),
+            "the Moon is at {:.2}°, not near the 50° this test is built for",
+            moon.alt_az.altitude_degrees
+        );
+        assert!(
+            (drop_deg - expected_drop_deg).abs() < 1.0 / 60.0,
+            "the Moon dropped {drop_deg:.4}° from geocentre to site; parallax predicts \
+             {expected_drop_deg:.4}°"
+        );
+    }
+
     /// `Dtf2d` rejects years < -4799. chrono can construct dates down
     /// to year -262144, so we can hit the Err arm in `time_jds` from
     /// safe code. Expect NaN-filled JDs and a `tracing::error!` log.
@@ -772,6 +871,7 @@ mod tests {
         assert!(sun.coords.dec_degrees.is_nan());
         let moon = eph.moon_position(&site, t);
         assert!(moon.coords.ra_hours.is_nan());
+        assert!(moon.alt_az.altitude_degrees.is_nan());
         assert!(moon.illumination_fraction.is_nan());
         assert!(eph.moon_separation(target, t).is_nan());
         // Date-based helpers bisect over LST/sun-altitude; both go NaN

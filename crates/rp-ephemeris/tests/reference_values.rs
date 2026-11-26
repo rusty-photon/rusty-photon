@@ -1,5 +1,6 @@
-//! Reference-value test: compare `ErfarsEphemeris`'s `alt_az` against
-//! Astropy's values in `refvals/*.json`, within 1e-4°.
+//! Reference-value tests: compare `ErfarsEphemeris`'s `alt_az` against
+//! Astropy's values in `refvals/*.json`, within 1e-4°, and its
+//! `moon_position`'s alt/az against Astropy's topocentric Moon, within 10″.
 //!
 //! `refvals/gen.py`, run by hand, writes those files, and they are
 //! committed (see the README in that directory). The test cross-validates
@@ -50,6 +51,11 @@ struct TargetEntry {
 }
 
 #[derive(Debug, Deserialize)]
+struct MoonRef {
+    alt_az: AltAzRef,
+}
+
+#[derive(Debug, Deserialize)]
 struct SiteRef {
     latitude_degrees: f64,
     longitude_degrees: f64,
@@ -61,6 +67,7 @@ struct RefvalsFile {
     time_utc: String,
     time_label: String,
     targets: HashMap<String, TargetEntry>,
+    moon: MoonRef,
 }
 
 /// `refvals/`, under the crate's directory as the test runs: Cargo sets
@@ -70,6 +77,42 @@ fn refvals_dir() -> PathBuf {
     std::env::var_os("CARGO_MANIFEST_DIR")
         .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
         .join("refvals")
+}
+
+/// Every `refvals/*.json`, parsed, or why not: an error names the file,
+/// and finding none is an error too.
+fn load_refvals() -> Result<Vec<RefvalsFile>, String> {
+    let dir = refvals_dir();
+    let files = fs::read_dir(&dir)
+        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        })
+        .map(|path| {
+            let body = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            serde_json::from_str(&body).map_err(|e| format!("{}: {e}", path.display()))
+        })
+        .collect::<Result<Vec<RefvalsFile>, String>>()?;
+    if files.is_empty() {
+        return Err(format!(
+            "no refvals/*.json in {}: run refvals/gen.py and commit its output",
+            dir.display()
+        ));
+    }
+    Ok(files)
+}
+
+/// Great-circle angle between two alt/az directions, in degrees, by the
+/// haversine formula, which keeps its precision at small angles.
+fn separation_degrees(alt1: f64, az1: f64, alt2: f64, az2: f64) -> f64 {
+    let (p1, p2) = (alt1.to_radians(), alt2.to_radians());
+    let half_dp = (p2 - p1) / 2.0;
+    let half_dl = (az2 - az1).to_radians() / 2.0;
+    let h = half_dp.sin().powi(2) + p1.cos() * p2.cos() * half_dl.sin().powi(2);
+    2.0 * h.sqrt().asin().to_degrees()
 }
 
 #[test]
@@ -83,26 +126,8 @@ fn alt_az_matches_astropy_within_tight_tolerance() {
     const ALT_TOL_DEG: f64 = 1e-4;
     const AZ_TOL_DEG: f64 = 1e-4;
 
-    let dir = refvals_dir();
-    let entries: Vec<_> = fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
-        .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-        })
-        .collect();
-    assert!(
-        !entries.is_empty(),
-        "no refvals/*.json in {}: run refvals/gen.py and commit its output",
-        dir.display()
-    );
-
     let eph = ErfarsEphemeris::new();
-    for entry in entries {
-        let body = fs::read_to_string(entry.path()).unwrap();
-        let refs: RefvalsFile = serde_json::from_str(&body).unwrap();
+    for refs in load_refvals().unwrap() {
         let site = Site::new(refs.site.latitude_degrees, refs.site.longitude_degrees).unwrap();
         let when: DateTime<Utc> = refs.time_utc.parse().unwrap();
         for (name, target) in refs.targets {
@@ -130,5 +155,42 @@ fn alt_az_matches_astropy_within_tight_tolerance() {
                 target.alt_az.azimuth_degrees
             );
         }
+    }
+}
+
+#[test]
+fn moon_alt_az_matches_astropy_de440s_within_10_arcsec() {
+    // `gen.py` takes the Moon from JPL's DE440s, seen from the site, so the
+    // disagreement here is algorithmic: `Moon98` is a truncated lunar
+    // theory, and agrees with DE440s to about 4″ at these times. 10″ leaves
+    // room for that, and is far below the Moon's parallax, which moves it by
+    // at least half a degree at every one of these times.
+    const TOL_ARCSEC: f64 = 10.0;
+
+    let eph = ErfarsEphemeris::new();
+    for refs in load_refvals().unwrap() {
+        let site = Site::new(refs.site.latitude_degrees, refs.site.longitude_degrees).unwrap();
+        let when: DateTime<Utc> = refs.time_utc.parse().unwrap();
+        let ours = eph.moon_position(&site, when).alt_az;
+        let theirs = &refs.moon.alt_az;
+        let off_arcsec = separation_degrees(
+            ours.altitude_degrees,
+            ours.azimuth_degrees,
+            theirs.altitude_degrees,
+            theirs.azimuth_degrees,
+        ) * 3600.0;
+        assert!(
+            off_arcsec < TOL_ARCSEC,
+            "Moon {off_arcsec:.2}\" from Astropy at {} ({}), lat {} lon {}: \
+             erfars alt {:.5}° az {:.5}°, astropy alt {:.5}° az {:.5}°",
+            refs.time_label,
+            refs.time_utc,
+            refs.site.latitude_degrees,
+            refs.site.longitude_degrees,
+            ours.altitude_degrees,
+            ours.azimuth_degrees,
+            theirs.altitude_degrees,
+            theirs.azimuth_degrees
+        );
     }
 }

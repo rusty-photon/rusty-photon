@@ -120,9 +120,14 @@ pub trait Ephemeris {
 
     /// Geocentric Moon position, topocentric alt/az, plus phase
     /// (Sun-Earth-Moon elongation, 0–180°) and illumination fraction.
+    /// The alt/az includes the Moon's parallax: seen from `site` rather
+    /// than the geocentre, the Moon sits lower, by up to about 1° at the
+    /// horizon.
     fn moon_position(&self, site: &Site, time: DateTime<Utc>) -> MoonInfo;
 
     /// Angular separation between an ICRS target and the Moon, in
-    /// degrees. Geocentric — does not depend on `site`.
+    /// degrees. Geocentric — does not depend on `site` — so it differs
+    /// from the separation seen at a site by up to the Moon's parallax,
+    /// about 1°.
     fn moon_separation(&self, target: IcrsCoord, time: DateTime<Utc>) -> f64;
 }

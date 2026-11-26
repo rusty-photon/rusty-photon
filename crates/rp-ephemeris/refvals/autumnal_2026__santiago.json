@@ -1,4 +1,10 @@
 {
+  "moon": {
+    "alt_az": {
+      "altitude_degrees": 49.723414347338945,
+      "azimuth_degrees": 76.64757287155123
+    }
+  },
   "site": {
     "label": "santiago",
     "latitude_degrees": -33.4489,

@@ -111,7 +111,9 @@ pub struct SunInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MoonInfo {
+    /// Geocentric position (GCRS ≈ ICRS), the same from every site.
     pub coords: IcrsCoord,
+    /// Alt/az as seen from the site, the Moon's parallax included.
     pub alt_az: AltAz,
     /// Elongation between the Sun and Moon as seen from Earth, in
     /// degrees `[0, 180]`. 0 = new, 90 = quarter, 180 = full.
