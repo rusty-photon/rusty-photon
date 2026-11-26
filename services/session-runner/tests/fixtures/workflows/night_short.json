@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "night-short",
+  "description": "A night run that logs one line and ends: the night schedule starts it after dusk's power-up.",
+  "estimated_duration": "1s",
+  "max_duration": "1m",
+  "root": { "log": { "level": "info", "message": "the night's run" } }
+}

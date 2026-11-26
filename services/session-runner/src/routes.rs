@@ -29,15 +29,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;
 
-use crate::config::{Config, RpConnection};
-use crate::document::{
-    bind_parameters, resolve_workflow_path, validate_against_catalog, Document, ToolSpec,
-    ValidationIssue,
-};
+use crate::config::RpConnection;
+use crate::document::{validate_against_catalog, Document, ToolSpec, ValidationIssue};
 use crate::mcp_client::McpClient;
 use crate::runs::{
-    self, completion_result, mint_run_id, mint_session_id, valid_session_id, AppState, Launch,
-    RunManifest, SlotTaken, StopError,
+    self, mint_session_id, valid_session_id, AppState, SlotTaken, StartRefused, StopError,
 };
 
 pub fn build_router(state: Arc<AppState>) -> Router {
@@ -58,7 +54,11 @@ async fn health() -> &'static str {
 /// `GET /night`: the night schedule's place (design § Night Schedule →
 /// `GET /night`).
 async fn night(State(state): State<Arc<AppState>>) -> Json<Value> {
-    Json(state.night.report(state.config.night.is_some()))
+    Json(
+        state
+            .night
+            .report(state.config.night.is_some(), state.runs.active().as_deref()),
+    )
 }
 
 fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
@@ -102,7 +102,7 @@ async fn validate(
         (Some(document), None) => {
             Document::from_value(&document).map_err(|issues| (issues, "schema validation failed"))
         }
-        (None, Some(name)) => match load_workflow_source(config, &name).await {
+        (None, Some(name)) => match runs::load_workflow_source(config, &name).await {
             Ok(src) => Document::parse(&src).map_err(|issues| (issues, "schema validation failed")),
             Err(message) => Err((
                 vec![ValidationIssue {
@@ -157,13 +157,6 @@ async fn validate(
     )
 }
 
-async fn load_workflow_source(config: &Config, name: &str) -> Result<String, String> {
-    let path = resolve_workflow_path(&config.workflows_dir, name)?;
-    tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|e| format!("cannot read workflow `{name}` at {}: {e}", path.display()))
-}
-
 async fn fetch_catalog(mcp_url: &str, connection: &RpConnection) -> Result<Vec<ToolSpec>, String> {
     let client = McpClient::connect(mcp_url, connection.auth(), connection.ca_path())
         .await
@@ -201,8 +194,8 @@ async fn start_run(
         Err(rejection) => return body_rejected(&rejection),
     };
     let config = &state.config;
-    // A fast refusal before any validation work; the reserving call
-    // below is the authoritative one.
+    // A fast refusal before any validation work; the reserving call in
+    // `runs::start_run` is the authoritative one.
     if let Some(active) = state.runs.active() {
         return run_conflict(&SlotTaken::Run(active));
     }
@@ -228,81 +221,42 @@ async fn start_run(
         return error_response(StatusCode::BAD_REQUEST, "`params` must be a JSON object");
     }
 
-    // Layer 1: schema.
-    let source = match load_workflow_source(config, &request.workflow).await {
-        Ok(source) => source,
-        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
-    };
-    let document = match Document::parse(&source) {
-        Ok(document) => document,
-        Err(issues) => {
-            return issues_response(
-                StatusCode::BAD_REQUEST,
-                "document failed validation",
-                &issues,
-            )
-        }
-    };
-    // Layer 3: parameters — bound again by the supervisor on every
-    // (re)execution; checked here so the request fails loudly.
-    if let Err(issues) = bind_parameters(&document.parameters, Some(&params)) {
-        return issues_response(
-            StatusCode::BAD_REQUEST,
-            "parameter validation failed",
-            &issues,
-        );
-    }
-    // Layer 2: the live catalog.
-    let connection = config.rp_connection();
-    let mcp = match validate_with_live_catalog(&document, &mcp_url, &connection).await {
-        Ok(mcp) => mcp,
-        Err(response) => return response,
-    };
-
-    let run_id = mint_run_id();
-    let stop = match state
-        .runs
-        .start(&run_id, &session_id, &request.workflow, now)
-    {
-        Ok(stop) => stop,
-        Err(taken) => return run_conflict(&taken),
-    };
-    let manifest = RunManifest {
-        run_id: run_id.clone(),
-        session_id: session_id.clone(),
+    let request = runs::StartRequest {
         workflow: request.workflow,
         params,
-        started_at: now,
+        session_id: session_id.clone(),
     };
-    if let Err(message) = manifest.write(&config.state_dir).await {
-        // Release the slot: the run never started. It stays listed as
-        // failed, so the response names it.
-        state.runs.mark_ended(
-            &run_id,
-            runs::RunState::Failed,
-            completion_result(&manifest.workflow, "failed", Some(&message), None),
-            Utc::now(),
-        );
-        return (
+    match runs::start_run(&state, request, &mcp_url, false).await {
+        Ok(run_id) => (
+            StatusCode::ACCEPTED,
+            Json(json!({ "run_id": run_id, "session_id": session_id })),
+        ),
+        Err(refused) => start_refused(refused, &session_id),
+    }
+}
+
+/// A refused start as its response: `400` for a document, parameters or
+/// catalog that fail validation, `409` for a taken slot, `502` for an
+/// unreachable `rp`, `500` for a manifest that cannot be written.
+fn start_refused(refused: StartRefused, session_id: &str) -> (StatusCode, Json<Value>) {
+    match refused {
+        StartRefused::Invalid { message, issues } if issues.is_empty() => {
+            error_response(StatusCode::BAD_REQUEST, &message)
+        }
+        StartRefused::Invalid { message, issues } => {
+            issues_response(StatusCode::BAD_REQUEST, &message, &issues)
+        }
+        StartRefused::Taken(taken) => run_conflict(&taken),
+        StartRefused::Unreachable(message) => error_response(StatusCode::BAD_GATEWAY, &message),
+        StartRefused::NotRecorded { message, run_id } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
                 "error": message,
                 "run_id": run_id,
                 "session_id": session_id,
             })),
-        );
+        ),
     }
-    info!(run_id, session_id, workflow = %manifest.workflow, "run started");
-    tokio::spawn(runs::supervise(
-        state.clone(),
-        manifest,
-        stop,
-        Some(Launch { document, mcp }),
-    ));
-    (
-        StatusCode::ACCEPTED,
-        Json(json!({ "run_id": run_id, "session_id": session_id })),
-    )
 }
 
 /// The extractor's rejection in the module's JSON error shape.
@@ -372,34 +326,6 @@ async fn stop_run(
     }
 }
 
-/// Layer 2: the live tool catalog. Unlike `/validate`, an unreachable
-/// rp is a hard error here — the run cannot start without it.
-async fn validate_with_live_catalog(
-    document: &Document,
-    mcp_server_url: &str,
-    connection: &RpConnection,
-) -> Result<McpClient, (StatusCode, Json<Value>)> {
-    let mcp =
-        match McpClient::connect(mcp_server_url, connection.auth(), connection.ca_path()).await {
-            Ok(mcp) => mcp,
-            Err(e) => return Err(error_response(StatusCode::BAD_GATEWAY, &e.to_string())),
-        };
-    let catalog = match mcp.list_tools().await {
-        Ok(catalog) => catalog,
-        Err(e) => return Err(error_response(StatusCode::BAD_GATEWAY, &e.to_string())),
-    };
-    let issues = validate_against_catalog(document, &catalog);
-    if issues.is_empty() {
-        Ok(mcp)
-    } else {
-        Err(issues_response(
-            StatusCode::BAD_REQUEST,
-            "catalog validation failed",
-            &issues,
-        ))
-    }
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -407,6 +333,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::Config;
 
     async fn serve(router: Router) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
