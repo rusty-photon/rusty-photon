@@ -3257,22 +3257,291 @@ async fn reset_mount_encoders_errors_when_axis_never_stops() {
     );
 }
 
-// ---- The recovery, and no custom Actions ----
+// ---- The one custom Action, ParkMatchesPowerUpPose ----
+
+/// A device whose in-memory config powers up at `unpark` and parks at
+/// `preferred`, with the raw park override `park_ticks`, at latitude 0.
+fn park_pose_device(
+    unpark: ApPark,
+    preferred: ApPark,
+    park_ticks: (Option<i32>, Option<i32>),
+) -> MountDevice {
+    let mut cfg = base_config();
+    cfg.mount.unpark_from_ap_position = unpark;
+    cfg.mount.preferred_ap_park = preferred;
+    cfg.mount.park_ra_ticks = park_ticks.0;
+    cfg.mount.park_dec_ticks = park_ticks.1;
+    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
+    MountDevice::new(cfg.mount, manager)
+}
+
+/// Ask `ParkMatchesPowerUpPose` and parse its answer.
+async fn ask_park_matches(d: &MountDevice) -> serde_json::Value {
+    let text = d
+        .action("ParkMatchesPowerUpPose".to_string(), String::new())
+        .await
+        .unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+/// `ap_park_3` at latitude 0 on the mock's counts per revolution.
+const AP_PARK_3_TICKS: (i32, i32) = (-907_200, 725_760);
 
 #[tokio::test]
-async fn the_device_offers_no_actions_and_answers_any_as_not_implemented() {
+async fn the_device_offers_exactly_park_matches_power_up_pose() {
     let d = device();
-    assert_eq!(d.supported_actions().await.unwrap(), Vec::<String>::new());
+    assert_eq!(
+        d.supported_actions().await.unwrap(),
+        vec!["ParkMatchesPowerUpPose".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn every_other_action_name_answers_action_not_implemented() {
+    let d = connected_device().await;
     for name in [
         "NoSuchAction",
         "UnparkFromApPosition",
         "SetPreferredApPark",
         "config.get",
+        "ParkMatchesPowerUpPoseNow",
+        "ParkMatches",
+        "",
     ] {
         let err = d.action(name.to_string(), String::new()).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED, "{name}");
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED, "{name:?}");
     }
 }
+
+#[tokio::test]
+async fn park_matches_power_up_pose_answers_not_connected_while_disconnected() {
+    let d = park_pose_device(ApPark::ApPark3, ApPark::ApPark3, (None, None));
+    let err = d
+        .action("ParkMatchesPowerUpPose".to_string(), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    d.set_connected(true).await.unwrap();
+    d.set_connected(false).await.unwrap();
+    let err = d
+        .action("ParkMatchesPowerUpPose".to_string(), String::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_is_matched_without_regard_to_case() {
+    let d = park_pose_device(ApPark::ApPark3, ApPark::ApPark3, (None, None));
+    d.set_connected(true).await.unwrap();
+    for name in ["parkmatchespoweruppose", "PARKMATCHESPOWERUPPOSE"] {
+        let text = d.action(name.to_string(), String::new()).await.unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(answer["matches"], true, "{name}: {answer}");
+    }
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_ignores_its_parameters() {
+    let d = park_pose_device(ApPark::ApPark3, ApPark::ApPark3, (None, None));
+    d.set_connected(true).await.unwrap();
+    let text = d
+        .action(
+            "ParkMatchesPowerUpPose".to_string(),
+            r#"{"any": "thing"}"#.to_string(),
+        )
+        .await
+        .unwrap();
+    let answer: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(answer, ask_park_matches(&d).await);
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_matches_a_park_target_at_the_power_up_pose() {
+    let d = park_pose_device(ApPark::ApPark3, ApPark::ApPark3, (None, None));
+    d.set_connected(true).await.unwrap();
+    assert_eq!(
+        ask_park_matches(&d).await,
+        serde_json::json!({
+            "matches": true,
+            "power_up_pose": "ap_park_3",
+            "power_up_ticks": {"ra": AP_PARK_3_TICKS.0, "dec": AP_PARK_3_TICKS.1},
+            "park_target_ticks": {"ra": AP_PARK_3_TICKS.0, "dec": AP_PARK_3_TICKS.1},
+        })
+    );
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_misses_a_preferred_ap_park_other_than_the_power_up_pose() {
+    // ap_park_2 at latitude 0: mech_HA = -6 h, Dec encoder 0.
+    let d = park_pose_device(ApPark::ApPark3, ApPark::ApPark2, (None, None));
+    d.set_connected(true).await.unwrap();
+    assert_eq!(
+        ask_park_matches(&d).await,
+        serde_json::json!({
+            "matches": false,
+            "power_up_pose": "ap_park_3",
+            "power_up_ticks": {"ra": AP_PARK_3_TICKS.0, "dec": AP_PARK_3_TICKS.1},
+            "park_target_ticks": {"ra": AP_PARK_3_TICKS.0, "dec": 0},
+        })
+    );
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_misses_a_raw_park_override_elsewhere() {
+    let d = park_pose_device(ApPark::ApPark3, ApPark::ApPark3, (Some(5000), Some(-7000)));
+    d.set_connected(true).await.unwrap();
+    let answer = ask_park_matches(&d).await;
+    assert_eq!(answer["matches"], false, "{answer}");
+    assert_eq!(
+        answer["park_target_ticks"],
+        serde_json::json!({"ra": 5000, "dec": -7000})
+    );
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_matches_a_raw_park_override_at_the_power_up_pose() {
+    let d = park_pose_device(
+        ApPark::ApPark3,
+        ApPark::ApPark2,
+        (Some(AP_PARK_3_TICKS.0), Some(AP_PARK_3_TICKS.1)),
+    );
+    d.set_connected(true).await.unwrap();
+    let answer = ask_park_matches(&d).await;
+    assert_eq!(answer["matches"], true, "{answer}");
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_has_no_power_up_ticks_for_ap_park_0() {
+    // A raw override on both axes, so only the absent power-up pair keeps
+    // the answer from matching.
+    let d = park_pose_device(ApPark::ApPark0, ApPark::ApPark3, (Some(0), Some(0)));
+    d.set_connected(true).await.unwrap();
+    assert_eq!(
+        ask_park_matches(&d).await,
+        serde_json::json!({
+            "matches": false,
+            "power_up_pose": "ap_park_0",
+            "power_up_ticks": null,
+            "park_target_ticks": {"ra": 0, "dec": 0},
+        })
+    );
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_has_no_park_target_when_an_axis_has_none() {
+    // ap_park_0 leaves the frame unanchored, so Dec, with no raw override,
+    // has no park target.
+    let d = park_pose_device(ApPark::ApPark0, ApPark::ApPark3, (Some(5000), None));
+    d.set_connected(true).await.unwrap();
+    let answer = ask_park_matches(&d).await;
+    assert_eq!(
+        answer["park_target_ticks"],
+        serde_json::Value::Null,
+        "{answer}"
+    );
+    assert_eq!(answer["matches"], false, "{answer}");
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_has_no_park_target_while_the_position_is_lost() {
+    let d = park_pose_device(ApPark::ApPark3, ApPark::ApPark3, (None, None));
+    d.set_connected(true).await.unwrap();
+    // The position changes before the device state follows it: the park
+    // target the connect armed is still held.
+    d.manager.power().mark_position_lost();
+    assert!(d.state.read().await.park_ra_ticks.is_some());
+    let answer = ask_park_matches(&d).await;
+    assert_eq!(
+        answer["park_target_ticks"],
+        serde_json::Value::Null,
+        "{answer}"
+    );
+    assert_eq!(answer["matches"], false, "{answer}");
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_has_no_park_target_while_the_power_up_check_is_pending() {
+    let d = park_pose_device(ApPark::ApPark3, ApPark::ApPark3, (None, None));
+    d.set_connected(true).await.unwrap();
+    d.manager.power().await_power_up_check();
+    let answer = ask_park_matches(&d).await;
+    assert_eq!(
+        answer["park_target_ticks"],
+        serde_json::Value::Null,
+        "{answer}"
+    );
+    assert_eq!(answer["matches"], false, "{answer}");
+}
+
+/// Write a config file at `path` that powers up at `unpark`.
+fn write_unpark_config(path: &Path, unpark: ApPark) {
+    let mut file_cfg = base_config();
+    file_cfg.mount.unpark_from_ap_position = unpark;
+    std::fs::write(path, serde_json::to_string_pretty(&file_cfg).unwrap()).unwrap();
+}
+
+/// A config file that powers up at `ap_park_3`, beside a device whose
+/// in-memory config powers up at `ap_park_0`.
+fn ap_park_3_file_device(
+    dir: &tempfile::TempDir,
+) -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
+    let path = dir.path().join("config.json");
+    write_unpark_config(&path, ApPark::ApPark3);
+    device_with_path_and_mock(path)
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_reports_the_power_up_pose_the_file_holds_now() {
+    // The next power-up seeds the pose the file holds then, so an edit of
+    // the file while connected is in the answer: the park target armed at
+    // ap_park_3 no longer matches.
+    let dir = tempfile::TempDir::new().unwrap();
+    let (d, _mock) = ap_park_3_file_device(&dir);
+    d.set_connected(true).await.unwrap();
+    assert_eq!(ask_park_matches(&d).await["matches"], true);
+    write_unpark_config(&dir.path().join("config.json"), ApPark::ApPark5);
+    let answer = ask_park_matches(&d).await;
+    assert_eq!(answer["power_up_pose"], "ap_park_5", "{answer}");
+    assert_eq!(answer["matches"], false, "{answer}");
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_fails_when_the_configuration_file_cannot_be_read() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (d, _mock) = ap_park_3_file_device(&dir);
+    d.set_connected(true).await.unwrap();
+    std::fs::remove_file(dir.path().join("config.json")).unwrap();
+    d.action("ParkMatchesPowerUpPose".to_string(), String::new())
+        .await
+        .unwrap_err();
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_misses_after_a_set_park_elsewhere() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (d, mock) = ap_park_3_file_device(&dir);
+    d.set_connected(true).await.unwrap();
+    assert_eq!(ask_park_matches(&d).await["matches"], true);
+    // SetPark reads the encoders from the wire.
+    {
+        let mut s = mock.lock().await;
+        s.ra.position_ticks = 8000;
+        s.dec.position_ticks = -3000;
+    }
+    d.set_park().await.unwrap();
+    assert_eq!(
+        ask_park_matches(&d).await,
+        serde_json::json!({
+            "matches": false,
+            "power_up_pose": "ap_park_3",
+            "power_up_ticks": {"ra": AP_PARK_3_TICKS.0, "dec": AP_PARK_3_TICKS.1},
+            "park_target_ticks": {"ra": 8000, "dec": -3000},
+        })
+    );
+}
+
+// ---- The recovery ----
 
 #[tokio::test]
 async fn the_recovery_from_ap_park_0_clears_at_park_without_encoder_change() {

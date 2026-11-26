@@ -15,6 +15,7 @@ use async_trait::async_trait;
 use skywatcher_motor_protocol::Axis;
 use tracing::debug;
 
+use super::park_pose::PARK_MATCHES_POWER_UP_POSE;
 use super::recovery::is_recovery;
 use super::MountDevice;
 use crate::setup::DEVICE_TYPE;
@@ -154,16 +155,24 @@ impl Device for MountDevice {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
-    /// None: the driver has no custom Actions. The power-up pose and the
-    /// park target are configuration, and the recovery is a command on the
-    /// mount's setup page ([`super::recovery`]).
+    /// The one custom Action, the read-only `ParkMatchesPowerUpPose`
+    /// ([`super::park_pose`]). The power-up pose and the park target are
+    /// configuration, and the recovery is a command on the mount's setup
+    /// page ([`super::recovery`]), so neither is an Action.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(Vec::new())
+        Ok(vec![PARK_MATCHES_POWER_UP_POSE.to_string()])
     }
 
-    /// `ACTION_NOT_IMPLEMENTED` for every name, per the ASCOM `Action`
-    /// contract, not the generic `NotImplemented` the crate defaults to.
+    /// An Action name is matched without regard to case, as the ASCOM
+    /// `Action` contract has it. `ParkMatchesPowerUpPose` takes no
+    /// parameters, and ignores any it is sent. Every other name answers
+    /// `ACTION_NOT_IMPLEMENTED`, per that contract, not the generic
+    /// `NotImplemented` the crate defaults to.
     async fn action(&self, action: String, _parameters: String) -> ASCOMResult<String> {
+        if action.eq_ignore_ascii_case(PARK_MATCHES_POWER_UP_POSE) {
+            return self.park_matches_power_up_pose().await;
+        }
+        debug!(action, "no such action");
         Err(ASCOMError::new(
             ASCOMErrorCode::ACTION_NOT_IMPLEMENTED,
             format!("this device has no action {action:?}"),

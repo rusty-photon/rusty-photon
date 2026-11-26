@@ -1,13 +1,11 @@
 //! Step definitions for `setup_pages.feature`: the shared steps from
 //! `bdd-infra`, the Givens that start this service in each shape, the steps
-//! on the transport selector, the recovery page's Stop and recovery, the steps
-//! on the mount's (empty) action list, and the reload steps
-//! `connection_lifecycle.feature` and `unpark_from_ap_position.feature`
-//! share: a save on the mount's page is how a scenario reloads the driver.
+//! on the transport selector, the recovery page's Stop and recovery, and the
+//! reload steps `connection_lifecycle.feature` and
+//! `unpark_from_ap_position.feature` share: a save on the mount's page is how
+//! a scenario reloads the driver. The steps on the mount's Actions are in
+//! `park_matches_power_up_pose_steps.rs`.
 
-use std::sync::Arc;
-
-use ascom_alpaca::ASCOMErrorCode;
 use bdd_infra::setup_pages::{self, dom, SetupPagesWorld as _, SERVER_PATH};
 use cucumber::{given, then, when};
 
@@ -269,39 +267,5 @@ fn transport_pinned(world: &mut StarAdventurerWorld, kind: String) {
         dom::matches(&state.last_body, &css),
         "the {kind} radio is not checked and disabled:\n{}",
         state.last_body
-    );
-}
-
-#[when("the supported actions are queried")]
-async fn query_supported_actions(world: &mut StarAdventurerWorld) {
-    let mount = Arc::clone(world.mount());
-    world.last_supported_actions = Some(mount.supported_actions().await.unwrap());
-}
-
-#[then("the supported actions are empty")]
-fn assert_no_actions(world: &mut StarAdventurerWorld) {
-    let actions = world
-        .last_supported_actions
-        .as_ref()
-        .expect("no supported actions queried");
-    assert!(actions.is_empty(), "SupportedActions lists {actions:?}");
-}
-
-#[when(regex = r#"^the action "([^"]+)" is called$"#)]
-async fn call_named_action(world: &mut StarAdventurerWorld, name: String) {
-    let mount = Arc::clone(world.mount());
-    match mount.action(name, String::new()).await {
-        Ok(_) => world.last_error_code = None,
-        Err(e) => world.last_error_code = Some(e.code.raw()),
-    }
-}
-
-#[then("the call should fail with an action-not-implemented error")]
-fn assert_action_not_implemented(world: &mut StarAdventurerWorld) {
-    assert_eq!(
-        world.last_error_code,
-        Some(ASCOMErrorCode::ACTION_NOT_IMPLEMENTED.raw()),
-        "expected ACTION_NOT_IMPLEMENTED, got {:?}",
-        world.last_error_code
     );
 }

@@ -31,6 +31,8 @@
 //!   exclusion zone.
 //! - [`park_persistence`] — JSON config-file read/write for `SetPark`
 //!   and the boot-time writability probe.
+//! - [`park_pose`] — the read-only Action `ParkMatchesPowerUpPose`:
+//!   whether the mount parks at the pose its next power-up seeds.
 //! - [`mount_state`](crate::mount_state) — the mount state record beside
 //!   the config file, and what a power-up connect makes of it.
 //! - [`power_watch`] — per-connection background task that drops what
@@ -55,6 +57,7 @@ use crate::setup::StarAdvDriver;
 mod device;
 mod inherent;
 mod park_persistence;
+mod park_pose;
 mod power_watch;
 mod pulse;
 mod recovery;
