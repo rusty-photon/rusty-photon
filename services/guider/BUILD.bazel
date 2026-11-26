@@ -60,6 +60,36 @@ rust_test(
     ),
 )
 
+# The guide log held to PHD2's format: the parser built from the logs PHD2
+# wrote on the rigs accepts each of them, and a log the guider's writer
+# writes (docs/services/guider.md § Guide log).
+rust_test(
+    name = "guide_log_format",
+    size = "small",
+    srcs = [
+        "tests/bdd/phd2_log.rs",
+        "tests/guide_log_format.rs",
+    ],
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate_root = "tests/guide_log_format.rs",
+    data = glob(["tests/fixtures/guide-logs/**"]),
+    edition = "2021",
+    env = {
+        "CARGO_MANIFEST_DIR": "services/guider",
+    },
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = [":guider_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 # BDD cucumber suite: each scenario starts the guider binary
 # (GUIDER_BINARY) against `guide-simulator-alpaca`'s devices, served in
 # the test process (docs/services/guider.md § Testing).

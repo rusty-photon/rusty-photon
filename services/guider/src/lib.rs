@@ -44,6 +44,7 @@ pub mod config;
 pub mod devices;
 pub mod doctor;
 pub mod error;
+pub mod guide_log;
 pub mod guider;
 pub mod mount;
 pub mod preview;
@@ -138,12 +139,14 @@ impl ServerBuilder {
         let server = config.server.clone();
         let config = Arc::new(config);
         let store = Arc::new(CalibrationStore::open(&state_dir));
+        let guide_log = guide_log::GuideLog::new(&state_dir, config.guide_log);
         let guider = Arc::new(Guider::new(
             Arc::clone(&config),
             camera,
             mount,
             devices.clone(),
             store,
+            guide_log,
         ));
         let router =
             routes::build_router(routes::AppState::new(config, devices, Arc::clone(&guider)));
@@ -263,6 +266,7 @@ impl BoundServer {
             if let Err(error) = guider.stop().await {
                 debug!(error = %error.message, "the loop did not end before the shutdown");
             }
+            guider.close_guide_log();
         };
 
         let served = match self.tls {

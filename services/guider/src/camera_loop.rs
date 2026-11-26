@@ -43,12 +43,13 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::api::{ApiError, Stop};
+use crate::api::{ApiError, Stop, StopReason};
 use crate::calibration_store::{CalibrationStore, Record};
 use crate::config::Config;
 use crate::devices::{
     call, camera_sensor, CallError, CameraKind, CameraSensor, DeviceClient, DevicesState, Found,
 };
+use crate::guide_log::{self, GuideLog};
 use crate::guider::{AbortAnswer, FrameSummary, State, Status, Turn};
 use crate::mount::{Fault, MountStart, RunMount};
 use crate::sensor::{changed, effective_binning, FrameSettings, Reading};
@@ -71,6 +72,7 @@ pub struct LoopSetup {
     pub status: Arc<Mutex<Status>>,
     pub devices: watch::Receiver<DevicesState>,
     pub store: Arc<CalibrationStore>,
+    pub guide_log: Arc<Mutex<GuideLog>>,
     /// Answered with the guide stars of the first measured frame, for a
     /// `loop`.
     pub first: Option<oneshot::Sender<usize>>,
@@ -213,10 +215,29 @@ struct Calibrating {
     /// from `idle`, on the next from a loop that holds none, and on a fresh
     /// frame for a start.
     selecting: bool,
+    /// Whether the guide log's section has begun, which it does on the
+    /// first frame with an offset after the selection.
+    logged: bool,
     /// The request's turn, held until the guider is back in the state the
     /// request found, or has settled.
     turn: Turn,
     then: Then,
+}
+
+/// What a calibration's selection makes of a frame.
+enum Selection {
+    /// The frame goes on to the calibrator.
+    Steps,
+    /// The calibration ended on it, the loop going on or ending.
+    Ended(Option<Box<End>>),
+}
+
+/// A calibration's frame as the guide log takes it: whether it was
+/// measured, its offset, and what the calibrator made of it.
+struct Logged<'a> {
+    measured: bool,
+    offset: Option<Offset>,
+    progress: Option<&'a Progress>,
 }
 
 /// What a cycle's frame gave.
@@ -247,6 +268,7 @@ pub async fn run(
         status,
         devices,
         store,
+        guide_log,
         first,
         calibration,
         start,
@@ -267,6 +289,8 @@ pub async fn run(
         devices,
         status,
         store,
+        guide_log,
+        last_summary: None,
         config: Arc::clone(&config),
         epoch: Instant::now(),
         mode: Mode::Looping,
@@ -298,6 +322,9 @@ pub async fn run(
             break end;
         }
     };
+    if let End::Stop(stop) = &end {
+        cycle.log_stop(stop);
+    }
     cycle
         .exposer
         .end_exposure(cycle.sensor.can_abort_exposure)
@@ -342,6 +369,9 @@ struct Cycle {
     devices: watch::Receiver<DevicesState>,
     status: Arc<Mutex<Status>>,
     store: Arc<CalibrationStore>,
+    guide_log: Arc<Mutex<GuideLog>>,
+    /// What the latest measured frame gave, for the guide log's rows.
+    last_summary: Option<FrameSummary>,
     config: Arc<Config>,
     /// The start of the loop's clock, which a calibration's timeout runs
     /// on.
@@ -447,6 +477,7 @@ impl Cycle {
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Result<Result<ImageArray, String>, Stop> {
         let taken = {
+            let reference = self.star_at(Offset::default());
             let Self {
                 exposer,
                 devices,
@@ -454,6 +485,7 @@ impl Cycle {
                 inbox,
                 mode,
                 status,
+                guide_log,
                 ..
             } = self;
             let frame = exposer.frame();
@@ -465,7 +497,9 @@ impl Cycle {
                     Some(command) = commands.recv() => match command {
                         // An abort never queues: it acts as it arrives.
                         Command::AbortDither(reply) => {
-                            let _ = reply.send(guiding::abort(mode, status, inbox));
+                            let _ = reply.send(guiding::abort(
+                                mode, status, inbox, guide_log, reference,
+                            ));
                         }
                         command => inbox.push(command),
                     },
@@ -526,6 +560,7 @@ impl Cycle {
         self.stars = stars;
         // Recorded before the answers go out, so that a client that reads
         // stats or the latest frame on its answer finds the frame there.
+        self.last_summary = Some(summary);
         self.status.lock().record(summary, frame, centres);
         // A request that is gone has nothing to hear.
         if let Some(first) = self.first.take() {
@@ -602,9 +637,178 @@ impl Cycle {
             ),
             start,
             selecting: reselect || self.stars.is_none(),
+            logged: false,
             turn,
             then,
         }));
+    }
+
+    /// The guide log's name of the camera.
+    fn camera_name(&self) -> String {
+        self.config.devices.camera.as_ref().map_or_else(
+            || "Alpaca Camera".to_owned(),
+            |camera| format!("Alpaca Camera {}", camera.device_number),
+        )
+    }
+
+    /// The guide log's name of the mount.
+    fn mount_name(&self) -> String {
+        self.config.devices.mount.as_ref().map_or_else(
+            || "Alpaca Telescope".to_owned(),
+            |mount| format!("Alpaca Telescope {}", mount.device_number),
+        )
+    }
+
+    /// Where `offset` puts the first guide star on the sensor.
+    fn star_at(&self, offset: Offset) -> rp_guiding::Position {
+        let reference = self
+            .stars
+            .as_ref()
+            .and_then(|stars| stars.references().first().copied())
+            .unwrap_or_default();
+        rp_guiding::Position {
+            x: reference.x + offset.x,
+            y: reference.y + offset.y,
+        }
+    }
+
+    /// What both kinds of the guide log's header give, for a run on
+    /// `start`, with the lock and the stars at `lock` and `star`.
+    fn log_common(&self, start: &MountStart, lock: Offset, star: Offset) -> guide_log::Common {
+        guide_log::Common {
+            pixel_scale: self.setup(start).pixel_scale_arcsec(),
+            binning: effective_binning(self.sensor.sensor_type, self.reading.bin)
+                .map_or(1, u32::from),
+            focal_length_mm: self
+                .config
+                .optics
+                .focal_length_mm
+                .map_or(0.0, crate::config::FocalLength::get),
+            search_region_px: self.config.stars.search_region_px.get(),
+            mass_tolerance: self.config.stars.mass_change.get(),
+            stars: self
+                .stars
+                .as_ref()
+                .map_or(0, |stars| stars.references().len()),
+            camera: self.camera_name(),
+            gain: self.config.camera.gain,
+            width: self.sensor.width,
+            height: self.sensor.height,
+            pixel_size_um: self.sensor.pixel_size_um,
+            exposure: self.exposer.exposure,
+            mount: self.mount_name(),
+            guide_rates: start.guide_rates,
+            pointing: start.pointing,
+            declination_deg: start.declination_deg,
+            pier_side: start.side,
+            lock: self.star_at(lock),
+            star: self.star_at(star),
+            hfd: self.last_summary.and_then(|summary| summary.hfd),
+        }
+    }
+
+    /// Write a run's stop to the guide log: what the server received, or the
+    /// guider's own reason.
+    fn log_stop(&self, stop: &Stop) {
+        let note = if stop.reason == StopReason::Requested {
+            "Server received guiding/stop".to_owned()
+        } else {
+            format!(
+                "GUIDING STOPPED, {}: {}",
+                stop.reason.as_str(),
+                stop.message
+            )
+        };
+        self.guide_log.lock().stopped(&note, self.now());
+    }
+
+    /// Write a calibration's frame to the guide log, beginning its section
+    /// on the first frame with an offset, and the result of a leg the frame
+    /// ended; whether the section has begun.
+    fn log_calibration(
+        &self,
+        start: &MountStart,
+        logged: bool,
+        before: &Calibrator,
+        frame: &Logged<'_>,
+    ) -> bool {
+        let logged =
+            self.log_calibration_frame(start, logged, before, frame.offset, frame.measured);
+        if let Some(progress) = frame.progress {
+            self.log_leg_change(before, progress, start.declination_deg);
+        }
+        logged
+    }
+
+    /// Write a calibration's frame to the guide log, beginning its section
+    /// on the first frame with an offset; whether the section has begun.
+    fn log_calibration_frame(
+        &self,
+        start: &MountStart,
+        logged: bool,
+        before: &Calibrator,
+        offset: Option<Offset>,
+        measured: bool,
+    ) -> bool {
+        if !measured {
+            return logged;
+        }
+        let mut log = self.guide_log.lock();
+        let Some(offset) = offset else {
+            if logged {
+                let summary = self.last_summary;
+                log.calibration_star_lost(
+                    summary.and_then(|summary| summary.flux),
+                    summary.and_then(|summary| summary.snr),
+                );
+            }
+            return logged;
+        };
+        let leg_start = before.leg_start().unwrap_or(offset);
+        if !logged {
+            log.begin_calibration(
+                &self.log_common(start, leg_start, offset),
+                before.ra_step(),
+                self.config.calibration.distance_px.get(),
+            );
+        }
+        log.calibration_row(&guide_log::CalibrationRow {
+            leg: before.leg(),
+            step: before.steps(),
+            start: leg_start,
+            now: offset,
+            star: self.star_at(offset),
+        });
+        true
+    }
+
+    /// Write the result of the West or the North leg to the guide log, as
+    /// the calibration leaves it.
+    fn log_leg_change(&self, before: &Calibrator, progress: &Progress, declination_deg: f64) {
+        let (Progress::Pulse(next, _) | Progress::Wait(next)) = progress else {
+            return;
+        };
+        if next.leg() == before.leg() {
+            return;
+        }
+        let measured = match before.leg() {
+            rp_guiding::Leg::West => next.ra_axis().map(|ra| {
+                // The RA rate at the declination, the rate the leg measured.
+                (
+                    ra.angle_deg,
+                    ra.rate_px_per_s * declination_deg.to_radians().cos(),
+                )
+            }),
+            rp_guiding::Leg::North => next
+                .dec_axis()
+                .map(|dec| (dec.angle_deg, dec.rate_px_per_s)),
+            _ => None,
+        };
+        if let Some((angle_deg, rate)) = measured {
+            self.guide_log
+                .lock()
+                .leg_complete(before.leg(), angle_deg, rate);
+        }
     }
 
     /// The time on the loop's clock.
@@ -626,34 +830,12 @@ impl Cycle {
     /// What follows a frame of a calibration: the calibrator's next step.
     async fn calibration_frame(&mut self, took: Took, cancel: &CancellationToken) -> Option<End> {
         let now = self.now();
+        if let Selection::Ended(end) = self.calibration_selection(&took) {
+            return end.map(|end| *end);
+        }
         let Mode::Calibrating(calibrating) = &mut self.mode else {
             return None;
         };
-        if calibrating.selecting {
-            match took {
-                Took::Measured {
-                    selection: Some(Err(())),
-                    ..
-                } => {
-                    return self.calibration_ended(Err(ApiError::no_stars()), None);
-                }
-                Took::Measured {
-                    selection: Some(Ok(_)),
-                    ..
-                } => {
-                    calibrating.selecting = false;
-                    // A run calibrated again on a fresh selection.
-                    if let Then::Guide(guiding::StartAfter {
-                        found: guiding::Found::Run(_),
-                        ..
-                    }) = calibrating.then
-                    {
-                        self.status.lock().interruption();
-                    }
-                }
-                Took::Measured { .. } | Took::Failed(_) => {}
-            }
-        }
         let offset = match took {
             Took::Measured { offset, .. } if !calibrating.selecting => offset,
             Took::Measured { .. } | Took::Failed(_) => None,
@@ -665,7 +847,19 @@ impl Cycle {
         let frame_offset = offset;
         let calibrator = calibrating.calibrator.take()?;
         let before = calibrator.clone();
-        let progress = match calibrator.frame(offset, now) {
+        let (start, logged) = (calibrating.start, calibrating.logged);
+        let progress = calibrator.frame(offset, now);
+        let frame = Logged {
+            measured: matches!(took, Took::Measured { .. }),
+            offset,
+            progress: progress.as_ref().ok(),
+        };
+        let logged = self.log_calibration(&start, logged, &before, &frame);
+        let Mode::Calibrating(calibrating) = &mut self.mode else {
+            return None;
+        };
+        calibrating.logged = logged;
+        let progress = match progress {
             Ok(progress) => progress,
             Err(error) => {
                 info!(%error, "calibration failed");
@@ -723,6 +917,44 @@ impl Cycle {
         calibrating.mount.cycle(failed.as_deref()).map(End::Stop)
     }
 
+    /// The selection a calibration waits for, on `took`: with too few stars
+    /// the calibration ends with `no_stars`, and the frame is done with how
+    /// the loop goes on; with enough the calibration takes its steps from
+    /// this frame on, and a run calibrated again on it counts the
+    /// interruption.
+    fn calibration_selection(&mut self, took: &Took) -> Selection {
+        let Mode::Calibrating(calibrating) = &mut self.mode else {
+            return Selection::Ended(None);
+        };
+        if !calibrating.selecting {
+            return Selection::Steps;
+        }
+        match took {
+            Took::Measured {
+                selection: Some(Err(())),
+                ..
+            } => Selection::Ended(
+                self.calibration_ended(Err(ApiError::no_stars()), None)
+                    .map(Box::new),
+            ),
+            Took::Measured {
+                selection: Some(Ok(_)),
+                ..
+            } => {
+                calibrating.selecting = false;
+                if let Then::Guide(guiding::StartAfter {
+                    found: guiding::Found::Run(_),
+                    ..
+                }) = calibrating.then
+                {
+                    self.status.lock().interruption();
+                }
+                Selection::Steps
+            }
+            Took::Measured { .. } | Took::Failed(_) => Selection::Steps,
+        }
+    }
+
     /// A calibration ended with `outcome`, on a frame with `offset`: a
     /// `calibrate` goes back to the state its request found, the loop going
     /// on or ending with it; a start guides, or does not.
@@ -731,6 +963,13 @@ impl Cycle {
         outcome: Result<Record, ApiError>,
         offset: Option<Offset>,
     ) -> Option<End> {
+        {
+            let mut log = self.guide_log.lock();
+            match &outcome {
+                Ok(_) => log.calibration_complete(&self.mount_name()),
+                Err(error) => log.calibration_failed(&error.message),
+            }
+        }
         let Mode::Calibrating(calibrating) = std::mem::replace(&mut self.mode, Mode::Looping)
         else {
             return None;
@@ -1445,6 +1684,11 @@ mod tests {
             devices,
             status: Arc::new(Mutex::new(Status::new())),
             store: Arc::new(CalibrationStore::open(&dir)),
+            guide_log: Arc::new(Mutex::new(GuideLog::new(
+                &dir,
+                crate::config::GuideLogConfig::default(),
+            ))),
+            last_summary: None,
             config: Arc::new(config),
             epoch: Instant::now(),
             mode: Mode::Looping,
@@ -1483,6 +1727,7 @@ mod tests {
                     ra_deg_per_s: 0.004,
                     dec_deg_per_s: 0.004,
                 }),
+                pointing: None,
             },
             reply,
             return_to,

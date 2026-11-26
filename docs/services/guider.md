@@ -15,9 +15,9 @@ clients and their poll, the camera loop and the sensor handling,
 `loop`, `star/reselect` and `guiding/stop`, the requests' turns, the
 metrics window, `stats`, `frame/latest`, the mount check and the pulses,
 `calibrate` and the calibration store, guiding with its pause, dither
-and settling, the statistics and the running totals, `GET
-/api/v1/devices`, `/health` and `guider doctor` are built; the guide
-log, the setup page and the packages are not yet. Of the guiding core,
+and settling, the statistics and the running totals, the guide log,
+`GET /api/v1/devices`, `/health` and `guider doctor` are built; the
+setup page and the packages are not yet. Of the guiding core,
 `crates/rp-guiding`, the star selection, the measurement, the
 calibration, the control, dither and settling are built.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
@@ -1425,6 +1425,62 @@ change.
   measured offset, the error on each axis, the pulses sent and the
   star's flux and signal-to-noise ratio; and a note for each dither,
   settle, pause, resume, star-lost frame and stop.
+- **The lines, in PHD2's words.** Where PHD2 has a line for something,
+  the guider writes that line, with the same punctuation and precision:
+  - A file is one block. It opens with
+    `PHD2 version rusty-photon guider <version> [<platform>], Log version 2.5. Log enabled at <time>`,
+    the format's first line with the guider named where PHD2 gives its
+    version. It closes when the next file starts or the service stops,
+    with a blank line, `Log Summary: calcnt:<calibrations passed> gcnt:<runs ended> gdur:<seconds those runs guided> gacnt:0`
+    and `Log closed at <time>`. Times are local, as
+    `YYYY-MM-DD HH:MM:SS`.
+  - A calibration opens with a blank line and
+    `Calibration Begins at <time>`, its header and the column heading
+    `Direction,Step,dx,dy,x,y,Dist`. Each frame of a leg is a row: the
+    leg (`West`, `East`, `Backlash` for the North leg that clears the
+    backlash, `North`, `South`), the leg's pulses so far, the stars'
+    displacement since the leg began as PHD2 gives it (the leg's start
+    less where the stars are, which is the way the mount moved), the
+    first guide star's position on the sensor and the distance. The
+    West and North legs are each followed by
+    `<West|North> calibration complete. Angle = <deg> deg, Rate = <px/s> px/sec, Parity = N/A`,
+    the angle the way the mount moved. A calibration that passes ends
+    with `Calibration complete, mount = <mount>.`, and one that fails
+    or stops with a note that says why.
+  - A guiding run opens with a blank line and
+    `Guiding Begins at <time>`, its header and PHD2's 18-column
+    heading, and ends with `Guiding Ends at <time>`. Each guide step is
+    a `"Mount"` row: the frame number and the seconds since the run
+    began, the offset from the lock on the sensor, the error on each
+    axis and the distance its correction covers, each pulse's duration
+    in milliseconds and its direction, and the usable stars' flux and
+    signal-to-noise ratio. The distances are signed as PHD2 signs
+    them: a positive RA distance is corrected West, and a positive Dec
+    distance South. A star-lost frame is a `"DROP"` row, error code 5,
+    `"Too few guide stars usable"`.
+  - The headers give what PHD2's give, where the guider has it: the
+    pixel scale, the binning and the focal length, the stars' search
+    region and how many are selected, the camera's size and pixel
+    size, the exposure, the mount with its calibrated angles and
+    rates, the controllers' parameters (`Hysteresis` on RA and
+    `Resist Switch` on Dec, which is what they are), the pulse bounds,
+    the guide rates, the pointing, and the lock and star positions.
+    The pointing is read when the run starts; a read that fails or
+    is not implemented makes it `RA/Dec = Unknown`, as PHD2 writes it.
+  - The notes are PHD2's `INFO:` lines: `DITHER by <dx>, <dy>, new lock pos = <x>, <y>`,
+    `SET LOCK POSITION, new lock pos = <x>, <y>` for an aborted
+    dither, `SETTLING STATE CHANGE, Settling started` (and
+    `complete`, `failed`), and
+    `STAR LOST during calibration, Mass= <flux>, SNR= <snr>, Error= 5, Status=Too few guide stars usable`,
+    and `SET LOCK POSITION` too for the new lock a new selection takes.
+    PHD2 has no note for a pause, a resume or a failed calibration,
+    and writes what its
+    server receives as `Server received <command>`: the guider writes
+    `Server received guiding/pause, full = <true|false>`,
+    `Server received guiding/resume` and
+    `Server received guiding/stop` in that form, a stop of its own as
+    `GUIDING STOPPED, <reason>: <message>`, and a calibration that
+    fails as `CALIBRATION FAILED, <message>`.
 - **How it is kept true to the format.** Logs that PHD2 itself wrote
   are test fixtures, in `services/guider/tests/fixtures/guide-logs/`
   with a README that says what each one holds. The guider's writer is

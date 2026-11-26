@@ -36,6 +36,7 @@ use crate::devices::{
     camera_sensor, CameraKind, CameraSensor, DeviceClient, DevicesState, Found, Kind, MountKind,
     Reach,
 };
+use crate::guide_log::GuideLog;
 use crate::mount;
 use crate::sensor;
 
@@ -431,6 +432,9 @@ pub struct Guider {
     /// The mutating requests' turns.
     turns: Arc<tokio::sync::Mutex<()>>,
     store: Arc<CalibrationStore>,
+    /// The guide log, which outlives each loop: a night's file holds every
+    /// run of the night.
+    guide_log: Arc<Mutex<GuideLog>>,
     /// The count of stops.
     stops: watch::Sender<u64>,
     running: Mutex<Option<Running>>,
@@ -450,6 +454,7 @@ impl Guider {
         mount: Option<Arc<DeviceClient>>,
         devices: watch::Receiver<DevicesState>,
         store: Arc<CalibrationStore>,
+        guide_log: GuideLog,
     ) -> Self {
         Self {
             config,
@@ -458,12 +463,18 @@ impl Guider {
             devices,
             turns: Arc::new(tokio::sync::Mutex::new(())),
             store,
+            guide_log: Arc::new(Mutex::new(guide_log)),
             stops: watch::Sender::new(0),
             running: Mutex::new(None),
             status: Arc::new(Mutex::new(Status::new())),
             epoch: uuid::Uuid::new_v4().to_string(),
             ended_abnormally: CancellationToken::new(),
         }
+    }
+
+    /// Close the guide log's file, as the service stops.
+    pub fn close_guide_log(&self) {
+        self.guide_log.lock().close();
     }
 
     /// Cancelled when a loop's task ends without a stop, which the process
@@ -940,6 +951,7 @@ impl Guider {
             status: Arc::clone(&self.status),
             devices: self.devices.clone(),
             store: Arc::clone(&self.store),
+            guide_log: Arc::clone(&self.guide_log),
             first,
             calibration,
             start,
@@ -1237,7 +1249,7 @@ mod tests {
         }))
         .unwrap();
         let (_, devices) = watch::channel(DevicesState::default());
-        Guider::new(Arc::new(config), None, None, devices, store())
+        Guider::new(Arc::new(config), None, None, devices, store(), guide_log())
     }
 
     /// A store in a directory of its own, which the test leaves behind for
@@ -1245,6 +1257,11 @@ mod tests {
     fn store() -> Arc<CalibrationStore> {
         let dir = tempfile::tempdir().unwrap().keep();
         Arc::new(CalibrationStore::open(&dir))
+    }
+
+    fn guide_log() -> GuideLog {
+        let dir = tempfile::tempdir().unwrap().keep();
+        GuideLog::new(&dir, crate::config::GuideLogConfig::default())
     }
 
     fn summary(star_count: usize) -> FrameSummary {
@@ -1612,7 +1629,14 @@ mod tests {
             }),
             mount: None,
         });
-        Guider::new(Arc::new(Config::default()), None, None, devices, store())
+        Guider::new(
+            Arc::new(Config::default()),
+            None,
+            None,
+            devices,
+            store(),
+            guide_log(),
+        )
     }
 
     #[tokio::test]

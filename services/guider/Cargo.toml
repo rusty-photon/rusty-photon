@@ -17,6 +17,9 @@ workspace = true
 ascom-alpaca = { workspace = true, features = ["client", "camera", "telescope"] }
 axum = { workspace = true }
 base64 = { workspace = true }
+# The guide log's local times: its files' names, its lines and the noon that
+# turns a night.
+chrono = { workspace = true }
 clap = { workspace = true }
 humantime = { workspace = true }
 ndarray = { workspace = true }
