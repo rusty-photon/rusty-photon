@@ -63,6 +63,20 @@ node_test(
     ],
 )
 
+# bazel-stall-probe: bazel.yml's macOS `bazel build`, watched for the
+# remote-cache wedge's silence. The tests start a fake in Bazel's place.
+node_test(
+    name = "bazel_stall_probe_test",
+    size = "small",
+    srcs = ["bazel-stall-probe/probe.test.mjs"],
+    data = [
+        "bazel-stall-probe/probe.mjs",
+        "lib/helpers.mjs",
+        "lib/processes.mjs",
+        "lib/testing.mjs",
+    ],
+)
+
 # conformu-run: conformu.yml's ConformU suites at once, on Linux and macOS.
 # The tests start a fake in cargo's place.
 node_test(
