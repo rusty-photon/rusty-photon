@@ -256,8 +256,7 @@ One async trait — the single seam between the plan store and `rp`.
 `redb` is a synchronous engine; the shipped impl does each operation's
 work on the Tokio blocking pool (`spawn_blocking`), exactly as
 `rp-fits`/`persistence::document` already wrap blocking sidecar I/O. The
-async surface keeps the consumer ergonomic inside `rp`'s async planner,
-and any other implementation needs no blocking pool at all.
+async surface keeps the consumer ergonomic inside `rp`'s async planner.
 
 ```text
 upsert_target(target)            -> Result<(), TargetStoreError>
