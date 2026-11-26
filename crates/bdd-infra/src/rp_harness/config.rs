@@ -350,6 +350,10 @@ pub struct RpConfigBuilder {
     pub temperature_watch: Option<(std::time::Duration, f64)>,
     /// Singular mount — at most one per `rp` deployment.
     pub mount: Option<MountConfig>,
+    /// `equipment.mount.power_cut_keeps_pose`: the operator's word that a
+    /// power cut keeps a mount without the pose Action where it parks.
+    /// `None` ⇒ omit the key. Setting it requires a mount.
+    pub mount_power_cut_keeps_pose: Option<bool>,
     /// Optional plate-solver service config. `None` ⇒ omit the
     /// top-level `plate_solver` block from the emitted config so
     /// rp's `plate_solve` MCP tool reports "not configured".
@@ -530,6 +534,13 @@ impl RpConfigBuilder {
     /// "not configured".
     pub fn with_guider(&mut self, guider: GuiderConfig) -> &mut Self {
         self.guider = Some(guider);
+        self
+    }
+
+    /// Set `equipment.mount.power_cut_keeps_pose` — call
+    /// [`Self::with_mount`] too.
+    pub const fn with_mount_power_cut_keeps_pose(&mut self, keeps_pose: bool) -> &mut Self {
+        self.mount_power_cut_keeps_pose = Some(keeps_pose);
         self
     }
 
@@ -832,6 +843,13 @@ impl RpConfigBuilder {
             });
             if let Some(d) = m.settle_after_slew {
                 set_key(&mut obj, "settle_after_slew", duration_ms(d));
+            }
+            if let Some(keeps_pose) = self.mount_power_cut_keeps_pose {
+                set_key(
+                    &mut obj,
+                    "power_cut_keeps_pose",
+                    serde_json::json!(keeps_pose),
+                );
             }
             if let Some(g) = &self.guider {
                 set_key(&mut obj, "guiding", guiding_block(g));

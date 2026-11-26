@@ -1648,6 +1648,7 @@ mod tests {
                     slew_rate_arcsec_per_sec: config::mount::SlewRateArcsecPerSec::default(),
                     guiding: None,
                     auth: None,
+                    power_cut_keeps_pose: None,
                 },
                 session: DeviceSession::disconnected(),
             }),

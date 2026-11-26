@@ -157,13 +157,18 @@ pub const UNGATED: &[&str] = &[
     // plan schema / validation
     "get_plan_schema",
     "validate_plan",
-    // power: a dawn document cuts power whatever the weather, and a
-    // dusk document checks the sky before it powers anything up
+    // power: dawn cuts power whatever the weather, and the night
+    // schedule checks the sky before dusk powers anything up
     "disconnect_device",
     "connect_device",
     "get_switch",
     "set_switch",
     "restart_service",
+    "get_power_map",
+    "power_up",
+    "power_down",
+    // a dark test frame that keeps nothing, as an unsafe hour allows
+    "check_camera",
 ];
 
 /// The built-in class of a catalog tool.

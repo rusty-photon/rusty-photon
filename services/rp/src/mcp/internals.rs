@@ -838,6 +838,89 @@ fn wind_down(
     });
 }
 
+/// Why a wait for a frame ended without one.
+enum ReadyWait {
+    /// The frame was not ready by the readout backstop (`duration` plus
+    /// [`CAPTURE_READOUT_GRACE`]).
+    Backstop(String),
+    /// Any other end: a failed or aborted exposure, a read error, a
+    /// cancelled call.
+    Failed(String),
+}
+
+impl ReadyWait {
+    fn into_message(self) -> String {
+        match self {
+            Self::Backstop(message) | Self::Failed(message) => message,
+        }
+    }
+}
+
+/// The margin past `duration` plus the camera's readout estimate that a
+/// test frame may take before `check_camera` counts it late: `capture`'s
+/// advisory maximum (rp.md § Capture Tool Details).
+const CHECK_LATE_MARGIN: Duration = Duration::from_secs(30);
+
+/// What `check_camera` says of a camera (rp.md § Checking a camera for
+/// a wedge).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckVerdict {
+    Ok,
+    Wedged,
+    Unavailable,
+}
+
+impl CheckVerdict {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Wedged => "wedged",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// What a `check_camera` came to: the verdict, the time from the camera
+/// accepting the exposure to the frame ready (`None` when the exposure
+/// never started), and the reason for `unavailable`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CameraCheck {
+    pub(crate) verdict: CheckVerdict,
+    pub(crate) elapsed: Option<Duration>,
+    pub(crate) error: Option<String>,
+}
+
+impl CameraCheck {
+    const fn unavailable(error: String) -> Self {
+        Self {
+            verdict: CheckVerdict::Unavailable,
+            elapsed: None,
+            error: Some(error),
+        }
+    }
+}
+
+/// The verdict on a frame that came back: `wedged` when it was ready
+/// later than `duration` plus `readout_estimate` plus
+/// [`CHECK_LATE_MARGIN`], or when every pixel reads 0; `ok` otherwise.
+/// A wedged camera reads out for a minute or more and returns an
+/// all-zero frame.
+pub(crate) fn frame_verdict(
+    elapsed: Duration,
+    duration: Duration,
+    readout_estimate: Duration,
+    all_zero: bool,
+) -> CheckVerdict {
+    let late_after = duration
+        .saturating_add(readout_estimate)
+        .saturating_add(CHECK_LATE_MARGIN);
+    if all_zero || elapsed > late_after {
+        CheckVerdict::Wedged
+    } else {
+        CheckVerdict::Ok
+    }
+}
+
 /// Download the finished frame and give up the camera: the guide camera
 /// guard when the capture holds it, and the capture slot (rp.md
 /// § Capture Tool Details, Concurrency). Nothing
@@ -1614,6 +1697,92 @@ impl McpHandler {
         outcome
     }
 
+    /// The body of `check_camera` (rp.md § Checking a camera for a
+    /// wedge): one dark exposure of `duration` at full frame, through
+    /// the camera's capture slot and the guide camera guard as a capture
+    /// takes them, keeping nothing: no file, no exposure document, no
+    /// exposure events. At the readout backstop the exposure is aborted
+    /// and the slot given back.
+    pub(crate) async fn do_check_camera(
+        &self,
+        camera_id: &str,
+        duration: Duration,
+        cancel: &Cancel,
+    ) -> CameraCheck {
+        let mut hold = CameraHold::default();
+        let check = self
+            .check_holding(camera_id, duration, &mut hold, cancel)
+            .await;
+        hold.release();
+        drop(hold);
+        debug!(camera_id, verdict = check.verdict.as_str(), elapsed = ?check.elapsed, "checked a camera for a wedge");
+        check
+    }
+
+    /// [`Self::do_check_camera`], filling `hold` with what the check
+    /// takes of its camera. The caller releases what is left in it.
+    async fn check_holding(
+        &self,
+        camera_id: &str,
+        duration: Duration,
+        hold: &mut CameraHold,
+        cancel: &Cancel,
+    ) -> CameraCheck {
+        let CameraClaim {
+            cam,
+            readout_time_estimate,
+            invariants,
+            motion_permit: _motion_permit,
+            lease_call: _lease_call,
+            indoor_slot: _indoor_slot,
+        } = match self
+            .claim_camera(camera_id, None, false, cancel, hold)
+            .await
+        {
+            Ok(claim) => claim,
+            Err(e) => return CameraCheck::unavailable(e),
+        };
+        if let Err(e) = apply_frame_geometry(
+            &cam,
+            crate::mcp::built_in::camera::DEFAULT_BINNING,
+            &invariants,
+        )
+        .await
+        {
+            return CameraCheck::unavailable(e);
+        }
+        if let Err(e) = cam.start_exposure(duration, false).await {
+            return CameraCheck::unavailable(format!("failed to start exposure: {e}"));
+        }
+        let started = Instant::now();
+        match Self::wait_for_image_ready(&cam, duration, None, cancel).await {
+            Ok(()) => {}
+            Err(ReadyWait::Backstop(message)) => {
+                debug!(camera_id, %message, "test frame not ready by the readout backstop; aborting it");
+                if let Err(e) = cam.abort_exposure().await {
+                    debug!(camera_id, error = %e, "abort_exposure at the backstop failed");
+                }
+                return CameraCheck {
+                    verdict: CheckVerdict::Wedged,
+                    elapsed: Some(started.elapsed()),
+                    error: None,
+                };
+            }
+            Err(ReadyWait::Failed(message)) => return CameraCheck::unavailable(message),
+        }
+        let elapsed = started.elapsed();
+        let image_array = match download_frame(&cam, hold).await {
+            Ok(image_array) => image_array,
+            Err(e) => return CameraCheck::unavailable(e),
+        };
+        let all_zero = image_array.iter().all(|&pixel| pixel == 0);
+        CameraCheck {
+            verdict: frame_verdict(elapsed, duration, readout_time_estimate, all_zero),
+            elapsed: Some(elapsed),
+            error: None,
+        }
+    }
+
     /// [`Self::do_capture`], filling `hold` with what the capture takes
     /// of its camera. The caller releases what is left in it.
     async fn capture_holding(
@@ -1719,7 +1888,7 @@ impl McpHandler {
                     let abandoned = (hold.take(), motion_permit.take(), lease_call.take());
                     wind_down(&cam, camera_id, abandoned, exposure_start, duration);
                 }
-                return Err(e);
+                return Err(e.into_message());
             }
             let window = ExposureWindow {
                 requested: started_at,
@@ -2505,7 +2674,7 @@ impl McpHandler {
         duration: Duration,
         progress: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
-    ) -> std::result::Result<(), String> {
+    ) -> std::result::Result<(), ReadyWait> {
         let started_at = Instant::now();
         let total_budget = duration.saturating_add(CAPTURE_READOUT_GRACE);
         // A budget too large for the clock degrades to an
@@ -2531,7 +2700,7 @@ impl McpHandler {
                     if let Err(e) = cam.abort_exposure().await {
                         debug!(error = %e, "abort_exposure after cancellation failed");
                     }
-                    return Err(cancel.error());
+                    return Err(ReadyWait::Failed(cancel.error()));
                 }
                 () = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
@@ -2547,7 +2716,7 @@ impl McpHandler {
                                 || "camera reported error state".to_string(),
                                 |e| e.to_string(),
                             );
-                            return Err(format!("exposure failed: {detail}"));
+                            return Err(ReadyWait::Failed(format!("exposure failed: {detail}")));
                         }
                         // An aborted exposure (the safety enforcer's
                         // best-effort AbortExposure, an operator abort)
@@ -2565,16 +2734,18 @@ impl McpHandler {
                                 match cam.image_ready().await {
                                     Ok(true) => return Ok(()),
                                     Ok(false) => {
-                                        return Err(
+                                        return Err(ReadyWait::Failed(
                                             "exposure aborted: camera is idle with no image"
                                                 .to_string(),
-                                        )
+                                        ))
                                     }
                                     // A read error is a read error, not
                                     // an abort — same treatment as the
                                     // outer poll's Err arm.
                                     Err(e) => {
-                                        return Err(format!("error checking image ready: {e}"))
+                                        return Err(ReadyWait::Failed(format!(
+                                            "error checking image ready: {e}"
+                                        )))
                                     }
                                 }
                             }
@@ -2583,9 +2754,9 @@ impl McpHandler {
                     }
                     let now = Instant::now();
                     if now >= deadline {
-                        return Err(format!(
+                        return Err(ReadyWait::Backstop(format!(
                             "timeout waiting for image_ready after {total_budget:?}"
-                        ));
+                        )));
                     }
                     if let Some(sink) = progress {
                         if now.duration_since(last_progress_at) >= PROGRESS_INTERVAL {
@@ -2601,7 +2772,11 @@ impl McpHandler {
                         }
                     }
                 }
-                Err(e) => return Err(format!("error checking image ready: {e}")),
+                Err(e) => {
+                    return Err(ReadyWait::Failed(format!(
+                        "error checking image ready: {e}"
+                    )))
+                }
             }
         }
     }

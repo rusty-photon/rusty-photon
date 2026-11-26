@@ -70,6 +70,20 @@ fn result_contains_field(world: &mut RpWorld, field: String) {
 /// The binning envelope is cached at connect time, so `null` means
 /// exactly that the connect-time capability read failed — the contract
 /// is "present, and a boolean or null".
+#[then(expr = "the tool result should contain {string} as a positive number")]
+fn result_contains_positive_number(world: &mut RpWorld, field: String) {
+    let result = world
+        .last_tool_result
+        .as_ref()
+        .expect("no tool was called")
+        .as_ref()
+        .unwrap_or_else(|e| panic!("the tool call failed: {e}"));
+    let value = result[field.as_str()]
+        .as_f64()
+        .unwrap_or_else(|| panic!("{field} is not a number: {result}"));
+    assert!(value > 0.0, "{field} = {value}, expected above 0: {result}");
+}
+
 #[then(expr = "the tool result should contain {string} as a boolean or null")]
 fn result_contains_boolean_or_null(world: &mut RpWorld, field: String) {
     let result = world

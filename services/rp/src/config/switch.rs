@@ -41,6 +41,16 @@ impl SwitchConfig {
         let mut errors = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (j, output) in self.outputs.iter().enumerate() {
+            if output.daily && output.protected.is_some() {
+                errors.push(FieldError {
+                    path: format!("equipment.switches.{index}.outputs.{j}.daily"),
+                    msg: format!(
+                        "output '{}' is protected, so the night never cuts it; it cannot be \
+                         daily too (switch '{}')",
+                        output.name, self.id
+                    ),
+                });
+            }
             let path = format!("equipment.switches.{index}.outputs.{j}.name");
             if output.name.trim().is_empty() {
                 errors.push(FieldError {
@@ -91,6 +101,11 @@ pub struct OutputConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub protected: Option<ProtectedReason>,
+    /// The night switches the output: on at dusk and off at dawn, and
+    /// `power_up` and `power_down` called without outputs take exactly
+    /// the outputs marked so. Never set on a protected output.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub daily: bool,
 }
 
 /// The reason an output is protected, as the operator wrote it.
@@ -176,6 +191,37 @@ mod tests {
             errors[1].msg.contains("more than once"),
             "{}",
             errors[1].msg
+        );
+    }
+
+    #[test]
+    fn a_protected_output_cannot_be_daily_too() {
+        let config = switch_with_outputs(serde_json::json!([
+            {"name": "Quad 12V Output", "devices": ["main-cam"], "daily": true},
+            {"name": "Adjustable Output", "protected": "the Pi runs off it", "daily": true}
+        ]));
+
+        let errors = config.field_errors(0);
+
+        let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["equipment.switches.0.outputs.1.daily"]);
+        assert!(errors[0].msg.contains("protected"), "{}", errors[0].msg);
+    }
+
+    #[test]
+    fn daily_round_trips_and_is_left_out_when_false() {
+        let config = switch_with_outputs(serde_json::json!([
+            {"name": "Quad 12V Output", "daily": true},
+            {"name": "Dew Heater A", "daily": false}
+        ]));
+        assert!(config.outputs[0].daily);
+        assert!(!config.outputs[1].daily);
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["outputs"],
+            serde_json::json!([
+                {"name": "Quad 12V Output", "daily": true},
+                {"name": "Dew Heater A"}
+            ])
         );
     }
 

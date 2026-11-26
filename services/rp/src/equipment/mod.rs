@@ -79,6 +79,9 @@ pub struct EquipmentRegistry {
     /// device is connected between the check and the cut (rp.md § Power
     /// Switching).
     pub power: tokio::sync::Mutex<()>,
+    /// Held for the whole of a `power_up` or `power_down`, so the two
+    /// run one at a time; a second call waits for the first to end.
+    pub power_steps: tokio::sync::Mutex<()>,
     pub cameras: Vec<CameraEntry>,
     pub filter_wheels: Vec<FilterWheelEntry>,
     pub cover_calibrators: Vec<CoverCalibratorEntry>,
@@ -249,6 +252,7 @@ impl EquipmentRegistry {
         Self {
             ca_cert_path: ca_cert_path.map(std::path::Path::to_path_buf),
             power: tokio::sync::Mutex::new(()),
+            power_steps: tokio::sync::Mutex::new(()),
             cameras,
             filter_wheels,
             cover_calibrators,

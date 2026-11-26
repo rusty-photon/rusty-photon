@@ -108,6 +108,14 @@ pub struct MountConfig {
     /// Optional HTTP Basic Auth credentials for connecting to auth-enabled Alpaca services
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<rp_auth::config::ClientAuthConfig>,
+    /// The operator's word that a power cut and the next power-up leave
+    /// the mount where it parks, for a mount whose driver answers no
+    /// `ParkMatchesPowerUpPose` Action; `get_park_state` reports it as
+    /// `park_matches_power_up_pose`. A driver that lists the Action
+    /// answers for itself. Absent, such a mount keeps its power through
+    /// the day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_cut_keeps_pose: Option<bool>,
 }
 
 #[cfg(test)]
@@ -116,6 +124,24 @@ mod tests {
     use std::time::Duration;
 
     use crate::config::load_config;
+
+    #[test]
+    fn power_cut_keeps_pose_is_optional_and_reads_either_way() {
+        let bare: super::MountConfig =
+            serde_json::from_value(serde_json::json!({"alpaca_url": "http://localhost:11122"}))
+                .unwrap();
+        assert_eq!(bare.power_cut_keeps_pose, None);
+        assert!(serde_json::to_value(&bare)
+            .unwrap()
+            .get("power_cut_keeps_pose")
+            .is_none());
+        let vouched: super::MountConfig = serde_json::from_value(serde_json::json!({
+            "alpaca_url": "http://localhost:11122",
+            "power_cut_keeps_pose": true
+        }))
+        .unwrap();
+        assert_eq!(vouched.power_cut_keeps_pose, Some(true));
+    }
 
     #[test]
     fn mount_config_minimal_fields() {

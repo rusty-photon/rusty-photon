@@ -163,6 +163,108 @@ pub async fn await_restart(
     }
 }
 
+/// How long `power_up` waits for its devices to settle when the call
+/// names no `settle`.
+pub const DEFAULT_SETTLE: Duration = Duration::from_secs(30);
+
+/// The longest `settle` a `power_up` takes.
+pub const MAX_SETTLE: Duration = Duration::from_mins(5);
+
+/// The `settle` a `power_up` waits: the call's humantime duration, or
+/// [`DEFAULT_SETTLE`].
+///
+/// # Errors
+///
+/// A message naming the value when it does not parse or is longer than
+/// [`MAX_SETTLE`].
+pub fn parse_settle(settle: Option<&str>) -> Result<Duration, String> {
+    let Some(settle) = settle else {
+        return Ok(DEFAULT_SETTLE);
+    };
+    let duration = humantime::parse_duration(settle)
+        .map_err(|e| format!("settle {settle:?} is not a duration: {e}"))?;
+    if duration > MAX_SETTLE {
+        return Err(format!(
+            "settle {settle:?} is longer than the {} a power_up waits at most",
+            humantime::format_duration(MAX_SETTLE)
+        ));
+    }
+    Ok(duration)
+}
+
+/// One output a `power_up` or `power_down` switches, with the devices
+/// the power map puts on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PowerTarget {
+    pub switch_id: String,
+    pub output: String,
+    pub devices: Vec<String>,
+}
+
+/// The outputs a `power_up` (`cutting` false) or a `power_down`
+/// (`cutting` true) switches.
+///
+/// They are the ones `requested` names, as `(switch_id, output)` pairs,
+/// or, when the call names none, every output the power map marks
+/// `daily`, across every `switches[]` entry. An empty `requested` is no
+/// output. A pair named twice counts once.
+///
+/// # Errors
+///
+/// The refusal of the whole call, before anything is switched: a switch
+/// rp does not know, an output its power map does not list, and, when
+/// cutting, an output it marks protected.
+pub fn resolve_targets(
+    switches: &[&SwitchConfig],
+    requested: Option<&[(String, String)]>,
+    cutting: bool,
+) -> Result<Vec<PowerTarget>, String> {
+    let target = |switch: &SwitchConfig, output: &OutputConfig| PowerTarget {
+        switch_id: switch.id.clone(),
+        output: output.name.clone(),
+        devices: output.devices.clone(),
+    };
+    let Some(requested) = requested else {
+        return Ok(switches
+            .iter()
+            .flat_map(|switch| {
+                switch
+                    .outputs
+                    .iter()
+                    .filter(|output| output.daily)
+                    .map(|output| target(switch, output))
+            })
+            .collect());
+    };
+    let mut targets: Vec<PowerTarget> = Vec::with_capacity(requested.len());
+    for (switch_id, output) in requested {
+        let Some(switch) = switches.iter().find(|s| &s.id == switch_id) else {
+            return Err(format!("switch not found: {switch_id}"));
+        };
+        let Some(mapped) = switch.output(output) else {
+            return Err(format!(
+                "output '{output}' of switch '{switch_id}' is not in rp's power map, so rp does \
+                 not know what it feeds; list it under the switch's outputs to switch it \
+                 through rp"
+            ));
+        };
+        if cutting {
+            if let Some(reason) = &mapped.protected {
+                return Err(format!(
+                    "output '{output}' of switch '{switch_id}' is protected and is never \
+                     switched off through rp: {}",
+                    reason.as_str()
+                ));
+            }
+        }
+        let next = target(switch, mapped);
+        if !targets.contains(&next) {
+            targets.push(next);
+        }
+    }
+    Ok(targets)
+}
+
 /// One switch of a power box, as `get_switch` reports it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputReading {
@@ -316,11 +418,13 @@ mod tests {
                     name: "Quad 12V Output".to_string(),
                     devices: vec!["main-cam".to_string(), "mount".to_string()],
                     protected: None,
+                    daily: true,
                 },
                 OutputConfig {
                     name: "Adjustable Output".to_string(),
                     devices: Vec::new(),
                     protected: Some(ProtectedReason::try_new("the Pi runs off it".into()).unwrap()),
+                    daily: false,
                 },
             ],
         }
@@ -473,6 +577,88 @@ mod tests {
         .await;
         assert_eq!(restarted, Restarted::TimedOut);
         assert_eq!(restarted.as_str(), "timed_out");
+    }
+
+    #[test]
+    fn without_outputs_a_call_takes_every_daily_output() {
+        let config = power_box();
+        let targets = resolve_targets(&[&config], None, false).unwrap();
+        assert_eq!(
+            targets,
+            vec![PowerTarget {
+                switch_id: "ppba".to_string(),
+                output: "Quad 12V Output".to_string(),
+                devices: vec!["main-cam".to_string(), "mount".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn an_empty_list_is_no_output_not_the_daily_ones() {
+        let config = power_box();
+        assert_eq!(
+            resolve_targets(&[&config], Some(&[]), true).unwrap(),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_named_output_is_taken_once_however_often_it_is_named() {
+        let config = power_box();
+        let pair = ("ppba".to_string(), "Adjustable Output".to_string());
+        let targets = resolve_targets(&[&config], Some(&[pair.clone(), pair]), false).unwrap();
+        assert_eq!(targets.len(), 1, "{targets:?}");
+        assert_eq!(targets[0].output, "Adjustable Output");
+    }
+
+    #[test]
+    fn a_call_naming_an_unknown_switch_or_unmapped_output_is_refused_whole() {
+        let config = power_box();
+        let err = resolve_targets(
+            &[&config],
+            Some(&[("upb".to_string(), "Quad 12V Output".to_string())]),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("switch not found: upb"), "{err}");
+        let err = resolve_targets(
+            &[&config],
+            Some(&[
+                ("ppba".to_string(), "Quad 12V Output".to_string()),
+                ("ppba".to_string(), "USB Hub".to_string()),
+            ]),
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("not in rp's power map"), "{err}");
+    }
+
+    #[test]
+    fn cutting_refuses_a_protected_output_but_powering_up_takes_it() {
+        let config = power_box();
+        let pair = [("ppba".to_string(), "Adjustable Output".to_string())];
+        let err = resolve_targets(&[&config], Some(&pair), true).unwrap_err();
+        assert!(err.contains("the Pi runs off it"), "{err}");
+        assert_eq!(
+            resolve_targets(&[&config], Some(&pair), false)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn settle_defaults_to_thirty_seconds_and_stops_at_five_minutes() {
+        assert_eq!(parse_settle(None).unwrap(), Duration::from_secs(30));
+        assert_eq!(
+            parse_settle(Some("100ms")).unwrap(),
+            Duration::from_millis(100)
+        );
+        assert_eq!(parse_settle(Some("5m")).unwrap(), Duration::from_mins(5));
+        let err = parse_settle(Some("6m")).unwrap_err();
+        assert!(err.contains("longer than"), "{err}");
+        let err = parse_settle(Some("soon")).unwrap_err();
+        assert!(err.contains("not a duration"), "{err}");
     }
 
     #[test]

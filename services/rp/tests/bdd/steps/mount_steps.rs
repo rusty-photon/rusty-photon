@@ -30,6 +30,11 @@ async fn rp_running_with_mount(world: &mut RpWorld) {
     start_rp(world).await;
 }
 
+#[given("the mount entry sets power_cut_keeps_pose to true")]
+const fn mount_vouched_for(world: &mut RpWorld) {
+    world.mount_power_cut_keeps_pose = Some(true);
+}
+
 #[given("rp is running without a mount")]
 async fn rp_running_without_mount(world: &mut RpWorld) {
     if world.omnisim.is_none() {

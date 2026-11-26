@@ -11,6 +11,25 @@ Feature: Camera info tool
   tool error). Workflow plugins use this to compute target ADU levels for
   flat calibration and to pin the gain a flat-timing record was trained at.
 
+  It reads the cooler the same way, on every call: cooler_on (CoolerOn),
+  cooler_power_pct (CoolerPower) and ccd_temperature_c (CCDTemperature),
+  each null only when the driver does not implement it, and
+  cooler_running, true when CoolerOn is true or CoolerPower is above 0,
+  false when neither, null when the driver implements neither.
+
+  Scenario: The cooler's state reads beside the camera's capabilities
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When another client switches the simulator camera's cooler on
+    And the MCP client calls "get_camera_info" with camera "main-cam"
+    Then the tool result at "/cooler_on" should be the JSON true
+    And the tool result at "/cooler_running" should be the JSON true
+    When another client switches the simulator camera's cooler off
+    And the MCP client calls "get_camera_info" with camera "main-cam"
+    Then the tool result at "/cooler_on" should be the JSON false
+    And the tool result at "/cooler_running" should be the JSON false
+
   Scenario: Returns max_adu and sensor dimensions for connected camera
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
