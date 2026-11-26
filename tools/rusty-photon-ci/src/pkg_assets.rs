@@ -728,9 +728,10 @@ fn vendor_id(rule: &str) -> Option<&str> {
     })
 }
 
-/// The value of each udev `MODE` assignment in `text`, by `=` or `:=` and
-/// with or without spaces around the operator, without its quotes or the
-/// backslashes a shell string escapes them with.
+/// The value of each udev `MODE` assignment in `text`, by `=`, `:=` or `+=`
+/// (which udev warns about and takes as `=`) and with or without spaces
+/// around the operator, without its quotes or the backslashes a shell
+/// string escapes them with.
 fn udev_modes(text: &str) -> Vec<&str> {
     let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut modes = Vec::new();
@@ -742,7 +743,7 @@ fn udev_modes(text: &str) -> Vec<&str> {
             && !after.chars().next().is_some_and(word);
         let operator = after.trim_start();
         let assigned = operator
-            .strip_prefix(':')
+            .strip_prefix([':', '+'])
             .unwrap_or(operator)
             .strip_prefix('=')
             .filter(|rest| !rest.starts_with('='));
@@ -1324,6 +1325,10 @@ fn names_each_mistake_in_a_camera_udev_rules_mode() {
             &["zwo-camera: 90-rusty-photon-zwo.rules must set MODE=\"0660\" and no other MODE, never one that opens the device to every user (found 0660, 666)"],
         ),
         (
+            &[Replace(ZWO_RULE, "MODE=\"0660\"", "MODE=\"0660\", MODE+=\"0666\"")],
+            &["zwo-camera: 90-rusty-photon-zwo.rules must set MODE=\"0660\" and no other MODE, never one that opens the device to every user (found 0660, 0666)"],
+        ),
+        (
             &[Replace(ZWO_RULE, ", MODE=\"0660\"", "")],
             &["zwo-camera: 90-rusty-photon-zwo.rules must set MODE=\"0660\" and no other MODE, never one that opens the device to every user (found none)"],
         ),
@@ -1567,6 +1572,10 @@ fn names_each_mistake_in_svbony_cameras_sdk_helper() {
         ),
         (
             &[Replace(SVBONY_HELPER, "MODE=\\\"0660\\\"", "MODE:=\\\"0666\\\"")],
+            &["svbony-camera: helper's udev rule may set no MODE but \"0660\""],
+        ),
+        (
+            &[Replace(SVBONY_HELPER, "MODE=\\\"0660\\\"", "MODE+=\\\"0666\\\"")],
             &["svbony-camera: helper's udev rule may set no MODE but \"0660\""],
         ),
         (
