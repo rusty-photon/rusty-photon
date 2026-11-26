@@ -53,7 +53,6 @@ pub enum MountStubBehavior {
 #[derive(Debug)]
 pub struct MountStubState {
     pub behavior: Arc<RwLock<MountStubBehavior>>,
-    pub read_count: Arc<AtomicU32>,
 }
 
 /// Behaviour the in-test ASCOM Rotator stub serves on each `position`
@@ -70,7 +69,6 @@ pub enum RotatorStubBehavior {
 #[derive(Debug)]
 pub struct RotatorStubState {
     pub behavior: Arc<RwLock<RotatorStubBehavior>>,
-    pub read_count: Arc<AtomicU32>,
 }
 
 /// Build a minimal valid FITS payload of the given dimensions filled
@@ -109,9 +107,6 @@ pub struct SkySurveyCameraWorld {
 
     /// Temp dir holding config.json + cache dir for the running scenario.
     pub temp_dir: Option<TempDir>,
-
-    /// Path to the config.json the service was started with.
-    pub config_path: Option<PathBuf>,
 
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
@@ -403,7 +398,6 @@ impl SkySurveyCameraWorld {
     pub async fn spawn_mount_stub(&mut self, behavior: MountStubBehavior) {
         let state = Arc::new(MountStubState {
             behavior: Arc::new(RwLock::new(behavior)),
-            read_count: Arc::new(AtomicU32::new(0)),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -448,7 +442,6 @@ impl SkySurveyCameraWorld {
     pub async fn spawn_rotator_stub(&mut self, behavior: RotatorStubBehavior) {
         let state = Arc::new(RotatorStubState {
             behavior: Arc::new(RwLock::new(behavior)),
-            read_count: Arc::new(AtomicU32::new(0)),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -535,12 +528,7 @@ impl SkySurveyCameraWorld {
             .to_str()
             .expect("temp config path must be valid UTF-8 for ServiceHandle::start");
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), config_path_str).await;
-        setup_pages::adopt_plain(
-            &mut self.setup_pages,
-            handle.bound_port(),
-            config_path.clone(),
-        );
-        self.config_path = Some(config_path);
+        setup_pages::adopt_plain(&mut self.setup_pages, handle.bound_port(), config_path);
         self.service = Some(handle);
     }
 
@@ -877,7 +865,6 @@ async fn handle_configured_devices() -> axum::Json<Value> {
 async fn handle_right_ascension(
     axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
 ) -> axum::Json<Value> {
-    state.read_count.fetch_add(1, Ordering::Relaxed);
     let behavior = state.behavior.read().expect("mount stub rwlock").clone();
     match behavior {
         MountStubBehavior::Ok { ra_hours, .. } => axum::Json(serde_json::json!({
@@ -896,7 +883,6 @@ async fn handle_right_ascension(
 async fn handle_declination(
     axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
 ) -> axum::Json<Value> {
-    state.read_count.fetch_add(1, Ordering::Relaxed);
     let behavior = state.behavior.read().expect("mount stub rwlock").clone();
     match behavior {
         MountStubBehavior::Ok { dec_deg, .. } => axum::Json(serde_json::json!({
@@ -930,7 +916,6 @@ async fn handle_rotator_configured_devices(
 async fn handle_rotator_position(
     axum::extract::State(state): axum::extract::State<Arc<RotatorStubState>>,
 ) -> axum::Json<Value> {
-    state.read_count.fetch_add(1, Ordering::Relaxed);
     let behavior = state.behavior.read().expect("rotator stub rwlock").clone();
     match behavior {
         RotatorStubBehavior::Ok { position_angle } => axum::Json(serde_json::json!({
