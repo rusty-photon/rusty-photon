@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, test } from 'node:test';
 
 import { io } from '../lib/helpers.mjs';
 import { capture } from '../lib/testing.mjs';
-import { connections, diagnose, ENOBUFS, LOG_LINES, MAX_DUMPS, redact, THREAD_DUMP_LINES, threadDump, watch } from './probe.mjs';
+import { callGraph, commandPort, connections, diagnose, ENOBUFS, JVM_OUT_LINES, jvmOutSince, LOG_LINES, MAX_DUMPS, redact, watch } from './probe.mjs';
 
 function tempDir() {
   const base = process.env.TEST_TMPDIR ?? path.join(process.cwd(), '.tmp');
@@ -111,7 +111,7 @@ async function started({ diagnose: dump, ...options } = {}) {
     await new Promise((resolve) => setImmediate(resolve));
   };
   const exited = new Promise((resolve) => child.on('close', resolve));
-  return { send: (message) => child.send(message), result, exited, calls, clock, dumps, log, advance };
+  return { send: (message) => child.send(message), pid: child.pid, result, exited, calls, clock, dumps, log, advance };
 }
 
 // --- watch ----------------------------------------------------------------------------
@@ -156,7 +156,8 @@ test('watch dumps when the output stops for the silence, again at each further s
   run.send({ out: 'start\n' });
   await run.log.seen('start\n');
   await run.advance(SILENCE);
-  assert.deepEqual(run.dumps, [{ silentForMs: SILENCE, enobufs: null }]);
+  assert.ok(Number.isInteger(run.pid) && run.pid > 0);
+  assert.deepEqual(run.dumps, [{ silentForMs: SILENCE, enobufs: null, bazelPid: run.pid }]);
   await run.advance(SILENCE / 2);
   assert.equal(run.dumps.length, 1);
   await run.advance(SILENCE / 2);
@@ -194,7 +195,7 @@ test('watch hands a dump the last ENOBUFS line, even one that came in two chunks
   run.send({ err: 'space available\nat waitForBulkTransfer\n' });
   await run.log.seen('waitForBulkTransfer');
   await run.advance(SILENCE);
-  assert.deepEqual(run.dumps, [{ silentForMs: SILENCE, enobufs: { line: `WARNING: Remote Cache: ${ENOBUFS}`, agoMs: SILENCE } }]);
+  assert.deepEqual(run.dumps, [{ silentForMs: SILENCE, enobufs: { line: `WARNING: Remote Cache: ${ENOBUFS}`, agoMs: SILENCE }, bazelPid: run.pid }]);
   run.send({ exit: 0 });
   await run.result;
 });
@@ -264,14 +265,31 @@ test('watch rejects when bazel cannot start', async () => {
 
 // --- diagnose -------------------------------------------------------------------------
 
-// An output base holding a server's pid file and both logs.
-function outputBase({ pid = '4242', jvm = 'thread dump\n', javaLog = 'log line\n' } = {}) {
+// An output base holding a server's pid file, its port file and both logs.
+function outputBase({ pid = '4242', port = '127.0.0.1:9000', jvm = 'thread dump\n', javaLog = 'log line\n' } = {}) {
   const dir = tempDir();
   mkdirSync(path.join(dir, 'server'));
   if (pid !== null) writeFileSync(path.join(dir, 'server', 'server.pid.txt'), pid);
+  if (port !== null) writeFileSync(path.join(dir, 'server', 'command_port'), port);
   if (jvm !== null) writeFileSync(path.join(dir, 'server', 'jvm.out'), jvm);
   if (javaLog !== null) writeFileSync(path.join(dir, 'java.log'), javaLog);
   return dir;
+}
+
+// The text under each `--- title ---` line of a dump, by title.
+function sections(stdout) {
+  const found = {};
+  let title = null;
+  for (const line of stdout.split('\n')) {
+    const header = /^--- (.*) ---$/.exec(line);
+    if (header) {
+      title = header[1];
+      found[title] = [];
+    } else if (title !== null) {
+      found[title].push(line);
+    }
+  }
+  return Object.fromEntries(Object.entries(found).map(([name, lines]) => [name, lines.join('\n')]));
 }
 
 const ANSWERS = {
@@ -280,9 +298,13 @@ const ANSWERS = {
     'Active Internet connections\nProto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n' +
     'tcp4       0  52000  10.0.0.1.50000         1.2.3.4.443            ESTABLISHED\n' +
     'tcp4       0      0  127.0.0.1.9000         127.0.0.1.9001         ESTABLISHED\n' +
+    'tcp4  130000      0  127.0.0.1.9001         127.0.0.1.9000         ESTABLISHED\n' +
+    'tcp4       0      0  127.0.0.1.9000         *.*                    LISTEN\n' +
     'tcp4       0      0  10.0.0.1.50001         1.2.3.4.443            TIME_WAIT\n' +
     'Active LOCAL (UNIX) domain sockets\nAddress          Type   Recv-Q Send-Q\n',
   vm_stat: 'Pages free: 1234.\n',
+  children: '2182\n',
+  sample: 'Call graph:\n    1 Thread_1\n      1 __recvmsg\n\nBinary Images:\n    0x100000000 - 0x100ffffff +bazel\n',
   jstack: '"netty-event-loop-1" RUNNABLE\n',
 };
 
@@ -296,7 +318,9 @@ function fakes({ answers = ANSWERS, alive = true } = {}) {
     sleeps,
     run: async (program, args) => {
       runs.push([program, ...args]);
-      const answer = program === 'netstat' && args[0] === '-m' ? '512 mbufs in use\n' : answers[program];
+      let answer = answers[program];
+      if (program === 'netstat' && args[0] === '-m') answer = '512 mbufs in use\n';
+      if (program === 'pgrep' && args[0] === '-P') answer = answers.children;
       if (answer instanceof Error) throw answer;
       return answer ?? '';
     },
@@ -311,35 +335,50 @@ function fakes({ answers = ANSWERS, alive = true } = {}) {
   };
 }
 
-test('diagnose dumps the processes, the connections to the cache, the network buffers, the server threads and its logs, in a group', async () => {
+test('diagnose dumps the processes, the connections to the cache and to the server, the network buffers, the client’s stacks, the server threads and its logs, in a group', async () => {
   const f = fakes();
-  const threads = Array.from({ length: LOG_LINES + 100 }, (_, i) => `"thread-${i}" WAITING`).join('\n');
-  const dir = outputBase({ jvm: `JVM warning\nFull thread dump (an earlier one)\n"old" WAITING\n2026-11-26 16:22:38\nFull thread dump OpenJDK\n${threads}\nAuthorization: Bearer abc123\n` });
+  const dir = outputBase({ jvm: 'JVM warning\nException in thread "grpc-command-0"\nFull thread dump OpenJDK\n"main" WAITING\nAuthorization: Bearer abc123\n' });
   const { stdout } = await capture(() =>
-    diagnose({ silentForMs: SILENCE, enobufs: { line: 'WARNING: No buffer space available', agoMs: 12_000 }, outputBase: dir, platform: 'darwin', ...f }),
+    diagnose({ silentForMs: SILENCE, enobufs: { line: 'WARNING: No buffer space available', agoMs: 12_000 }, bazelPid: 2181, outputBase: dir, platform: 'darwin', ...f }),
   );
+  const dump = sections(stdout);
   assert.match(stdout, /^::group::bazel-stall-probe: no output for 300 s\n/);
   assert.match(stdout, /ENOBUFS came 12 s before this dump: WARNING: No buffer space available\n/);
-  assert.match(stdout, /1\.2\.3\.4\.443 +ESTABLISHED/);
-  assert.match(stdout, /Proto Recv-Q Send-Q/);
-  assert.doesNotMatch(stdout, /127\.0\.0\.1\.9001|TIME_WAIT +\n|UNIX/);
-  assert.match(stdout, /\(1 in TIME_WAIT left out\)/);
-  assert.match(stdout, /512 mbufs in use/);
-  assert.match(stdout, /Pages free: 1234\./);
-  assert.match(stdout, /"netty-event-loop-1" RUNNABLE/);
-  // jvm.out's last thread dump, whole: its first thread and its last.
-  assert.match(stdout, /--- server\/jvm\.out from its last thread dump ---\nFull thread dump OpenJDK\n"thread-0" WAITING\n/);
-  assert.match(stdout, new RegExp(`"thread-${LOG_LINES + 99}" WAITING`));
-  assert.doesNotMatch(stdout, /an earlier one/);
-  assert.match(stdout, /log line/);
+  const cache = dump['TCP connections to port 443 (the remote cache)'];
+  assert.match(cache, /Proto Recv-Q Send-Q/);
+  assert.match(cache, /1\.2\.3\.4\.443 +ESTABLISHED/);
+  assert.doesNotMatch(cache, /127\.0\.0\.1|TIME_WAIT +\n|UNIX/);
+  assert.match(cache, /\(1 in TIME_WAIT left out\)/);
+  // Both ends of the client's connection to the server, and the server's listener.
+  const server = dump['TCP connections to port 9000 (the Bazel client and its server)'];
+  assert.match(server, /Proto Recv-Q Send-Q/);
+  assert.match(server, /127\.0\.0\.1\.9000 +127\.0\.0\.1\.9001 +ESTABLISHED/);
+  assert.match(server, /130000 +0 +127\.0\.0\.1\.9001 +127\.0\.0\.1\.9000 +ESTABLISHED/);
+  assert.match(server, /127\.0\.0\.1\.9000 +\*\.\* +LISTEN/);
+  assert.doesNotMatch(server, /443/);
+  assert.match(dump['network buffers (netstat -m)'], /512 mbufs in use/);
+  assert.match(dump['memory (vm_stat)'], /Pages free: 1234\./);
+  // The bazel process and its child, each to the end of its call graph.
+  for (const pid of [2181, 2182]) {
+    assert.match(dump[`stacks of ${pid} (sample, 1 s)`], /Call graph:\n +1 Thread_1\n +1 __recvmsg/);
+    assert.doesNotMatch(dump[`stacks of ${pid} (sample, 1 s)`], /Binary Images/);
+  }
+  assert.match(dump['jstack 4242'], /"netty-event-loop-1" RUNNABLE/);
+  // The first dump prints jvm.out from its first line.
+  assert.match(dump['server/jvm.out'], /^JVM warning\nException in thread "grpc-command-0"\nFull thread dump OpenJDK\n"main" WAITING\n/);
+  assert.match(dump[`last ${LOG_LINES} lines of java.log`], /log line/);
   assert.doesNotMatch(stdout, /s3cret|abc123/);
   assert.match(stdout, /Authorization=Bearer \[REDACTED\]/);
   assert.match(stdout, /::endgroup::\n$/);
   assert.deepEqual(f.runs, [
     ['pgrep', '-fl', 'bazel|java'],
     ['netstat', '-an'],
+    ['netstat', '-an'],
     ['netstat', '-m'],
     ['vm_stat'],
+    ['pgrep', '-P', '2181'],
+    ['sample', '2181', '1'],
+    ['sample', '2182', '1'],
     ['jstack', '4242'],
   ]);
   // The server gets a liveness check and SIGQUIT, and nothing that could stop it.
@@ -352,15 +391,16 @@ test('diagnose dumps the processes, the connections to the cache, the network bu
 
 test('diagnose reports a command that fails and goes on, and dumps no threads of a server that is gone', async () => {
   const f = fakes({ answers: { ...ANSWERS, pgrep: new Error('pgrep exited with 1') }, alive: false });
-  const dir = outputBase({ javaLog: null });
-  const { stdout } = await capture(() => diagnose({ silentForMs: 600_000, enobufs: null, outputBase: dir, platform: 'linux', ...f }));
+  const dir = outputBase({ port: null, javaLog: null });
+  const { stdout } = await capture(() => diagnose({ silentForMs: 600_000, enobufs: null, bazelPid: 2181, outputBase: dir, platform: 'linux', ...f }));
   assert.match(stdout, /no output for 600 s/);
   assert.match(stdout, /No ENOBUFS warning came before the silence\./);
   assert.match(stdout, /\(pgrep exited with 1\)/);
+  assert.match(stdout, /--- TCP connections between the Bazel client and its server ---\n\(no port in server\/command_port\)\n/);
   assert.match(stdout, /No live Bazel server for /);
   assert.match(stdout, /thread dump/);
   assert.match(stdout, /last 600 lines of java\.log ---\n\(cannot be read\)/);
-  // No macOS-only commands on Linux, and no jstack or SIGQUIT without a live server.
+  // No macOS-only commands on Linux, sample among them, and no jstack or SIGQUIT without a live server.
   assert.deepEqual(f.runs, [
     ['pgrep', '-fl', 'bazel|java'],
     ['netstat', '-an'],
@@ -373,8 +413,42 @@ test('diagnose without an output base dumps the processes and connections only',
   const f = fakes();
   const { stdout } = await capture(() => diagnose({ silentForMs: SILENCE, enobufs: null, outputBase: null, platform: 'darwin', ...f }));
   assert.match(stdout, /The output base is unknown, so the server is not dumped\./);
+  assert.doesNotMatch(stdout, /Bazel client and its server/);
   assert.deepEqual(f.signals, []);
   assert.match(stdout, /::endgroup::\n$/);
+});
+
+test('diagnose samples the bazel process alone when it has no children, and samples nothing without its pid', async () => {
+  const alone = fakes({ answers: { ...ANSWERS, children: new Error('pgrep exited with 1') } });
+  await capture(() => diagnose({ silentForMs: SILENCE, enobufs: null, bazelPid: 2181, outputBase: null, platform: 'darwin', ...alone }));
+  assert.deepEqual(
+    alone.runs.filter(([program]) => program === 'sample'),
+    [['sample', '2181', '1']],
+  );
+  const unknown = fakes();
+  await capture(() => diagnose({ silentForMs: SILENCE, enobufs: null, outputBase: null, platform: 'darwin', ...unknown }));
+  assert.deepEqual(
+    unknown.runs.filter(([program, flag]) => program === 'sample' || flag === '-P'),
+    [],
+  );
+});
+
+test('diagnose prints all of jvm.out at its first dump and only what the file gained at each later one', async () => {
+  const f = fakes();
+  const dir = outputBase({ jvm: 'JVM warning\nFull thread dump 1\n' });
+  const jvmOut = path.join(dir, 'server', 'jvm.out');
+  const printed = { jvmOut: 0 };
+  const dump = async () => sections((await capture(() => diagnose({ silentForMs: SILENCE, enobufs: null, outputBase: dir, printed, platform: 'linux', ...f }))).stdout);
+
+  assert.match((await dump())['server/jvm.out'], /^JVM warning\nFull thread dump 1\n/);
+  appendFileSync(jvmOut, 'Exception in thread "grpc-command-0"\nFull thread dump 2\n');
+  const second = (await dump())['server/jvm.out since the last dump'];
+  assert.match(second, /^Exception in thread "grpc-command-0"\nFull thread dump 2\n/);
+  assert.doesNotMatch(second, /JVM warning|dump 1/);
+  assert.equal((await dump())['server/jvm.out since the last dump'], '(nothing new)');
+  // A new server's shorter jvm.out is printed from its start.
+  writeFileSync(jvmOut, 'new server\n');
+  assert.match((await dump())['server/jvm.out'], /^new server\n/);
 });
 
 test('connections keeps the column header and the live connections to port 443, and counts those in TIME_WAIT', () => {
@@ -399,18 +473,44 @@ test('connections keeps the column header and the live connections to port 443, 
   );
 });
 
-test('threadDump gives jvm.out’s last thread dump from its first line, or the file’s tail when it holds none', () => {
-  assert.deepEqual(threadDump('warning\nFull thread dump A\n"a"\nFull thread dump B\n"b"\n'), {
-    title: 'server/jvm.out from its last thread dump',
-    text: 'Full thread dump B\n"b"\n',
-  });
-  const lines = Array.from({ length: LOG_LINES + 5 }, (_, i) => `line ${i}`).join('\n');
-  const tail = threadDump(lines);
-  assert.equal(tail.title, `last ${LOG_LINES} lines of server/jvm.out`);
-  assert.equal(tail.text.split('\n').length, LOG_LINES + 1);
-  assert.match(tail.text, new RegExp(`^line 4\n`));
-  const runaway = `Full thread dump\n${Array.from({ length: THREAD_DUMP_LINES + 10 }, () => 'x').join('\n')}`;
-  assert.equal(threadDump(runaway).text.split('\n').length, THREAD_DUMP_LINES);
+test('connections on the server’s port keeps both ends of a connection and the listener, and no other port', () => {
+  const header = 'Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)';
+  const live = [
+    'tcp4       0      0  127.0.0.1.52345        127.0.0.1.61000        ESTABLISHED',
+    'tcp4  130000      0  127.0.0.1.61000        127.0.0.1.52345        ESTABLISHED',
+    'tcp4       0      0  127.0.0.1.52345        *.*                    LISTEN',
+  ];
+  const netstat = [
+    header,
+    ...live,
+    'tcp4       0      0  127.0.0.1.61001        127.0.0.1.52345        TIME_WAIT',
+    'tcp4       0      0  127.0.0.1.523456       127.0.0.1.61002        ESTABLISHED',
+    'tcp4       0      0  10.0.0.1.50000         1.2.3.4.443            ESTABLISHED',
+  ].join('\n');
+  assert.equal(connections(netstat, 52345), [header, ...live, '(1 in TIME_WAIT left out)'].join('\n'));
+});
+
+test('commandPort reads the server’s port in either address family, and no port from anything else', () => {
+  assert.equal(commandPort('127.0.0.1:52345'), 52345);
+  assert.equal(commandPort('[::1]:52345\n'), 52345);
+  assert.equal(commandPort('127.0.0.1'), null);
+  assert.equal(commandPort(''), null);
+  assert.equal(commandPort(null), null);
+});
+
+test('callGraph keeps sample’s report up to its list of loaded images, or all of it when it has none', () => {
+  assert.equal(callGraph('Call graph:\n    1 __recvmsg\n\nBinary Images:\n    0x1 +bazel\n'), 'Call graph:\n    1 __recvmsg');
+  assert.equal(callGraph('Call graph:\n    1 __recvmsg\n'), 'Call graph:\n    1 __recvmsg\n');
+});
+
+test('jvmOutSince keeps only the last lines of a runaway, which hold the latest thread dump', () => {
+  const runaway = Array.from({ length: JVM_OUT_LINES + 10 }, (_, i) => `line ${i}`).join('\n');
+  const whole = jvmOutSince(runaway, 0);
+  assert.equal(whole.title, `last ${JVM_OUT_LINES} lines of server/jvm.out`);
+  assert.equal(whole.text.split('\n').length, JVM_OUT_LINES);
+  assert.match(whole.text, new RegExp(`^line 10\n[^]*\nline ${JVM_OUT_LINES + 9}$`));
+  assert.equal(whole.end, runaway.length);
+  assert.equal(jvmOutSince(runaway, 5).title, `last ${JVM_OUT_LINES} lines of server/jvm.out since the last dump`);
 });
 
 test('redact hides a bearer credential in either spelling', () => {

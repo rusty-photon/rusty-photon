@@ -2,9 +2,10 @@ name: Bazel, watched for a stall
 description: >-
   Runs one Bazel command, as a `run:` step would, and copies its output to
   the step's log. When the command prints nothing for silence-seconds, it
-  dumps what the macOS remote-cache wedge leaves to read: the Bazel server's
-  threads and logs, the TCP connections to the remote cache, and on macOS
-  the kernel's network buffers and memory, and whether ENOBUFS came first.
+  dumps what the macOS wedge leaves to read: the Bazel server's threads and
+  logs, the TCP connections to the remote cache and between the Bazel
+  client and its server, whether ENOBUFS came first, and on macOS the
+  client's stacks and the kernel's network buffers and memory.
   It dumps again at each further silence-seconds of silence, at most three
   times, and retries and stops nothing: the step's timeout ends a wedged
   build. The step fails when Bazel does. The logic is probe.mjs's.

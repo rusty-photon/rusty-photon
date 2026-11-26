@@ -629,8 +629,9 @@ build:macos --remote_max_connections=0
 # reverting to 64. The wedge survives this ceiling too, so the concurrency axis
 # is exhausted and a smaller number is not the next move. bazel.yml's macOS
 # build runs under the bazel-stall-probe action instead, which dumps the
-# server's threads and logs, its connections to the cache and the kernel's
-# network buffers when the build goes silent.
+# server's threads and logs, its connections to the cache and to the Bazel
+# client, the client's stacks and the kernel's network buffers when the
+# build goes silent.
 build:macos --jobs=HOST_CPUS*2
 
 # --- Conformu config -------------------------------------------------------
