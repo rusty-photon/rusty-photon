@@ -650,7 +650,8 @@ itself cannot run, the CLI archives. The refresh never moves the
 database pin. It downloads the database only to check a rotated CLI
 archive, and then warns when the database has rotated too; a rotation
 of the database alone shows only as `plate-solver-smoke`'s failure and
-its tracking issue. For the CLI archives:
+its tracking issue, whose body names the database's checksum mismatch
+among the likely causes and points here. For the CLI archives:
 
 1. Download each runner's archive from SourceForge, from the folder
    the table names.
