@@ -157,3 +157,20 @@ jobs:
           label: plate-solver-nightly
           body: |
             The nightly cross-platform real-ASTAP smoke workflow failed.
+
+            Likely causes, by the step that failed in the linked run:
+
+            - "Install ASTAP + D20 database", with
+              `d20_star_database.zip: SHA-256 mismatch` in its log: upstream
+              rotated the D20 star database. Nothing else reports that and
+              nothing refreshes its pin, which moves by hand: see
+              docs/services/plate-solver.md § "Refreshing the ASTAP pins".
+              A mismatch on an ASTAP CLI archive instead is the
+              `install-astap-nightly` issue's, and the refresh it starts.
+            - "Run @requires-astap BDD scenarios": the real ASTAP no longer
+              behaves as the wrapper and its mock expect (its `.wcs` shape,
+              command line or banner).
+            - "Log and check solve times": the M 101 solves broke the time
+              budget, whose error annotations say which: a blind solve
+              under 10× the hinted one, or a solve over its ceiling. See
+              docs/services/plate-solver.md § "Real-ASTAP Coverage Cadence".
