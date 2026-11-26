@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub use config::{check, NightConfig, NightRun, SignedDuration};
 pub use state::{NightState, Phase};
@@ -101,11 +101,21 @@ pub async fn run(state: Arc<AppState>) {
     }
     let connection = state.config.rp_connection();
     let mut backoff = CONNECT_BACKOFF;
+    // A failure is logged at `warn!` the first time it reads so, and at
+    // `debug!` while it repeats: a bad `ca_cert` or URL never clears by
+    // itself, and the night waits on it.
+    let mut logged: Option<String> = None;
     let rp = loop {
         match McpClient::connect(mcp_url, connection.auth(), connection.ca_path()).await {
             Ok(rp) => break rp,
             Err(e) => {
-                debug!(error = %e, wait = ?backoff, "night schedule cannot reach rp yet");
+                let message = e.to_string();
+                if logged.as_deref() == Some(message.as_str()) {
+                    debug!(error = %message, wait = ?backoff, "night schedule still cannot reach rp");
+                } else {
+                    warn!(error = %message, "night schedule cannot reach rp; no night runs until it can, and it keeps trying");
+                    logged = Some(message);
+                }
                 tokio::time::sleep(backoff).await;
                 backoff = backoff.saturating_mul(2).min(MAX_CONNECT_BACKOFF);
             }

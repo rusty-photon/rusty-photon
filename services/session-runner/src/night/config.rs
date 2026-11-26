@@ -32,9 +32,10 @@ pub struct NightConfig {
     /// the services restarting.
     #[serde(default = "default_settle", with = "humantime_serde")]
     pub settle: Duration,
-    /// How long dawn waits for the coolers to stop, and how long an
-    /// output whose camera cannot be read stays on after dawn's
-    /// `start_warmup`.
+    /// How long dawn waits for the coolers to stop, how long an output
+    /// whose camera cannot be read stays on after dawn's `start_warmup`,
+    /// and how long dusk waits for a cooler left running to stop before
+    /// its power-up.
     #[serde(default = "default_warmup_timeout", with = "humantime_serde")]
     pub warmup_timeout: Duration,
     /// The documents the night runs, in order.

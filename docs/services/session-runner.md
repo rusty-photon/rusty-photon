@@ -1016,7 +1016,7 @@ decision 12).
 | `dusk_offset` | signed duration | `"0s"` | When dusk starts, from the evening end of civil twilight (`get_twilight`'s `begin_utc`, the Sun sinking below −6°). A leading `-` is earlier: sky flats need dusk before that end |
 | `dawn_offset` | signed duration | `"0s"` | When dawn starts, from the morning end of civil twilight (`get_twilight`'s `end_utc`) |
 | `settle` | duration | `"30s"` | Passed to `power_up`: the time the devices get between their outputs going on and their services restarting |
-| `warmup_timeout` | duration | `"45m"` | How long dawn waits for the cameras' coolers to stop before it applies the cut rules, and how long an output whose camera cannot be read stays on after dawn's `start_warmup` |
+| `warmup_timeout` | duration | `"45m"` | How long dawn waits for the cameras' coolers to stop before it applies the cut rules, how long an output whose camera cannot be read stays on after dawn's `start_warmup`, and how long dusk waits for a cooler left running to stop before its power-up |
 | `runs` | array | `[]` | The documents the night runs, in order, each `{ "workflow", "params" }` as in a `POST /runs` body |
 
 The block is checked at load as far as `session-runner` can check it
@@ -1287,8 +1287,9 @@ block.
 ```
 
 `phase` is `off` without a `night` block, and the other fields are then
-absent. `night`, `dusk` and `dawn` are `null` until the schedule has
-read the night's twilight from `rp`.
+absent. `night`, `dusk` and `dawn` are `null` until the schedule knows
+its night, from the `night.json` the last process left or from `rp`'s
+twilight.
 
 ### Errors
 
@@ -1425,7 +1426,7 @@ rejected — it names the blackboard file.
 |-------|------|---------|-------------|
 | `server` | object | `{ "port": 11171 }` | The HTTP server for `/runs`, `/night`, `/validate`, `/health` |
 | `workflows_dir` | path | required | Directory of workflow documents; first-party documents ship in the package |
-| `state_dir` | path | required | Blackboard + run-manifest persistence directory |
+| `state_dir` | path | required | Blackboard + run-manifest persistence directory, and the night schedule's `night.json` |
 | `mcp_server_url` | string or null | null | `rp`'s MCP endpoint — every `POST /runs` run and standalone `/validate` use it (a run cannot start without it). Doctor `--fix` moves it to `https://` once `rp` serves TLS ([doctor.md](doctor.md) §Client-target joins) |
 | `events_url` | string or null | null | Explicit SSE endpoint; null derives `<mcp origin>/api/events/subscribe`. When set, doctor judges and fixes it as it does `mcp_server_url` |
 | `rp_outage_grace` | duration | `"10m"` | How long a paused run keeps reconnecting after `rp` becomes unreachable before it fails (§ Safety Behavior). Startup self-resume waits unbounded |
