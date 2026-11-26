@@ -11,8 +11,10 @@ SV605CC. There, both ConformU suites pass on three physical cameras
 (ASI1600MM-Cool, ASI178MM, ASI120MC-S), and full-frame 16-bit frames come
 through the driver over Alpaca; [zwo-camera.md](../../services/zwo-camera.md)
 lists the records. Both design docs carry their real-hardware validation
-sections. Not done, from § 3: the field rig's sentinel monitors neither ZWO
-service, and no frame from a ZWO camera was written to disk there.
+sections. On the field rig, sentinel supervises both ZWO services, as it
+does every installed `rusty-photon-*` unit
+([sentinel.md § Service discovery](../../services/sentinel.md#service-discovery)).
+Not done, from § 3: no frame from a ZWO camera was written to disk there.
 
 **Date:** 2026-07-11
 **Branch:** `feature/rig-dev-loop`
