@@ -24,7 +24,8 @@
 //!
 //! The requests the loop hears during a frame are served after it, from
 //! the next frame on, so that a start selects on a frame exposed after it
-//! was taken up. A `dither/abort` is served as it arrives.
+//! was taken up. A `dither/abort` is served as it arrives during a frame,
+//! and before the next frame otherwise.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -639,7 +640,17 @@ impl Cycle {
                 Took::Measured {
                     selection: Some(Ok(_)),
                     ..
-                } => calibrating.selecting = false,
+                } => {
+                    calibrating.selecting = false;
+                    // A run calibrated again on a fresh selection.
+                    if let Then::Guide(guiding::StartAfter {
+                        found: guiding::Found::Run(_),
+                        ..
+                    }) = calibrating.then
+                    {
+                        self.status.lock().interruption();
+                    }
+                }
                 Took::Measured { .. } | Took::Failed(_) => {}
             }
         }

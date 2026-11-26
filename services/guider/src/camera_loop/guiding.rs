@@ -169,10 +169,7 @@ impl Cycle {
                 if self.status.lock().exposing() {
                     self.reselect = Some(reply);
                 } else {
-                    let _ = reply.send(Err(ApiError::new(
-                        ErrorCode::NotExposing,
-                        "the guider takes no frames",
-                    )));
+                    let _ = reply.send(Err(ApiError::not_exposing()));
                 }
             }
             super::Command::Calibrate(run) => {
@@ -221,7 +218,6 @@ impl Cycle {
                     self.status.lock().set_state(State::Guiding);
                 }
                 if guiding.sub == Sub::StarLost {
-                    self.status.lock().interruption();
                     guiding.select = Some(SelectWait {
                         settle,
                         reply,
@@ -263,14 +259,18 @@ impl Cycle {
             turn,
             ..
         } = run;
+        let telescope = guiding.mount.telescope();
+        let start = guiding.start;
+        // In `star_lost` the run calibrates again only once its fresh frame
+        // has selected guide stars, and counts the interruption then.
+        let reselect = guiding.sub == Sub::StarLost;
         {
             let mut status = self.status.lock();
             status.start_accepted();
-            status.interruption();
+            if !reselect {
+                status.interruption();
+            }
         }
-        let telescope = guiding.mount.telescope();
-        let start = guiding.start;
-        let reselect = guiding.sub == Sub::StarLost;
         let after = StartAfter {
             settle,
             reply,
@@ -559,6 +559,7 @@ impl Cycle {
                                     wait.turn,
                                 ));
                                 let mut status = self.status.lock();
+                                status.interruption();
                                 status.set_state(State::Guiding);
                                 status.set_settling(true);
                             }
@@ -1543,8 +1544,9 @@ mod tests {
         let (run, _answer, _turns) = start_in_a_run(false).await;
         cycle.start(run);
         assert!(cycle.select_next);
-        assert_eq!(cycle.status.lock().totals().interruptions, 1);
+        assert_eq!(cycle.status.lock().totals().interruptions, 0);
         assert!(guide(&mut cycle, selection(Ok(3))).await.is_none());
+        assert_eq!(cycle.status.lock().totals().interruptions, 1);
         assert_eq!(state(&cycle), State::Guiding);
         assert!(cycle.status.lock().settling());
         assert!(
@@ -1592,6 +1594,8 @@ mod tests {
         assert_eq!(answer.await.unwrap().unwrap_err().code, ErrorCode::NoStars);
         assert_eq!(state(&cycle), State::StarLost);
         assert!(turns.try_lock().is_ok(), "the turn is still held");
+        // The run kept its stars: it was not interrupted.
+        assert_eq!(cycle.status.lock().totals().interruptions, 0);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1632,6 +1636,21 @@ mod tests {
         assert_eq!(state(&cycle), State::StarLost);
         assert_eq!(guiding(&cycle).sub, Sub::StarLost);
         assert!(turns.try_lock().is_ok(), "the turn is still held");
+        assert_eq!(cycle.status.lock().totals().interruptions, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recalibrate_in_star_lost_counts_its_interruption_once_its_fresh_frame_selects() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        assert!(guide(&mut cycle, lost()).await.is_none());
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        assert_eq!(cycle.status.lock().totals().interruptions, 0);
+        let end = cycle
+            .after_frame(selection(Ok(3)), &CancellationToken::new())
+            .await;
+        assert!(end.is_none());
+        assert_eq!(cycle.status.lock().totals().interruptions, 1);
     }
 
     #[tokio::test(start_paused = true)]

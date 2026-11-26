@@ -74,10 +74,10 @@ guider serves nothing for it, and refuses no request on its account.
 
 | Piece | Kind | Holds |
 |---|---|---|
-| `rp-guiding` | Library crate | The guiding core: star selection, measurement, calibration, control, dither, settle, statistics and the state machine. Frames and timestamps in, pulse requests and statistics out. No I/O; time and randomness are passed in, so a whole night runs under test in simulated time |
+| `rp-guiding` | Library crate | The guiding core: star selection, measurement, calibration, control, dither and settle. Frames and timestamps in, pulse requests and each step's error out. No I/O; time and randomness are passed in, so a whole night runs under test in simulated time |
 | `rp-image-analysis` | Library crate | The image kernels `rp` and the guider share: background, star detection, centroid, half-flux diameter, signal-to-noise ratio |
 | `rp-guider` | Library crate | The HTTP contract of this document: request and response types, the error codes, and the client `rp` uses |
-| `guider` | Service, port 11129 | The Alpaca clients, the loop that drives the core, the HTTP API, the setup page, the calibration store and the guide log |
+| `guider` | Service, port 11129 | The Alpaca clients, the loop that drives the core, the states and the statistics, the HTTP API, the setup page, the calibration store and the guide log. The states sequence frames, pulses and requests, which is I/O, and the statistics are a window and running sums over the core's step errors |
 | `guide-simulator` | Test-infrastructure crate | A mount model and a star renderer in simulated time: drift, periodic error, backlash, pulse granularity and seeing, with the stars moving as the pulses say |
 | `guide-simulator-alpaca` | Test-infrastructure crate | `guide-simulator` behind an Alpaca Camera and an Alpaca Telescope on the wall clock, scripted by the service's scenarios |
 
@@ -364,8 +364,9 @@ camera's frame depends on `SensorType`:
 never slews, parks, unparks, sets tracking or writes a guide rate.
 
 **The mount check.** Before every pulse, and once in every cycle of a
-run state that sends none, the guider reads `Tracking`, `Slewing`,
-`AtPark` and `SideOfPier`. The run continues only while the mount is
+run state that sends none or of a `guiding/start` that waits for its
+fresh frame, the guider reads `Tracking`, `Slewing`, `AtPark` and
+`SideOfPier`. The run continues only while the mount is
 tracking, not slewing, not parked and on the pier side the run started
 on. Otherwise the run stops, with the reason `mount_not_tracking`,
 `mount_slewing`, `mount_parked` or `pier_side_changed`. The guider does
@@ -388,7 +389,10 @@ is what happened.
 - The check is the guider's because a driver's is not enough: the Star
   Adventurer GTi driver accepts a pulse while tracking is off
   ([star-adventurer-gti.md § PulseGuide lifecycle](star-adventurer-gti.md#pulseguide-lifecycle)).
-- The check does not run in `looping`: no pulse is sent there.
+- The check does not run in `looping`, where no pulse is sent, but for
+  the cycles of a `guiding/start` that waits there for its fresh frame:
+  the next cycle pulses, and a selection taken while the mount slews
+  must not become the run's home. A failure then stops the loop.
 
 **At a request.** `calibrate`, and a `guiding/start` that finds the
 guider in `idle` or `looping`, run the same check before they start,
@@ -854,9 +858,9 @@ guider does not hold Dec.
   one that `guiding/stop` ends answers it with `stopped`.
 
 **Aborting a dither.** `dither/abort` sets the lock offset to where the
-stars are in the latest frame, so that the controller stops steering to
-the abandoned point, and answers the waiting `dither` with
-`dither_aborted`. Guiding continues.
+stars are in the latest frame that showed them, so that the controller
+stops steering to the abandoned point, and answers the waiting `dither`
+with `dither_aborted`. Guiding continues.
 
 ### Stopping on its own
 

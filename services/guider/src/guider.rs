@@ -758,15 +758,13 @@ impl Guider {
             if stops.has_changed().unwrap_or(true) {
                 return Err(ApiError::stopped());
             }
-            let not_exposing =
-                || ApiError::new(ErrorCode::NotExposing, "the guider takes no frames");
             running
                 .as_ref()
                 .filter(|running| alive(running) && self.status.lock().exposing)
-                .ok_or_else(not_exposing)?
+                .ok_or_else(ApiError::not_exposing)?
                 .commands
                 .send(Command::Reselect(reply))
-                .map_err(|_| not_exposing())?;
+                .map_err(|_| ApiError::not_exposing())?;
         }
         let star_count = self.answer(selection, &mut stops).await??;
         Ok(SelectionAnswer {
@@ -1364,25 +1362,29 @@ mod tests {
     async fn a_dither_or_a_start_it_cannot_read_is_refused_before_its_turn() {
         let guider = guider();
         let _held = guider.turns.lock().await;
+        let at_once = Duration::from_secs(1);
         let dither: DitherBody = serde_json::from_str("{}").unwrap();
-        assert_eq!(
-            guider.dither(dither).await.unwrap_err().code,
-            ErrorCode::InvalidRequest
-        );
+        let dithered = tokio::time::timeout(at_once, guider.dither(dither))
+            .await
+            .expect("the dither waited for the turn");
+        assert_eq!(dithered.unwrap_err().code, ErrorCode::InvalidRequest);
         let start: StartBody =
             serde_json::from_str(r#"{"settle": {"pixels": 1.0, "arcsec": 2.0}}"#).unwrap();
-        assert_eq!(
-            guider.start_guiding(start).await.unwrap_err().code,
-            ErrorCode::InvalidRequest
-        );
+        let started = tokio::time::timeout(at_once, guider.start_guiding(start))
+            .await
+            .expect("the start waited for the turn");
+        assert_eq!(started.unwrap_err().code, ErrorCode::InvalidRequest);
     }
 
     #[tokio::test]
     async fn an_abort_with_no_loop_answers_unaborted_at_once() {
         let guider = guider();
         let _held = guider.turns.lock().await;
+        let aborted = tokio::time::timeout(Duration::from_secs(1), guider.abort_dither())
+            .await
+            .expect("the abort waited for the turn");
         assert_eq!(
-            guider.abort_dither().await,
+            aborted,
             AbortAnswer {
                 state: State::Idle,
                 aborted: false

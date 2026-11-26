@@ -243,6 +243,12 @@ impl ApiError {
         )
     }
 
+    /// A request that needs frames while the guider takes none.
+    #[must_use]
+    pub fn not_exposing() -> Self {
+        Self::new(ErrorCode::NotExposing, "the guider takes no frames")
+    }
+
     /// A request that needs a run that guides, outside one.
     #[must_use]
     pub fn not_guiding() -> Self {

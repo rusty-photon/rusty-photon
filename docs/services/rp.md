@@ -116,8 +116,8 @@ rp-managed services only when they must wrap an external program (ASTAP
 the binary) that has its own crash and restart behavior.
 A first-party control loop is an rp-managed service too when it runs for
 hours, has device traffic of its own and must keep running while `rp`
-restarts. The guider ([`guider.md`](guider.md), designed
-and not yet built) is the one component of this kind; an algorithm that is a
+restarts. The guider ([`guider.md`](guider.md), being
+built) is the one component of this kind; an algorithm that is a
 tool call, which starts, runs and returns, stays built-in.
 
 Workflow logic stays out of `rp`, but not as a
@@ -5249,8 +5249,8 @@ credentials to an auth-enabled guider; `doctor --fix` wires it from
 the observatory credential once the guider's own `server.auth` is on
 (`joins.client-auth`, `docs/services/doctor.md` §Client-target joins).
 
-**The guider service is being built and does not guide yet**
-([`guider.md`](guider.md)), so no rig guides under `rp` yet. `rp`'s
+**The guider service is being built** ([`guider.md`](guider.md)): it
+guides, and is not packaged yet, so no rig guides under `rp` yet. `rp`'s
 side of its contract is built: the guider tools, the check and the
 watch below, the [guide camera guard](#the-guide-camera-guard) that a
 capture through the guide camera, a guiding train's
