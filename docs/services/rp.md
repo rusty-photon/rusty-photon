@@ -1194,6 +1194,12 @@ Point events (e.g. `filter_switch`, `safety_changed`) carry no
 | `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder paused the guider's corrections for this move |
 | `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains, guiding_ladder | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it, `guiding_ladder` the ladder outcome (`null` when it did not engage) |
 | `move_rotator_failed` | error | Rotator move failed or timed out (the guide stars re-selected and the corrections resumed best-effort when the ladder paused them) |
+| `open_cover_started` | calibrator_id | Dust cover begins opening. `calibrator_id` is the resolved calibrator, also when the call addressed its train (see [CoverCalibrator Tool Details](#covercalibrator-tool-details)) |
+| `open_cover_complete` | calibrator_id, status | Cover reports `Open`; `status` is the tool's own, `open` |
+| `open_cover_failed` | error, calibrator_id | Open failed: the device refused it, a cover-state poll failed, the cover was not open within the 60 s ceiling, or the call was cancelled (the cover halted where it is) |
+| `close_cover_started` | calibrator_id | Dust cover begins closing; `calibrator_id` as on `open_cover_started` |
+| `close_cover_complete` | calibrator_id, status | Cover reports `Closed`; `status` is the tool's own, `closed` |
+| `close_cover_failed` | error, calibrator_id | Close failed: the device refused it, a cover-state poll failed, the cover was not closed within the 60 s ceiling, or the call was cancelled (the cover goes on closing) |
 | `plate_solve_started` | document_id, image_path, blind | Plate solve begins; `blind` is the call's own flag, not whether the solve resolved to one |
 | `plate_solve_complete` | ra_center, dec_center, pixel_scale_arcsec, rotation_deg, solver | Plate solve succeeded |
 | `plate_solve_failed` | error | Plate solve failed |
@@ -1531,8 +1537,8 @@ Operators can move any tool across the line with `safety.gate`
 | `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name, lease_id (optional, a held [train lease](#train-lease)) | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way, writes the slot, and blocks until the wheel names it, each wait bounded at 60 s (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id`. Filter changes through one wheel run one at a time; one that names no lease, of a wheel a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
 | `get_cover_state` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found. `train_id` resolves the train's cover calibrator; `trains` lists every train containing it. See [CoverCalibrator Tool Details](#covercalibrator-tool-details) |
-| `close_cover` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Close the dust cover (blocks until closed) |
-| `open_cover` | Gated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Open the dust cover (blocks until open) |
+| `close_cover` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Close the dust cover (blocks until closed). Emits the `close_cover_started` / `close_cover_complete` / `close_cover_failed` triple. See [CoverCalibrator Tool Details](#covercalibrator-tool-details) |
+| `open_cover` | Gated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Open the dust cover (blocks until open). Emits the `open_cover_started` / `open_cover_complete` / `open_cover_failed` triple. See [CoverCalibrator Tool Details](#covercalibrator-tool-details) |
 | `calibrator_on` | Ungated | calibrator_id *or* train_id (exactly one), brightness (optional) | calibrator_id, trains, status, brightness | Turn on flat panel at brightness (0..max_brightness, default max). Blocks until ready |
 | `calibrator_off` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Turn off flat panel. Blocks until off |
 | `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, filter_wavelengths_nm, calibrator_id, focusers, terminal_focuser_id, terminal_focuser_shared_with, rotator_id, devices, optics | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id`, `filters` and `filter_wavelengths_nm` all `null` when the train has none or several; `filter_wavelengths_nm` maps each name to its configured wavelength or `null`), the cover calibrator (`null` when none), the focusers in optical order plus `terminal_focuser_id`, the last of them — the one a focus sweep of the train moves and whose probe a `temperature_changed` names for this train (`null` when the train has no focuser), `terminal_focuser_shared_with`, the ids of the other trains that terminal focuser is a member of, in config order (empty when no other train has it, or the train has no focuser; a focus provider refuses a guiding train's training run on a focuser an imaging train has), the sole rotator (`null` when none or several), the ordered `devices` list as `{id, kind}`, and `optics` — `{focal_length_mm, aperture_mm, obstruction_mm, obstruction_ratio, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel, microns_per_step}`, each `null` when unknown, `obstruction_ratio` being `0.0` on a train with an aperture and no obstruction (see [Train optics](#train-optics)). An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
@@ -2190,6 +2196,22 @@ OAG guide train went dark too (the `moved_trains` precedent of
 **Gating does not depend on addressing.** `open_cover` is gated (it
 exposes the optics); the other four are ungated — reads, protective
 or indoor — whichever way they are addressed.
+
+**A cover move is an operation.** `open_cover` and `close_cover` each
+emit a lifecycle triple ([Events](#events)): `open_cover_started`, then
+`open_cover_complete` or `open_cover_failed`, under one `operation_id`,
+and the same for `close_cover`. Every event of the triple names the
+resolved `calibrator_id`, whichever way the call addressed it, so a
+client that did not make the move learns that the cover moved: a caller
+retrying a cover that failed to open can stop once a run has moved that
+cover itself, closed for darks or panel flats, rather than reopen it
+mid-frame. A call refused before the device is touched — addressing
+that does not resolve, an unknown calibrator, one not connected, or a
+gated `open_cover` refused as `SafetyUnsafe` — emits no event: nothing
+moved. `open_cover_started` and `close_cover_started` carry no deadline
+fields, because a move's only bound is the fixed 60 s ceiling, not a
+prediction ([Event Envelope](#event-envelope)); the Sentinel watchdog
+tracks the move open with no timer, and the ceiling ends it.
 
 #### Rotator Tool Details
 

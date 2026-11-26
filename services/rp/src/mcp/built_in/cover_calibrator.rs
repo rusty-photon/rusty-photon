@@ -9,10 +9,17 @@
 //! trains containing it: a closed cover blinds every camera behind it
 //! and a lit panel floods them, so the sibling trains are worth
 //! knowing (as `move_rotator`'s `moved_trains` lists them).
+//!
+//! `close_cover` and `open_cover` block until the cover arrives, so
+//! each move emits a lifecycle triple (rp.md § Event System):
+//! `<tool>_started`, then `<tool>_complete` or `<tool>_failed`, under
+//! one `operation_id`.
 
+use std::future::Future;
 use std::time::Duration;
 
 use ascom_alpaca::api::cover_calibrator::{CalibratorStatus, CoverStatus};
+use ascom_alpaca::api::CoverCalibrator;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::service::RequestContext;
@@ -24,6 +31,7 @@ use tracing::debug;
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
 use super::super::{resolve_device, tool_error, tool_success};
+use crate::events::EventEnvelope;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(extend("oneOf" = [{"required": ["calibrator_id"]}, {"required": ["train_id"]}]))]
@@ -118,45 +126,18 @@ impl McpHandler {
             Ok(id) => id,
             Err(e) => return Ok(*e),
         };
+        // A call refused before the device is touched (bad addressing,
+        // an unknown calibrator, one not connected) emits no event:
+        // nothing moved, and the Sentinel watchdog should not see a
+        // phantom operation (as `capture` and `move_rotator` refuse).
         let (cc_entry, cc) =
             resolve_device!(self, find_cover_calibrator, &calibrator_id, "calibrator");
         let poll_interval = cc_entry.config.poll_interval;
 
-        debug!(calibrator_id = %calibrator_id, "closing cover");
-        if let Err(e) = cc.close_cover().await {
-            return Ok(tool_error!("failed to close cover: {}", e));
-        }
-
-        let now = tokio::time::Instant::now();
-        // Unreachable overflow degrades to an expired deadline, not a panic.
-        let deadline = now.checked_add(COVER_CALIBRATOR_DEADLINE).unwrap_or(now);
-        loop {
-            // A cancelled close stops *waiting*, never the cover: a
-            // closing cover is what the transition wants (rp.md
-            // § In-Flight Tool Calls).
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
-                () = tokio::time::sleep(poll_interval) => {}
-            }
-            match cc.cover_state().await {
-                Ok(CoverStatus::Closed) => {
-                    debug!(calibrator_id = %calibrator_id, "cover closed");
-                    return Ok(tool_success!({
-                        "calibrator_id": calibrator_id,
-                        "trains": self.trains_with_calibrator(&calibrator_id),
-                        "status": "closed",
-                    }));
-                }
-                Ok(_) if tokio::time::Instant::now() < deadline => {}
-                Ok(_) => break,
-                Err(e) => {
-                    return Ok(tool_error!("error polling cover state: {}", e));
-                }
-            }
-        }
-
-        Ok(tool_error!("timeout waiting for cover to close"))
+        let close = close_cover_and_wait(cc.as_ref(), &calibrator_id, poll_interval, cancel);
+        Ok(self
+            .cover_move_operation("close_cover", &calibrator_id, "closed", close)
+            .await)
     }
 
     #[tool(
@@ -187,49 +168,17 @@ impl McpHandler {
             Ok(id) => id,
             Err(e) => return Ok(*e),
         };
+        // A call refused before the device is touched emits no event
+        // (see `close_cover_inner`); a gated call refused as
+        // `SafetyUnsafe` never reaches this body at all.
         let (cc_entry, cc) =
             resolve_device!(self, find_cover_calibrator, &calibrator_id, "calibrator");
         let poll_interval = cc_entry.config.poll_interval;
 
-        debug!(calibrator_id = %calibrator_id, "opening cover");
-        if let Err(e) = cc.open_cover().await {
-            return Ok(tool_error!("failed to open cover: {}", e));
-        }
-
-        let now = tokio::time::Instant::now();
-        // Unreachable overflow degrades to an expired deadline, not a panic.
-        let deadline = now.checked_add(COVER_CALIBRATOR_DEADLINE).unwrap_or(now);
-        loop {
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => {
-                    // Stop-class counterpart (rp.md § In-Flight Tool
-                    // Calls): halt the cover where it is.
-                    if let Err(e) = cc.halt_cover().await {
-                        debug!(error = %e, "halt_cover after cancellation failed");
-                    }
-                    return Ok(tool_error!("{}", cancel.error()));
-                }
-                () = tokio::time::sleep(poll_interval) => {}
-            }
-            match cc.cover_state().await {
-                Ok(CoverStatus::Open) => {
-                    debug!(calibrator_id = %calibrator_id, "cover opened");
-                    return Ok(tool_success!({
-                        "calibrator_id": calibrator_id,
-                        "trains": self.trains_with_calibrator(&calibrator_id),
-                        "status": "open",
-                    }));
-                }
-                Ok(_) if tokio::time::Instant::now() < deadline => {}
-                Ok(_) => break,
-                Err(e) => {
-                    return Ok(tool_error!("error polling cover state: {}", e));
-                }
-            }
-        }
-
-        Ok(tool_error!("timeout waiting for cover to open"))
+        let open = open_cover_and_wait(cc.as_ref(), &calibrator_id, poll_interval, cancel);
+        Ok(self
+            .cover_move_operation("open_cover", &calibrator_id, "open", open)
+            .await)
     }
 
     #[tool(
@@ -433,6 +382,136 @@ impl McpHandler {
             .iter()
             .map(|t| t.id.clone())
             .collect()
+    }
+
+    /// Run one cover move, `motion`, under the `tool`'s lifecycle triple
+    /// and answer the tool's result.
+    ///
+    /// `<tool>_started` carries the resolved `calibrator_id`;
+    /// `<tool>_complete` adds the `status` the result reports;
+    /// `<tool>_failed` carries the error and the `calibrator_id`. All
+    /// three share one `operation_id`. `motion` is a future, so nothing
+    /// reaches the device until `<tool>_started` is out. The started
+    /// envelope carries no deadline fields: a move's only bound is the
+    /// fixed [`COVER_CALIBRATOR_DEADLINE`], not a prediction (rp.md
+    /// § Event Envelope).
+    async fn cover_move_operation(
+        &self,
+        tool: &str,
+        calibrator_id: &str,
+        status: &str,
+        motion: impl Future<Output = Result<(), String>> + Send,
+    ) -> CallToolResult {
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let started_at = chrono::Utc::now();
+        self.event_bus.emit_operation(EventEnvelope::started(
+            tool,
+            &operation_id,
+            started_at,
+            serde_json::json!({ "calibrator_id": calibrator_id }),
+        ));
+        match motion.await {
+            Ok(()) => {
+                self.event_bus.emit_operation(EventEnvelope::complete(
+                    tool,
+                    &operation_id,
+                    started_at,
+                    serde_json::json!({ "calibrator_id": calibrator_id, "status": status }),
+                ));
+                tool_success!({
+                    "calibrator_id": calibrator_id,
+                    "trains": self.trains_with_calibrator(calibrator_id),
+                    "status": status,
+                })
+            }
+            Err(e) => {
+                let mut failed = EventEnvelope::failed(tool, &operation_id, started_at, &e);
+                if let Some(payload) = failed.payload.as_object_mut() {
+                    payload.insert("calibrator_id".to_string(), calibrator_id.into());
+                }
+                self.event_bus.emit_operation(failed);
+                tool_error!("{}", e)
+            }
+        }
+    }
+}
+
+/// Close the cover and wait until it reports `Closed`, polling every
+/// `poll_interval`, bounded by [`COVER_CALIBRATOR_DEADLINE`].
+///
+/// A cancelled close stops *waiting*, never the cover: a closing cover
+/// is what the transition wants (rp.md § In-Flight Tool Calls).
+async fn close_cover_and_wait(
+    cc: &dyn CoverCalibrator,
+    calibrator_id: &str,
+    poll_interval: Duration,
+    cancel: &Cancel,
+) -> Result<(), String> {
+    debug!(calibrator_id = %calibrator_id, "closing cover");
+    if let Err(e) = cc.close_cover().await {
+        return Err(format!("failed to close cover: {e}"));
+    }
+
+    let now = tokio::time::Instant::now();
+    // Unreachable overflow degrades to an expired deadline, not a panic.
+    let deadline = now.checked_add(COVER_CALIBRATOR_DEADLINE).unwrap_or(now);
+    loop {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(cancel.error()),
+            () = tokio::time::sleep(poll_interval) => {}
+        }
+        match cc.cover_state().await {
+            Ok(CoverStatus::Closed) => {
+                debug!(calibrator_id = %calibrator_id, "cover closed");
+                return Ok(());
+            }
+            Ok(_) if tokio::time::Instant::now() < deadline => {}
+            Ok(_) => return Err("timeout waiting for cover to close".to_string()),
+            Err(e) => return Err(format!("error polling cover state: {e}")),
+        }
+    }
+}
+
+/// Open the cover and wait until it reports `Open`, polling every
+/// `poll_interval`, bounded by [`COVER_CALIBRATOR_DEADLINE`].
+///
+/// A cancelled open halts the cover where it is, the stop-class
+/// counterpart rp.md § In-Flight Tool Calls names.
+async fn open_cover_and_wait(
+    cc: &dyn CoverCalibrator,
+    calibrator_id: &str,
+    poll_interval: Duration,
+    cancel: &Cancel,
+) -> Result<(), String> {
+    debug!(calibrator_id = %calibrator_id, "opening cover");
+    if let Err(e) = cc.open_cover().await {
+        return Err(format!("failed to open cover: {e}"));
+    }
+
+    let now = tokio::time::Instant::now();
+    // Unreachable overflow degrades to an expired deadline, not a panic.
+    let deadline = now.checked_add(COVER_CALIBRATOR_DEADLINE).unwrap_or(now);
+    loop {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                if let Err(e) = cc.halt_cover().await {
+                    debug!(error = %e, "halt_cover after cancellation failed");
+                }
+                return Err(cancel.error());
+            }
+            () = tokio::time::sleep(poll_interval) => {}
+        }
+        match cc.cover_state().await {
+            Ok(CoverStatus::Open) => {
+                debug!(calibrator_id = %calibrator_id, "cover opened");
+                return Ok(());
+            }
+            Ok(_) if tokio::time::Instant::now() < deadline => {}
+            Ok(_) => return Err("timeout waiting for cover to open".to_string()),
+            Err(e) => return Err(format!("error polling cover state: {e}")),
+        }
     }
 }
 

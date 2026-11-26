@@ -23,6 +23,13 @@ Feature: Operation event envelopes
   operation's events as on a point event, so the started payload
   carries the operation inputs and the complete payload its outcome.
 
+  A cover move (`open_cover`, `close_cover`) names the resolved
+  `calibrator_id` on every event of its triple, whether the call
+  addressed the calibrator or its train, and its complete payload
+  carries the cover `status` the tool returns. A cover move is bounded
+  by a fixed ceiling, not a sized deadline, so its started event
+  carries no deadline fields.
+
   Scenario: Slew emits a started and complete event under one operation_id
     Given a running Alpaca simulator
     And a webhook subscriber for the "slew" operation
@@ -119,3 +126,36 @@ Feature: Operation event envelopes
     And the "move_focuser_started" event payload includes "focuser_id"
     And the "move_focuser_started" event payload includes "backlash_compensated"
     And the "move_focuser_complete" event payload includes "position"
+
+  Scenario: Close-cover emits a started and complete event naming the resolved calibrator
+    Given a running Alpaca simulator
+    And a webhook subscriber for the "close_cover" operation
+    And rp is running with a camera and a cover calibrator on the simulator in an imaging train
+    And an MCP client connected to rp
+    When the MCP client calls "close_cover" with train "main"
+    Then the webhook delivers the "close_cover_started" event
+    And the webhook delivers the "close_cover_complete" event
+    And the "close_cover_started" and "close_cover_complete" events share one operation_id
+    And the "close_cover_complete" event has a higher event_seq than the "close_cover_started" event
+    And the "close_cover_started" event carries a started_at timestamp
+    And the "close_cover_complete" event carries ended_at and elapsed_ms
+    And the "close_cover_started" event reserves the deadline fields as absent
+    And the "close_cover_started" event payload field "calibrator_id" should be "flat-panel"
+    And the "close_cover_complete" event payload field "calibrator_id" should be "flat-panel"
+    And the "close_cover_complete" event payload field "status" should be "closed"
+
+  Scenario: Open-cover emits a started and complete event under one operation_id
+    Given a running Alpaca simulator
+    And a webhook subscriber for the "open_cover" operation
+    And rp is running with a cover calibrator on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "close_cover" with calibrator "flat-panel"
+    And the MCP client calls "open_cover" with calibrator "flat-panel"
+    Then the tool call should succeed
+    And the webhook delivers the "open_cover_started" event
+    And the webhook delivers the "open_cover_complete" event
+    And the "open_cover_started" and "open_cover_complete" events share one operation_id
+    And the "open_cover_complete" event has a higher event_seq than the "open_cover_started" event
+    And the "open_cover_started" event reserves the deadline fields as absent
+    And the "open_cover_started" event payload field "calibrator_id" should be "flat-panel"
+    And the "open_cover_complete" event payload field "status" should be "open"
