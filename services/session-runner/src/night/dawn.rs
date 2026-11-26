@@ -6,6 +6,9 @@
 //! output the cut rules allow. The checks that follow look at each output
 //! dawn left on every 5 minutes until the next dusk, and cut it once its
 //! reason has cleared.
+//!
+//! The calls to `rp` that dusk shares live here too: the retried call,
+//! the power map, the readings the cut rules take, and the cooler wait.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -18,7 +21,7 @@ use super::clock::NightWindow;
 use super::rules::{
     self, CameraReading, CoverReading, MappedDevice, MappedOutput, ParkReading, Readings, When,
 };
-use super::schedule::{until, NightMemory, Schedule, INITIAL_BACKOFF, MAX_BACKOFF};
+use super::schedule::{until, NightMemory, RunSlot, Schedule, INITIAL_BACKOFF, MAX_BACKOFF};
 use super::state::{LeftOn, NightState, OutputRef, Phase};
 use crate::engine::{Clock, ToolCallError, ToolClient};
 
@@ -33,37 +36,6 @@ pub(super) const CHECK_EVERY: Duration = Duration::from_mins(5);
 /// How many times the after-dawn checks call `park` again, and
 /// `close_cover` again for one cover.
 const MAX_RETRIES: u32 = 3;
-
-/// The run slot as the schedule uses it.
-pub trait RunSlot: Sync {
-    /// The run that holds the slot, if any.
-    fn active_run(&self) -> Option<String>;
-    /// End a run as `POST /runs/{id}/stop` ends it.
-    fn stop_run(&self, run_id: &str);
-    /// Take the slot; `false` while a run holds it.
-    fn hold(&self) -> bool;
-    fn release(&self);
-}
-
-impl RunSlot for crate::runs::RunRegistry {
-    fn active_run(&self) -> Option<String> {
-        self.active()
-    }
-
-    fn stop_run(&self, run_id: &str) {
-        if let Err(e) = self.stop(run_id) {
-            debug!(run_id, error = ?e, "the run ended before dawn could stop it");
-        }
-    }
-
-    fn hold(&self) -> bool {
-        self.hold_for_night()
-    }
-
-    fn release(&self) {
-        self.release_night();
-    }
-}
 
 /// One output of `get_power_map`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,7 +57,7 @@ pub(super) struct MapDevice {
 }
 
 impl MapOutput {
-    fn mapped(&self) -> MappedOutput {
+    pub(super) fn mapped(&self) -> MappedOutput {
         MappedOutput {
             output: self.output.clone(),
             devices: self
@@ -99,7 +71,7 @@ impl MapOutput {
         }
     }
 
-    fn of_kind<'a>(&'a self, kind: &'a str) -> impl Iterator<Item = &'a MapDevice> + 'a {
+    pub(super) fn of_kind<'a>(&'a self, kind: &'a str) -> impl Iterator<Item = &'a MapDevice> + 'a {
         self.devices.iter().filter(move |d| d.kind == kind)
     }
 }
@@ -155,7 +127,7 @@ pub(super) fn parse_power_map(answer: &Value) -> Result<Vec<MapOutput>, String> 
 }
 
 /// `then` moved on by `d`, or `then` itself past chrono's range.
-fn later(then: DateTime<Utc>, d: Duration) -> DateTime<Utc> {
+pub(super) fn later(then: DateTime<Utc>, d: Duration) -> DateTime<Utc> {
     chrono::TimeDelta::from_std(d)
         .ok()
         .and_then(|d| then.checked_add_signed(d))
@@ -174,6 +146,7 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
             _ => NightState::ahead(latest.night, latest.dusk, latest.dawn),
         };
         self.memory = NightMemory::default();
+        self.status.set_run(None);
         // A comeback counts from this dawn on: one noticed on an earlier
         // day says nothing about the coolers this dawn leaves running.
         self.rp_came_back = false;
@@ -181,6 +154,7 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
         self.seen_connects = self.connects.load(std::sync::atomic::Ordering::SeqCst);
         state.phase = Phase::Dawn;
         state.outputs_left_on.clear();
+        state.covers_to_open.clear();
         self.save(&state).await;
         info!(night = %latest.night, "dawn: ending the night");
 
@@ -208,7 +182,10 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
             state.warmup_started_at.unwrap_or_else(|| self.clock.now()),
             self.night.warmup_timeout,
         );
-        self.wait_for_coolers(&map, warmed_by).await;
+        let running = self.wait_for_coolers(&map, warmed_by).await;
+        if !running.is_empty() {
+            warn!(cameras = ?running, "dawn: coolers still run after warmup_timeout; the cut rules hold their outputs");
+        }
 
         let candidates: Vec<MapOutput> = self
             .power_map(deadline)
@@ -446,44 +423,59 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
 
     /// Wait until no camera on a daily output reads its cooler running,
     /// polled every 30 s and woken early by `cooler_warmup_complete`,
-    /// until `warmed_by`.
-    async fn wait_for_coolers(&mut self, map: &[MapOutput], warmed_by: DateTime<Utc>) {
+    /// until `warmed_by`. Returns the cameras whose cooler still runs.
+    pub(super) async fn wait_for_coolers(
+        &mut self,
+        map: &[MapOutput],
+        warmed_by: DateTime<Utc>,
+    ) -> Vec<String> {
+        loop {
+            let running = self.running_coolers(map, warmed_by).await;
+            if running.is_empty() {
+                debug!("no cooler on a daily output runs");
+                return running;
+            }
+            let now = self.clock.now();
+            if now >= warmed_by {
+                return running;
+            }
+            debug!(cameras = ?running, "waiting for the coolers to stop");
+            self.sleep_or_warmup_done(COOLER_POLL.min(until(now, warmed_by)))
+                .await;
+        }
+    }
+
+    /// The cameras on a daily output that does not read off whose
+    /// `get_camera_info` reads `cooler_running` true. A camera `rp` holds
+    /// no session with fails the read, and is not connected for it.
+    pub(super) async fn running_coolers(
+        &mut self,
+        map: &[MapOutput],
+        deadline: DateTime<Utc>,
+    ) -> Vec<String> {
         let cameras: BTreeSet<String> = map
             .iter()
             .filter(|o| o.daily && o.on != Some(false))
             .flat_map(|o| o.of_kind("camera"))
             .map(|d| d.device_id.clone())
             .collect();
-        loop {
-            let mut running = Vec::new();
-            for camera in &cameras {
-                let info = self
-                    .call("get_camera_info", json!({ "camera_id": camera }), warmed_by)
-                    .await;
-                if info.is_ok_and(|v| v.get("cooler_running") == Some(&Value::Bool(true))) {
-                    running.push(camera.clone());
-                }
-            }
-            if running.is_empty() {
-                debug!("dawn: no cooler on a daily output runs");
-                return;
-            }
-            let now = self.clock.now();
-            if now >= warmed_by {
-                warn!(cameras = ?running, "dawn: coolers still run after warmup_timeout; the cut rules hold their outputs");
-                return;
-            }
-            debug!(cameras = ?running, "dawn: waiting for the coolers to stop");
-            self.sleep_or_warmup_done(COOLER_POLL.min(until(now, warmed_by)))
+        let mut running = Vec::new();
+        for camera in cameras {
+            let info = self
+                .call("get_camera_info", json!({ "camera_id": camera }), deadline)
                 .await;
+            if info.is_ok_and(|v| v.get("cooler_running") == Some(&Value::Bool(true))) {
+                running.push(camera);
+            }
         }
+        running
     }
 
     /// Sleep `wait`, or less if a `cooler_warmup_complete` arrives first.
     async fn sleep_or_warmup_done(&self, wait: Duration) {
         tokio::select! {
             () = self.clock.sleep(wait) => {}
-            () = self.warmup_done.notified() => {}
+            () = self.signals.warmup_done.notified() => {}
         }
     }
 
@@ -532,30 +524,17 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
             {
                 Ok(result) => {
                     for output in &allowed {
-                        let reported =
-                            result
-                                .get("outputs")
-                                .and_then(Value::as_array)
-                                .and_then(|outs| {
-                                    outs.iter().find(|o| {
-                                        o.get("switch_id").and_then(Value::as_str)
-                                            == Some(output.switch_id.as_str())
-                                            && o.get("output").and_then(Value::as_str)
-                                                == Some(output.output.as_str())
-                                    })
-                                });
-                        match reported {
-                            Some(o) if o.get("error").is_some_and(|e| !e.is_null()) => {
-                                let error = o["error"].as_str().unwrap_or("an error");
+                        match cut_outcome(&result, output) {
+                            CutOutcome::Failed(error) => {
                                 self.memory.reconnect_first.insert(output.clone());
                                 left_on.push(leave(output, format!("its cut failed: {error}")));
                             }
-                            Some(o) if o.get("on") == Some(&Value::Bool(false)) => {
+                            CutOutcome::Off => {
                                 self.memory.logged_left_on.remove(output);
                                 self.memory.reconnect_first.remove(output);
                                 info!(switch_id = %output.switch_id, output = %output.output, "cut a daily output");
                             }
-                            _ => {
+                            CutOutcome::NotOff => {
                                 self.memory.reconnect_first.insert(output.clone());
                                 left_on.push(leave(
                                     output,
@@ -590,7 +569,11 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
     /// What the cut rules read of the devices on `outputs`. A camera `rp`
     /// holds no session with is connected first; one that will not
     /// connect, or whose `get_camera_info` fails, is unreadable.
-    async fn readings(&mut self, outputs: &[MapOutput], deadline: DateTime<Utc>) -> Readings {
+    pub(super) async fn readings(
+        &mut self,
+        outputs: &[MapOutput],
+        deadline: DateTime<Utc>,
+    ) -> Readings {
         let mut readings = Readings::default();
         let cameras: Vec<MapDevice> = dedup(outputs.iter().flat_map(|o| o.of_kind("camera")));
         for camera in cameras {
@@ -656,7 +639,7 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
     }
 
     /// `rp`'s power map, or none when it cannot be read.
-    async fn power_map(&mut self, deadline: DateTime<Utc>) -> Vec<MapOutput> {
+    pub(super) async fn power_map(&mut self, deadline: DateTime<Utc>) -> Vec<MapOutput> {
         match self.call("get_power_map", json!({}), deadline).await {
             Ok(answer) => parse_power_map(&answer).unwrap_or_else(|e| {
                 warn!(error = %e, "rp's power map does not read; nothing is cut");
@@ -669,10 +652,11 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
         }
     }
 
-    /// A step of dawn: a failure is logged at `warn!` and dawn goes on.
-    async fn step(&mut self, tool: &str, args: Value, deadline: DateTime<Utc>) {
+    /// A step of the night: a failure is logged at `warn!` and the night
+    /// goes on.
+    pub(super) async fn step(&mut self, tool: &str, args: Value, deadline: DateTime<Utc>) {
         if let Err(e) = self.call(tool, args, deadline).await {
-            warn!(tool, error = %e, "a step of dawn failed; dawn goes on");
+            warn!(tool, error = %e, "a step of the night failed; the night goes on");
         }
     }
 
@@ -682,7 +666,7 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
     /// # Errors
     ///
     /// The tool's error, or `rp` still unreachable at `deadline`.
-    async fn call(
+    pub(super) async fn call(
         &mut self,
         tool: &str,
         args: Value,
@@ -727,6 +711,34 @@ impl<C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'_, C, K, S> {
     }
 }
 
+/// What `power_down`'s answer says of one output's cut.
+pub(super) enum CutOutcome {
+    Off,
+    /// The cut is reported with this error.
+    Failed(String),
+    /// Not reported off, and no error says why.
+    NotOff,
+}
+
+pub(super) fn cut_outcome(answer: &Value, output: &OutputRef) -> CutOutcome {
+    let reported = answer
+        .get("outputs")
+        .and_then(Value::as_array)
+        .and_then(|outs| {
+            outs.iter().find(|o| {
+                o.get("switch_id").and_then(Value::as_str) == Some(output.switch_id.as_str())
+                    && o.get("output").and_then(Value::as_str) == Some(output.output.as_str())
+            })
+        });
+    match reported {
+        Some(o) if o.get("error").is_some_and(|e| !e.is_null()) => {
+            CutOutcome::Failed(o["error"].as_str().unwrap_or("an error").to_owned())
+        }
+        Some(o) if o.get("on") == Some(&Value::Bool(false)) => CutOutcome::Off,
+        _ => CutOutcome::NotOff,
+    }
+}
+
 fn leave(output: &OutputRef, reason: String) -> LeftOn {
     LeftOn {
         switch_id: output.switch_id.clone(),
@@ -736,7 +748,7 @@ fn leave(output: &OutputRef, reason: String) -> LeftOn {
 }
 
 /// The devices in `devices`, each once, in their first order.
-fn dedup<'a>(devices: impl Iterator<Item = &'a MapDevice>) -> Vec<MapDevice> {
+pub(super) fn dedup<'a>(devices: impl Iterator<Item = &'a MapDevice>) -> Vec<MapDevice> {
     let mut seen = BTreeSet::new();
     devices
         .filter(|d| seen.insert(d.device_id.clone()))
@@ -751,33 +763,8 @@ mod tests {
 
     use chrono::TimeZone;
 
-    use super::super::test_rig::{at, date, Harness, TestClock};
+    use super::super::test_rig::{at, date, Harness};
     use super::*;
-    use crate::night::test_rig::{FakeRp, FakeSlot};
-
-    type TestSchedule<'a> = Schedule<'a, FakeRp, TestClock, FakeSlot>;
-
-    /// Run the loop as `Schedule::run` does until `done` holds, at most
-    /// `passes` passes.
-    async fn run_until(
-        h: &Harness,
-        schedule: &mut TestSchedule<'_>,
-        passes: usize,
-        done: impl Fn(&Harness) -> bool,
-    ) {
-        for _ in 0..passes {
-            let wait = schedule.tick().await;
-            if done(h) {
-                return;
-            }
-            h.clock.sleep(wait).await;
-        }
-        panic!(
-            "not done after {passes} passes; steps: {:?}; state: {:?}",
-            h.rp.steps(),
-            h.status.snapshot()
-        );
-    }
 
     fn position(steps: &[String], tool: &str) -> usize {
         steps
@@ -957,7 +944,7 @@ mod tests {
         let dawn_started = h.clock.now();
         let mut schedule = h.schedule();
 
-        run_until(&h, &mut schedule, 40, |h| {
+        h.run_until(&mut schedule, 40, |h| {
             h.status.snapshot().is_some_and(|s| s.night == date(24))
         })
         .await;
@@ -990,7 +977,7 @@ mod tests {
             .unwrap()
             .coolers
             .insert("main-cam".into(), Some(false));
-        run_until(&h, &mut schedule, 5, |h| {
+        h.run_until(&mut schedule, 5, |h| {
             h.status.snapshot().is_some_and(|s| s.night == date(24))
         })
         .await;
@@ -1008,22 +995,23 @@ mod tests {
         h.rp.rig.lock().unwrap().parks_fail = true;
         let mut schedule = h.schedule();
 
-        run_until(&h, &mut schedule, 200, |h| {
+        h.run_until(&mut schedule, 200, |h| {
             h.status.snapshot().is_some_and(|s| s.night == date(24))
         })
         .await;
 
         assert_eq!(h.rp.called("park"), 4, "dawn's park and three more");
-        let dusk = h.status.snapshot().unwrap();
         assert!(
             h.clock.now() >= at(25, 0),
             "the file moved at dusk, {}",
             h.clock.now()
         );
-        assert_eq!(dusk.phase, Phase::Day);
-        assert_eq!(
-            h.rp.rig.lock().unwrap().output("Mount Power").on,
-            Some(true)
+        assert!(
+            !h.rp
+                .args_of("power_down")
+                .iter()
+                .any(|a| a.to_string().contains("Mount Power")),
+            "the mount's output was never cut"
         );
     }
 
@@ -1033,7 +1021,7 @@ mod tests {
         h.rp.rig.lock().unwrap().closes_fail = true;
         let mut schedule = h.schedule();
 
-        run_until(&h, &mut schedule, 200, |h| {
+        h.run_until(&mut schedule, 200, |h| {
             h.status.snapshot().is_some_and(|s| s.night == date(24))
         })
         .await;
@@ -1058,7 +1046,7 @@ mod tests {
         assert!(h.rp.rig.lock().unwrap().held_out.contains("mount"));
 
         h.rp.rig.lock().unwrap().cuts_fail.clear();
-        run_until(&h, &mut schedule, 5, |h| {
+        h.run_until(&mut schedule, 5, |h| {
             h.status.snapshot().is_some_and(|s| s.night == date(24))
         })
         .await;

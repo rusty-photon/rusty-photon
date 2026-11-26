@@ -1,7 +1,9 @@
-//! The schedule's loop: it runs each dawn, the after-dawn checks until
-//! the next dusk, and keeps `night.json` on the night ahead.
+//! The schedule's loop: it runs each dusk and the night's runs, each
+//! dawn and the after-dawn checks until the next dusk, and keeps
+//! `night.json` on the night ahead.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -12,13 +14,12 @@ use serde_json::{json, Map, Value};
 use tracing::{debug, warn};
 
 use super::clock::{candidate_nights, civil_ends, window, NightWindow};
-use super::config::NightConfig;
-use super::dawn::RunSlot;
+use super::config::{NightConfig, NightRun};
 use super::state::{NightState, OutputRef, Phase};
-use super::NightStatus;
-use tokio::sync::Notify;
+use super::{NightStatus, Signals};
 
 use crate::engine::{Clock, ToolCallError, ToolClient};
+use crate::runs::StartRefused;
 
 /// First retry after `rp` fails at the request level; doubles up to
 /// [`MAX_BACKOFF`] (design § Night Schedule → Errors).
@@ -28,7 +29,40 @@ pub(super) const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// How often a `get_twilight` that answered with a tool error is asked
 /// again, and how long the loop sleeps at most between two reads of the
 /// nights.
-const TWILIGHT_RETRY: Duration = Duration::from_hours(1);
+pub(super) const TWILIGHT_RETRY: Duration = Duration::from_hours(1);
+
+/// A run the slot knows, as the schedule reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnownRun {
+    pub run_id: String,
+    pub session_id: String,
+    /// Running or paused.
+    pub active: bool,
+}
+
+/// The run slot as the schedule uses it.
+pub trait RunSlot: Sync {
+    /// The run that holds the slot, if any.
+    fn active_run(&self) -> Option<String>;
+    /// Every run this process knows.
+    fn runs(&self) -> Vec<KnownRun>;
+    /// End a run as `POST /runs/{id}/stop` ends it.
+    fn stop_run(&self, run_id: &str);
+    /// Take the slot; `false` while a run holds it.
+    fn hold(&self) -> bool;
+    fn release(&self);
+    /// Whether the schedule holds the slot.
+    fn held(&self) -> bool;
+    /// Start `run` under `session_id` as `POST /runs` starts it, the
+    /// schedule's hold of the slot handed to it when `from_night`.
+    /// Returns the run id.
+    fn start_run(
+        &self,
+        run: &NightRun,
+        session_id: &str,
+        from_night: bool,
+    ) -> impl Future<Output = Result<String, StartRefused>> + Send;
+}
 
 /// What reading the nights came to, other than nights.
 enum ReadFailure {
@@ -62,6 +96,15 @@ pub(super) struct NightMemory {
     /// The outputs left on because their cut failed or their box could
     /// not be read: a check connects their held-out devices first.
     pub(super) reconnect_first: BTreeSet<OutputRef>,
+    /// Whether the runs phase has looked for a run of this night the
+    /// previous process left.
+    pub(super) runs_taken_up: bool,
+    /// When the covers still to open are tried next.
+    pub(super) next_cover_retry: Option<DateTime<Utc>>,
+    /// The operator's run whose wait has been logged.
+    pub(super) logged_wait_for: Option<String>,
+    /// Whether the end of the night's runs has been logged.
+    pub(super) logged_runs_done: bool,
 }
 
 /// The loop over nights, with what it has logged so far.
@@ -72,9 +115,11 @@ pub struct Schedule<'a, C, K, S> {
     pub(super) night: &'a NightConfig,
     pub(super) state_dir: &'a Path,
     pub(super) status: &'a NightStatus,
-    /// Notified at each `cooler_warmup_complete`: it wakes the cooler
-    /// wait.
-    pub(super) warmup_done: Arc<Notify>,
+    /// What `rp`'s event stream tells the schedule.
+    pub(super) signals: Arc<Signals>,
+    /// How often dusk reads `get_safety_status` while the roof does not
+    /// read safe.
+    pub(super) safety_poll: Duration,
     /// How often the event stream has connected; a reconnect reads as
     /// `rp` back from a restart.
     pub(super) connects: Arc<AtomicU64>,
@@ -99,7 +144,8 @@ pub struct Seams<'a, C, K, S> {
     pub night: &'a NightConfig,
     pub state_dir: &'a Path,
     pub status: &'a NightStatus,
-    pub warmup_done: Arc<Notify>,
+    pub signals: Arc<Signals>,
+    pub safety_poll: Duration,
     pub connects: Arc<AtomicU64>,
 }
 
@@ -113,7 +159,8 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'a, C, K, S
             night: seams.night,
             state_dir: seams.state_dir,
             status: seams.status,
-            warmup_done: seams.warmup_done,
+            signals: seams.signals,
+            safety_poll: seams.safety_poll,
             connects: seams.connects,
             seen_connects: 0,
             rp_was_down: false,
@@ -133,9 +180,10 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'a, C, K, S
         }
     }
 
-    /// One pass: a dawn owed runs, the after-dawn checks run when due,
-    /// and otherwise `night.json` moves to the night ahead. Returns how
-    /// long to wait before the next pass.
+    /// One pass: from dusk to dawn the night runs from wherever
+    /// `night.json` says it is; by day a dawn owed runs, the after-dawn
+    /// checks run when due, and otherwise `night.json` moves to the night
+    /// ahead. Returns how long to wait before the next pass.
     pub async fn tick(&mut self) -> Duration {
         let now = self.clock.now();
         let nights = match self.nights(now).await {
@@ -170,26 +218,41 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'a, C, K, S
             debug!("no night with civil darkness in reach; reading the twilight again in an hour");
             return TWILIGHT_RETRY;
         };
+        // Night: the night ahead's dusk has passed and its dawn has not.
+        if now >= ahead.dusk {
+            self.keep_on(ahead).await;
+            return self.night_time(ahead).await;
+        }
         // Daytime: the latest dawn has passed and the next dusk has not.
-        if now < ahead.dusk {
-            if let Some(latest) = nights.latest {
-                let state = self.status.snapshot();
-                if dawn_owed(latest.night, state.as_ref()) {
-                    self.dawn(latest, ahead).await;
-                    return Duration::ZERO;
-                }
-                if state.is_some_and(|s| s.night == latest.night && s.phase == Phase::AfterDawn) {
-                    return self.after_dawn(ahead).await;
-                }
+        if let Some(latest) = nights.latest {
+            let state = self.status.snapshot();
+            if dawn_owed(latest.night, state.as_ref()) {
+                self.dawn(latest, ahead).await;
+                return Duration::ZERO;
+            }
+            if state.is_some_and(|s| s.night == latest.night && s.phase == Phase::AfterDawn) {
+                return self.after_dawn(ahead).await;
             }
         }
         self.keep_on(ahead).await;
-        let next = if now < ahead.dusk {
-            ahead.dusk
-        } else {
-            ahead.dawn
+        until(now, ahead.dusk).min(TWILIGHT_RETRY)
+    }
+
+    /// The night between `ahead`'s dusk and its dawn, from wherever
+    /// `night.json` says it is (design § Restarts, cases 2 and 4 to 6).
+    async fn night_time(&mut self, ahead: NightWindow) -> Duration {
+        let Some(state) = self.status.snapshot().filter(|s| s.night == ahead.night) else {
+            return Duration::ZERO;
         };
-        until(now, next).min(TWILIGHT_RETRY)
+        match state.phase {
+            Phase::Day | Phase::Dusk => self.dusk(ahead, state).await,
+            Phase::PowerUp | Phase::CameraCheck => self.power_up_again(ahead, state).await,
+            Phase::Runs => self.runs(ahead, state).await,
+            // A night's dawn and the checks after it come after its dawn.
+            Phase::Dawn | Phase::AfterDawn => {
+                until(self.clock.now(), ahead.dawn).min(TWILIGHT_RETRY)
+            }
+        }
     }
 
     /// The nights around `now`: the one whose dawn passed latest, and
@@ -242,6 +305,7 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'a, C, K, S
             return;
         }
         self.memory = NightMemory::default();
+        self.status.set_run(None);
         let state = NightState::ahead(ahead.night, ahead.dusk, ahead.dawn);
         self.save(&state).await;
         debug!(night = %ahead.night, dusk = %ahead.dusk, dawn = %ahead.dawn, "night.json moved to the night ahead");
@@ -303,28 +367,36 @@ mod tests {
 
     #[tokio::test]
     async fn a_start_in_the_night_puts_night_json_on_it_with_its_offsets() {
-        let h = Harness::new(at(24, 3));
+        let h = Harness::with_runs(at(24, 3), &[]);
         let mut schedule = h.schedule();
 
-        let wait = schedule.tick().await;
+        schedule.tick().await;
 
-        let expected = NightState::ahead(
-            date(23),
-            Utc.with_ymd_and_hms(2026, 11, 24, 0, 58, 0).unwrap(),
-            Utc.with_ymd_and_hms(2026, 11, 24, 14, 31, 0).unwrap(),
+        let state = NightState::load(h.dir.path()).await.unwrap();
+        assert_eq!(h.status.snapshot(), Some(state.clone()));
+        assert_eq!(
+            (state.night, state.dusk, state.dawn),
+            (
+                date(23),
+                Utc.with_ymd_and_hms(2026, 11, 24, 0, 58, 0).unwrap(),
+                Utc.with_ymd_and_hms(2026, 11, 24, 14, 31, 0).unwrap(),
+            )
         );
-        assert_eq!(h.status.snapshot(), Some(expected.clone()));
-        assert_eq!(NightState::load(h.dir.path()).await, Some(expected));
-        assert_eq!(wait, TWILIGHT_RETRY, "dawn is more than an hour off");
         assert_eq!(h.rp.called("power_down"), 0, "no dawn ran");
     }
 
     #[tokio::test]
     async fn a_night_in_progress_is_the_night_ahead_until_its_dawn() {
-        let h = Harness::new(Utc.with_ymd_and_hms(2026, 11, 24, 14, 0, 0).unwrap());
+        let h = Harness::with_runs(Utc.with_ymd_and_hms(2026, 11, 24, 14, 0, 0).unwrap(), &[]);
         h.status.publish(done_up_to(23));
         let mut schedule = h.schedule();
 
+        schedule.tick().await;
+        assert_eq!(
+            h.status.snapshot().unwrap().phase,
+            Phase::Runs,
+            "a start between dusk and dawn takes the night up at dusk"
+        );
         let wait = schedule.tick().await;
         assert_eq!(h.status.snapshot().unwrap().night, date(23));
         assert_eq!(wait, Duration::from_mins(31), "until dawn");

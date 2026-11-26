@@ -1,5 +1,6 @@
 //! Step definitions for `night.feature`: the night schedule's place, read
-//! on `GET /night` and in `night.json`, against rp's civil twilight.
+//! on `GET /night` and in `night.json`, against rp's civil twilight, and
+//! its dusk and dawn against the simulator and a stub power box.
 
 use std::time::Duration;
 
@@ -22,6 +23,13 @@ const READ_BUDGET: Duration = Duration::from_secs(20);
 #[given("session-runner is running without a night block")]
 async fn running_without_night(world: &mut SessionRunnerWorld) {
     start_session_runner_service(world).await;
+}
+
+#[given("rp is running with no devices at a site whose dawn has passed")]
+async fn rp_bare_at_morning_site(world: &mut SessionRunnerWorld) {
+    let sky = ComputedSky::morning_at(Utc::now());
+    world.site = Some((sky.latitude_degrees(), sky.longitude_degrees()));
+    start_rp_service(world).await;
 }
 
 #[given(expr = "rp is running with a site at latitude {float} and longitude {float}")]
@@ -52,7 +60,13 @@ async fn read_night_ahead(world: &mut SessionRunnerWorld) {
     let deadline = tokio::time::Instant::now() + READ_BUDGET;
     loop {
         let report = get_night(world).await;
-        if !report["night"].is_null() {
+        // A start in the day runs the dawn that has passed first, on the
+        // night it ends.
+        let dawn_ahead = report["dawn"]
+            .as_str()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .is_some_and(|t| t.with_timezone(&Utc) > Utc::now());
+        if dawn_ahead {
             world.night_report = Some(report);
             return;
         }
@@ -176,6 +190,10 @@ async fn civil_twilight(world: &SessionRunnerWorld) -> (DateTime<Utc>, DateTime<
 /// How long dawn gets to run its steps against the simulator.
 const DAWN_BUDGET: Duration = Duration::from_secs(90);
 
+/// How long dusk gets to power the simulator's camera up, check it and
+/// start the night's run.
+const DUSK_BUDGET: Duration = Duration::from_secs(120);
+
 #[given(expr = "a stub power box whose daily output {string} feeds the simulator's camera")]
 async fn power_box_feeding_camera(world: &mut SessionRunnerWorld, output: String) {
     ensure_omnisim(world).await;
@@ -191,9 +209,30 @@ async fn power_box_feeding_camera(world: &mut SessionRunnerWorld, output: String
     world.power_box = Some(stub);
 }
 
+#[given(
+    expr = "a stub power box whose daily output {string} feeds the simulator's camera and reads off"
+)]
+async fn power_box_feeding_camera_off(world: &mut SessionRunnerWorld, output: String) {
+    power_box_feeding_camera(world, output.clone()).await;
+    world
+        .power_box
+        .as_ref()
+        .expect("a stub power box runs")
+        .switch(&output, false);
+}
+
 #[given("rp is running at an observing site whose dawn has passed")]
 async fn rp_at_morning_site(world: &mut SessionRunnerWorld) {
-    let sky = ComputedSky::morning_at(Utc::now());
+    rp_at_observing_site(world, &ComputedSky::morning_at(Utc::now())).await;
+}
+
+#[given("rp is running at an observing site whose dusk has passed")]
+async fn rp_at_night_site(world: &mut SessionRunnerWorld) {
+    rp_at_observing_site(world, &ComputedSky::night_at(Utc::now())).await;
+}
+
+/// rp at `sky`'s site, with the simulated mount moved there.
+async fn rp_at_observing_site(world: &mut SessionRunnerWorld, sky: &ComputedSky) {
     let (lat, lon) = (sky.latitude_degrees(), sky.longitude_degrees());
     world.site = Some((lat, lon));
     // rp refuses a mount whose site differs from its own. The site is a
@@ -236,6 +275,77 @@ async fn run_left_by_previous_process(world: &mut SessionRunnerWorld, workflow: 
 #[when("session-runner starts with a night block")]
 async fn starts_with_night(world: &mut SessionRunnerWorld) {
     start_session_runner_service_with(world, json!({ "night": {} })).await;
+}
+
+#[when(expr = "session-runner starts with a night block that runs {string}")]
+async fn starts_with_night_run(world: &mut SessionRunnerWorld, workflow: String) {
+    let night = json!({ "night": { "settle": "1s", "runs": [ { "workflow": workflow } ] } });
+    start_session_runner_service_with(world, night).await;
+}
+
+#[then(expr = "the stub power box's {string} output should go on")]
+async fn output_goes_on(world: &mut SessionRunnerWorld, output: String) {
+    let stub = world.power_box.as_ref().expect("a stub power box runs");
+    let deadline = tokio::time::Instant::now() + DUSK_BUDGET;
+    while !stub.is_on(&output) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{output} is still off after {DUSK_BUDGET:?}; the night reads {}",
+            get_night(world).await
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[then(
+    expr = "the night's run of {string} should complete under the session id of its night and index {int}"
+)]
+async fn night_run_completes(world: &mut SessionRunnerWorld, workflow: String, index: usize) {
+    let deadline = tokio::time::Instant::now() + DUSK_BUDGET;
+    loop {
+        let night = get_night(world).await;
+        let session_id = format!("night-{}-{index}", night["night"].as_str().unwrap_or(""));
+        let runs: Value = reqwest::get(format!("{}/runs", world.session_runner_url()))
+            .await
+            .expect("GET /runs failed")
+            .json()
+            .await
+            .expect("GET /runs answers JSON");
+        let run = runs
+            .as_array()
+            .expect("GET /runs answers a list")
+            .iter()
+            .find(|r| r["session_id"] == json!(session_id))
+            .cloned();
+        if let Some(run) = &run {
+            assert_eq!(run["workflow"], json!(workflow), "{run}");
+            if run["state"] == json!("complete") {
+                return;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no run of {workflow} completed under {session_id} within {DUSK_BUDGET:?}; \
+             the night reads {night}; the runs read {runs}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[then(expr = "the night schedule should reach phase {string}")]
+async fn reaches_phase(world: &mut SessionRunnerWorld, phase: String) {
+    let deadline = tokio::time::Instant::now() + DUSK_BUDGET;
+    loop {
+        let report = get_night(world).await;
+        if report["phase"] == json!(phase) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the night did not reach phase {phase}: {report}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 #[then(expr = "the stub power box's {string} output should go off")]

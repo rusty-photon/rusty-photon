@@ -6,6 +6,11 @@ Feature: Night schedule
   The schedule stays on a night until its dawn, in phase day until dusk.
   Without a night block, GET /night reports phase off and nothing else.
 
+  At dusk, once the roof reads safe, the schedule has rp power the daily
+  outputs up, checks each camera for a wedge, opens the covers, starts
+  the cooldown and starts the configured runs in turn, each under the
+  session id night-<date>-<n>.
+
   Dawn runs every morning, a start in the day included. It stops the
   active run, warms the cameras, parks the mount, closes the covers the
   power map lists, waits for the coolers to stop, and has rp cut every
@@ -21,7 +26,7 @@ Feature: Night schedule
     Then the night schedule should report the JSON {"phase": "off"}
 
   Scenario: The schedule reads the night ahead from rp's civil twilight
-    Given rp is running with a site at latitude 47.6 and longitude -122.3
+    Given rp is running with no devices at a site whose dawn has passed
     And session-runner is running with a night block whose dusk_offset is "-30m"
     When the night schedule has read the night ahead
     Then the night schedule's phase should be "day"
@@ -52,3 +57,12 @@ Feature: Night schedule
     When session-runner starts with a night block
     Then the run the previous process left should end "stopped"
     And the stub power box's "Camera Power" output should go off
+
+  @serial
+  Scenario: At a site whose dusk has passed, the schedule powers the rig up and starts the night's run
+    Given a stub power box whose daily output "Camera Power" feeds the simulator's camera and reads off
+    And rp is running at an observing site whose dusk has passed
+    When session-runner starts with a night block that runs "night_short"
+    Then the stub power box's "Camera Power" output should go on
+    And the night's run of "night_short" should complete under the session id of its night and index 0
+    And the night schedule should reach phase "runs"

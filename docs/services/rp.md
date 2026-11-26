@@ -4260,10 +4260,9 @@ a step of the night over every device it touches: `power_up` and
 `power_down`, which power a set of outputs up or down with every device
 on them, `check_camera`, which tests a camera for a wedge, and
 `get_power_map`, which reads the whole map. `session-runner`'s night
-schedule, which calls the last four
-([session-runner.md § Night Schedule](session-runner.md#night-schedule)),
-is designed in the [daily power cycle
-plan](../plans/daily-power-cycle.md) and not built yet.
+schedule calls the last four at dusk and at dawn
+([session-runner.md § Night Schedule](session-runner.md#night-schedule);
+[daily power cycle plan](../plans/daily-power-cycle.md)).
 
 #### The power map
 

@@ -4,10 +4,11 @@
 //! box whose outputs they can read and whose writes they can observe,
 //! without a serial device behind it. The stub serves one `Switch` at
 //! device number 0 with a fixed list of named, writable on/off outputs,
-//! all on at start, with the wire shape rp's Alpaca client speaks: reads
-//! answer through the `{Value, ErrorNumber, ErrorMessage}` envelope, and
-//! any switch read or write issued before `Connected = true` answers
-//! ASCOM `NOT_CONNECTED` (0x407), as a real driver does.
+//! all on at start unless the scenario switches one, with the wire shape
+//! rp's Alpaca client speaks: reads answer through the
+//! `{Value, ErrorNumber, ErrorMessage}` envelope, and any switch read or
+//! write issued before `Connected = true` answers ASCOM `NOT_CONNECTED`
+//! (0x407), as a real driver does.
 //!
 //! Every `Connected` read is counted. rp's reconnect supervisor reads it
 //! once per pass, after every device ahead of the power box in its walk,
@@ -133,6 +134,21 @@ impl PowerBoxStub {
             .position(|n| n == name)
             .unwrap_or_else(|| panic!("the stub power box has no output named {name:?}"));
         self.state.is_on(index)
+    }
+
+    /// Switch the output named `name`, as its box's own controls would.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the box has no output of that name.
+    pub fn switch(&self, name: &str, on: bool) {
+        let index = self
+            .state
+            .names
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or_else(|| panic!("the stub power box has no output named {name:?}"));
+        self.state.set(index, on);
     }
 
     /// How many `Connected` reads the box has served.

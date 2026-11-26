@@ -22,7 +22,9 @@ use tracing::{debug, info, warn};
 
 use crate::blackboard::Blackboard;
 use crate::config::{Config, RpConnection};
-use crate::document::{bind_parameters, resolve_workflow_path, validate_against_catalog, Document};
+use crate::document::{
+    bind_parameters, resolve_workflow_path, validate_against_catalog, Document, ValidationIssue,
+};
 use crate::engine::{
     run_with_stop, PauseReason, RunOutcome, SystemClock, ToolCallError, ToolClient,
 };
@@ -139,13 +141,44 @@ impl RunRegistry {
         workflow: &str,
         started_at: DateTime<Utc>,
     ) -> Result<CancellationToken, SlotTaken> {
+        self.reserve(run_id, session_id, workflow, started_at, false)
+    }
+
+    /// Register a run the night schedule starts while it holds the slot,
+    /// handing the hold to the run in the same step, so that no other run
+    /// starts between the two.
+    ///
+    /// # Errors
+    ///
+    /// The run that holds the slot.
+    pub fn start_from_night(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        workflow: &str,
+        started_at: DateTime<Utc>,
+    ) -> Result<CancellationToken, SlotTaken> {
+        self.reserve(run_id, session_id, workflow, started_at, true)
+    }
+
+    fn reserve(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        workflow: &str,
+        started_at: DateTime<Utc>,
+        from_night: bool,
+    ) -> Result<CancellationToken, SlotTaken> {
         let mut runs = self.lock();
         if let Some(active) = runs.iter().find(|r| r.state.is_active()) {
             let active = active.run_id.clone();
             drop(runs);
             return Err(SlotTaken::Run(active));
         }
-        if self.night_hold.load(std::sync::atomic::Ordering::SeqCst) {
+        if from_night {
+            self.night_hold
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        } else if self.night_hold.load(std::sync::atomic::Ordering::SeqCst) {
             drop(runs);
             return Err(SlotTaken::Night);
         }
@@ -461,6 +494,150 @@ pub fn completion_result(
         }
     }
     Value::Object(result)
+}
+
+// --- starting a run ---------------------------------------------------------
+
+/// A run to start: what a `POST /runs` body names, its session id
+/// settled.
+pub struct StartRequest {
+    pub workflow: String,
+    /// The document's parameters, a JSON object.
+    pub params: Value,
+    pub session_id: String,
+}
+
+/// Why a run did not start.
+#[derive(Debug)]
+pub enum StartRefused {
+    /// The document cannot be read, or it, its parameters or the live
+    /// catalog fail validation. `issues` is empty for a document that
+    /// cannot be read.
+    Invalid {
+        message: String,
+        issues: Vec<ValidationIssue>,
+    },
+    /// What holds the run slot.
+    Taken(SlotTaken),
+    /// `rp` cannot be reached for the catalog check.
+    Unreachable(String),
+    /// The manifest cannot be written. The run is listed as failed.
+    NotRecorded { message: String, run_id: String },
+}
+
+impl std::fmt::Display for StartRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid { message, issues } if issues.is_empty() => f.write_str(message),
+            Self::Invalid { message, issues } => {
+                write!(f, "{message}: {}", issue_messages(issues))
+            }
+            Self::Taken(SlotTaken::Run(active)) => write!(f, "run `{active}` is still active"),
+            Self::Taken(SlotTaken::Night) => f.write_str("the night schedule holds the run slot"),
+            Self::Unreachable(message) => write!(f, "rp unreachable: {message}"),
+            Self::NotRecorded { message, .. } => f.write_str(message),
+        }
+    }
+}
+
+/// Read a workflow document named in `workflows_dir`, or at an
+/// absolute path.
+///
+/// # Errors
+///
+/// A message naming the workflow and the path that cannot be read.
+pub async fn load_workflow_source(config: &Config, name: &str) -> Result<String, String> {
+    let path = resolve_workflow_path(&config.workflows_dir, name)?;
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("cannot read workflow `{name}` at {}: {e}", path.display()))
+}
+
+/// Start a run as `POST /runs` starts it (design § Runs), and return its
+/// id.
+///
+/// Validate the document (schema, parameters, then the live catalog),
+/// reserve the run slot, write the manifest and spawn the supervisor.
+///
+/// `from_night` hands the night schedule's hold of the slot to the run
+/// (design § Night Schedule → A night, step 2).
+///
+/// # Errors
+///
+/// Why the run did not start.
+pub async fn start_run(
+    state: &Arc<AppState>,
+    request: StartRequest,
+    mcp_url: &str,
+    from_night: bool,
+) -> Result<String, StartRefused> {
+    let invalid = |message: &str, issues| StartRefused::Invalid {
+        message: message.to_owned(),
+        issues,
+    };
+    let config = &state.config;
+    // Layer 1: schema.
+    let source = load_workflow_source(config, &request.workflow)
+        .await
+        .map_err(|message| invalid(&message, Vec::new()))?;
+    let document =
+        Document::parse(&source).map_err(|issues| invalid("document failed validation", issues))?;
+    // Layer 3: parameters — bound again by the supervisor on every
+    // (re)execution; checked here so the start fails loudly.
+    bind_parameters(&document.parameters, Some(&request.params))
+        .map_err(|issues| invalid("parameter validation failed", issues))?;
+    // Layer 2: the live catalog.
+    let connection = config.rp_connection();
+    let mcp = McpClient::connect(mcp_url, connection.auth(), connection.ca_path())
+        .await
+        .map_err(|e| StartRefused::Unreachable(e.to_string()))?;
+    let catalog = mcp
+        .list_tools()
+        .await
+        .map_err(|e| StartRefused::Unreachable(e.to_string()))?;
+    let issues = validate_against_catalog(&document, &catalog);
+    if !issues.is_empty() {
+        return Err(invalid("catalog validation failed", issues));
+    }
+
+    let now = Utc::now();
+    let run_id = mint_run_id();
+    let reserved = if from_night {
+        state
+            .runs
+            .start_from_night(&run_id, &request.session_id, &request.workflow, now)
+    } else {
+        state
+            .runs
+            .start(&run_id, &request.session_id, &request.workflow, now)
+    };
+    let stop = reserved.map_err(StartRefused::Taken)?;
+    let manifest = RunManifest {
+        run_id: run_id.clone(),
+        session_id: request.session_id,
+        workflow: request.workflow,
+        params: request.params,
+        started_at: now,
+    };
+    if let Err(message) = manifest.write(&config.state_dir).await {
+        // Release the slot: the run never started. It stays listed as
+        // failed, so the refusal names it.
+        state.runs.mark_ended(
+            &run_id,
+            RunState::Failed,
+            completion_result(&manifest.workflow, "failed", Some(&message), None),
+            Utc::now(),
+        );
+        return Err(StartRefused::NotRecorded { message, run_id });
+    }
+    info!(run_id, session_id = %manifest.session_id, workflow = %manifest.workflow, "run started");
+    tokio::spawn(supervise(
+        state.clone(),
+        manifest,
+        stop,
+        Some(Launch { document, mcp }),
+    ));
+    Ok(run_id)
 }
 
 // --- the supervisor ---------------------------------------------------------
@@ -1028,6 +1205,30 @@ mod tests {
         registry.start("run-1", "s-1", "flats", now).unwrap();
         assert!(!registry.hold_for_night(), "the active run keeps the slot");
         assert!(!registry.held_for_night());
+    }
+
+    #[test]
+    fn the_night_hands_its_hold_to_the_run_it_starts() {
+        let registry = RunRegistry::default();
+        let now = Utc::now();
+        assert!(registry.hold_for_night());
+        assert_eq!(
+            registry.start("run-1", "s-1", "flats", now).unwrap_err(),
+            SlotTaken::Night
+        );
+
+        registry
+            .start_from_night("run-2", "night-2026-11-23-0", "flats", now)
+            .unwrap();
+        assert!(!registry.held_for_night(), "the hold went to the run");
+        assert_eq!(registry.active().as_deref(), Some("run-2"));
+        assert_eq!(
+            registry
+                .start_from_night("run-3", "night-2026-11-23-1", "flats", now)
+                .unwrap_err(),
+            SlotTaken::Run("run-2".into()),
+            "one run at a time, the night's included"
+        );
     }
 
     #[test]

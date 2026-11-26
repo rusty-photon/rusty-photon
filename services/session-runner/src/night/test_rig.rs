@@ -3,22 +3,25 @@
 //! [`FakeRp`] answers `get_twilight` from a table of nights and the
 //! power tools from a small [`Rig`]: a power box whose outputs carry a
 //! camera, the mount and a cover, a cooler that stops a few reads after
-//! `start_warmup`, a park and a cover close that work unless told not to.
+//! `start_warmup`, a park and a cover close that work unless told not to,
+//! a roof that reads safe after a few reads, and a camera check whose
+//! verdicts a test scripts. [`FakeSlot`] starts runs that end at once
+//! unless told to last.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, TimeDelta, TimeZone, Utc};
 use serde_json::{json, Map, Value};
 
-use super::config::NightConfig;
-use super::dawn::RunSlot;
-use super::schedule::{Schedule, Seams};
+use super::config::{NightConfig, NightRun};
+use super::schedule::{KnownRun, RunSlot, Schedule, Seams};
 use super::state::NightState;
-use super::NightStatus;
+use super::{NightStatus, Signals};
 use crate::engine::{Clock, ToolCallError, ToolClient};
+use crate::runs::{SlotTaken, StartRefused};
 
 pub fn date(day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, 11, day).unwrap()
@@ -100,6 +103,14 @@ pub struct Rig {
     pub unavailable: u32,
     /// Answer this many calls to one tool with a request-level failure.
     pub unavailable_for: BTreeMap<String, u32>,
+    /// `get_safety_status` reads unsafe this many times, then safe.
+    pub unsafe_reads: u32,
+    /// Each camera's next `check_camera` verdicts; `ok` once they run
+    /// out.
+    pub verdicts: BTreeMap<String, Vec<&'static str>>,
+    pub opens_fail: bool,
+    /// `power_up` refuses the whole call.
+    pub power_up_refused: bool,
 }
 
 impl Default for Rig {
@@ -145,16 +156,37 @@ impl Default for Rig {
             cuts_fail: BTreeSet::new(),
             unavailable: 0,
             unavailable_for: BTreeMap::new(),
+            unsafe_reads: 0,
+            verdicts: BTreeMap::new(),
+            opens_fail: false,
+            power_up_refused: false,
         }
     }
 }
 
 impl Rig {
+    /// The rig as a dawn leaves it: every daily output off with its
+    /// devices held out, the coolers stopped, the mount parked and the
+    /// cover closed.
+    pub fn daytime() -> Self {
+        let mut rig = Self::default();
+        for output in rig.outputs.iter_mut().filter(|o| o.daily) {
+            output.on = Some(false);
+            rig.held_out
+                .extend(output.devices.iter().map(|(id, _)| (*id).to_owned()));
+        }
+        rig.coolers.insert("main-cam".to_owned(), Some(false));
+        rig.at_park = true;
+        rig.covers
+            .insert("flat-panel".to_owned(), "Closed".to_owned());
+        rig
+    }
+
     pub fn output(&self, name: &str) -> &RigOutput {
         self.outputs.iter().find(|o| o.output == name).unwrap()
     }
 
-    fn output_mut(&mut self, name: &str) -> &mut RigOutput {
+    pub fn output_mut(&mut self, name: &str) -> &mut RigOutput {
         self.outputs.iter_mut().find(|o| o.output == name).unwrap()
     }
 
@@ -261,6 +293,69 @@ impl FakeRp {
                 rig.at_park = true;
                 Ok(json!({}))
             }
+            "get_safety_status" if rig.unsafe_reads > 0 => {
+                rig.unsafe_reads -= 1;
+                Ok(json!({ "overall": "unsafe", "monitors": [] }))
+            }
+            "get_safety_status" => Ok(json!({ "overall": "safe", "monitors": [] })),
+            "power_up" if rig.power_up_refused => failed("an output the map does not list"),
+            "power_up" => {
+                let targets: Vec<String> =
+                    args.get("outputs").and_then(Value::as_array).map_or_else(
+                        || {
+                            rig.outputs
+                                .iter()
+                                .filter(|o| o.daily)
+                                .map(|o| o.output.to_owned())
+                                .collect()
+                        },
+                        |list| {
+                            list.iter()
+                                .map(|o| o["output"].as_str().unwrap().to_owned())
+                                .collect()
+                        },
+                    );
+                let mut outputs = Vec::new();
+                let mut devices = Vec::new();
+                for name in targets {
+                    let output = rig.output_mut(&name);
+                    output.on = Some(true);
+                    let on_it = output.devices.clone();
+                    outputs.push(json!({ "switch_id": "power-box", "output": name, "on": true, "switched": true }));
+                    for (id, kind) in on_it {
+                        rig.held_out.remove(id);
+                        if rig.connect_fails.contains(id) {
+                            rig.held_out.insert(id.to_owned());
+                            devices
+                                .push(json!({ "device_id": id, "kind": kind, "connected": false,
+                                                 "error": "device did not connect" }));
+                        } else {
+                            devices
+                                .push(json!({ "device_id": id, "kind": kind, "connected": true }));
+                        }
+                    }
+                }
+                Ok(json!({ "outputs": outputs, "services": [], "devices": devices }))
+            }
+            "check_camera" => {
+                let camera = id("camera_id");
+                if !rig.connected(&camera) {
+                    return Ok(json!({ "camera_id": camera, "verdict": "unavailable",
+                                      "elapsed_s": null, "error": "camera not connected" }));
+                }
+                let verdict = rig
+                    .verdicts
+                    .get_mut(&camera)
+                    .filter(|left| !left.is_empty())
+                    .map_or("ok", |left| left.remove(0));
+                Ok(json!({ "camera_id": camera, "verdict": verdict, "elapsed_s": 1.0 }))
+            }
+            "open_cover" if rig.opens_fail => failed("cover did not answer"),
+            "open_cover" => {
+                rig.covers.insert(id("calibrator_id"), "Open".into());
+                Ok(json!({ "status": "open" }))
+            }
+            "start_cooldown" => Ok(json!({ "cameras": [] })),
             "close_cover" if rig.closes_fail => failed("cover did not answer"),
             "close_cover" => {
                 rig.covers.insert(id("calibrator_id"), "Closed".into());
@@ -340,7 +435,9 @@ impl ToolClient for FakeRp {
     }
 }
 
-/// The run slot: a run that ends when stopped, unless told not to.
+/// The run slot: a run that ends when stopped, unless told not to, or
+/// after a set number of reads, and starts of the night's runs, which
+/// end at once unless told to last.
 #[derive(Default)]
 pub struct FakeSlot {
     pub active: Mutex<Option<String>>,
@@ -348,22 +445,76 @@ pub struct FakeSlot {
     pub held: AtomicBool,
     /// The stopped run keeps going.
     pub never_ends: AtomicBool,
+    /// Every run this process knows: those started, and those a test
+    /// seeds.
+    pub known: Mutex<Vec<KnownRun>>,
+    /// Each start: its session id, and whether the hold was handed over.
+    pub starts: Mutex<Vec<(String, bool)>>,
+    /// The workflows whose starts the catalog refuses.
+    pub refused: Mutex<BTreeSet<String>>,
+    /// Answer this many starts with `rp` unreachable.
+    pub unreachable_starts: AtomicU32,
+    /// A started run stays active for this many reads of `active_run`;
+    /// `None` ends it at once.
+    pub run_reads: Mutex<Option<u32>>,
+    /// The active run ends after this many more reads of `active_run`;
+    /// `None` keeps it until it is stopped.
+    pub reads_left: Mutex<Option<u32>>,
+}
+
+impl FakeSlot {
+    /// The session ids started, in order.
+    pub fn sessions(&self) -> Vec<String> {
+        self.starts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(session, _)| session.clone())
+            .collect()
+    }
+
+    /// An operator's run, active for `reads` reads of `active_run`.
+    pub fn operator_run(&self, run_id: &str, reads: u32) {
+        *self.active.lock().unwrap() = Some(run_id.to_owned());
+        *self.reads_left.lock().unwrap() = Some(reads);
+    }
+
+    /// End the active run, as its last instruction would.
+    pub fn end_active(&self) {
+        let ended = self.active.lock().unwrap().take();
+        *self.reads_left.lock().unwrap() = None;
+        for run in self.known.lock().unwrap().iter_mut() {
+            if Some(&run.run_id) == ended.as_ref() {
+                run.active = false;
+            }
+        }
+    }
 }
 
 impl RunSlot for FakeSlot {
     fn active_run(&self) -> Option<String> {
+        let left = *self.reads_left.lock().unwrap();
+        match left {
+            Some(0) => self.end_active(),
+            Some(n) => *self.reads_left.lock().unwrap() = Some(n - 1),
+            None => {}
+        }
         self.active.lock().unwrap().clone()
+    }
+
+    fn runs(&self) -> Vec<KnownRun> {
+        self.known.lock().unwrap().clone()
     }
 
     fn stop_run(&self, run_id: &str) {
         self.stopped.lock().unwrap().push(run_id.to_owned());
         if !self.never_ends.load(Ordering::SeqCst) {
-            *self.active.lock().unwrap() = None;
+            self.end_active();
         }
     }
 
     fn hold(&self) -> bool {
-        if self.active.lock().unwrap().is_some() {
+        if self.active_run().is_some() {
             return false;
         }
         self.held.store(true, Ordering::SeqCst);
@@ -372,6 +523,55 @@ impl RunSlot for FakeSlot {
 
     fn release(&self) {
         self.held.store(false, Ordering::SeqCst);
+    }
+
+    fn held(&self) -> bool {
+        self.held.load(Ordering::SeqCst)
+    }
+
+    async fn start_run(
+        &self,
+        run: &NightRun,
+        session_id: &str,
+        from_night: bool,
+    ) -> Result<String, StartRefused> {
+        if self
+            .unreachable_starts
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(StartRefused::Unreachable("connection refused".into()));
+        }
+        if self.refused.lock().unwrap().contains(&run.workflow) {
+            return Err(StartRefused::Invalid {
+                message: "catalog validation failed".into(),
+                issues: Vec::new(),
+            });
+        }
+        if let Some(active) = self.active.lock().unwrap().clone() {
+            return Err(StartRefused::Taken(SlotTaken::Run(active)));
+        }
+        if from_night {
+            self.held.store(false, Ordering::SeqCst);
+        } else if self.held() {
+            return Err(StartRefused::Taken(SlotTaken::Night));
+        }
+        let run_id = format!("run-{session_id}");
+        let reads = *self.run_reads.lock().unwrap();
+        self.starts
+            .lock()
+            .unwrap()
+            .push((session_id.to_owned(), from_night));
+        self.known.lock().unwrap().push(KnownRun {
+            run_id: run_id.clone(),
+            session_id: session_id.to_owned(),
+            active: reads.is_some(),
+        });
+        if reads.is_some() {
+            *self.active.lock().unwrap() = Some(run_id.clone());
+            *self.reads_left.lock().unwrap() = reads;
+        }
+        Ok(run_id)
     }
 }
 
@@ -383,6 +583,7 @@ pub struct Harness {
     pub slot: FakeSlot,
     pub night: NightConfig,
     pub status: NightStatus,
+    pub signals: Arc<Signals>,
     pub connects: Arc<AtomicU64>,
 }
 
@@ -403,8 +604,24 @@ impl Harness {
             slot: FakeSlot::default(),
             night: serde_json::from_value(json!({ "dusk_offset": "-30m" })).unwrap(),
             status: NightStatus::default(),
+            signals: Arc::new(Signals::default()),
             connects: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// The day after night 23, rig in its daytime state, with runs of
+    /// `workflows` configured.
+    pub fn with_runs(now: DateTime<Utc>, workflows: &[&str]) -> Self {
+        let mut h = Self::new(now);
+        h.rp.rig = Mutex::new(Rig::daytime());
+        h.night.runs = workflows
+            .iter()
+            .map(|w| NightRun {
+                workflow: (*w).to_owned(),
+                params: None,
+            })
+            .collect();
+        h
     }
 
     pub fn schedule(&self) -> Schedule<'_, FakeRp, TestClock, FakeSlot> {
@@ -415,8 +632,31 @@ impl Harness {
             night: &self.night,
             state_dir: self.dir.path(),
             status: &self.status,
-            warmup_done: Arc::new(tokio::sync::Notify::new()),
+            signals: self.signals.clone(),
+            safety_poll: Duration::from_secs(10),
             connects: self.connects.clone(),
         })
+    }
+
+    /// Run the loop as `Schedule::run` does until `done` holds, at most
+    /// `passes` passes.
+    pub async fn run_until(
+        &self,
+        schedule: &mut Schedule<'_, FakeRp, TestClock, FakeSlot>,
+        passes: usize,
+        done: impl Fn(&Self) -> bool,
+    ) {
+        for _ in 0..passes {
+            let wait = schedule.tick().await;
+            if done(self) {
+                return;
+            }
+            self.clock.sleep(wait).await;
+        }
+        panic!(
+            "not done after {passes} passes; steps: {:?}; state: {:?}",
+            self.rp.steps(),
+            self.status.snapshot()
+        );
     }
 }
