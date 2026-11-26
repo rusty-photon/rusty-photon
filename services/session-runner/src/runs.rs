@@ -104,11 +104,25 @@ pub enum StopError {
     AlreadyEnded(RunState),
 }
 
+/// Why the run slot is taken.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SlotTaken {
+    /// This run is still active.
+    Run(String),
+    /// The night schedule holds the slot (design § Night Schedule).
+    Night,
+}
+
 /// Every run this process knows, in start order. One run at a time
-/// (design § Runs): [`RunRegistry::start`] refuses a second active run.
+/// (design § Runs): [`RunRegistry::start`] refuses a second active run,
+/// and any run while the night schedule holds the slot.
 #[derive(Default)]
 pub struct RunRegistry {
     runs: Mutex<Vec<RunRecord>>,
+    /// The night schedule holds the slot, so that no run starts under
+    /// its power steps. Guarded by `runs`' lock in every check that
+    /// starts a run or takes the hold.
+    night_hold: std::sync::atomic::AtomicBool,
 }
 
 impl RunRegistry {
@@ -116,19 +130,24 @@ impl RunRegistry {
     ///
     /// # Errors
     ///
-    /// The id of the run that is still active — one run at a time.
+    /// What holds the slot: a run that is still active (one run at a
+    /// time), or the night schedule.
     pub fn start(
         &self,
         run_id: &str,
         session_id: &str,
         workflow: &str,
         started_at: DateTime<Utc>,
-    ) -> Result<CancellationToken, String> {
+    ) -> Result<CancellationToken, SlotTaken> {
         let mut runs = self.lock();
         if let Some(active) = runs.iter().find(|r| r.state.is_active()) {
             let active = active.run_id.clone();
             drop(runs);
-            return Err(active);
+            return Err(SlotTaken::Run(active));
+        }
+        if self.night_hold.load(std::sync::atomic::Ordering::SeqCst) {
+            drop(runs);
+            return Err(SlotTaken::Night);
         }
         let stop = CancellationToken::new();
         runs.push(RunRecord {
@@ -145,6 +164,34 @@ impl RunRegistry {
         });
         drop(runs);
         Ok(stop)
+    }
+
+    /// Take the run slot for the night schedule, so that no run starts
+    /// until [`RunRegistry::release_night`]. `false` while a run is
+    /// active: the slot is that run's.
+    pub fn hold_for_night(&self) -> bool {
+        let runs = self.lock();
+        if runs.iter().any(|r| r.state.is_active()) {
+            return false;
+        }
+        self.night_hold
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(runs);
+        true
+    }
+
+    /// Let the slot go after [`RunRegistry::hold_for_night`].
+    pub fn release_night(&self) {
+        let runs = self.lock();
+        self.night_hold
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        drop(runs);
+    }
+
+    /// Whether the night schedule holds the slot.
+    #[must_use]
+    pub fn held_for_night(&self) -> bool {
+        self.night_hold.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The id of the run that is running or paused, if any.
@@ -930,10 +977,10 @@ pub async fn resume_on_start(state: Arc<AppState>) {
                 );
                 tokio::spawn(supervise(state.clone(), manifest, stop, None));
             }
-            Err(active) => warn!(
+            Err(taken) => warn!(
                 run_id = %manifest.run_id,
-                active,
-                "a run is already active; manifest left in place"
+                ?taken,
+                "the run slot is taken; manifest left in place"
             ),
         }
     }
@@ -951,12 +998,12 @@ mod tests {
         registry.start("run-1", "s-1", "flats", now).unwrap();
         assert_eq!(
             registry.start("run-2", "s-2", "flats", now).unwrap_err(),
-            "run-1"
+            SlotTaken::Run("run-1".into())
         );
         registry.mark_paused("run-1", "safety", "clouds");
         assert_eq!(
             registry.start("run-2", "s-2", "flats", now).unwrap_err(),
-            "run-1",
+            SlotTaken::Run("run-1".into()),
             "a paused run still owns the rig"
         );
         registry.mark_ended("run-1", RunState::Complete, json!({}), now);
@@ -964,6 +1011,23 @@ mod tests {
         assert_eq!(registry.active().as_deref(), Some("run-2"));
         let listed: Vec<_> = registry.list().into_iter().map(|r| r.run_id).collect();
         assert_eq!(listed, vec!["run-2", "run-1"], "newest first");
+    }
+
+    #[test]
+    fn the_night_holds_the_slot_only_while_no_run_is_active() {
+        let registry = RunRegistry::default();
+        let now = Utc::now();
+        assert!(registry.hold_for_night());
+        assert!(registry.held_for_night());
+        assert_eq!(
+            registry.start("run-1", "s-1", "flats", now).unwrap_err(),
+            SlotTaken::Night
+        );
+        registry.release_night();
+        assert!(!registry.held_for_night());
+        registry.start("run-1", "s-1", "flats", now).unwrap();
+        assert!(!registry.hold_for_night(), "the active run keeps the slot");
+        assert!(!registry.held_for_night());
     }
 
     #[test]

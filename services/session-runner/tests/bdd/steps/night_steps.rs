@@ -3,14 +3,16 @@
 
 use std::time::Duration;
 
-use bdd_infra::rp_harness::McpTestClient;
+use bdd_infra::rp_harness::{
+    ComputedSky, McpTestClient, OmniSimHandle, PowerBoxStub, SwitchConfig,
+};
 use chrono::{DateTime, TimeDelta, Utc};
 use cucumber::{given, then, when};
 use serde_json::{json, Value};
 
 use crate::steps::infrastructure::{
-    start_rp_service, start_session_runner_service, start_session_runner_service_with,
-    try_start_session_runner_with,
+    ensure_camera, ensure_mount, ensure_omnisim, start_rp_service, start_session_runner_service,
+    start_session_runner_service_with, try_start_session_runner_with,
 };
 use crate::world::SessionRunnerWorld;
 
@@ -169,4 +171,148 @@ async fn civil_twilight(world: &SessionRunnerWorld) -> (DateTime<Utc>, DateTime<
             .with_timezone(&Utc)
     };
     (end("begin_utc"), end("end_utc"))
+}
+
+/// How long dawn gets to run its steps against the simulator.
+const DAWN_BUDGET: Duration = Duration::from_secs(90);
+
+#[given(expr = "a stub power box whose daily output {string} feeds the simulator's camera")]
+async fn power_box_feeding_camera(world: &mut SessionRunnerWorld, output: String) {
+    ensure_omnisim(world).await;
+    ensure_camera(world);
+    ensure_mount(world);
+    let stub = PowerBoxStub::start(&[output.as_str()]);
+    world.switches.push(SwitchConfig {
+        id: "power-box".to_owned(),
+        alpaca_url: stub.url(),
+        device_number: 0,
+        outputs: vec![json!({ "name": output, "devices": ["main-cam"], "daily": true })],
+    });
+    world.power_box = Some(stub);
+}
+
+#[given("rp is running at an observing site whose dawn has passed")]
+async fn rp_at_morning_site(world: &mut SessionRunnerWorld) {
+    let sky = ComputedSky::morning_at(Utc::now());
+    let (lat, lon) = (sky.latitude_degrees(), sky.longitude_degrees());
+    world.site = Some((lat, lon));
+    // rp refuses a mount whose site differs from its own. The site is a
+    // profile setting the per-scenario restart does not reset, so the
+    // after-hook puts the old one back.
+    ensure_omnisim(world).await;
+    world.original_telescope_site = Some(
+        OmniSimHandle::get_telescope_site()
+            .await
+            .expect("failed to read the simulated mount's site"),
+    );
+    OmniSimHandle::set_telescope_site(lat, lon)
+        .await
+        .expect("failed to set the simulated mount's site");
+    start_rp_service(world).await;
+}
+
+#[given(expr = "a run of {string} left in the state directory by the previous process")]
+async fn run_left_by_previous_process(world: &mut SessionRunnerWorld, workflow: String) {
+    let state_dir = world
+        .state_dir
+        .get_or_insert_with(|| tempfile::tempdir().expect("cannot create a state_dir"));
+    let run_id = "run-left-by-the-previous-process".to_owned();
+    let session_id = "session-left";
+    let manifest = json!({
+        "run_id": run_id,
+        "session_id": session_id,
+        "workflow": workflow,
+        "params": {},
+        "started_at": Utc::now(),
+    });
+    std::fs::write(
+        state_dir.path().join(format!("{session_id}.run.json")),
+        serde_json::to_vec(&manifest).expect("the manifest serializes"),
+    )
+    .expect("cannot write the run manifest");
+    world.left_run_id = Some(run_id);
+}
+
+#[when("session-runner starts with a night block")]
+async fn starts_with_night(world: &mut SessionRunnerWorld) {
+    start_session_runner_service_with(world, json!({ "night": {} })).await;
+}
+
+#[then(expr = "the stub power box's {string} output should go off")]
+async fn output_goes_off(world: &mut SessionRunnerWorld, output: String) {
+    let stub = world.power_box.as_ref().expect("a stub power box runs");
+    let deadline = tokio::time::Instant::now() + DAWN_BUDGET;
+    while stub.is_on(&output) {
+        if tokio::time::Instant::now() >= deadline {
+            let mcp = McpTestClient::connect(&format!("{}/mcp", world.rp_url()))
+                .await
+                .expect("connect to rp's MCP server");
+            let info = mcp
+                .call_tool("get_camera_info", json!({ "camera_id": "main-cam" }))
+                .await;
+            let map = mcp.call_tool("get_power_map", json!({})).await;
+            panic!(
+                "{output} is still on after {DAWN_BUDGET:?}; the night reads {}; \
+                 main-cam reads {info:?}; the power map reads {map:?}",
+                get_night(world).await
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[then("rp should report the mount parked")]
+async fn mount_parked(world: &mut SessionRunnerWorld) {
+    let mcp = McpTestClient::connect(&format!("{}/mcp", world.rp_url()))
+        .await
+        .expect("connect to rp's MCP server");
+    let park = mcp
+        .call_tool("get_park_state", json!({}))
+        .await
+        .expect("get_park_state answers");
+    assert_eq!(park["at_park"], json!(true), "{park}");
+}
+
+#[then(expr = "the night schedule should be on the night ahead in phase {string}")]
+async fn on_night_ahead(world: &mut SessionRunnerWorld, phase: String) {
+    let deadline = tokio::time::Instant::now() + DAWN_BUDGET;
+    loop {
+        let report = get_night(world).await;
+        let dusk_ahead = report["dusk"]
+            .as_str()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .is_some_and(|t| t.with_timezone(&Utc) > Utc::now());
+        if report["phase"] == json!(phase) && dusk_ahead {
+            assert_eq!(report["outputs_left_on"], json!([]), "{report}");
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the night did not move to the night ahead: {report}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+#[then(expr = "the run the previous process left should end {string}")]
+async fn left_run_ends(world: &mut SessionRunnerWorld, state: String) {
+    let run_id = world.left_run_id.clone().expect("a run was left");
+    let url = format!("{}/runs/{run_id}", world.session_runner_url());
+    let deadline = tokio::time::Instant::now() + DAWN_BUDGET;
+    loop {
+        let record: Value = reqwest::get(&url)
+            .await
+            .expect("GET /runs/{id} failed")
+            .json()
+            .await
+            .expect("GET /runs/{id} answers JSON");
+        if record["state"] == json!(state) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the run did not end {state}: {record}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }

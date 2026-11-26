@@ -6,6 +6,12 @@ Feature: Night schedule
   The schedule stays on a night until its dawn, in phase day until dusk.
   Without a night block, GET /night reports phase off and nothing else.
 
+  Dawn runs every morning, a start in the day included. It stops the
+  active run, warms the cameras, parks the mount, closes the covers the
+  power map lists, waits for the coolers to stop, and has rp cut every
+  daily output the cut rules allow. With nothing left on, night.json
+  moves to the night ahead.
+
   The night block is checked when the service starts: a run whose
   document does not resolve in workflows_dir fails the start.
 
@@ -28,3 +34,21 @@ Feature: Night schedule
     Given rp is running with a site at latitude 47.6 and longitude -122.3
     When session-runner is started with a night block whose run names the workflow "no_such_document"
     Then session-runner should fail to start
+
+  @serial
+  Scenario: At a site whose dawn has passed, the schedule parks the mount and cuts the daily output
+    Given a stub power box whose daily output "Camera Power" feeds the simulator's camera
+    And rp is running at an observing site whose dawn has passed
+    When session-runner starts with a night block
+    Then the stub power box's "Camera Power" output should go off
+    And rp should report the mount parked
+    And the night schedule should be on the night ahead in phase "day"
+
+  @serial
+  Scenario: Dawn stops the run the previous process left
+    Given a stub power box whose daily output "Camera Power" feeds the simulator's camera
+    And rp is running at an observing site whose dawn has passed
+    And a run of "night_long_wait" left in the state directory by the previous process
+    When session-runner starts with a night block
+    Then the run the previous process left should end "stopped"
+    And the stub power box's "Camera Power" output should go off

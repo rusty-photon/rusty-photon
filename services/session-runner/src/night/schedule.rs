@@ -1,7 +1,10 @@
-//! The schedule's loop: it keeps `night.json` on the night ahead.
+//! The schedule's loop: it runs each dawn, the after-dawn checks until
+//! the next dusk, and keeps `night.json` on the night ahead.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, Utc};
@@ -10,21 +13,22 @@ use tracing::{debug, warn};
 
 use super::clock::{candidate_nights, civil_ends, window, NightWindow};
 use super::config::NightConfig;
-use super::state::NightState;
+use super::dawn::RunSlot;
+use super::state::{NightState, OutputRef, Phase};
 use super::NightStatus;
-use crate::engine::{Clock, ToolCallError, ToolClient};
+use crate::engine::{Clock, EventIntake, ToolCallError, ToolClient};
 
 /// First retry after `rp` fails at the request level; doubles up to
 /// [`MAX_BACKOFF`] (design § Night Schedule → Errors).
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
+pub(super) const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+pub(super) const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// How often a `get_twilight` that answered with a tool error is asked
 /// again, and how long the loop sleeps at most between two reads of the
-/// night ahead.
+/// nights.
 const TWILIGHT_RETRY: Duration = Duration::from_hours(1);
 
-/// What reading the night ahead came to, other than a night.
+/// What reading the nights came to, other than nights.
 enum ReadFailure {
     /// `rp` answered with a tool error (no site configured, for one).
     Tool(String),
@@ -32,13 +36,48 @@ enum ReadFailure {
     Unavailable(String),
 }
 
+/// The two nights the schedule works between: the one whose dawn passed
+/// latest, and the first whose dawn is still ahead.
+struct Nights {
+    latest: Option<NightWindow>,
+    ahead: Option<NightWindow>,
+}
+
+/// What the schedule keeps in memory for one night.
+#[derive(Default)]
+pub(super) struct NightMemory {
+    /// When the after-dawn checks run next.
+    pub(super) next_check: Option<DateTime<Utc>>,
+    /// The re-parks the after-dawn checks have called.
+    pub(super) parks: u32,
+    /// The re-closes the after-dawn checks have called, per calibrator.
+    pub(super) closes: BTreeMap<String, u32>,
+    /// The outputs whose hold has been logged at `warn!`.
+    pub(super) logged_left_on: BTreeSet<OutputRef>,
+    /// The outputs left on until dusk: the mount's after its last
+    /// re-park, or a cover's after its last re-close.
+    pub(super) until_dusk: BTreeSet<OutputRef>,
+}
+
 /// The loop over nights, with what it has logged so far.
-pub struct Schedule<'a, C, K> {
-    pub rp: &'a C,
-    pub clock: &'a K,
-    pub night: &'a NightConfig,
-    pub state_dir: &'a Path,
-    pub status: &'a NightStatus,
+pub struct Schedule<'a, C, K, S> {
+    pub(super) rp: &'a C,
+    pub(super) clock: &'a K,
+    pub(super) slot: &'a S,
+    pub(super) night: &'a NightConfig,
+    pub(super) state_dir: &'a Path,
+    pub(super) status: &'a NightStatus,
+    /// `rp`'s events: `cooler_warmup_complete` wakes the cooler wait.
+    pub(super) events: EventIntake,
+    /// How often the event stream has connected; a reconnect reads as
+    /// `rp` back from a restart.
+    pub(super) connects: Arc<AtomicU64>,
+    pub(super) seen_connects: u64,
+    /// A call failed at the request level since the last that answered.
+    pub(super) rp_was_down: bool,
+    /// `rp` came back since the after-dawn checks last looked.
+    pub(super) rp_came_back: bool,
+    pub(super) memory: NightMemory,
     backoff: Duration,
     /// The last tool error logged at `warn!`, so a repeat is not.
     logged_tool_error: Option<String>,
@@ -46,20 +85,34 @@ pub struct Schedule<'a, C, K> {
     logged_dark_less: BTreeSet<NaiveDate>,
 }
 
-impl<'a, C: ToolClient + Sync, K: Clock + Sync> Schedule<'a, C, K> {
-    pub const fn new(
-        rp: &'a C,
-        clock: &'a K,
-        night: &'a NightConfig,
-        state_dir: &'a Path,
-        status: &'a NightStatus,
-    ) -> Self {
+/// The seams a [`Schedule`] runs against.
+pub struct Seams<'a, C, K, S> {
+    pub rp: &'a C,
+    pub clock: &'a K,
+    pub slot: &'a S,
+    pub night: &'a NightConfig,
+    pub state_dir: &'a Path,
+    pub status: &'a NightStatus,
+    pub events: EventIntake,
+    pub connects: Arc<AtomicU64>,
+}
+
+impl<'a, C: ToolClient + Sync, K: Clock + Sync, S: RunSlot> Schedule<'a, C, K, S> {
+    #[must_use]
+    pub fn new(seams: Seams<'a, C, K, S>) -> Self {
         Self {
-            rp,
-            clock,
-            night,
-            state_dir,
-            status,
+            rp: seams.rp,
+            clock: seams.clock,
+            slot: seams.slot,
+            night: seams.night,
+            state_dir: seams.state_dir,
+            status: seams.status,
+            events: seams.events,
+            connects: seams.connects,
+            seen_connects: 0,
+            rp_was_down: false,
+            rp_came_back: false,
+            memory: NightMemory::default(),
             backoff: INITIAL_BACKOFF,
             logged_tool_error: None,
             logged_dark_less: BTreeSet::new(),
@@ -74,28 +127,16 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync> Schedule<'a, C, K> {
         }
     }
 
-    /// Read the night ahead and keep `night.json` on it. Returns how long
-    /// to wait before the next read: until that night's dawn, an hour at
-    /// most.
+    /// One pass: a dawn owed runs, the after-dawn checks run when due,
+    /// and otherwise `night.json` moves to the night ahead. Returns how
+    /// long to wait before the next pass.
     pub async fn tick(&mut self) -> Duration {
         let now = self.clock.now();
-        match self.night_ahead(now).await {
-            Ok(Some(ahead)) => {
+        let nights = match self.nights(now).await {
+            Ok(nights) => {
                 self.backoff = INITIAL_BACKOFF;
                 self.logged_tool_error = None;
-                self.keep_on(ahead).await;
-                ahead
-                    .dawn
-                    .signed_duration_since(now)
-                    .to_std()
-                    .map_or(Duration::ZERO, |wait| wait.min(TWILIGHT_RETRY))
-            }
-            Ok(None) => {
-                self.backoff = INITIAL_BACKOFF;
-                debug!(
-                    "no night with civil darkness in reach; reading the twilight again in an hour"
-                );
-                TWILIGHT_RETRY
+                nights
             }
             Err(ReadFailure::Tool(message)) => {
                 self.backoff = INITIAL_BACKOFF;
@@ -105,23 +146,50 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync> Schedule<'a, C, K> {
                     warn!(error = %message, "get_twilight failed; the schedule knows no new dusk or dawn until it answers, and asks again every hour");
                     self.logged_tool_error = Some(message);
                 }
-                TWILIGHT_RETRY
+                return TWILIGHT_RETRY;
             }
             Err(ReadFailure::Unavailable(message)) => {
+                self.rp_was_down = true;
                 let wait = self.backoff;
                 debug!(error = %message, ?wait, "rp unreachable; reading the twilight again");
                 self.backoff = self.backoff.saturating_mul(2).min(MAX_BACKOFF);
-                wait
+                return wait;
+            }
+        };
+        let Some(ahead) = nights.ahead else {
+            debug!("no night with civil darkness in reach; reading the twilight again in an hour");
+            return TWILIGHT_RETRY;
+        };
+        // Daytime: the latest dawn has passed and the next dusk has not.
+        if now < ahead.dusk {
+            if let Some(latest) = nights.latest {
+                let state = self.status.snapshot();
+                if dawn_owed(latest.night, state.as_ref()) {
+                    self.dawn(latest, ahead).await;
+                    return Duration::ZERO;
+                }
+                if state.is_some_and(|s| s.night == latest.night && s.phase == Phase::AfterDawn) {
+                    return self.after_dawn(ahead).await;
+                }
             }
         }
+        self.keep_on(ahead).await;
+        let next = if now < ahead.dusk {
+            ahead.dusk
+        } else {
+            ahead.dawn
+        };
+        until(now, next).min(TWILIGHT_RETRY)
     }
 
-    /// The first night whose dawn is still ahead of `now`, skipping a
-    /// night without civil darkness.
-    async fn night_ahead(
-        &mut self,
-        now: DateTime<Utc>,
-    ) -> Result<Option<NightWindow>, ReadFailure> {
+    /// The nights around `now`: the one whose dawn passed latest, and
+    /// the first whose dawn is still ahead, skipping a night without
+    /// civil darkness.
+    async fn nights(&mut self, now: DateTime<Utc>) -> Result<Nights, ReadFailure> {
+        let mut nights = Nights {
+            latest: None,
+            ahead: None,
+        };
         for night in candidate_nights(now) {
             let mut args = Map::new();
             args.insert("date".to_owned(), json!(night.to_string()));
@@ -145,15 +213,17 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync> Schedule<'a, C, K> {
                 continue;
             };
             if w.dawn > now {
-                return Ok(Some(w));
+                nights.ahead = Some(w);
+                return Ok(nights);
             }
+            nights.latest = Some(w);
         }
-        Ok(None)
+        Ok(nights)
     }
 
     /// Point `night.json` at `ahead` unless it already names that night,
     /// that dusk and that dawn.
-    async fn keep_on(&self, ahead: NightWindow) {
+    pub(super) async fn keep_on(&mut self, ahead: NightWindow) {
         let current = self.status.snapshot();
         let on_it = current.as_ref().is_some_and(|s| {
             s.night == ahead.night && s.dusk == ahead.dusk && s.dawn == ahead.dawn
@@ -161,122 +231,70 @@ impl<'a, C: ToolClient + Sync, K: Clock + Sync> Schedule<'a, C, K> {
         if on_it {
             return;
         }
+        self.memory = NightMemory::default();
         let state = NightState::ahead(ahead.night, ahead.dusk, ahead.dawn);
+        self.save(&state).await;
+        debug!(night = %ahead.night, dusk = %ahead.dusk, dawn = %ahead.dawn, "night.json moved to the night ahead");
+    }
+
+    /// Write `night.json` and publish it.
+    pub(super) async fn save(&self, state: &NightState) {
         if let Err(e) = state.write(self.state_dir).await {
             warn!(error = %e, "cannot write night.json; the schedule carries on with its place in memory");
         }
-        debug!(night = %ahead.night, dusk = %ahead.dusk, dawn = %ahead.dawn, "night.json moved to the night ahead");
-        self.status.publish(state);
+        self.status.publish(state.clone());
     }
+}
+
+/// Whether the dawn of `latest` is still owed: nothing shows it done.
+/// A file of an earlier night, or of this night in any phase before
+/// `after_dawn`, owes it; a file moved to a later night shows it done.
+fn dawn_owed(latest: NaiveDate, state: Option<&NightState>) -> bool {
+    state.is_none_or(|s| s.night < latest || (s.night == latest && s.phase != Phase::AfterDawn))
+}
+
+/// How long from `now` until `then`, zero once it has passed.
+pub(super) fn until(now: DateTime<Utc>, then: DateTime<Utc>) -> Duration {
+    then.signed_duration_since(now)
+        .to_std()
+        .unwrap_or(Duration::ZERO)
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
+    use chrono::TimeZone;
 
-    use chrono::{TimeDelta, TimeZone};
-
+    use super::super::test_rig::{at, date, done_up_to, Harness};
     use super::*;
-    use crate::night::state::Phase;
 
-    /// A clock whose `sleep` moves `now` on at once.
-    struct TestClock {
-        now: Mutex<DateTime<Utc>>,
-    }
-
-    impl TestClock {
-        fn at(now: DateTime<Utc>) -> Self {
-            Self {
-                now: Mutex::new(now),
-            }
-        }
-
-        fn set(&self, now: DateTime<Utc>) {
-            *self.now.lock().unwrap() = now;
-        }
-    }
-
-    impl Clock for TestClock {
-        fn now(&self) -> DateTime<Utc> {
-            *self.now.lock().unwrap()
-        }
-
-        async fn sleep(&self, duration: Duration) {
-            let mut now = self.now.lock().unwrap();
-            *now += TimeDelta::from_std(duration).unwrap();
-        }
-
-        fn monotonic(&self) -> Duration {
-            Duration::ZERO
-        }
-    }
-
-    /// `rp` answering `get_twilight` from a table of nights; a night not
-    /// in it answers with the table's fallback.
-    struct TwilightRp {
-        nights: BTreeMap<NaiveDate, Value>,
-        fallback: Result<Value, ToolCallError>,
-        calls: Mutex<usize>,
-    }
-
-    impl ToolClient for TwilightRp {
-        async fn call(&self, tool: &str, args: Map<String, Value>) -> Result<Value, ToolCallError> {
-            assert_eq!(tool, "get_twilight");
-            assert_eq!(args["kind"], json!("civil"));
-            *self.calls.lock().unwrap() += 1;
-            let night: NaiveDate = args["date"].as_str().unwrap().parse().unwrap();
-            self.nights
-                .get(&night)
-                .cloned()
-                .map_or_else(|| self.fallback.clone(), Ok)
-        }
-    }
-
-    fn date(day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 11, day).unwrap()
-    }
-
-    /// Civil darkness from 01:28 to 14:31 UTC after the night's date, as
-    /// at 47.6° N, 122° W in late November.
-    fn dark(day: u32) -> Value {
-        json!({
-            "kind": "civil",
-            "begin_utc": format!("2026-11-{:02}T01:28:00+00:00", day + 1),
-            "end_utc": format!("2026-11-{:02}T14:31:00+00:00", day + 1),
-        })
-    }
-
-    fn rp_with(nights: &[(u32, Value)]) -> TwilightRp {
-        TwilightRp {
-            nights: nights.iter().map(|(d, v)| (date(*d), v.clone())).collect(),
-            fallback: Err(ToolCallError::Failed("no such night in the test".into())),
-            calls: Mutex::new(0),
-        }
-    }
-
-    fn block() -> NightConfig {
-        serde_json::from_value(json!({ "dusk_offset": "-30m" })).unwrap()
-    }
-
-    fn at(day: u32, hour: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, day, hour, 0, 0).unwrap()
+    #[test]
+    fn a_dawn_is_owed_until_a_file_shows_it_done() {
+        assert!(dawn_owed(date(23), None));
+        assert!(dawn_owed(date(23), Some(&done_up_to(22))));
+        assert!(
+            dawn_owed(date(23), Some(&done_up_to(23))),
+            "phase day of the same night"
+        );
+        let mut dawn = done_up_to(23);
+        dawn.phase = Phase::Dawn;
+        assert!(
+            dawn_owed(date(23), Some(&dawn)),
+            "a dawn cut short runs again"
+        );
+        let mut after = done_up_to(23);
+        after.phase = Phase::AfterDawn;
+        assert!(!dawn_owed(date(23), Some(&after)));
+        assert!(
+            !dawn_owed(date(23), Some(&done_up_to(24))),
+            "moved to the next night"
+        );
     }
 
     #[tokio::test]
-    async fn the_night_ahead_goes_to_night_json_with_its_offsets() {
-        let dir = tempfile::tempdir().unwrap();
-        let rp = rp_with(&[
-            (21, dark(21)),
-            (22, dark(22)),
-            (23, dark(23)),
-            (24, dark(24)),
-        ]);
-        let clock = TestClock::at(at(23, 20));
-        let night = block();
-        let status = NightStatus::default();
-        let mut schedule = Schedule::new(&rp, &clock, &night, dir.path(), &status);
+    async fn a_start_in_the_night_puts_night_json_on_it_with_its_offsets() {
+        let h = Harness::new(at(24, 3));
+        let mut schedule = h.schedule();
 
         let wait = schedule.tick().await;
 
@@ -285,119 +303,84 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 11, 24, 0, 58, 0).unwrap(),
             Utc.with_ymd_and_hms(2026, 11, 24, 14, 31, 0).unwrap(),
         );
-        assert_eq!(status.snapshot(), Some(expected.clone()));
-        assert_eq!(NightState::load(dir.path()).await, Some(expected));
+        assert_eq!(h.status.snapshot(), Some(expected.clone()));
+        assert_eq!(NightState::load(h.dir.path()).await, Some(expected));
         assert_eq!(wait, TWILIGHT_RETRY, "dawn is more than an hour off");
+        assert_eq!(h.rp.called("power_down"), 0, "no dawn ran");
     }
 
     #[tokio::test]
     async fn a_night_in_progress_is_the_night_ahead_until_its_dawn() {
-        let dir = tempfile::tempdir().unwrap();
-        let rp = rp_with(&[(22, dark(22)), (23, dark(23)), (24, dark(24))]);
-        let clock = TestClock::at(Utc.with_ymd_and_hms(2026, 11, 24, 14, 0, 0).unwrap());
-        let night = block();
-        let status = NightStatus::default();
-        let mut schedule = Schedule::new(&rp, &clock, &night, dir.path(), &status);
+        let h = Harness::new(Utc.with_ymd_and_hms(2026, 11, 24, 14, 0, 0).unwrap());
+        h.status.publish(done_up_to(23));
+        let mut schedule = h.schedule();
 
         let wait = schedule.tick().await;
-        assert_eq!(status.snapshot().unwrap().night, date(23));
+        assert_eq!(h.status.snapshot().unwrap().night, date(23));
         assert_eq!(wait, Duration::from_mins(31), "until dawn");
-
-        clock.set(Utc.with_ymd_and_hms(2026, 11, 24, 14, 31, 0).unwrap());
-        schedule.tick().await;
-        let state = status.snapshot().unwrap();
-        assert_eq!(
-            state.night,
-            date(24),
-            "at dawn the file moves to the next night"
-        );
-        assert_eq!(state.phase, Phase::Day);
+        assert_eq!(h.rp.called("power_down"), 0);
     }
 
     #[tokio::test]
     async fn a_night_without_civil_darkness_is_skipped() {
-        let dir = tempfile::tempdir().unwrap();
-        let no_dark = json!({ "kind": "civil", "begin_utc": null, "end_utc": null });
-        let rp = rp_with(&[
-            (21, dark(21)),
-            (22, dark(22)),
-            (23, no_dark),
-            (24, dark(24)),
-        ]);
-        let clock = TestClock::at(at(23, 20));
-        let night = block();
-        let status = NightStatus::default();
-        let mut schedule = Schedule::new(&rp, &clock, &night, dir.path(), &status);
+        let mut h = Harness::new(at(24, 20));
+        h.rp.nights.insert(
+            date(24),
+            json!({ "kind": "civil", "begin_utc": null, "end_utc": null }),
+        );
+        let mut after_dawn = done_up_to(23);
+        after_dawn.phase = Phase::AfterDawn;
+        h.status.publish(after_dawn);
+        let mut schedule = h.schedule();
 
         schedule.tick().await;
 
-        assert_eq!(status.snapshot().unwrap().night, date(24));
+        assert_eq!(
+            h.status.snapshot().unwrap().night,
+            date(25),
+            "nothing left on: the file moves past the dark-less night to the next"
+        );
     }
 
     #[tokio::test]
     async fn a_tool_error_keeps_the_place_and_asks_again_in_an_hour() {
-        let dir = tempfile::tempdir().unwrap();
-        let known = NightState::ahead(date(23), at(24, 1), at(24, 14));
-        known.write(dir.path()).await.unwrap();
-        let status = NightStatus::default();
-        status.publish(known.clone());
-        let rp = rp_with(&[]);
-        let clock = TestClock::at(at(23, 20));
-        let night = block();
-        let mut schedule = Schedule::new(&rp, &clock, &night, dir.path(), &status);
+        let mut h = Harness::new(at(23, 20));
+        h.rp.nights.clear();
+        let known = done_up_to(23);
+        h.status.publish(known.clone());
+        let mut schedule = h.schedule();
 
         assert_eq!(schedule.tick().await, TWILIGHT_RETRY);
-        assert_eq!(status.snapshot(), Some(known.clone()));
-        assert_eq!(NightState::load(dir.path()).await, Some(known));
+        assert_eq!(h.status.snapshot(), Some(known));
     }
 
     #[tokio::test]
     async fn an_unreachable_rp_is_retried_backing_off_to_thirty_seconds() {
-        let dir = tempfile::tempdir().unwrap();
-        let rp = TwilightRp {
-            nights: BTreeMap::new(),
-            fallback: Err(ToolCallError::Unavailable("connection refused".into())),
-            calls: Mutex::new(0),
-        };
-        let clock = TestClock::at(at(23, 20));
-        let night = block();
-        let status = NightStatus::default();
-        let mut schedule = Schedule::new(&rp, &clock, &night, dir.path(), &status);
+        let h = Harness::new(at(23, 20));
+        h.rp.rig.lock().unwrap().unavailable = u32::MAX;
+        let mut schedule = h.schedule();
 
         let mut waits = Vec::new();
         for _ in 0..7 {
             waits.push(schedule.tick().await.as_secs());
         }
         assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30]);
-        assert_eq!(status.snapshot(), None);
+        assert_eq!(h.status.snapshot(), None);
     }
 
     #[tokio::test]
     async fn a_file_already_on_the_night_ahead_is_left_as_it_is() {
-        let dir = tempfile::tempdir().unwrap();
-        let rp = rp_with(&[
-            (21, dark(21)),
-            (22, dark(22)),
-            (23, dark(23)),
-            (24, dark(24)),
-        ]);
-        let clock = TestClock::at(at(23, 20));
-        let night = block();
-        let status = NightStatus::default();
-        let mut on_it = NightState::ahead(
-            date(23),
-            Utc.with_ymd_and_hms(2026, 11, 24, 0, 58, 0).unwrap(),
-            Utc.with_ymd_and_hms(2026, 11, 24, 14, 31, 0).unwrap(),
-        );
+        let h = Harness::new(at(23, 20));
+        let mut on_it = done_up_to(23);
         on_it.cameras_given_up.push("main-cam".into());
-        status.publish(on_it.clone());
-        let mut schedule = Schedule::new(&rp, &clock, &night, dir.path(), &status);
+        h.status.publish(on_it.clone());
+        let mut schedule = h.schedule();
 
         schedule.tick().await;
 
-        assert_eq!(status.snapshot(), Some(on_it));
+        assert_eq!(h.status.snapshot(), Some(on_it));
         assert_eq!(
-            NightState::load(dir.path()).await,
+            NightState::load(h.dir.path()).await,
             None,
             "nothing was written"
         );

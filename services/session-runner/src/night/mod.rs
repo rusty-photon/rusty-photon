@@ -4,14 +4,18 @@
 //!
 //! [`config`] is the block and its load checks, [`state`] is
 //! `night.json`, [`clock`] turns `rp`'s civil twilight into dusk and
-//! dawn, [`rules`] are the cut rules, and [`schedule`] is the loop that
-//! keeps `night.json` on the night ahead.
+//! dawn, [`rules`] are the cut rules, [`dawn`] is dawn and the after-dawn
+//! checks, and [`schedule`] is the loop that runs them and keeps
+//! `night.json` on the night ahead.
 
 pub mod clock;
 pub mod config;
+pub mod dawn;
 pub mod rules;
 pub mod schedule;
 pub mod state;
+#[cfg(test)]
+mod test_rig;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,8 +27,9 @@ pub use config::{check, NightConfig, NightRun, SignedDuration};
 pub use state::{NightState, Phase};
 
 use crate::engine::SystemClock;
+use crate::events;
 use crate::mcp_client::McpClient;
-use crate::runs::AppState;
+use crate::runs::{self, AppState};
 
 /// The schedule's place as `GET /night` reports it.
 #[derive(Default)]
@@ -121,14 +126,19 @@ pub async fn run(state: Arc<AppState>) {
             }
         }
     };
+    let (events, connects) =
+        events::subscribe_counting(runs::events_url(&state.config, mcp_url), &connection).await;
     info!("night schedule started");
-    schedule::Schedule::new(
-        &rp,
-        &SystemClock,
+    schedule::Schedule::new(schedule::Seams {
+        rp: &rp,
+        clock: &SystemClock,
+        slot: &state.runs,
         night,
-        &state.config.state_dir,
-        &state.night,
-    )
+        state_dir: &state.config.state_dir,
+        status: &state.night,
+        events,
+        connects,
+    })
     .run()
     .await;
 }

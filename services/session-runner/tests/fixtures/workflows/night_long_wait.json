@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "night-long-wait",
+  "estimated_duration": "10m",
+  "max_duration": "20m",
+  "root": {
+    "wait": { "until_event": "meridian_flip", "timeout": "10m" }
+  }
+}
