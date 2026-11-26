@@ -23,6 +23,13 @@ const WORKSPACE = [
   'zwo-camera', 'zwo-focuser',
 ];
 
+// The workspace the tests that run every suite start: the sharded suites,
+// HEAVY's two and two more for the rest stream. Each suite is a process, and
+// a stream starts its suites one after another; on a loaded 4-core Windows
+// runner a process takes about a second to start, so the whole workspace's
+// rest stream, 21 suites in a row, would put this file past its 60 s budget.
+const SMALL = ['calibrator-flats', 'doctor', 'filemonitor', 'polar-align', 'rp', 'session-runner'];
+
 // What `cargo test --no-run --message-format=json` prints for `artifacts`:
 // a bdd test binary per `{ name, exe }`, among messages of the kinds cargo
 // prints around them.
@@ -102,7 +109,7 @@ function running(pid) {
 
 // Runs main with `fake` and resolves to what it printed, the exit code it
 // set and the error it threw, if it threw.
-async function runMain(fake, { artifacts = WORKSPACE.map((name) => ({ name })), env = {}, cargoExit = 0, out, ...options } = {}) {
+async function runMain(fake, { artifacts = SMALL.map((name) => ({ name })), env = {}, cargoExit = 0, out, ...options } = {}) {
   const tmp = tempDir();
   const saved = process.exitCode;
   try {
@@ -282,7 +289,7 @@ test('a build that prints no bdd binary is an error', async () => {
 
 test('a missing rp suite fails before any suite starts', async () => {
   const fake = fakeSpawn();
-  const { error } = await runMain(fake, { artifacts: WORKSPACE.filter((n) => n !== 'rp').map((name) => ({ name })) });
+  const { error } = await runMain(fake, { artifacts: SMALL.filter((n) => n !== 'rp').map((name) => ({ name })) });
   assert.equal(error.message, 'no bdd binary for rp');
   assert.deepEqual(suiteCalls(fake.calls), []);
 });
@@ -306,7 +313,7 @@ test('only rp’s and session-runner’s processes get the shard variables, and 
   const expected = [
     ...['0/4', '1/4', '2/4', '3/4'].map((s) => `rp ${s}`),
     ...['0/2', '1/2'].map((s) => `session-runner ${s}`),
-    ...WORKSPACE.filter((n) => !SHARDED.includes(n)).map((n) => `${n} whole`),
+    ...SMALL.filter((n) => !SHARDED.includes(n)).map((n) => `${n} whole`),
   ];
   assert.deepEqual(runs.toSorted(), expected.toSorted());
 });
@@ -324,7 +331,7 @@ test('each suite starts in its package directory, with no stdin of the step’s,
 });
 
 test('one failing shard fails the step, by its stream’s name alone', async () => {
-  const artifacts = WORKSPACE.map((name) => ({ name, exe: name === 'rp' ? 'fake:fail-shard-2:rp' : undefined }));
+  const artifacts = SMALL.map((name) => ({ name, exe: name === 'rp' ? 'fake:fail-shard-2:rp' : undefined }));
   const { stdout, exitCode } = await runMain(fakeSpawn(), { artifacts });
   assert.equal(exitCode, 1);
   assert.deepEqual(stdout.match(/^::error::.*$/gm), ['::error::BDD stream rp-2 failed']);
@@ -332,7 +339,7 @@ test('one failing shard fails the step, by its stream’s name alone', async () 
 
 test('a stream runs every suite in it after one fails, and fails', async () => {
   const fake = fakeSpawn();
-  const artifacts = WORKSPACE.map((name) => ({ name, exe: name === 'filemonitor' ? 'fake:fail:filemonitor' : undefined }));
+  const artifacts = SMALL.map((name) => ({ name, exe: name === 'filemonitor' ? 'fake:fail:filemonitor' : undefined }));
   const { stdout, exitCode } = await runMain(fake, { artifacts });
   assert.equal(exitCode, 1);
   assert.deepEqual(stdout.match(/^::error::.*$/gm), ['::error::BDD stream heavy failed']);
@@ -346,8 +353,8 @@ test('each stream’s output is printed as a group of its own, its suites in ord
   assert.deepEqual(groups.map(([name]) => name), ['rp-0', 'rp-1', 'rp-2', 'rp-3', 'session-runner-0', 'session-runner-1', 'heavy', 'rest']);
   assert.equal(groups[1][1], 'rp in /w/services/rp, 1/4\n');
   assert.equal(groups[6][1], 'filemonitor in /w/services/filemonitor, whole\npolar-align in /w/services/polar-align, whole\n');
-  assert.equal(groups[7][1].split('\n').length - 1, 21);
-  assert.match(stdout, /^built 25 bdd binaries$/m);
+  assert.equal(groups[7][1], 'calibrator-flats in /w/services/calibrator-flats, whole\ndoctor in /w/services/doctor, whole\n');
+  assert.match(stdout, /^built 6 bdd binaries$/m);
 });
 
 test('a stopped run stops every suite, starts no other, and still prints what each printed', async () => {
