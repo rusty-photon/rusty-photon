@@ -343,7 +343,7 @@ it, leaning on the `sky-survey-camera` + `qhy-camera` scaffolding.
   generic `CameraConfig` (`alpaca_url`, `device_number`), which binds
   `zwo-camera` as it binds any Alpaca camera, so nothing camera-specific is owed
   in `rp`; running the two together on the field rig is an item of
-  [zwo-real-hardware-validation.md](zwo-real-hardware-validation.md).
+  [zwo-real-hardware-validation.md](archive/zwo-real-hardware-validation.md).
 - **Phase H — EAF focuser (`zwo-focuser` service):** ✅ *landed (2026-07-09),
   validated on a real EAF (2026-07-14).* New service, port 11124,
   built on the `zwo-rs`/`zwo-camera` native-SDK pattern (not the serial

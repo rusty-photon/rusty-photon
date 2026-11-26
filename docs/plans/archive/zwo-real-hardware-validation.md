@@ -1,17 +1,32 @@
 # Plan: ZWO real-hardware validation on the field rig
 
+**Status: COMPLETE (archived 2026-11-26), with the camera validated off
+the field rig.** zwo-focuser passed both ConformU suites against a physical
+EAF on the field rig
+([record](../../validation/2026-10-07-zwo-focuser-departure-linux/README.md)),
+moves reliably, and is in the field rig's `rp` equipment. zwo-camera was
+validated on the development host and in a Windows 11 guest instead: the
+field rig never received a ZWO camera, and its main camera is an SVBony
+SV605CC. There, both ConformU suites pass on three physical cameras
+(ASI1600MM-Cool, ASI178MM, ASI120MC-S), and full-frame 16-bit frames come
+through the driver over Alpaca; [zwo-camera.md](../../services/zwo-camera.md)
+lists the records. Both design docs carry their real-hardware validation
+sections. Not done, from § 3: the field rig's sentinel monitors neither ZWO
+service, and no frame from a ZWO camera was written to disk there.
+
 **Date:** 2026-07-11
 **Branch:** `feature/rig-dev-loop`
-**Status:** waiting on hardware (ZWO color main camera + ZWO EAF focuser,
-expected within days). No filter wheel is in the order — zwo Phase F
-(EFW/FilterWheel, `docs/plans/zwo-driver.md`) stays out of scope here.
+**Status when written:** waiting on hardware (ZWO color main camera + ZWO
+EAF focuser, expected within days). No filter wheel is in the order — zwo
+Phase F (EFW/FilterWheel, `docs/plans/zwo-driver.md`) stays out of scope
+here.
 **Context:** both ZWO services have only ever been validated against the
 simulated SDK: zwo-camera passed ConformU 2026-06-16 with the *sim* backend;
 zwo-focuser (merged as PR #479) has **never touched a real EAF**. The field
 rig already runs both services (ADR-014 per-device debs, empty device lists)
 plus the full stack, so validation is configuration + observation, not
 deployment work. Remote dev loop: see
-[docs/skills/rig-development.md](../skills/rig-development.md).
+[docs/skills/rig-development.md](../../skills/rig-development.md).
 
 ---
 
@@ -43,7 +58,7 @@ deployment work. Remote dev loop: see
 
 - [ ] First real-SDK ConformU run against the rig's zwo-camera, invoking
       ConformU directly as
-      [hardware-validation.md](../skills/hardware-validation.md#install-and-run)
+      [hardware-validation.md](../../skills/hardware-validation.md#install-and-run)
       says. The sim round surfaced sensor-geometry and async-op bugs
       (CameraXSize R4 alignment, async PulseGuide); expect the real sensor
       to disagree with the sim on geometry, exposure limits, and gain/offset
