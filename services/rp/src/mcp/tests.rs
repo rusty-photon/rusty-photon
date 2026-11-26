@@ -722,6 +722,9 @@ struct MockCoverCalibrator {
     fail_max_brightness: bool,
     fail_cover_state_poll: bool,
     stuck_cover_moving: bool,
+    /// `cover_state` answers `Open` rather than `Closed`, so an
+    /// `open_cover` arrives.
+    cover_reports_open: bool,
     fail_calibrator_state_poll: bool,
     stuck_calibrator_not_ready: bool,
 }
@@ -769,6 +772,9 @@ impl ascom_alpaca::api::CoverCalibrator for MockCoverCalibrator {
         }
         if self.stuck_cover_moving {
             return Ok(CoverStatus::Moving);
+        }
+        if self.cover_reports_open {
+            return Ok(CoverStatus::Open);
         }
         Ok(CoverStatus::Closed)
     }
@@ -2451,6 +2457,226 @@ async fn test_calibrator_off_command_fails() {
         )
         .await;
     assert_tool_error(result, "failed to turn calibrator off");
+}
+
+// -----------------------------------------------------------------------
+// Cover move events (rp.md § Event System): `open_cover` and
+// `close_cover` each emit `<tool>_started`, then `<tool>_complete` or
+// `<tool>_failed`, under one `operation_id`. A call refused before the
+// device is touched emits nothing. The bus publishes synchronously, so
+// every envelope a call emits is queued by the time it returns.
+// -----------------------------------------------------------------------
+
+fn calibrator_params(calibrator_id: &str) -> CalibratorIdParams {
+    CalibratorIdParams {
+        calibrator_id: Some(calibrator_id.into()),
+        train_id: None,
+    }
+}
+
+/// The call emitted nothing at all: the bus is synchronous, so there is
+/// no later emission to wait out.
+fn assert_no_event_emitted(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::events::EventEnvelope>,
+) {
+    let next = rx.try_recv();
+    assert!(
+        matches!(
+            next,
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "a refused cover call must emit no event, got: {next:?}"
+    );
+}
+
+#[tokio::test]
+async fn close_cover_emits_started_then_complete_naming_the_resolved_calibrator() {
+    let handler = test_handler(calibrator_registry(
+        Arc::new(MockCoverCalibrator::default()),
+    ))
+    .with_trains(calibrator_trains());
+    let mut rx = handler.event_bus.subscribe();
+
+    // Addressed by train: the events name the calibrator it resolves to.
+    let result = handler
+        .close_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: None,
+                train_id: Some("guide".into()),
+            },
+            &Cancel::never(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(success_json(result)["status"], "closed");
+
+    let started = next_event(&mut rx).await;
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+    assert_eq!(started.event, "close_cover_started");
+    assert_eq!(
+        started.payload,
+        serde_json::json!({ "calibrator_id": "cc" })
+    );
+    assert_eq!(complete.event, "close_cover_complete");
+    assert_eq!(
+        complete.payload,
+        serde_json::json!({ "calibrator_id": "cc", "status": "closed" })
+    );
+    assert_end_mirrors_start(&started, &complete);
+}
+
+#[tokio::test]
+async fn open_cover_emits_started_then_complete_under_one_operation_id() {
+    let cc = MockCoverCalibrator {
+        cover_reports_open: true,
+        ..Default::default()
+    };
+    let handler = test_handler(calibrator_registry(Arc::new(cc)));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .open_cover_inner(calibrator_params("cc"), &Cancel::never())
+        .await
+        .unwrap();
+    assert_eq!(success_json(result)["status"], "open");
+
+    let started = next_event(&mut rx).await;
+    let complete = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+    assert_eq!(started.event, "open_cover_started");
+    assert_eq!(
+        started.payload,
+        serde_json::json!({ "calibrator_id": "cc" })
+    );
+    assert_eq!(complete.event, "open_cover_complete");
+    assert_eq!(
+        complete.payload,
+        serde_json::json!({ "calibrator_id": "cc", "status": "open" })
+    );
+    assert_end_mirrors_start(&started, &complete);
+}
+
+#[tokio::test]
+async fn open_cover_refused_by_the_device_emits_failed_naming_the_calibrator() {
+    let cc = MockCoverCalibrator {
+        fail_open_cover: true,
+        ..Default::default()
+    };
+    let handler = test_handler(calibrator_registry(Arc::new(cc)));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .open_cover_inner(calibrator_params("cc"), &Cancel::never())
+        .await;
+    assert_tool_error(result, "failed to open cover");
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_no_more_events(&mut rx).await;
+    assert_eq!(started.event, "open_cover_started");
+    assert_eq!(failed.event, "open_cover_failed");
+    assert_eq!(failed.payload["calibrator_id"], "cc");
+    let error = failed.payload["error"].as_str().unwrap();
+    assert!(
+        error.starts_with("failed to open cover: ") && error.contains("motor fault"),
+        "open_cover_failed must carry the tool's error, got: {error}"
+    );
+    assert_end_mirrors_start(&started, &failed);
+}
+
+#[tokio::test(start_paused = true)]
+async fn close_cover_timeout_emits_failed_with_the_timeout() {
+    let cc = MockCoverCalibrator {
+        stuck_cover_moving: true,
+        ..Default::default()
+    };
+    let handler = test_handler(calibrator_registry(Arc::new(cc)));
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .close_cover_inner(calibrator_params("cc"), &Cancel::never())
+        .await;
+    assert_tool_error(result, "timeout waiting for cover to close");
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_eq!(started.event, "close_cover_started");
+    assert_eq!(failed.event, "close_cover_failed");
+    assert_eq!(
+        failed.payload,
+        serde_json::json!({
+            "error": "timeout waiting for cover to close",
+            "calibrator_id": "cc",
+        })
+    );
+    assert_end_mirrors_start(&started, &failed);
+}
+
+#[tokio::test]
+async fn a_cancelled_open_cover_emits_failed_with_the_cancel_reason() {
+    let handler = test_handler(calibrator_registry(
+        Arc::new(MockCoverCalibrator::default()),
+    ));
+    let mut rx = handler.event_bus.subscribe();
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::Safety);
+
+    let result = handler
+        .open_cover_inner(calibrator_params("cc"), &cancel)
+        .await;
+    assert_tool_error(result, "cancelled: safety");
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_eq!(started.event, "open_cover_started");
+    assert_eq!(failed.event, "open_cover_failed");
+    assert_eq!(
+        failed.payload,
+        serde_json::json!({ "error": "cancelled: safety", "calibrator_id": "cc" })
+    );
+    assert_end_mirrors_start(&started, &failed);
+}
+
+#[tokio::test]
+async fn a_cover_call_refused_before_the_device_is_touched_emits_no_event() {
+    let handler = test_handler(calibrator_registry(
+        Arc::new(MockCoverCalibrator::default()),
+    ))
+    .with_trains(calibrator_trains());
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .open_cover_inner(calibrator_params("nope"), &Cancel::never())
+        .await;
+    assert_tool_error(result, "calibrator not found: nope");
+    assert_no_event_emitted(&mut rx);
+
+    let result = handler
+        .close_cover_inner(
+            CalibratorIdParams {
+                calibrator_id: None,
+                train_id: Some("bare".into()),
+            },
+            &Cancel::never(),
+        )
+        .await;
+    assert_tool_error(result, "train 'bare' has no cover calibrator");
+    assert_no_event_emitted(&mut rx);
+}
+
+#[tokio::test]
+async fn a_cover_call_on_a_disconnected_calibrator_emits_no_event() {
+    let mut registry = calibrator_registry(Arc::new(MockCoverCalibrator::default()));
+    registry.cover_calibrators[0].session = crate::equipment::DeviceSession::disconnected();
+    let handler = test_handler(registry);
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .close_cover_inner(calibrator_params("cc"), &Cancel::never())
+        .await;
+    assert_tool_error(result, "calibrator not connected: cc");
+    assert_no_event_emitted(&mut rx);
 }
 
 // -----------------------------------------------------------------------
