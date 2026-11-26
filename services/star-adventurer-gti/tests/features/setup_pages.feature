@@ -19,8 +19,9 @@ Feature: Setup pages
   input. No password hash reaches a page. A POST that does not come from
   the page itself is refused with 403.
   With auth configured the pages answer 401 without a credential and
-  render with one. The driver has no custom Actions: SupportedActions is
-  empty.
+  render with one. Neither the recovery nor the configuration is an
+  Action: each name answers ACTION_NOT_IMPLEMENTED. The driver's one
+  custom Action only reads (park_matches_power_up_pose.feature).
 
   The mount's page links to the recovery page, served at its path with
   ?recover. Its GET shows what the mount is doing, a Stop, the poses and
@@ -256,10 +257,8 @@ Feature: Setup pages
     And the page shows an empty password input named "auth.password"
     And the page does not contain the stored password hash
 
-  Scenario: The driver has no custom actions
+  Scenario: Neither the recovery nor the configuration is an Action
     Given a running star-adventurer service
-    When the supported actions are queried
-    Then the supported actions are empty
     When the action "UnparkFromApPosition" is called
     Then the call should fail with an action-not-implemented error
     When the action "config.get" is called

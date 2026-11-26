@@ -7,6 +7,7 @@ pub mod coordinate_steps;
 pub mod doctor_steps;
 pub mod meridian_flip_steps;
 pub mod metadata_steps;
+pub mod park_matches_power_up_pose_steps;
 pub mod park_steps;
 pub mod pier_side_selection_steps;
 pub mod power_cut_steps;

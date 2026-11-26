@@ -107,6 +107,31 @@ fn end_of_last_startup(log: &[String]) -> usize {
     idx
 }
 
+/// A file as a scenario noted it: a later write replaces its bytes or its
+/// modification time, or both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotedFile {
+    pub path: std::path::PathBuf,
+    pub bytes: Vec<u8>,
+    pub modified: SystemTime,
+}
+
+impl NotedFile {
+    /// Read `path` now. A file that is not there fails the scenario: a
+    /// note of a missing file could not tell a later write from none.
+    pub fn read(path: std::path::PathBuf) -> Self {
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let modified = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .unwrap_or_else(|e| panic!("modification time of {}: {e}", path.display()));
+        Self {
+            path,
+            bytes,
+            modified,
+        }
+    }
+}
+
 #[derive(Debug, Default, World)]
 pub struct StarAdventurerWorld {
     pub service_handle: Option<ServiceHandle>,
@@ -135,6 +160,14 @@ pub struct StarAdventurerWorld {
 
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
+    /// The string the last successful `Action` call answered.
+    pub last_action_answer: Option<String>,
+    /// Each file a scenario noted, with its bytes and modification time
+    /// at the note.
+    pub noted_files: Vec<NotedFile>,
+    /// Length of the mock's command log at the note: the frames after it
+    /// are the scenario's.
+    pub noted_log_len: Option<usize>,
 
     /// Set when a scenario pins `site_longitude_deg` itself, which
     /// suppresses the reference-LST pin [`StarAdventurerWorld::start_service`]
@@ -573,6 +606,15 @@ impl StarAdventurerWorld {
             );
             sleep(DEBUG_POLL_INTERVAL).await;
         }
+    }
+
+    /// The configuration file the running service was started with.
+    pub fn config_file_path(&self) -> std::path::PathBuf {
+        self.temp_dir
+            .as_ref()
+            .expect("service started from a temp dir")
+            .path()
+            .join("config.json")
     }
 
     /// Where the driver keeps its mount state record: beside the

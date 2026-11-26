@@ -18,8 +18,9 @@ Feature: Unpark from AP position
   path with ?recover: the operator says the telescope is physically at a
   pose now, ticks the box that confirms it, and the driver resets the
   firmware encoder to that pose before clearing AtPark; from ap_park_0 it
-  clears AtPark alone. It runs on a still mount, parked or not. The
-  driver has no custom Actions.
+  clears AtPark alone. It runs on a still mount, parked or not. It is no
+  Action: the driver's one custom Action only reads
+  (park_matches_power_up_pose.feature).
 
   Scenario: Fresh power-up with ap_park_0 leaves the encoder untouched
     Given a star-adventurer service configured with unpark_from_ap_position "ap_park_0"
