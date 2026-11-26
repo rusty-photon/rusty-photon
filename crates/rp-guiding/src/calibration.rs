@@ -503,6 +503,52 @@ impl Calibrator {
         }
     }
 
+    /// The leg the next frame belongs to.
+    #[must_use]
+    pub const fn leg(&self) -> Leg {
+        self.stage.leg()
+    }
+
+    /// The pulses the current leg has sent.
+    #[must_use]
+    pub const fn steps(&self) -> u32 {
+        self.steps
+    }
+
+    /// Where the stars were when the current leg began; `None` until the
+    /// leg's first frame with an offset.
+    #[must_use]
+    pub const fn leg_start(&self) -> Option<Offset> {
+        self.start
+    }
+
+    /// The pulse of each step of the RA legs.
+    #[must_use]
+    pub const fn ra_step(&self) -> Duration {
+        self.ra_step
+    }
+
+    /// The RA axis, once the West leg has measured it.
+    #[must_use]
+    pub const fn ra_axis(&self) -> Option<Axis> {
+        match self.stage {
+            Stage::West => None,
+            Stage::East { ra }
+            | Stage::ClearBacklash { ra }
+            | Stage::North { ra }
+            | Stage::South { ra, .. } => Some(ra),
+        }
+    }
+
+    /// The Dec axis, once the North leg has measured it.
+    #[must_use]
+    pub const fn dec_axis(&self) -> Option<Axis> {
+        match self.stage {
+            Stage::South { dec, .. } => Some(dec),
+            _ => None,
+        }
+    }
+
     /// Takes a frame's offset at `now`, and says what comes next.
     ///
     /// The frame is the one taken after the last pulse, or the selection's
@@ -672,8 +718,10 @@ impl Calibrator {
 }
 
 /// The cosine a run scales the RA rate by: of the declination, held to
-/// 89° from the equator.
-fn scaling_cosine(declination_deg: f64) -> f64 {
+/// 89° from the equator. A calibration's RA rate is the rate measured at
+/// its declination divided by it.
+#[must_use]
+pub fn scaling_cosine(declination_deg: f64) -> f64 {
     declination_deg
         .abs()
         .min(MAX_SCALED_DEC_DEG)
@@ -817,6 +865,52 @@ mod tests {
             }
         }
         runs
+    }
+
+    #[test]
+    fn the_calibrator_tells_its_leg_its_steps_and_the_axes_it_has_measured() {
+        let mut mount = Scripted::new();
+        let mut calibrator =
+            Calibrator::new(setup(), 0.0, CalibrationParams::default(), Duration::ZERO);
+        assert_eq!((calibrator.leg(), calibrator.steps()), (Leg::West, 0));
+        assert_eq!(calibrator.leg_start(), None);
+        let mut now = Duration::ZERO;
+        let mut seen = vec![calibrator.leg()];
+        loop {
+            match calibrator.frame(Some(mount.position), now).unwrap() {
+                Progress::Pulse(next, pulse) => {
+                    if next.leg() == Leg::West {
+                        assert_eq!(next.leg_start(), Some(Offset::default()));
+                        assert!(next.ra_axis().is_none());
+                    }
+                    if next.leg() == Leg::East {
+                        assert!(next.ra_axis().is_some());
+                    }
+                    if next.leg() == Leg::South {
+                        assert!(next.dec_axis().is_some());
+                    }
+                    if seen.last() != Some(&next.leg()) {
+                        seen.push(next.leg());
+                    }
+                    assert!(next.steps() >= 1);
+                    mount.apply(pulse);
+                    now += pulse.duration + EXPOSURE;
+                    calibrator = next;
+                }
+                Progress::Wait(next) => calibrator = next,
+                Progress::Done(_) => break,
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                Leg::West,
+                Leg::East,
+                Leg::ClearBacklash,
+                Leg::North,
+                Leg::South
+            ]
+        );
     }
 
     #[test]

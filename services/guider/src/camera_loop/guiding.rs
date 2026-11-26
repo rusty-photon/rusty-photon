@@ -14,7 +14,8 @@ use std::sync::Arc;
 use ascom_alpaca::api::Telescope;
 use parking_lot::Mutex;
 use rp_guiding::{
-    Calibration, ControlError, ControlParams, Controller, Offset, Settle, SettleParams, Settling,
+    Calibration, ControlError, ControlParams, Controller, Offset, Position, Settle, SettleParams,
+    Settling,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -23,8 +24,20 @@ use tracing::{debug, info};
 use super::{Cycle, End, Then, Took};
 use crate::api::{ApiError, ErrorCode, SettleSpec, Size, Stop, StopReason};
 use crate::config::Config;
+use crate::guide_log::{self, GuideLog};
 use crate::guider::{AbortAnswer, SettledAnswer, State, Status, Turn};
 use crate::mount::{Fault, MountStart, RunMount};
+
+/// The guide log's note of a settle that begins.
+const SETTLING_STARTED: &str = "SETTLING STATE CHANGE, Settling started";
+
+/// The guide log's note of a new lock at `position` on the sensor.
+fn lock_note(position: Position) -> String {
+    format!(
+        "SET LOCK POSITION, new lock pos = {:.3}, {:.3}",
+        position.x, position.y
+    )
+}
 
 /// A settle's answer.
 pub type SettledReply = oneshot::Sender<Result<SettledAnswer, ApiError>>;
@@ -138,6 +151,8 @@ pub struct Guiding {
     /// The offset of the latest frame that had one, where an aborted dither
     /// sets the lock.
     last_offset: Option<Offset>,
+    /// The stars' offset where the lock is at zero, for the guide log.
+    home: Offset,
 }
 
 /// The control settings of the configuration, as the core takes them.
@@ -216,6 +231,7 @@ impl Cycle {
                     guiding.controller.resume();
                     guiding.sub = Sub::Guiding;
                     self.status.lock().set_state(State::Guiding);
+                    self.guide_log.lock().note("Server received guiding/start");
                 }
                 if guiding.sub == Sub::StarLost {
                     guiding.select = Some(SelectWait {
@@ -235,6 +251,7 @@ impl Cycle {
                     turn,
                 ));
                 self.status.lock().set_settling(true);
+                self.guide_log.lock().note(SETTLING_STARTED);
             }
             super::Mode::Looping => self.begin_start(run, Found::Looping),
             super::Mode::Calibrating(_) | super::Mode::Starting(_) => {
@@ -262,15 +279,16 @@ impl Cycle {
         let telescope = guiding.mount.telescope();
         let start = guiding.start;
         // In `star_lost` the run calibrates again only once its fresh frame
-        // has selected guide stars, and counts the interruption then.
+        // has selected guide stars, and counts the interruption then: a
+        // fresh frame with too few stars leaves the run as it was. Its
+        // section of the guide log ends where the calibration's begins.
         let reselect = guiding.sub == Sub::StarLost;
-        {
-            let mut status = self.status.lock();
-            status.start_accepted();
-            if !reselect {
-                status.interruption();
-            }
+        let mut status = self.status.lock();
+        status.start_accepted();
+        if !reselect {
+            status.interruption();
         }
+        drop(status);
         let after = StartAfter {
             settle,
             reply,
@@ -344,7 +362,7 @@ impl Cycle {
         let super::Mode::Starting(starting) = &mut self.mode else {
             return None;
         };
-        let failed = match send_pulses(&starting.mount, [None, None], cancel).await {
+        let failed = match send_pulses(&starting.mount, &mut [None, None], cancel).await {
             Err(stop) => return Some(End::Stop(stop)),
             Ok(failed) => failed,
         };
@@ -456,6 +474,26 @@ impl Cycle {
             status.set_state(State::Guiding);
             status.set_settling(true);
         }
+        let control = guide_log::Control {
+            ra_hysteresis: self.config.control.ra.hysteresis.get(),
+            ra_aggression: self.config.control.ra.aggression.get(),
+            dec_aggression: self.config.control.dec.aggression.get(),
+            dec_reversal_frames: self.config.control.dec.reversal_frames.get(),
+            dec_mode: match self.config.control.dec.mode {
+                crate::config::DecMode::Auto => Some("Auto"),
+                crate::config::DecMode::North => Some("North"),
+                crate::config::DecMode::South => Some("South"),
+                crate::config::DecMode::Off => None,
+            },
+            min_move_px: controller.min_move_px(),
+            max_pulse: self.config.mount.max_pulse.get(),
+        };
+        let common = self.log_common(&start, home, home);
+        {
+            let mut log = self.guide_log.lock();
+            log.begin_guiding(&common, &calibration, &control, self.epoch.elapsed());
+            log.note(SETTLING_STARTED);
+        }
         self.mode = super::Mode::Guiding(Box::new(Guiding {
             controller,
             mount,
@@ -465,6 +503,7 @@ impl Cycle {
             settle: Some(settle),
             select: None,
             last_offset: Some(home),
+            home,
         }));
     }
 
@@ -478,6 +517,9 @@ impl Cycle {
         }
         guiding.sub = Sub::Paused { full };
         self.status.lock().paused(full);
+        self.guide_log
+            .lock()
+            .note(&format!("Server received guiding/pause, full = {full}"));
         info!(full, "guiding paused");
         Ok(State::Paused)
     }
@@ -492,6 +534,7 @@ impl Cycle {
                 guiding.controller.resume();
                 guiding.sub = Sub::Guiding;
                 self.status.lock().set_state(State::Guiding);
+                self.guide_log.lock().note("Server received guiding/resume");
                 info!("guiding resumed");
                 Ok(State::Guiding)
             }
@@ -502,6 +545,7 @@ impl Cycle {
 
     /// `dither`.
     fn dither(&mut self, run: DitherRun) {
+        let reference = self.star_at(Offset::default());
         let super::Mode::Guiding(guiding) = &mut self.mode else {
             let _ = run.reply.send(Err(ApiError::not_guiding()));
             return;
@@ -512,10 +556,21 @@ impl Cycle {
         }
         let scale = guiding.pixel_scale();
         let amount_px = run.amount.pixels(scale);
+        let was = guiding.controller.lock();
         let lock = guiding
             .controller
             .dither(amount_px, run.ra_only, &mut self.rng);
         info!(amount_px, ?lock, "dither");
+        let now = guide_log::to_sensor(&guiding.calibration, lock);
+        // The lock's move on the axes, signed as PHD2 signs its raw
+        // distances: the next frame's are the move turned around.
+        self.guide_log.lock().note(&format!(
+            "DITHER by {:.3}, {:.3}, new lock pos = {:.3}, {:.3}",
+            was.ra - lock.ra,
+            lock.dec - was.dec,
+            reference.x + guiding.home.x + now.x,
+            reference.y + guiding.home.y + now.y
+        ));
         guiding.settle = Some(SettleWait::new(
             run.settle,
             scale,
@@ -525,11 +580,19 @@ impl Cycle {
             run.turn,
         ));
         self.status.lock().set_settling(true);
+        self.guide_log.lock().note(SETTLING_STARTED);
     }
 
     /// `dither/abort`.
     fn abort_dither(&mut self) -> AbortAnswer {
-        abort(&mut self.mode, &self.status, &mut self.inbox)
+        let reference = self.star_at(Offset::default());
+        abort(
+            &mut self.mode,
+            &self.status,
+            &mut self.inbox,
+            &self.guide_log,
+            reference,
+        )
     }
 
     /// What follows a frame of a guiding run.
@@ -539,42 +602,24 @@ impl Cycle {
         cancel: &CancellationToken,
     ) -> Option<End> {
         let now = self.epoch.elapsed();
+        // The first guide star's reference after this frame's selection,
+        // if it made one.
+        let reference = self.star_at(Offset::default());
+        let summary = self.last_summary;
+        let flux = summary.and_then(|summary| summary.flux);
+        let snr = summary.and_then(|summary| summary.snr);
+        if let Took::Measured {
+            selection: Some(selection),
+            ..
+        } = took
+        {
+            self.selected(selection, reference, now);
+        }
         let super::Mode::Guiding(guiding) = &mut self.mode else {
             return None;
         };
         let (offset, failed) = match &took {
-            Took::Measured { offset, selection } => {
-                if let Some(selection) = selection {
-                    if let Some(wait) = guiding.select.take() {
-                        match selection {
-                            Ok(_) => {
-                                guiding.controller.rehome(Offset::default());
-                                guiding.sub = Sub::Guiding;
-                                guiding.settle = Some(SettleWait::new(
-                                    wait.settle,
-                                    guiding.pixel_scale(),
-                                    now,
-                                    wait.reply,
-                                    false,
-                                    wait.turn,
-                                ));
-                                let mut status = self.status.lock();
-                                status.interruption();
-                                status.set_state(State::Guiding);
-                                status.set_settling(true);
-                            }
-                            Err(()) => {
-                                let _ = wait.reply.send(Err(ApiError::no_stars()));
-                            }
-                        }
-                    } else if selection.is_ok() {
-                        // A star/reselect: the new stars are the run's home.
-                        guiding.controller.rehome(Offset::default());
-                        self.status.lock().interruption();
-                    }
-                }
-                (*offset, false)
-            }
+            Took::Measured { offset, .. } => (*offset, false),
             Took::Failed(_) => (None, true),
         };
         // Every measured frame with an offset, paused or rehomed, is where
@@ -583,6 +628,9 @@ impl Cycle {
             guiding.last_offset = offset;
         }
         let mut pulses = [None, None];
+        // A guide step's row and its distance from the lock, written and
+        // judged once its pulses have gone out.
+        let mut stepped_frame = None;
         match (guiding.sub, offset) {
             (Sub::Paused { .. }, offset) => {
                 if offset.is_none() && !failed {
@@ -600,9 +648,8 @@ impl Cycle {
                 }
                 guiding.controller.star_lost();
                 self.status.lock().star_lost_frame();
-                if let Some(end) = self.settle_frame(None, now) {
-                    return Some(end);
-                }
+                self.guide_log.lock().star_lost(flux, snr, now);
+                self.settle_frame(None, now);
             }
             (Sub::Guiding | Sub::StarLost, Some(offset)) => {
                 if guiding.sub == Sub::StarLost {
@@ -616,9 +663,13 @@ impl Cycle {
                 let error = guiding.controller.error(offset);
                 let dec = guiding.controller.corrects_dec().then_some(error.dec);
                 self.status.lock().guide_step(error.ra, dec);
-                let step = match guiding.controller.step(offset) {
+                let lock = guide_log::to_sensor(&guiding.calibration, guiding.controller.lock());
+                let stepped = guiding.controller.step(offset);
+                let row = guide_row(guiding, offset, lock, error, (flux, snr));
+                let step = match stepped {
                     Ok(step) => step,
                     Err(ControlError::Runaway { axis }) => {
+                        self.guide_log.lock().guide_step(&row, now);
                         return Some(End::Stop(Stop::new(
                             StopReason::Runaway,
                             format!(
@@ -628,35 +679,105 @@ impl Cycle {
                     }
                 };
                 pulses = [step.ra, step.dec];
-                if let Some(end) = self.settle_frame(Some(distance), now) {
-                    return Some(end);
-                }
+                stepped_frame = Some((row, distance));
             }
         }
         let super::Mode::Guiding(guiding) = &mut self.mode else {
             return None;
         };
-        match send_pulses(&guiding.mount, pulses, cancel).await {
+        let end = match send_pulses(&guiding.mount, &mut pulses, cancel).await {
             Err(stop) => Some(End::Stop(stop)),
             Ok(failed) => guiding.mount.cycle(failed.as_deref()).map(End::Stop),
+        };
+        if let Some((mut row, distance)) = stepped_frame {
+            // The row gives the pulses that went out, as PHD2's does.
+            [row.ra, row.dec] = pulses;
+            self.guide_log.lock().guide_step(&row, now);
+            // A run that stopped answers its waiting settle with the stop.
+            if end.is_none() {
+                self.settle_frame(Some(distance), now);
+            }
+        }
+        end
+    }
+
+    /// A frame of a guiding run that selected guide stars, the first guide
+    /// star's reference after it at `reference`: a start in `star_lost`
+    /// waiting for it takes a new lock and settles, or answers `no_stars`;
+    /// otherwise it is a `star/reselect`, whose stars are the run's home.
+    fn selected(
+        &mut self,
+        selection: Result<usize, ()>,
+        reference: Position,
+        now: std::time::Duration,
+    ) {
+        let super::Mode::Guiding(guiding) = &mut self.mode else {
+            return;
+        };
+        let waiting = guiding.select.take();
+        match (waiting, selection) {
+            (Some(wait), Ok(_)) => {
+                guiding.controller.rehome(Offset::default());
+                guiding.home = Offset::default();
+                guiding.sub = Sub::Guiding;
+                guiding.settle = Some(SettleWait::new(
+                    wait.settle,
+                    guiding.pixel_scale(),
+                    now,
+                    wait.reply,
+                    false,
+                    wait.turn,
+                ));
+                {
+                    let mut log = self.guide_log.lock();
+                    log.note(&lock_note(reference));
+                    log.note(SETTLING_STARTED);
+                }
+                let mut status = self.status.lock();
+                status.interruption();
+                status.set_state(State::Guiding);
+                status.set_settling(true);
+            }
+            (Some(wait), Err(())) => {
+                let _ = wait.reply.send(Err(ApiError::no_stars()));
+            }
+            (None, Ok(_)) => {
+                guiding.controller.rehome(Offset::default());
+                guiding.home = Offset::default();
+                self.guide_log.lock().note(&lock_note(reference));
+                self.status.lock().interruption();
+            }
+            (None, Err(())) => {}
         }
     }
 
     /// Judge a settle that waits, with a frame's distance from the lock:
     /// answer it once settled or timed out.
-    fn settle_frame(&mut self, distance: Option<f64>, now: std::time::Duration) -> Option<End> {
+    fn settle_frame(&mut self, distance: Option<f64>, now: std::time::Duration) {
         let super::Mode::Guiding(guiding) = &mut self.mode else {
-            return None;
+            return;
         };
-        let settling = guiding.settle.as_mut()?.settle.frame(distance, now);
+        let Some(waiting) = guiding.settle.as_mut() else {
+            return;
+        };
+        let settling = waiting.settle.frame(distance, now);
         if settling == Settling::Settling {
-            return None;
+            return;
         }
-        let wait = guiding.settle.take()?;
+        let Some(wait) = guiding.settle.take() else {
+            return;
+        };
         if wait.dither {
             guiding.controller.dither_ended();
         }
         let scale = Some(guiding.pixel_scale());
+        self.guide_log
+            .lock()
+            .note(if settling == Settling::Settled {
+                "SETTLING STATE CHANGE, Settling complete"
+            } else {
+                "SETTLING STATE CHANGE, Settling failed"
+            });
         let mut status = self.status.lock();
         status.set_settling(false);
         let answer = match settling {
@@ -674,7 +795,6 @@ impl Cycle {
         };
         drop(status);
         let _ = wait.reply.send(answer);
-        None
     }
 
     /// A cycle of a full pause: no frame, the mount checked once an
@@ -703,7 +823,7 @@ impl Cycle {
         let super::Mode::Guiding(guiding) = &mut self.mode else {
             return None;
         };
-        match send_pulses(&guiding.mount, [None, None], cancel).await {
+        match send_pulses(&guiding.mount, &mut [None, None], cancel).await {
             Err(stop) => Some(End::Stop(stop)),
             Ok(failed) => guiding.mount.cycle(failed.as_deref()).map(End::Stop),
         }
@@ -715,6 +835,38 @@ impl Cycle {
             &self.mode,
             super::Mode::Guiding(guiding) if guiding.sub == Sub::Paused { full: true }
         )
+    }
+}
+
+/// A guide step's row for the guide log: the stars at `offset` with the
+/// lock at `lock` on the sensor, the controller's `error` and the frame's
+/// flux and signal-to-noise ratio, with no pulse until the step's pulses
+/// have gone out.
+fn guide_row(
+    guiding: &Guiding,
+    offset: Offset,
+    lock: Offset,
+    error: rp_guiding::AxisOffset,
+    (flux, snr): (Option<f64>, Option<f64>),
+) -> guide_log::GuideRow {
+    guide_log::GuideRow {
+        from_lock: Offset {
+            x: offset.x - guiding.home.x - lock.x,
+            y: offset.y - guiding.home.y - lock.y,
+        },
+        error,
+        ra: None,
+        dec: None,
+        ra_rate_px_per_s: guiding
+            .calibration
+            .ra_rate_at(guiding.start.declination_deg),
+        dec_rate_px_per_s: guiding
+            .calibration
+            .dec
+            .as_ref()
+            .map_or(0.0, |dec| dec.axis.rate_px_per_s),
+        flux,
+        snr,
     }
 }
 
@@ -733,6 +885,8 @@ pub(super) fn abort(
     mode: &mut super::Mode,
     status: &Mutex<Status>,
     inbox: &mut Vec<super::Command>,
+    guide_log: &Mutex<GuideLog>,
+    reference: Position,
 ) -> AbortAnswer {
     let state = status.lock().state();
     let unaborted = AbortAnswer {
@@ -761,6 +915,13 @@ pub(super) fn abort(
     guiding
         .controller
         .lock_at(guiding.last_offset.unwrap_or_default());
+    // The lock the controller holds, which the guide log's rows measure
+    // from: with Dec off, the stars' place on the RA axis.
+    let lock = guide_log::to_sensor(&guiding.calibration, guiding.controller.lock());
+    guide_log.lock().note(&lock_note(Position {
+        x: reference.x + guiding.home.x + lock.x,
+        y: reference.y + guiding.home.y + lock.y,
+    }));
     if let Some(wait) = guiding.settle.take() {
         let _ = wait.reply.send(Err(ApiError::dither_aborted()));
     }
@@ -775,32 +936,34 @@ pub(super) fn abort(
 /// Send `pulses`, RA then Dec, each after the mount check raced against
 /// `cancel`; with none to send, check the mount once. The message of the
 /// first failed mount call, after which no further pulse goes out; the stop
-/// when the run stops.
+/// when the run stops. `pulses` is left holding the pulses that went out:
+/// each `PulseGuide` asked for and not refused.
 pub(super) async fn send_pulses(
     mount: &RunMount,
-    pulses: [Option<rp_guiding::Pulse>; 2],
+    pulses: &mut [Option<rp_guiding::Pulse>; 2],
     cancel: &CancellationToken,
 ) -> Result<Option<String>, Stop> {
-    let mut sent = false;
-    for pulse in pulses.into_iter().flatten() {
-        sent = true;
-        let checked = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(Stop::requested()),
-            checked = mount.check() => checked,
+    let mut asked = false;
+    let mut ended = None;
+    for slot in pulses.iter_mut() {
+        let Some(pulse) = *slot else {
+            continue;
         };
-        let fault = match checked {
-            Err(fault) => Some(fault),
-            Ok(()) if cancel.is_cancelled() => return Err(Stop::requested()),
-            Ok(()) => mount.pulse(pulse).await.err(),
-        };
-        match fault {
-            None => {}
-            Some(Fault::Stop(stop)) => return Err(stop),
-            Some(Fault::Failed(message) | Fault::Unconfirmed(message)) => return Ok(Some(message)),
+        asked = true;
+        if ended.is_some() {
+            *slot = None;
+            continue;
         }
+        let (went_out, end) = send_pulse(mount, pulse, cancel).await;
+        if !went_out {
+            *slot = None;
+        }
+        ended = end;
     }
-    if sent {
+    if let Some(end) = ended {
+        return end;
+    }
+    if asked {
         return Ok(None);
     }
     let checked = tokio::select! {
@@ -808,10 +971,41 @@ pub(super) async fn send_pulses(
         () = cancel.cancelled() => return Err(Stop::requested()),
         checked = mount.check() => checked,
     };
-    match checked {
-        Ok(()) => Ok(None),
-        Err(Fault::Stop(stop)) => Err(stop),
-        Err(Fault::Failed(message) | Fault::Unconfirmed(message)) => Ok(Some(message)),
+    checked.map_or_else(fault_end, |()| Ok(None))
+}
+
+/// Send `pulse` after the mount check raced against `cancel`: whether it
+/// went out, and how the cycle ends, if it ends with this pulse.
+async fn send_pulse(
+    mount: &RunMount,
+    pulse: rp_guiding::Pulse,
+    cancel: &CancellationToken,
+) -> (bool, Option<Result<Option<String>, Stop>>) {
+    let checked = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return (false, Some(Err(Stop::requested()))),
+        checked = mount.check() => checked,
+    };
+    let fault = match checked {
+        Err(fault) => return (false, Some(fault_end(fault))),
+        Ok(()) if cancel.is_cancelled() => return (false, Some(Err(Stop::requested()))),
+        Ok(()) => mount.pulse(pulse).await.err(),
+    };
+    match fault {
+        None => (true, None),
+        Some(Fault::Failed(message)) => (false, Some(Ok(Some(message)))),
+        // `PulseGuide` took the pulse; only its end was not seen.
+        Some(Fault::Unconfirmed(message)) => (true, Some(Ok(Some(message)))),
+        Some(Fault::Stop(stop)) => (true, Some(Err(stop))),
+    }
+}
+
+/// How a cycle ends on a mount `fault`: the stop, or the failed call's
+/// message.
+fn fault_end(fault: Fault) -> Result<Option<String>, Stop> {
+    match fault {
+        Fault::Stop(stop) => Err(stop),
+        Fault::Failed(message) | Fault::Unconfirmed(message) => Ok(Some(message)),
     }
 }
 
@@ -843,6 +1037,7 @@ mod tests {
                 ra_deg_per_s: 0.004,
                 dec_deg_per_s: 0.004,
             }),
+            pointing: None,
         }
     }
 
@@ -1037,6 +1232,31 @@ mod tests {
         assert_eq!(settled.sample_count, 3);
         assert!(!cycle.status.lock().settling());
         assert!(turns.try_lock().is_ok(), "the turn is still held");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_that_stops_on_the_frame_that_would_settle_leaves_the_settle_to_the_stop() {
+        let (mut cycle, mut answer, _turns) = guiding_on(Arc::new(FakeMount::default())).await;
+        for _ in 0..2 {
+            assert!(guide(&mut cycle, at(0.5, 0.0)).await.is_none());
+            tokio::time::advance(Duration::from_millis(600)).await;
+        }
+        let Mode::Guiding(guiding) = &mut cycle.mode else {
+            panic!("the loop is not guiding");
+        };
+        guiding.mount = run_mount(Arc::new(FakeMount {
+            slewing: true,
+            ..FakeMount::default()
+        }));
+        let Some(End::Stop(stop)) = guide(&mut cycle, at(0.5, 0.0)).await else {
+            panic!("the run went on");
+        };
+        assert_eq!(stop.reason, StopReason::MountSlewing);
+        assert!(
+            matches!(answer.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "the settle was answered"
+        );
+        assert!(!guide_log_text(&cycle).contains("Settling complete"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1326,6 +1546,51 @@ mod tests {
             "{lock:?}"
         );
         assert!(!cycle.status.lock().settling());
+        assert!(
+            guide_log_text(&cycle)
+                .contains("INFO: SET LOCK POSITION, new lock pos = 0.250, -0.500"),
+            "{}",
+            guide_log_text(&cycle)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_dec_off_an_abort_notes_the_lock_on_the_ra_axis_the_rows_measure_from() {
+        let mut cycle = looping_cycle();
+        cycle.config = Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "optics": { "focal_length_mm": 200.0 },
+                "control": { "dec": { "mode": "off" } }
+            }))
+            .unwrap(),
+        );
+        let calibration = calibration(&cycle);
+        let (after, mut started) = after(Found::Looping);
+        let (turn, _turns) = turn().await;
+        cycle.begin_guiding(
+            run_mount(Arc::new(FakeMount::default())),
+            mount_start(),
+            calibration,
+            Offset::default(),
+            after,
+            turn,
+        );
+        for _ in 0..3 {
+            assert!(guide(&mut cycle, at(0.0, 0.0)).await.is_none());
+            tokio::time::advance(Duration::from_millis(600)).await;
+        }
+        started.try_recv().unwrap().unwrap();
+        let (run, _answer, _given_up) = dither_run(4.0);
+        cycle.dither(run);
+        assert!(guide(&mut cycle, at(0.25, -0.5)).await.is_none());
+        assert!(cycle.abort_dither().aborted);
+        // West moves the stars along +x: the lock is where they stand along
+        // that axis.
+        let text = guide_log_text(&cycle);
+        assert!(
+            text.contains("INFO: SET LOCK POSITION, new lock pos = 0.250, 0.000"),
+            "{text}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1392,15 +1657,13 @@ mod tests {
             cancels: Some(cancel.clone()),
             ..FakeMount::default()
         });
-        let stop = send_pulses(
-            &run_mount(Arc::clone(&mount)),
-            [Some(pulse(Direction::West)), None],
-            &cancel,
-        )
-        .await
-        .unwrap_err();
+        let mut pulses = [Some(pulse(Direction::West)), None];
+        let stop = send_pulses(&run_mount(Arc::clone(&mount)), &mut pulses, &cancel)
+            .await
+            .unwrap_err();
         assert_eq!(stop.reason, StopReason::Requested);
         assert_eq!(mount.pulses.load(Ordering::SeqCst), 0);
+        assert_eq!(pulses, [None, None]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1525,6 +1788,229 @@ mod tests {
         );
     }
 
+    /// The guide log the loop wrote so far.
+    fn guide_log_text(cycle: &Cycle) -> String {
+        let path = cycle
+            .guide_log
+            .lock()
+            .path()
+            .expect("a guide log is open")
+            .to_owned();
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recalibrate_in_a_run_ends_the_runs_section_where_the_calibrations_begins() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        assert!(!guide_log_text(&cycle).contains("Guiding Ends"));
+        // The test's loop holds no guide stars, so the calibration selects
+        // on its first frame.
+        assert!(cycle
+            .after_frame(selection(Ok(3)), &CancellationToken::new())
+            .await
+            .is_none());
+        let text = guide_log_text(&cycle);
+        let ends = text
+            .find("Guiding Ends at")
+            .expect("the run's section ended");
+        let calibration = text
+            .find("Calibration Begins at")
+            .expect("the calibration's section");
+        assert!(ends < calibration, "{text}");
+    }
+
+    /// The guide log of a run that calibrates again and stops with `stop`
+    /// before the calibration's first frame.
+    async fn stopped_before_the_calibration_began(stop: &Stop) -> String {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        cycle.log_stop(stop);
+        guide_log_text(&cycle)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_that_stops_before_its_calibration_begins_ends_its_section_with_the_stop() {
+        for (stop, note) in [
+            (Stop::requested(), "INFO: Server received guiding/stop"),
+            (
+                Stop::new(StopReason::MountSlewing, "the mount is slewing"),
+                "INFO: GUIDING STOPPED, mount_slewing: the mount is slewing",
+            ),
+        ] {
+            let text = stopped_before_the_calibration_began(&stop).await;
+            let noted = text.find(note).expect("the stop's note");
+            let ends = text
+                .find("Guiding Ends at")
+                .expect("the run's section ended");
+            assert!(noted < ends, "{text}");
+            assert!(!text.contains("Calibration Begins"), "{text}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recalibrate_in_star_lost_refused_for_too_few_stars_goes_on_logging_the_run() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        assert!(guide(&mut cycle, lost()).await.is_none());
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        let refused = Took::Measured {
+            offset: None,
+            selection: Some(Err(())),
+        };
+        assert!(cycle
+            .after_frame(refused, &CancellationToken::new())
+            .await
+            .is_none());
+        assert!(guide(&mut cycle, at(0.25, 0.0)).await.is_none());
+        let text = guide_log_text(&cycle);
+        assert!(!text.contains("Guiding Ends"), "{text}");
+        assert!(
+            text.lines().last().unwrap().contains(",\"Mount\","),
+            "{text}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_recalibrate_in_star_lost_ends_the_runs_section_once_its_fresh_frame_selects() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        assert!(guide(&mut cycle, lost()).await.is_none());
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        assert!(!guide_log_text(&cycle).contains("Guiding Ends"));
+        assert!(cycle
+            .after_frame(selection(Ok(3)), &CancellationToken::new())
+            .await
+            .is_none());
+        let text = guide_log_text(&cycle);
+        let ends = text.find("Guiding Ends").expect("the run's section ended");
+        let calibration = text
+            .find("Calibration Begins")
+            .expect("the calibration's section");
+        assert!(ends < calibration, "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dither_note_gives_the_locks_move_on_the_axes_as_the_next_rows_raw_distances_turned_around(
+    ) {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        let (run, _answer, _given_up) = dither_run(4.0);
+        cycle.dither(run);
+        assert!(guide(&mut cycle, at(0.0, 0.0)).await.is_none());
+        let text = guide_log_text(&cycle);
+        let note = text
+            .lines()
+            .find_map(|line| line.strip_prefix("INFO: DITHER by "))
+            .expect("a dither note");
+        let by: Vec<f64> = note
+            .split(", ")
+            .take(2)
+            .map(|amount| amount.parse().unwrap())
+            .collect();
+        let row = text.lines().last().unwrap();
+        let fields: Vec<&str> = row.split(',').collect();
+        let raw: Vec<f64> = fields[5..7]
+            .iter()
+            .map(|field| field.parse().unwrap())
+            .collect();
+        assert!(by[0].abs() + by[1].abs() > 1.0, "{note}");
+        assert!(
+            (by[0] + raw[0]).abs() < 0.002 && (by[1] + raw[1]).abs() < 0.002,
+            "{note} / {row}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_settles_note_follows_the_row_of_the_frame_that_settled() {
+        let (mut cycle, mut answer, _turns) = guiding_on(Arc::new(FakeMount::default())).await;
+        for _ in 0..3 {
+            assert!(guide(&mut cycle, at(0.5, 0.0)).await.is_none());
+            tokio::time::advance(Duration::from_millis(600)).await;
+        }
+        answer.try_recv().unwrap().unwrap();
+        let text = guide_log_text(&cycle);
+        let lines: Vec<&str> = text.lines().collect();
+        let [.., row, note] = lines[..] else {
+            panic!("{text}");
+        };
+        assert_eq!(
+            note, "INFO: SETTLING STATE CHANGE, Settling complete",
+            "{text}"
+        );
+        assert!(row.contains(",\"Mount\","), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_guide_steps_row_gives_no_pulse_the_mount_refused() {
+        let mount = Arc::new(FakeMount {
+            pulse_refused: true,
+            ..FakeMount::default()
+        });
+        let mut cycle = settled_guiding(mount).await;
+        assert!(guide(&mut cycle, at(0.5, 0.0)).await.is_none());
+        let text = guide_log_text(&cycle);
+        let row = text.lines().last().unwrap();
+        let fields: Vec<&str> = row.split(',').collect();
+        // RAGuideDistance, RADuration and RADirection.
+        assert_eq!(
+            (fields[7], fields[9], fields[10]),
+            ("0.000", "0", ""),
+            "{row}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_of_its_own_in_a_recalibration_still_in_the_runs_section_is_a_runs_note() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        assert!(guide(&mut cycle, lost()).await.is_none());
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        cycle.log_stop(&Stop::new(StopReason::MountSlewing, "the mount is slewing"));
+        let text = guide_log_text(&cycle);
+        assert!(
+            text.contains("INFO: GUIDING STOPPED, mount_slewing: the mount is slewing"),
+            "{text}"
+        );
+        assert!(text.contains("Guiding Ends at"), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_of_its_own_in_a_calibration_is_a_calibrations_note() {
+        let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
+        let (run, _answer, _turns) = start_in_a_run(true).await;
+        cycle.start(run);
+        // The test's loop holds no guide stars, so the calibration selects
+        // on its first frame.
+        assert!(cycle
+            .after_frame(selection(Ok(3)), &CancellationToken::new())
+            .await
+            .is_none());
+        cycle.log_stop(&Stop::new(StopReason::MountSlewing, "the mount is slewing"));
+        let text = guide_log_text(&cycle);
+        assert!(
+            text.contains("INFO: CALIBRATION STOPPED, mount_slewing: the mount is slewing"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_a_reselect_the_guide_logs_rows_measure_from_the_new_stars() {
+        let home = Offset { x: 2.0, y: 1.0 };
+        let mut cycle = settled_guiding_from(Arc::new(FakeMount::default()), home).await;
+        assert!(guide(&mut cycle, selection(Ok(3))).await.is_none());
+        assert!(guide(&mut cycle, at(0.25, 0.0)).await.is_none());
+        let text = guide_log_text(&cycle);
+        let row = text.lines().last().unwrap();
+        let fields: Vec<&str> = row.split(',').collect();
+        assert_eq!((fields[3], fields[4]), ("0.250", "0.000"), "{row}");
+        assert!(
+            text.contains("INFO: SET LOCK POSITION, new lock pos = "),
+            "{text}"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn an_abort_with_no_dither_waiting_changes_nothing() {
         let mut cycle = settled_guiding(Arc::new(FakeMount::default())).await;
@@ -1554,6 +2040,19 @@ mod tests {
         cycle.start(run);
         assert_eq!(state(&cycle), State::Guiding);
         assert!(!cycle.full_paused());
+        let text = guide_log_text(&cycle);
+        let [.., paused, started, settling] = text.lines().collect::<Vec<_>>()[..] else {
+            panic!("{text}");
+        };
+        assert_eq!(
+            (paused, started, settling),
+            (
+                "INFO: Server received guiding/pause, full = true",
+                "INFO: Server received guiding/start",
+                "INFO: SETTLING STATE CHANGE, Settling started"
+            ),
+            "{text}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1840,9 +2339,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_pulses_go_out_ra_first() {
         let mount = Arc::new(FakeMount::default());
+        let both = [Some(pulse(Direction::West)), Some(pulse(Direction::North))];
+        let mut pulses = both;
         let sent = send_pulses(
             &run_mount(Arc::clone(&mount)),
-            [Some(pulse(Direction::West)), Some(pulse(Direction::North))],
+            &mut pulses,
             &CancellationToken::new(),
         )
         .await;
@@ -1851,6 +2352,7 @@ mod tests {
             *mount.directions.lock(),
             [GuideDirection::West, GuideDirection::North]
         );
+        assert_eq!(pulses, both);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1859,14 +2361,47 @@ mod tests {
             pulse_refused: true,
             ..FakeMount::default()
         });
+        let mut pulses = [Some(pulse(Direction::West)), Some(pulse(Direction::North))];
         let sent = send_pulses(
             &run_mount(Arc::clone(&mount)),
-            [Some(pulse(Direction::West)), Some(pulse(Direction::North))],
+            &mut pulses,
             &CancellationToken::new(),
         )
         .await;
         assert!(sent.unwrap().is_some(), "the failure was not reported");
         assert_eq!(*mount.directions.lock(), [GuideDirection::West]);
+        assert_eq!(pulses, [None, None], "a refused pulse went out");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pulse_the_mount_check_held_back_did_not_go_out() {
+        let mount = Arc::new(FakeMount {
+            at_park: true,
+            ..FakeMount::default()
+        });
+        let mut pulses = [Some(pulse(Direction::West)), None];
+        let stop = send_pulses(&run_mount(mount), &mut pulses, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(stop.reason, StopReason::MountParked);
+        assert_eq!(pulses, [None, None]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pulse_whose_end_could_not_be_read_went_out_and_the_next_did_not() {
+        let mount = Arc::new(FakeMount {
+            pulse_guiding_fails: true,
+            ..FakeMount::default()
+        });
+        let mut pulses = [Some(pulse(Direction::West)), Some(pulse(Direction::North))];
+        let sent = send_pulses(
+            &run_mount(Arc::clone(&mount)),
+            &mut pulses,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(sent.unwrap().is_some(), "the failure was not reported");
+        assert_eq!(pulses, [Some(pulse(Direction::West)), None]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1875,9 +2410,13 @@ mod tests {
             at_park: true,
             ..FakeMount::default()
         });
-        let stop = send_pulses(&run_mount(mount), [None, None], &CancellationToken::new())
-            .await
-            .unwrap_err();
+        let stop = send_pulses(
+            &run_mount(mount),
+            &mut [None, None],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(stop.reason, StopReason::MountParked);
     }
 
@@ -1886,15 +2425,13 @@ mod tests {
         let mount = Arc::new(FakeMount::default());
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let stop = send_pulses(
-            &run_mount(Arc::clone(&mount)),
-            [Some(pulse(Direction::West)), None],
-            &cancel,
-        )
-        .await
-        .unwrap_err();
+        let mut pulses = [Some(pulse(Direction::West)), None];
+        let stop = send_pulses(&run_mount(Arc::clone(&mount)), &mut pulses, &cancel)
+            .await
+            .unwrap_err();
         assert_eq!(stop.reason, StopReason::Requested);
         assert_eq!(mount.pulses.load(Ordering::SeqCst), 0);
+        assert_eq!(pulses, [None, None]);
     }
 
     #[test]

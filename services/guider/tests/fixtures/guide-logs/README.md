@@ -3,8 +3,11 @@
 Guide logs that PHD2 wrote on the rigs, whole and byte for byte. They are the
 record of the guide-log format the guider's own log is held to: the guider's
 writer is tested against what a parser built from these files accepts
-(`docs/services/guider.md`, § Guide log). PHD2's description of the format is
-<https://github.com/OpenPHDGuiding/phd2/wiki/PHD2GuideLog>.
+(`docs/services/guider.md`, § Guide log). The parser is
+`services/guider/tests/bdd/phd2_log.rs`; `services/guider/tests/guide_log_format.rs`
+holds it to these files, and the guider's log to it, and the BDD suite parses
+the log of each guide-log scenario with it. PHD2's description of the format
+is <https://github.com/OpenPHDGuiding/phd2/wiki/PHD2GuideLog>.
 
 Everything this file says about a log is a count of that log's lines or a
 quotation from it. Nothing here says what PHD2 does in a case the files do not

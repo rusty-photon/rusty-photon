@@ -131,6 +131,7 @@ async fn gain_reads_again(world: &mut GuiderWorld, gain: i32) {
     panic!("the camera's gain did not read {gain} within {WAIT_BUDGET:?}; last read {last:?}");
 }
 
+#[when(regex = r#"^the guider's last stop has the reason "([a-z_]+)"$"#)]
 #[then(regex = r#"^the guider's last stop has the reason "([a-z_]+)"$"#)]
 async fn last_stop_reason(world: &mut GuiderWorld, reason: String) {
     last_stop(world, &reason).await;

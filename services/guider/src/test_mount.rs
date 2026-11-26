@@ -28,6 +28,8 @@ pub struct FakeMount {
     pub pulse_hangs: bool,
     /// `PulseGuide` answers an error.
     pub pulse_refused: bool,
+    /// `PulseGuide` answers an error once it has answered this many calls.
+    pub pulses_refused_after: Option<usize>,
     /// `IsPulseGuiding` reads true.
     pub pulse_guiding: AtomicBool,
     /// `IsPulseGuiding` answers an error.
@@ -45,6 +47,9 @@ pub struct FakeMount {
     pub cancels: Option<tokio_util::sync::CancellationToken>,
     /// A read of `Tracking` answers an error.
     pub tracking_fails: bool,
+    /// `RightAscension`, `Altitude`, `Azimuth` and `SiderealTime` answer;
+    /// `false` for a mount that does not implement them.
+    pub reports_pointing: bool,
 }
 
 impl Default for FakeMount {
@@ -58,6 +63,7 @@ impl Default for FakeMount {
             guide_rate: Some(0.002),
             pulse_hangs: false,
             pulse_refused: false,
+            pulses_refused_after: None,
             pulse_guiding: AtomicBool::new(false),
             pulse_guiding_fails: false,
             pulse_guiding_delay: Duration::ZERO,
@@ -66,6 +72,18 @@ impl Default for FakeMount {
             directions: parking_lot::Mutex::new(Vec::new()),
             cancels: None,
             tracking_fails: false,
+            reports_pointing: true,
+        }
+    }
+}
+
+impl FakeMount {
+    /// `value`, or `NOT_IMPLEMENTED` for a mount that reports no pointing.
+    fn pointing(&self, value: f64) -> ASCOMResult<f64> {
+        if self.reports_pointing {
+            Ok(value)
+        } else {
+            Err(ASCOMError::NOT_IMPLEMENTED)
         }
     }
 }
@@ -144,7 +162,15 @@ impl Telescope for FakeMount {
     }
 
     async fn right_ascension(&self) -> ASCOMResult<f64> {
-        Ok(6.0)
+        self.pointing(6.0)
+    }
+
+    async fn altitude(&self) -> ASCOMResult<f64> {
+        self.pointing(45.0)
+    }
+
+    async fn azimuth(&self) -> ASCOMResult<f64> {
+        self.pointing(180.0)
     }
 
     async fn right_ascension_rate(&self) -> ASCOMResult<f64> {
@@ -156,7 +182,7 @@ impl Telescope for FakeMount {
     }
 
     async fn sidereal_time(&self) -> ASCOMResult<f64> {
-        Ok(6.0)
+        self.pointing(7.5)
     }
 
     async fn slewing(&self) -> ASCOMResult<bool> {
@@ -187,12 +213,16 @@ impl Telescope for FakeMount {
     }
 
     async fn pulse_guide(&self, direction: GuideDirection, _duration: Duration) -> ASCOMResult<()> {
-        self.pulses.fetch_add(1, Ordering::SeqCst);
+        let answered = self.pulses.fetch_add(1, Ordering::SeqCst);
         self.directions.lock().push(direction);
         if self.pulse_hangs {
             std::future::pending::<()>().await;
         }
-        if self.pulse_refused {
+        if self.pulse_refused
+            || self
+                .pulses_refused_after
+                .is_some_and(|after| answered >= after)
+        {
             return Err(ASCOMError::invalid_operation("not now"));
         }
         Ok(())

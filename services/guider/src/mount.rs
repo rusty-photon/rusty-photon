@@ -16,6 +16,7 @@ use tracing::debug;
 
 use crate::api::{ApiError, ErrorCode, Stop, StopReason};
 use crate::devices::{member, MemberError};
+use crate::guide_log::Pointing;
 
 /// How often `IsPulseGuiding` is read once a pulse's duration has passed.
 const PULSE_POLL: Duration = Duration::from_millis(25);
@@ -30,6 +31,9 @@ pub struct MountStart {
     /// `GuideRateRightAscension` and `GuideRateDeclination`; `None` for a
     /// mount that does not implement them.
     pub guide_rates: Option<GuideRates>,
+    /// `RightAscension`, `Altitude`, `Azimuth` and `SiderealTime`, for the
+    /// guide log only; `None` when any of them could not be read.
+    pub pointing: Option<Pointing>,
 }
 
 /// What the mount check reads.
@@ -97,8 +101,27 @@ fn verdict(readings: Readings, side: PierSide) -> Option<(StopReason, String)> {
     }
 }
 
+/// The pointing the guide log gives, read for it alone: a read that fails
+/// or that the mount does not implement leaves it unknown, and refuses
+/// nothing.
+async fn pointing(mount: &dyn Telescope) -> Option<Pointing> {
+    let (ra_hours, altitude_deg, azimuth_deg, sidereal_hours) = tokio::join!(
+        member(mount.right_ascension()),
+        member(mount.altitude()),
+        member(mount.azimuth()),
+        member(mount.sidereal_time()),
+    );
+    Some(Pointing {
+        ra_hours: ra_hours.ok()?,
+        altitude_deg: altitude_deg.ok()?,
+        azimuth_deg: azimuth_deg.ok()?,
+        sidereal_hours: sidereal_hours.ok()?,
+    })
+}
+
 /// Read the mount at a request that starts a run: the mount check,
-/// `CanPulseGuide`, the declination and the guide rates.
+/// `CanPulseGuide`, the declination and the guide rates, and the pointing
+/// for the guide log.
 ///
 /// # Errors
 ///
@@ -111,12 +134,13 @@ pub async fn ready(mount: &dyn Telescope) -> Result<MountStart, ApiError> {
             format!("the mount does not answer: {error}"),
         )
     };
-    let (readings, can_pulse_guide, declination_deg, ra_rate, dec_rate) = tokio::join!(
+    let (readings, can_pulse_guide, declination_deg, ra_rate, dec_rate, pointing) = tokio::join!(
         read(mount),
         member(mount.can_pulse_guide()),
         member(mount.declination()),
         member(mount.guide_rate_right_ascension()),
         member(mount.guide_rate_declination()),
+        pointing(mount),
     );
     let readings = readings.map_err(unreachable)?;
     if let Some((_, message)) = verdict(readings, readings.side) {
@@ -140,6 +164,7 @@ pub async fn ready(mount: &dyn Telescope) -> Result<MountStart, ApiError> {
         side: readings.side,
         declination_deg: declination_deg.map_err(unreachable)?,
         guide_rates,
+        pointing,
     };
     debug!(?start, "the mount is ready for a run");
     Ok(start)
@@ -386,8 +411,26 @@ mod tests {
                     ra_deg_per_s: 0.002,
                     dec_deg_per_s: 0.002
                 }),
+                pointing: Some(Pointing {
+                    ra_hours: 6.0,
+                    altitude_deg: 45.0,
+                    azimuth_deg: 180.0,
+                    sidereal_hours: 7.5,
+                }),
             }
         );
+        assert_eq!(start.pointing.unwrap().hour_angle(), 1.5);
+    }
+
+    #[tokio::test]
+    async fn a_mount_that_reports_no_pointing_is_ready_with_it_unknown() {
+        let start = ready(&FakeMount {
+            reports_pointing: false,
+            ..FakeMount::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(start.pointing, None);
     }
 
     #[tokio::test]

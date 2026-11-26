@@ -151,6 +151,7 @@ async fn background_answers_with_stop_reason(
 }
 
 #[given(regex = r#"^the guider's stats report the state "([a-z_]+)"$"#)]
+#[when(regex = r#"^the guider's stats report the state "([a-z_]+)"$"#)]
 #[then(regex = r#"^the guider's stats report the state "([a-z_]+)"$"#)]
 async fn stats_report_state(world: &mut GuiderWorld, state: String) {
     world

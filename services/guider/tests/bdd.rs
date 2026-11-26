@@ -54,6 +54,13 @@ mod world;
 #[path = "bdd/steps/mod.rs"]
 mod steps;
 
+#[path = "bdd/phd2_log.rs"]
+#[expect(
+    dead_code,
+    reason = "the parser reads every part of a log; each of its two users asserts on some"
+)]
+mod phd2_log;
+
 bdd_infra::bdd_main! {
     use cucumber::World as _;
     use world::GuiderWorld;
