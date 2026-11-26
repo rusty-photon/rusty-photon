@@ -3,7 +3,7 @@
 A [`redb`](https://crates.io/crates/redb)-backed store for the imaging
 **plan**: the operator's target list, the per-sub-spec acquisition
 quotas, and the per-target overrides for grading thresholds and
-scheduling constraints. Pure storage behind one mockable trait — no
+scheduling constraints. Pure storage behind one trait — no
 filesystem scanning, no ephemeris, no policy.
 
 This is a workspace library, not a service. The `rp` orchestrator
@@ -256,8 +256,7 @@ One async trait — the single seam between the plan store and `rp`.
 `redb` is a synchronous engine; the shipped impl does each operation's
 work on the Tokio blocking pool (`spawn_blocking`), exactly as
 `rp-fits`/`persistence::document` already wrap blocking sidecar I/O. The
-async surface keeps the consumer ergonomic inside `rp`'s async planner,
-and a mock impl needs no blocking pool at all.
+async surface keeps the consumer ergonomic inside `rp`'s async planner.
 
 ```text
 upsert_target(target)            -> Result<(), TargetStoreError>
@@ -706,8 +705,7 @@ as good rather than as not-good.
 **This crate:** the `Target` + `AcquisitionGoal` model, the
 `TargetSlug` newtype, the `TargetStore` trait, `RedbTargetStore`
 (two-table layout, transaction-per-op, ACID), the `schema_version`
-migration scaffold, and override storage for scheduling + grading. An
-in-memory test double for consumer tests.
+migration scaffold, and override storage for scheduling + grading.
 
 **rp-side:** target CRUD MCP tools (resolve via
 `rp-catalog` → derive slug → `upsert`), the round-trippable naming
@@ -789,8 +787,7 @@ crates/rp-targets/src/
 │                 #   come from rp-vocabulary)
 ├── error.rs      # TargetStoreError (thiserror)
 ├── redb_store.rs # RedbTargetStore: tables, transaction-per-op, spawn_blocking
-├── migrate.rs    # schema_version constant + ordered migration steps
-└── memory.rs     # InMemoryTargetStore test double (cfg(any(test, feature = "mock")))
+└── migrate.rs    # schema_version constant + ordered migration steps
 ```
 
 Crate-root attributes match the sibling crates:
@@ -807,12 +804,8 @@ Crate-root attributes match the sibling crates:
   database a newer build wrote. Tests use `.unwrap()` per
   [testing.md](../skills/testing.md), which the workspace `clippy.toml`
   allows in test scope.
-- **Test doubles:** `InMemoryTargetStore` (a `BTreeMap<String, Target>`
-  behind the same trait) is a working store for a test that wants one
-  without a temp database, and `MockTargetStore` (`mockall::automock`)
-  serves tests that want call-assertions. Both are behind
-  `cfg(any(test, feature = "mock"))`, which no consumer enables: `rp`'s
-  tests use `RedbTargetStore` over a temporary directory.
+- **No test double:** the crate's tests and `rp`'s use
+  `RedbTargetStore` over a temporary directory.
 - **BDD (rp-side):** target CRUD via MCP; progress derivation
   over a fixture `data_directory` (total from filenames, good/rejected
   from fixture sidecars + thresholds); naming-pattern validation
@@ -862,7 +855,7 @@ resolution and ephemeris evaluation happen in `rp`, which passes already
   verdict is computed from per-frame sidecar metrics + dynamic
   thresholds, so it is reversible and never baked into disk layout.
 - **Pure plan repository, not a progress/selection engine.** Keeps the
-  crate clock-free, filesystem-free, and mockable, consistent with the
+  crate clock-free and filesystem-free, consistent with the
   `rp-ephemeris` / `rp-catalog` / `rp-fits` split.
 - **Targets denormalize catalog coordinates.** Self-contained rows that
   also represent non-catalog targets (comets, custom framings, mosaic
