@@ -85,12 +85,19 @@ pub fn parse_side_of_pier(s: &str) -> Result<SideOfPier, String> {
 ///
 /// # Errors
 ///
-/// Returns the [`rp_vocabulary::CoordError`] message naming the
-/// out-of-range coordinate.
-pub fn validate_icrs(ra_hours: f64, dec_degrees: f64) -> Result<IcrsCoord, String> {
-    rp_vocabulary::IcrsCoord::try_new(ra_hours, dec_degrees)
+/// Returns a message naming the out-of-range coordinate by the `ra` or
+/// `dec` parameter every tool that calls this takes.
+pub fn validate_icrs(ra: f64, dec: f64) -> Result<IcrsCoord, String> {
+    rp_vocabulary::IcrsCoord::try_new(ra, dec)
         .map(IcrsCoord::from)
-        .map_err(|e| e.to_string())
+        .map_err(|e| match e {
+            rp_vocabulary::CoordError::RaOutOfRange { ra_hours } => {
+                format!("ra {ra_hours} is outside [0, 24)")
+            }
+            rp_vocabulary::CoordError::DecOutOfRange { dec_degrees } => {
+                format!("dec {dec_degrees} is outside [-90, 90]")
+            }
+        })
 }
 
 /// Common error: a tool that needs a configured site was called when
@@ -282,14 +289,14 @@ mod tests {
     }
 
     #[test]
-    fn icrs_validation_names_the_coordinate_as_the_plan_type_does() {
+    fn icrs_validation_names_the_coordinate_by_the_tool_parameter() {
         assert_eq!(
             validate_icrs(25.0, 0.0).unwrap_err(),
-            "ra_hours 25 is outside [0, 24)"
+            "ra 25 is outside [0, 24)"
         );
         assert_eq!(
             validate_icrs(0.0, -91.0).unwrap_err(),
-            "dec_degrees -91 is outside [-90, 90]"
+            "dec -91 is outside [-90, 90]"
         );
     }
 
