@@ -1,7 +1,3 @@
-// No step constructs `MountStubBehavior::NoTelescope` or reads the
-// `last_image_dimensions` and `last_error` fields.
-#![allow(dead_code)]
-
 use ascom_alpaca::api::{Camera, TypedDevice};
 use ascom_alpaca::Client as AlpacaClient;
 use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
@@ -52,9 +48,6 @@ pub enum MountStubBehavior {
     /// Serve `ErrorNumber=1024` ("driver-specific") on every read —
     /// drives F2.
     AscomError,
-    /// `/management/v1/configureddevices` returns an empty list, so
-    /// device resolution fails with `DeviceNotFound`. No step selects it.
-    NoTelescope,
 }
 
 #[derive(Debug)]
@@ -184,8 +177,6 @@ pub struct SkySurveyCameraWorld {
     pub last_http_status: Option<u16>,
     pub last_http_body: Option<String>,
     pub last_ascom_error: Option<u32>,
-    pub last_image_dimensions: Option<(u32, u32)>,
-    pub last_error: Option<String>,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
@@ -870,21 +861,14 @@ async fn handle_stub(
     }
 }
 
-async fn handle_configured_devices(
-    axum::extract::State(state): axum::extract::State<Arc<MountStubState>>,
-) -> axum::Json<Value> {
-    let behavior = state.behavior.read().expect("mount stub rwlock").clone();
-    let devices = match behavior {
-        MountStubBehavior::NoTelescope => Vec::new(),
-        _ => vec![serde_json::json!({
+async fn handle_configured_devices() -> axum::Json<Value> {
+    axum::Json(serde_json::json!({
+        "Value": [{
             "DeviceName": "Telescope 0",
             "DeviceType": "Telescope",
             "DeviceNumber": 0,
             "UniqueID": "test-mount-uid"
-        })],
-    };
-    axum::Json(serde_json::json!({
-        "Value": devices,
+        }],
         "ErrorNumber": 0,
         "ErrorMessage": ""
     }))
@@ -906,11 +890,6 @@ async fn handle_right_ascension(
             "ErrorNumber": 1024,
             "ErrorMessage": "simulated mount read failure"
         })),
-        MountStubBehavior::NoTelescope => axum::Json(serde_json::json!({
-            "Value": 0.0,
-            "ErrorNumber": 0,
-            "ErrorMessage": ""
-        })),
     }
 }
 
@@ -929,11 +908,6 @@ async fn handle_declination(
             "Value": 0.0,
             "ErrorNumber": 1024,
             "ErrorMessage": "simulated mount read failure"
-        })),
-        MountStubBehavior::NoTelescope => axum::Json(serde_json::json!({
-            "Value": 0.0,
-            "ErrorNumber": 0,
-            "ErrorMessage": ""
         })),
     }
 }
