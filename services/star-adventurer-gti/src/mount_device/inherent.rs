@@ -639,7 +639,6 @@ impl MountDevice {
             s.park_dec_ticks = dec_target;
             s.frame_anchored = anchored;
             s.preferred_ap_park = Some(cfg.preferred_ap_park);
-            s.unpark_from_ap_position = Some(cfg.unpark_from_ap_position);
             if lost {
                 s.at_park = false;
             }

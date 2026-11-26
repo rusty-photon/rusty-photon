@@ -1298,10 +1298,12 @@ any it is sent, answers whether it does, as a JSON string:
  "park_target_ticks": {"ra": -907200, "dec": 725760}}
 ```
 
-- `power_up_pose` is the `unpark_from_ap_position` name, as the connect
-  read it from the configuration file, and `power_up_ticks` its encoder
-  pair for the configured latitude and the handshake's counts per
-  revolution: `null` for `ap_park_0`, which asserts no pose.
+- `power_up_pose` is the `unpark_from_ap_position` name the
+  configuration file holds when the Action answers, which is the pose
+  the next power-up seeds, and `power_up_ticks` its encoder pair for the
+  configured latitude and the handshake's counts per revolution: `null`
+  for `ap_park_0`, which asserts no pose. A file that cannot be read
+  fails the Action.
 - `park_target_ticks` is the park target the driver holds when it
   answers: the one the connect resolved
   ([§Park-target resolution](#park-target-resolution)), or the one a
@@ -1312,8 +1314,9 @@ any it is sent, answers whether it does, as a JSON string:
   axes. A `SetPark` capture, raw `park_*_ticks`, or a `preferred_ap_park`
   other than the power-up pose makes it `false`.
 
-The Action moves nothing and writes nothing (tenet 3): it reads what
-the driver holds, and sends nothing to the mount. It answers
+The Action moves nothing and writes nothing (tenet 3): it reads the
+configuration file and what the driver holds, and sends nothing to the
+mount. It answers
 `NOT_CONNECTED` while the mount is not connected, because the park target
 is resolved on connect. `SupportedActions` lists it as
 `ParkMatchesPowerUpPose`, and its name is matched without regard to case,

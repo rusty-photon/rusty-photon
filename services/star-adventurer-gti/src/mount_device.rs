@@ -117,11 +117,6 @@ struct DriverState {
     /// re-arm the park target without re-reading the file. `None`
     /// before the first connect.
     preferred_ap_park: Option<ApPark>,
-    /// `unpark_from_ap_position` as resolved at connect (config-file
-    /// read): the pose the connect's seed used, which
-    /// `ParkMatchesPowerUpPose` compares the park target with. `None`
-    /// before the first connect.
-    unpark_from_ap_position: Option<ApPark>,
     /// Pier side the most recent slew was *issued for*. Read by the
     /// slew-completion watcher's pickup loop so it picks
     /// `target_encoder_normal` vs `target_encoder_flipped` for the
@@ -227,7 +222,6 @@ impl Default for DriverState {
             park_dec_ticks: None,
             frame_anchored: false,
             preferred_ap_park: None,
-            unpark_from_ap_position: None,
             target_pier_side: None,
             guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
@@ -298,11 +292,10 @@ impl DriverState {
     ///     the config and the frame's anchoring. Clearing here means a
     ///     mid-session edit to `MountConfig::park_*_ticks` would take
     ///     effect on reconnect.
-    ///   - `frame_anchored` / `preferred_ap_park` /
-    ///     `unpark_from_ap_position` — re-derived on the next connect. A
-    ///     sync-derived anchor deliberately does not survive disconnect: a
-    ///     new session cannot know what an earlier one measured (see the
-    ///     design doc's §Park lifecycle).
+    ///   - `frame_anchored` / `preferred_ap_park` — re-derived on the
+    ///     next connect. A sync-derived anchor deliberately does not
+    ///     survive disconnect: a new session cannot know what an
+    ///     earlier one measured (see the design doc's §Park lifecycle).
     ///   - `pulse_guiding` — disconnect cancels every pulse (the
     ///     disconnect path does this under `axis_ownership` first; the
     ///     reset repeats it so the state is whole on its own).
@@ -316,7 +309,6 @@ impl DriverState {
         self.park_dec_ticks = None;
         self.frame_anchored = false;
         self.preferred_ap_park = None;
-        self.unpark_from_ap_position = None;
         self.pulse_guiding = PulseGuiding::IDLE;
         self.guide_rate_ra_fraction = DEFAULT_GUIDE_RATE_FRACTION;
         self.guide_rate_dec_fraction = DEFAULT_GUIDE_RATE_FRACTION;

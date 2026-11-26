@@ -2,10 +2,13 @@
 //! parks at the pose its next power-up seeds, which is whether a power cut
 //! keeps the mount's pose.
 //!
-//! The answer is read from what the driver holds — the power-up pose and
-//! the park target the connect resolved, the site latitude and the
-//! handshake's counts per revolution — so the Action sends nothing to the
-//! mount and writes no file.
+//! The power-up pose is the one the configuration file holds when the
+//! Action answers, which is the pose the next power-up seeds: the
+//! power-up check after a long cut and every connect read it from the
+//! file. The rest of the answer is what the driver holds — the park
+//! target, the site latitude and the handshake's counts per revolution.
+//! The Action reads that file, sends nothing to the mount and writes no
+//! file.
 //!
 //! See the design doc's
 //! [§`ParkMatchesPowerUpPose`](../../../../docs/services/star-adventurer-gti.md#parkmatchespoweruppose).
@@ -79,8 +82,14 @@ impl ParkPoseAnswer {
 
 impl MountDevice {
     /// Answer `ParkMatchesPowerUpPose`. `NOT_CONNECTED` while the mount is
-    /// not connected, because the connect resolves the power-up pose and
-    /// the park target the answer reads.
+    /// not connected, because the connect resolves the park target the
+    /// answer reads.
+    ///
+    /// The power-up pose is the `unpark_from_ap_position` the
+    /// configuration file holds now, the pose the next power-up seeds,
+    /// so an edit of the file since the connect is in the answer. A file
+    /// that cannot be read fails the Action, as it fails the power-up
+    /// check.
     ///
     /// The park target is the one the driver holds now: the connect's, or
     /// the one a `SetPark` or an anchoring sync has put in its place since.
@@ -89,11 +98,11 @@ impl MountDevice {
     /// itself, which changes before the device state follows it.
     pub(super) async fn park_matches_power_up_pose(&self) -> ASCOMResult<String> {
         self.ensure_connected().await?;
-        let (connect_pose, park_ra, park_dec) = {
+        let power_up_pose = self.read_connect_config().await?.unpark_from_ap_position;
+        let (park_ra, park_dec) = {
             let s = self.state.read().await;
-            (s.unpark_from_ap_position, s.park_ra_ticks, s.park_dec_ticks)
+            (s.park_ra_ticks, s.park_dec_ticks)
         };
-        let power_up_pose = connect_pose.unwrap_or(self.config.unpark_from_ap_position);
         let power_up_ticks = self
             .ap_park_target_ticks(power_up_pose)
             .await

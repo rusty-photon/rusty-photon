@@ -3474,27 +3474,47 @@ async fn park_matches_power_up_pose_has_no_park_target_while_the_power_up_check_
     assert_eq!(answer["matches"], false, "{answer}");
 }
 
+/// Write a config file at `path` that powers up at `unpark`.
+fn write_unpark_config(path: &Path, unpark: ApPark) {
+    let mut file_cfg = base_config();
+    file_cfg.mount.unpark_from_ap_position = unpark;
+    std::fs::write(path, serde_json::to_string_pretty(&file_cfg).unwrap()).unwrap();
+}
+
 /// A config file that powers up at `ap_park_3`, beside a device whose
-/// in-memory config powers up at `ap_park_0`: what the Action reports can
-/// only have come from the file the connect read.
+/// in-memory config powers up at `ap_park_0`.
 fn ap_park_3_file_device(
     dir: &tempfile::TempDir,
 ) -> (MountDevice, Arc<tokio::sync::Mutex<MockMountState>>) {
     let path = dir.path().join("config.json");
-    let mut file_cfg = base_config();
-    file_cfg.mount.unpark_from_ap_position = ApPark::ApPark3;
-    std::fs::write(&path, serde_json::to_string_pretty(&file_cfg).unwrap()).unwrap();
+    write_unpark_config(&path, ApPark::ApPark3);
     device_with_path_and_mock(path)
 }
 
 #[tokio::test]
-async fn park_matches_power_up_pose_reports_the_power_up_pose_the_connect_read() {
+async fn park_matches_power_up_pose_reports_the_power_up_pose_the_file_holds_now() {
+    // The next power-up seeds the pose the file holds then, so an edit of
+    // the file while connected is in the answer: the park target armed at
+    // ap_park_3 no longer matches.
     let dir = tempfile::TempDir::new().unwrap();
     let (d, _mock) = ap_park_3_file_device(&dir);
     d.set_connected(true).await.unwrap();
+    assert_eq!(ask_park_matches(&d).await["matches"], true);
+    write_unpark_config(&dir.path().join("config.json"), ApPark::ApPark5);
     let answer = ask_park_matches(&d).await;
-    assert_eq!(answer["power_up_pose"], "ap_park_3", "{answer}");
-    assert_eq!(answer["matches"], true, "{answer}");
+    assert_eq!(answer["power_up_pose"], "ap_park_5", "{answer}");
+    assert_eq!(answer["matches"], false, "{answer}");
+}
+
+#[tokio::test]
+async fn park_matches_power_up_pose_fails_when_the_configuration_file_cannot_be_read() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (d, _mock) = ap_park_3_file_device(&dir);
+    d.set_connected(true).await.unwrap();
+    std::fs::remove_file(dir.path().join("config.json")).unwrap();
+    d.action("ParkMatchesPowerUpPose".to_string(), String::new())
+        .await
+        .unwrap_err();
 }
 
 #[tokio::test]
@@ -5697,7 +5717,6 @@ const fn driver_state_with_every_field_set() -> DriverState {
         park_dec_ticks: Some(-1_000),
         frame_anchored: true,
         preferred_ap_park: Some(ApPark::ApPark3),
-        unpark_from_ap_position: Some(ApPark::ApPark3),
         target_pier_side: Some(PierSide::East),
         guide_rate_ra_fraction: 0.25,
         guide_rate_dec_fraction: 0.75,
@@ -5726,12 +5745,11 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
     assert_eq!(s.target_dec_degrees, None);
     assert_eq!(s.park_ra_ticks, None);
     assert_eq!(s.park_dec_ticks, None);
-    // The frame anchor and the connect-resolved preferred park and
-    // power-up pose are re-derived on the next connect — a sync-derived
-    // anchor must not survive disconnect.
+    // The frame anchor and connect-resolved preferred park are
+    // re-derived on the next connect — a sync-derived anchor must not
+    // survive disconnect.
     assert!(!s.frame_anchored);
     assert_eq!(s.preferred_ap_park, None);
-    assert_eq!(s.unpark_from_ap_position, None);
     assert_eq!(s.pulse_guiding.ra, None);
     assert_eq!(s.pulse_guiding.dec, None);
     // Guide rates re-initialise to the default (half-sidereal).
@@ -5764,7 +5782,6 @@ fn a_reload_starts_from_at_park_and_the_settle_override_alone() {
     assert_eq!(s.park_dec_ticks, None);
     assert!(!s.frame_anchored);
     assert_eq!(s.preferred_ap_park, None);
-    assert_eq!(s.unpark_from_ap_position, None);
     assert_eq!(s.target_pier_side, None);
     assert!((s.guide_rate_ra_fraction - DEFAULT_GUIDE_RATE_FRACTION).abs() < 1e-9);
     assert!((s.guide_rate_dec_fraction - DEFAULT_GUIDE_RATE_FRACTION).abs() < 1e-9);
