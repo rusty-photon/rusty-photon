@@ -118,9 +118,9 @@ pub enum CenterOnTargetError {
          is meant to converge in 2–4 iterations)"
     )]
     MaxAttemptsExceedsCap { requested: usize, max: usize },
-    #[error("ra out of range: {0} (must be in [0.0, 24.0))")]
+    #[error("ra {0} is outside [0, 24)")]
     InvalidRa(f64),
-    #[error("dec out of range: {0} (must be in [-90.0, 90.0])")]
+    #[error("dec {0} is outside [-90, 90]")]
     InvalidDec(f64),
     #[error(
         "tolerance_not_reached: residual {last_residual_arcsec:.2}\" after \
@@ -173,12 +173,14 @@ pub const MAX_ATTEMPTS: usize = 50;
 /// [`CenterOnTargetError::MaxAttemptsExceedsCap`] if `max_attempts`
 /// exceeds [`MAX_ATTEMPTS`].
 pub fn validate_params(params: &CenterOnTargetParams) -> Result<(), CenterOnTargetError> {
-    if !(0.0..24.0).contains(&params.ra) {
-        return Err(CenterOnTargetError::InvalidRa(params.ra));
-    }
-    if !(-90.0..=90.0).contains(&params.dec) {
-        return Err(CenterOnTargetError::InvalidDec(params.dec));
-    }
+    rp_vocabulary::IcrsCoord::try_new(params.ra, params.dec).map_err(|e| match e {
+        rp_vocabulary::CoordError::RaOutOfRange { ra_hours } => {
+            CenterOnTargetError::InvalidRa(ra_hours)
+        }
+        rp_vocabulary::CoordError::DecOutOfRange { dec_degrees } => {
+            CenterOnTargetError::InvalidDec(dec_degrees)
+        }
+    })?;
     if params.tolerance_arcsec <= 0.0 {
         return Err(CenterOnTargetError::InvalidTolerance(
             params.tolerance_arcsec,

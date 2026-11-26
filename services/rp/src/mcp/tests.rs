@@ -5822,7 +5822,7 @@ async fn test_slew_ra_out_of_range() {
             &Cancel::never(),
         )
         .await;
-    assert_tool_error(result, "ra out of range");
+    assert_tool_error(result, "ra 25 is outside [0, 24)");
 }
 
 #[tokio::test]
@@ -5839,7 +5839,7 @@ async fn test_slew_dec_out_of_range() {
             &Cancel::never(),
         )
         .await;
-    assert_tool_error(result, "dec out of range");
+    assert_tool_error(result, "dec 91 is outside [-90, 90]");
 }
 
 /// Models the ASCOM `InvalidOperationException` that fires when
@@ -5980,7 +5980,7 @@ async fn test_sync_mount_ra_out_of_range() {
             dec: Some(0.0),
         }))
         .await;
-    assert_tool_error(result, "ra out of range");
+    assert_tool_error(result, "ra -1 is outside [0, 24)");
 }
 
 #[tokio::test]
@@ -6432,7 +6432,7 @@ async fn compute_alt_az_errors_on_out_of_range_inputs() {
             time: None,
         }))
         .await;
-    assert_tool_error(r, "ra_hours");
+    assert_tool_error(r, "ra 30 is outside [0, 24)");
 }
 
 #[tokio::test]
@@ -6570,7 +6570,7 @@ async fn compute_moon_separation_errors_on_bad_inputs() {
             time: None,
         }))
         .await;
-    assert_tool_error(r, "ra_hours");
+    assert_tool_error(r, "ra 100 is outside [0, 24)");
 }
 
 #[tokio::test]

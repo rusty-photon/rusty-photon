@@ -80,10 +80,10 @@ Feature: Mount tools
 
     Examples:
       | ra      | dec     | fragment                       |
-      | -1.0    | 0.0     | ra out of range                |
-      | 25.0    | 0.0     | ra out of range                |
-      | 0.0     | -91.0   | dec out of range               |
-      | 0.0     | 91.0    | dec out of range               |
+      | -1.0    | 0.0     | ra -1 is outside [0, 24)       |
+      | 25.0    | 0.0     | ra 25 is outside [0, 24)       |
+      | 0.0     | -91.0   | dec -91 is outside [-90, 90]   |
+      | 0.0     | 91.0    | dec 91 is outside [-90, 90]    |
       | MISSING | 0.0     | missing required parameter: ra |
       | 0.0     | MISSING | missing required parameter: dec|
 
@@ -115,9 +115,9 @@ Feature: Mount tools
     And the error message should contain "<fragment>"
 
     Examples:
-      | ra   | dec   | fragment         |
-      | -1.0 | 0.0   | ra out of range  |
-      | 0.0  | 91.0  | dec out of range |
+      | ra   | dec   | fragment                    |
+      | -1.0 | 0.0   | ra -1 is outside [0, 24)    |
+      | 0.0  | 91.0  | dec 91 is outside [-90, 90] |
 
   Scenario: get_mount_position returns the mount's current RA and Dec
     Given a running Alpaca simulator

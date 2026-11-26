@@ -96,26 +96,17 @@ impl McpHandler {
         progress: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        // Body validation in input order (ra → dec → settle_after) so
-        // the error message points at the first missing or out-of-range
-        // field. Same convention as `measure_basic`.
+        // Presence first (ra, then dec), then range through
+        // `validate_icrs` (ra, then dec), so the error message points at
+        // the first missing or out-of-range field.
         let Some(ra) = params.ra else {
             return Ok(tool_error!("missing required parameter: ra"));
         };
-        if !(0.0..24.0).contains(&ra) {
-            return Ok(tool_error!(
-                "ra out of range: {} (must be in [0.0, 24.0))",
-                ra
-            ));
-        }
         let Some(dec) = params.dec else {
             return Ok(tool_error!("missing required parameter: dec"));
         };
-        if !(-90.0..=90.0).contains(&dec) {
-            return Ok(tool_error!(
-                "dec out of range: {} (must be in [-90.0, 90.0])",
-                dec
-            ));
+        if let Err(e) = crate::planner::primitives::validate_icrs(ra, dec) {
+            return Ok(tool_error!("{}", e));
         }
 
         // Resolve `settle_after`: explicit per-call value wins; otherwise
@@ -152,20 +143,11 @@ impl McpHandler {
         let Some(ra) = params.ra else {
             return Ok(tool_error!("missing required parameter: ra"));
         };
-        if !(0.0..24.0).contains(&ra) {
-            return Ok(tool_error!(
-                "ra out of range: {} (must be in [0.0, 24.0))",
-                ra
-            ));
-        }
         let Some(dec) = params.dec else {
             return Ok(tool_error!("missing required parameter: dec"));
         };
-        if !(-90.0..=90.0).contains(&dec) {
-            return Ok(tool_error!(
-                "dec out of range: {} (must be in [-90.0, 90.0])",
-                dec
-            ));
+        if let Err(e) = crate::planner::primitives::validate_icrs(ra, dec) {
+            return Ok(tool_error!("{}", e));
         }
 
         match self.do_sync_mount(ra, dec).await {

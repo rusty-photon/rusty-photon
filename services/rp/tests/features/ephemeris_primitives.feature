@@ -82,7 +82,7 @@ Feature: Ephemeris primitive MCP tools
     And an MCP client connected to rp
     When the MCP client calls "compute_alt_az" with ra "25.0" dec "0.0"
     Then the tool call should fail
-    And the tool error message should mention "ra_hours must be in [0, 24)"
+    And the tool error message should mention "ra 25 is outside [0, 24)"
 
   Scenario: get_twilight rejects an unknown kind
     Given a running Alpaca simulator
