@@ -300,23 +300,6 @@ pub async fn reserved_test_port_async() -> u16 {
     port
 }
 
-/// The port in `slot`, reserving one with [`reserved_test_port_async`] the
-/// first time. For a scenario that must keep one port across rewrites of
-/// its config, so a reload or a restart rebinds the same port.
-///
-/// # Panics
-///
-/// [`reserved_test_port_async`]'s panic.
-pub async fn reserved_port_once(slot: &mut Option<u16>) -> u16 {
-    if let Some(port) = *slot {
-        debug!(port, "reusing the scenario's reserved port");
-        return port;
-    }
-    let port = reserved_test_port_async().await;
-    *slot = Some(port);
-    port
-}
-
 /// The probe behind [`reserved_test_port_async`], run on the blocking
 /// pool. It blocks, so nothing outside this crate may call it.
 #[must_use]
@@ -481,14 +464,6 @@ mod reserved_port_tests {
         assert_eq!(panic_text(literal.as_ref()), "a literal");
         assert_eq!(panic_text(formatted.as_ref()), "a formatted one");
         assert_eq!(panic_text(other.as_ref()), "a panic without a message");
-    }
-
-    #[tokio::test]
-    async fn a_reserved_port_is_kept_once_reserved() {
-        let mut slot = None;
-        let first = reserved_port_once(&mut slot).await;
-        assert_eq!(slot, Some(first));
-        assert_eq!(reserved_port_once(&mut slot).await, first);
     }
 
     #[tokio::test]
