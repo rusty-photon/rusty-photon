@@ -1203,7 +1203,7 @@ reading judges that verdict alone:
 | `hardware.serial-node` | The serial device does not exist, or the COM port is not among the host's | Every roster device on the service |
 | `hardware.sdk-devices` | The SDK enumerates zero devices | Every roster device on the service |
 | `usb-devices.resolve` | No working camera is enumerated on a listed entry's port | The roster camera at the entry's number |
-| `service.devices` | A placeholder holds a listed number | The roster device of the placeholder's type at its number |
+| `service.devices` | A placeholder holds a listed number, on a port where the host's USB scan shows no working device | The roster device of the placeholder's type at its number |
 
 Every other verdict of these checks keeps its own: a scan or listing that
 could not run, a device on the bus that is not working, a node that is
@@ -1211,22 +1211,27 @@ not a character device, an SDK enumeration that errors, and a listed port
 that holds another device, a look-alike or a model the driver does not
 know each say something a cut output does not explain.
 
-A placeholder stands in for a camera its driver could not place when it
-started, whatever the reason, and a camera that was off then is one: its
-driver serves the placeholder until the driver restarts. So a placeholder
-whose camera's output reads off is reported as powered off, and its
-detail says that dusk's `power_up`, which restarts the service once the
-output is on, places a camera that was only off
+A placeholder stands in for a camera, or a camera's wheel, that its
+driver could not place when it started, and a camera that was off then is
+one: its driver serves the placeholder until the driver restarts. So a
+placeholder whose device's output reads off is reported as powered off,
+and its detail says that dusk's `power_up`, which restarts the service
+once the output is on, places a camera (or wheel) that was only off
 ([session-runner.md § Night Schedule](session-runner.md#night-schedule)).
+A placeholder whose port the host's USB scan shows holding a working
+device is not judged: that device is on the bus, so the placeholder
+holds the port for a reason a cut output does not explain, and the
+driver's `doctor --devices` names it.
 
 ### Finding a device's outputs
 
 Doctor reads both halves of the lookup from `rp`'s config
 ([rp.md § The power map](rp.md#the-power-map)):
 
-- **The roster:** each device's `id`, `alpaca_url` and `device_number`,
-  under `equipment.<kind>[]`, and the mount's under `equipment.mount`,
-  whose id is `mount`. A device is on a service when its `alpaca_url`
+- **The roster:** each device's `id`, `alpaca_url` and `device_number`
+  (0 when the entry leaves it out, as `rp` reads it), under
+  `equipment.<kind>[]`, and the mount's under `equipment.mount`, whose id
+  is `mount`. A device is on a service when its `alpaca_url`
   joins that service by the client-target joins' rule (§Client-target
   joins, **Resolution**): a loopback host, or on an ACME install the
   service's own `<svc>.<domain>`, at the service's effective port. A

@@ -155,10 +155,10 @@ impl PowerMap {
                 let Some(url) = entry.get("alpaca_url").and_then(Value::as_str) else {
                     continue;
                 };
+                // rp reads an absent device_number as 0.
                 let device_number = entry
                     .get("device_number")
-                    .and_then(Value::as_u64)
-                    .and_then(|n| u32::try_from(n).ok());
+                    .map_or(Some(0), |n| n.as_u64().and_then(|n| u32::try_from(n).ok()));
                 if let Some(service) =
                     crate::checks::parse_target_url(url).and_then(|(_, host, port)| {
                         crate::checks::resolve_join_target(ctx, &host, port)
@@ -357,10 +357,15 @@ fn powered_off(map: &PowerMap, verdicts: &[(&RosterDevice, DeviceVerdict)], chec
     );
     if check.name == "service.devices" {
         if let Some(service) = &check.service {
+            let kind = check
+                .absent
+                .as_ref()
+                .and_then(|a| a.device_type.as_deref())
+                .map_or_else(|| "device".to_string(), crate::aggregate::device_kind);
             let _ = write!(
                 detail,
                 "; dusk's power_up, which restarts {service} once the output is on, places a \
-                 camera that was only off"
+                 {kind} that was only off"
             );
         }
     }
@@ -600,7 +605,7 @@ mod tests {
     /// A config-only context over `dir`, where qhy-camera and zwo-camera
     /// participate at their default ports and rp's roster puts main-cam
     /// and main-fw on qhy-camera, guide-cam and side-cam on zwo-camera,
-    /// and remote-cam on another host.
+    /// and remote-cam on another host. main-fw names no `device_number`.
     fn rig(dir: &Path) -> Context {
         std::fs::write(dir.join("qhy-camera.json"), "{}").unwrap();
         std::fs::write(dir.join("zwo-camera.json"), "{}").unwrap();
@@ -612,7 +617,7 @@ mod tests {
                 { "id": "remote-cam", "alpaca_url": "http://rig2.example:11121", "device_number": 0 }
             ],
             "filter_wheels": [
-                { "id": "main-fw", "alpaca_url": "http://localhost:11121", "device_number": 0 }
+                { "id": "main-fw", "alpaca_url": "http://localhost:11121" }
             ],
             "switches": [ {
                 "id": "ppba",
@@ -677,7 +682,8 @@ mod tests {
                 ("side-cam", "zwo-camera", Some("Camera"), Some(1)),
                 ("main-fw", "qhy-camera", Some("FilterWheel"), Some(0)),
             ],
-            "remote-cam is on another host, and ppba-driver has no config here"
+            "remote-cam is on another host, ppba-driver has no config here, and main-fw's \
+             absent device_number reads as rp reads it"
         );
         assert_eq!(map.boxes.len(), 1, "a power box need not join a service");
         assert_eq!(map.outputs.len(), 3);
@@ -832,7 +838,7 @@ mod tests {
         assert!(
             check.detail.ends_with(
                 "; dusk's power_up, which restarts qhy-camera once the output is on, places a \
-                 camera that was only off"
+                 filter wheel that was only off"
             ),
             "{}",
             check.detail

@@ -394,10 +394,7 @@ fn inventory_checks(
     )];
     for placeholder in placeholders {
         let port = placeholder_port(&placeholder.unique_id).unwrap_or_default();
-        let kind = match placeholder.device_type.as_str() {
-            "FilterWheel" => "filter wheel".to_string(),
-            other => other.to_lowercase(),
-        };
+        let kind = device_kind(&placeholder.device_type);
         let mut detail = format!(
             "{} #{} is a placeholder for {port}, not a {kind}: run `{command}` for the reason",
             placeholder.device_type, placeholder.number
@@ -415,19 +412,31 @@ fn inventory_checks(
                 device.product
             );
         }
-        checks.push(
-            Check::warn(
-                "service.devices",
-                Some(service.to_string()),
-                detail,
-                Some(format!(
-                    "run `{command}`; once the camera is fixed, restart {service}"
-                )),
-            )
-            .with_absent(Absent::device(&placeholder.device_type, placeholder.number)),
+        let check = Check::warn(
+            "service.devices",
+            Some(service.to_string()),
+            detail,
+            Some(format!(
+                "run `{command}`; once the camera is fixed, restart {service}"
+            )),
         );
+        // A working device on the port is on the bus, so the placeholder holds
+        // the port for a reason a cut output does not explain.
+        checks.push(if on_the_port.is_some() {
+            check
+        } else {
+            check.with_absent(Absent::device(&placeholder.device_type, placeholder.number))
+        });
     }
     checks
+}
+
+/// An ASCOM device type as a detail names it: `filter wheel`, `camera`.
+pub(crate) fn device_kind(device_type: &str) -> String {
+    match device_type {
+        "FilterWheel" => "filter wheel".to_string(),
+        other => other.to_lowercase(),
+    }
 }
 
 /// Ask an active Alpaca service for its configured devices, following the
@@ -1053,6 +1062,10 @@ mod tests {
             "{}",
             checks[1].detail
         );
+        assert_eq!(
+            checks[1].absent, None,
+            "a working device on the port is not missing, so its power is not read"
+        );
 
         let failed = HardwareFacts {
             usb_unavailable: Some("powershell.exe timed out".to_string()),
@@ -1063,6 +1076,11 @@ mod tests {
             !checks[1].detail.contains("USB scan shows"),
             "a failed scan names nothing on the port: {}",
             checks[1].detail
+        );
+        assert_eq!(
+            checks[1].absent,
+            Some(Absent::device("Camera", 0)),
+            "a failed scan cannot show the port holds a device"
         );
     }
 
