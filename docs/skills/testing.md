@@ -859,6 +859,19 @@ other listeners as if nothing happened, otherwise sails through readiness and
 fails in the middle of a scenario, long past the point where picking another
 port was still possible.
 
+**A service a scenario stops and brings back.** A client that keeps one
+address across the restart (sentinel polling filemonitor, rp reconnecting
+to a device service) needs that port held through the gap, never released
+and rebound: concurrent test binaries take a port freed between a stop and
+a restart often enough to fail a scenario on a healthy tree, and the
+restarted service then fails its bind. So the test owns the socket the
+client dials, for the whole scenario. An in-process stub serves on it and,
+while stopped, accepts each connection and drops it unanswered
+(`rp_harness/held_port.rs`). A service process binds port 0 on every start
+behind a relay the test holds, which forwards each connection to the
+service's current port and drops each one while the service is stopped
+(sentinel's `FilemonitorRelay`).
+
 #### 5.2 Entry Point Structure
 
 Each service's BDD tests follow this structure:
@@ -1255,13 +1268,12 @@ health wait runs out with its service up and connected: in the measured
 run, 48 of 58 scenarios failed on a service that had done nothing wrong.
 
 So synchronous work a scenario does goes through `off_loop`: steps take a
-port from **`bdd_infra::reserved_test_port_async`** (or keep one with
-`reserved_port_once`), `ServiceHandle`'s async starts find their binary
-and spawn their process there (the lookup stats files and reads
-`Cargo.toml`, and process creation is a synchronous call a loaded host
-makes slow), a binary run to its exit goes through `run_once_async`, and
-doctor's Pebble harness mints its certificates and spawns its pair there
-for every `@pebble` scenario.
+port from **`bdd_infra::reserved_test_port_async`**, `ServiceHandle`'s
+async starts find their binary and spawn their process there (the lookup
+stats files and reads `Cargo.toml`, and process creation is a synchronous
+call a loaded host makes slow), a binary run to its exit goes through
+`run_once_async`, and doctor's Pebble harness mints its certificates and
+spawns its pair there for every `@pebble` scenario.
 
 Off the loop, spawns run in parallel on pool threads, where the loop
 would run them one at a time, so every process creation in a test process
