@@ -517,6 +517,10 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
   credential pair, generated once per test process on the blocking pool. Steps
   call this, never `PkiFixture::generate` directly; see
   [§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop).
+- `restart_relay::RestartRelay` — a loopback port the test holds for a
+  whole scenario, in front of a service process it stops and starts again:
+  `forward_to(port)` after each start, `refuse()` before each stop. See
+  "A service a scenario stops and brings back" below.
 - `scratch::new_dir(prefix)` — a fresh scratch directory named
   `<prefix><random>`, deleted with its contents when the returned `TempDir`
   guard drops. Created under Bazel's per-action `TEST_TMPDIR` when that is set
@@ -868,9 +872,12 @@ restarted service then fails its bind. So the test owns the socket the
 client dials, for the whole scenario. An in-process stub serves on it and,
 while stopped, accepts each connection and drops it unanswered
 (`rp_harness/held_port.rs`). A service process binds port 0 on every start
-behind a relay the test holds, which forwards each connection to the
-service's current port and drops each one while the service is stopped
-(sentinel's `FilemonitorRelay`).
+behind a `bdd_infra::restart_relay::RestartRelay` the test holds, which
+forwards each connection to the service's current port and drops each one
+while the service is stopped: sentinel's filemonitor and session-runner's
+rp run behind one. The relay's port exists before the service starts, so
+it also serves a client that has to be configured first, with no band
+port: session-runner's focus-model provider names rp's relay.
 
 #### 5.2 Entry Point Structure
 

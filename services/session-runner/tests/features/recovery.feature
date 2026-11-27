@@ -12,8 +12,8 @@ Feature: Resume (the re-entrancy contract)
   The safety scenario exercises rp's own machinery end-to-end: an
   unsafe SafetyMonitor reading makes rp cancel the in-flight call and
   refuse the run's gated calls, and the run waits on rp's safety
-  status. The rp-outage scenario restarts rp on the port the run was
-  configured for, as a real restart would. The fixture document
+  status. The rp-outage scenario brings rp back at the address the run
+  was configured for, as a real restart would. The fixture document
   (recovery_capture_loop, tests/fixtures/workflows/) plans 4 frames of
   2s each; its progress counter lives in session.frames.
 

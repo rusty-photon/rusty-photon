@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use bdd_infra::restart_relay::RestartRelay;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
@@ -24,7 +25,7 @@ pub struct SentinelWorld {
     pub fm_rules: Vec<serde_json::Value>,
     pub fm_polling_interval: u64,
     /// The port sentinel dials for filemonitor, held across a restart.
-    pub fm_relay: Option<FilemonitorRelay>,
+    pub fm_relay: Option<RestartRelay>,
 
     // Sentinel config accumulation
     pub sentinel_monitor_name: String,
@@ -232,10 +233,10 @@ impl SentinelWorld {
     }
 
     /// Start filemonitor binary with the accumulated config, behind the
-    /// scenario's [`FilemonitorRelay`] (started on the first call).
+    /// scenario's [`RestartRelay`] (started on the first call).
     pub async fn start_filemonitor(&mut self) {
         if self.fm_relay.is_none() {
-            self.fm_relay = Some(FilemonitorRelay::start().await);
+            self.fm_relay = Some(RestartRelay::start().await);
         }
         let config_json = self.build_filemonitor_config();
         let dir = self
@@ -247,13 +248,13 @@ impl SentinelWorld {
 
         let handle = ServiceHandle::start("filemonitor", config_path.to_str().unwrap()).await;
 
-        self.fm_relay().forward_to(Some(handle.port()));
+        self.fm_relay().forward_to(handle.port());
         self.filemonitor = Some(handle);
     }
 
     /// The relay in front of the filemonitor [`Self::start_filemonitor`]
     /// started.
-    const fn fm_relay(&self) -> &FilemonitorRelay {
+    const fn fm_relay(&self) -> &RestartRelay {
         self.fm_relay.as_ref().expect("filemonitor not started")
     }
 
@@ -261,9 +262,7 @@ impl SentinelWorld {
     /// back behind the same relay port, with its device disconnected, as a
     /// restarted service is.
     pub async fn stop_filemonitor(&mut self) {
-        // Connections sentinel opens from here on drop unanswered, so none
-        // reaches the port filemonitor frees, which another process may take.
-        self.fm_relay().forward_to(None);
+        self.fm_relay().refuse();
         self.filemonitor
             .take()
             .expect("filemonitor not started")
@@ -992,79 +991,5 @@ impl RpEventStub {
 impl Drop for RpEventStub {
     fn drop(&mut self) {
         self.cancel.cancel();
-    }
-}
-
-/// The port sentinel dials for filemonitor, bound by the test once per
-/// scenario and never released. Each connection is forwarded to the
-/// running filemonitor's own port; while filemonitor is stopped, each is
-/// accepted and dropped unanswered, which sentinel sees as a service that
-/// is down. filemonitor binds port 0 on every start, so a restart never
-/// rebinds a port it released: concurrent test binaries take a port freed
-/// between a stop and a restart often enough to fail a scenario.
-#[derive(Debug)]
-pub struct FilemonitorRelay {
-    port: u16,
-    /// filemonitor's own port, `None` while it is stopped.
-    upstream: std::sync::Arc<std::sync::Mutex<Option<u16>>>,
-    handle: tokio::task::JoinHandle<()>,
-}
-
-impl FilemonitorRelay {
-    pub async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind filemonitor relay");
-        let port = listener
-            .local_addr()
-            .expect("filemonitor relay has no addr")
-            .port();
-        let upstream = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let target = std::sync::Arc::clone(&upstream);
-        let handle = tokio::spawn(async move {
-            // Aborting the relay drops the set, which ends every forwarded
-            // connection.
-            let mut connections = tokio::task::JoinSet::new();
-            loop {
-                let Ok((mut inbound, _)) = listener.accept().await else {
-                    // A persistent accept error (descriptor exhaustion)
-                    // must not become a busy loop.
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    continue;
-                };
-                let Some(port) = *target.lock().expect("relay upstream lock") else {
-                    // filemonitor is stopped: the connection drops unanswered.
-                    continue;
-                };
-                connections.spawn(async move {
-                    if let Ok(mut outbound) =
-                        tokio::net::TcpStream::connect(("127.0.0.1", port)).await
-                    {
-                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
-                    }
-                });
-            }
-        });
-        Self {
-            port,
-            upstream,
-            handle,
-        }
-    }
-
-    pub const fn port(&self) -> u16 {
-        self.port
-    }
-
-    /// Forward each connection to filemonitor's `port` from now on, or,
-    /// with `None`, drop each one unanswered.
-    pub fn forward_to(&self, port: Option<u16>) {
-        *self.upstream.lock().expect("relay upstream lock") = port;
-    }
-}
-
-impl Drop for FilemonitorRelay {
-    fn drop(&mut self) {
-        self.handle.abort();
     }
 }
