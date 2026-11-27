@@ -746,11 +746,17 @@ hardware. Decision 10 dropped the session on 2026-11-14.
 ### Owed
 
 - rig2's other devices.
-- A first configured night of `session-runner`'s night schedule on pier1
-  or rig2: dusk's power-up and camera check, the covers, the cooldown and
-  the runs, then dawn's warm-up, park, covers and cuts, and the after-dawn
-  checks. A doctor run the next day reads the devices dawn cut as powered
-  off.
+- A first configured night of `session-runner`'s night schedule on each
+  rig: dusk's power-up and camera check, the covers, the cooldown and the
+  runs, then dawn's warm-up, park, covers and cuts, and the after-dawn
+  checks, with a doctor run the next day reading the devices dawn cut as
+  powered off. Only rig2 cuts a camera, so only its night shows a cooled
+  camera cut after dawn's wait for its cooler, and dusk's camera check,
+  with its wedge retry, on a camera that was cut. It comes after rig2's
+  survey above: until then its dawn would cut devices nobody has taken
+  across a cut. pier1's night cuts its mount, its flat panel and its
+  rotator's motor, and shows the mount's park kept across the cut
+  (`star-adventurer-gti`'s `ParkMatchesPowerUpPose`).
 - An output that may feed the host or the power box's own serial bridge is
   not cut remotely at all: on pier1 the PPBA is reachable only through
   `ppba-driver` on the Pi, so once either is down no host can switch the
