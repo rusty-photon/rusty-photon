@@ -64,7 +64,8 @@ node_test(
 )
 
 # bazel-stall-probe: bazel.yml's macOS `bazel build`, watched for the
-# remote-cache wedge's silence. The tests start a fake in Bazel's place.
+# macOS wedge's silence. The tests start a fake in Bazel's place and in
+# tcpdump's.
 node_test(
     name = "bazel_stall_probe_test",
     size = "small",

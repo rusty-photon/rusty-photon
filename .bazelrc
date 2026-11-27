@@ -288,10 +288,8 @@ build:ci --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings
 # (in-memory analysis cache + output-base action cache) already spans every
 # step, so a disk cache contributes zero hits. It isn't free either: combined
 # with the HTTP cache it routes every remote hit through the combined-cache
-# write path, a suspect in the macOS bazel-build stall where every in-flight
-# cache download freezes at once with no output (the macOS wedge below). The
-# empty value disables the global --disk_cache above for every --config=ci
-# invocation (bazel.yml, bazel-coverage.yml).
+# write path. The empty value disables the global --disk_cache above for
+# every --config=ci invocation (bazel.yml, bazel-coverage.yml).
 build:ci --disk_cache=
 
 # A stale MODULE.bazel.lock is an error in CI, not a silent re-resolve.
@@ -342,14 +340,11 @@ common:ci --lockfile_mode=error
 # `minimal`.
 build:windows --remote_download_outputs=all
 
-# macOS: never bulk-download remote-cache-hit outputs. The recurring macOS
-# remote-cache wedge lives exclusively in the bulk-download tail: with
+# macOS: never bulk-download remote-cache-hit outputs. With
 # `bazel build //...` every target is top-level, so `toplevel` above
-# degenerates to `all` and the build ends by downloading the full output set —
-# and every recorded hang froze inside that phase, silent past every timeout
-# flag (a capped netty channel pool's acquire() has no timeout, and the cache
-# client's two event-loop threads write downloaded bytes to disk, so one
-# stalled write also freezes the idle-timeout timers). `minimal` deletes the
+# degenerates to `all` and the build ends by downloading the full output set.
+# The macOS wedge (below) starts during the build's largest downloads, so
+# the macOS build downloads no more than it must. `minimal` deletes that
 # phase: cache-hit outputs stay in the CAS, and the test steps materialize on
 # demand only the inputs of suites that actually execute. Cache uploads on
 # trusted runs are unaffected (the upload path is independent of the download
@@ -580,10 +575,18 @@ build:remote-cache-base --keep_going
 # every option read from a file.
 try-import %workspace%/ci-remote.bazelrc
 
-# macOS runners intermittently wedge inside Bazel's HTTP remote-cache client:
-# the step goes totally silent mid-build and dies at its timeout, leaving an
-# orphan java + bazel for the runner to reap, while the same commit builds
-# normally on Linux and Windows.
+# macOS runners intermittently wedge: the step goes totally silent mid-build
+# and dies at its timeout, leaving an orphan java + bazel for the runner to
+# reap, while the same commit builds normally on Linux and Windows. Its
+# captures put it between the Bazel client and its server, not in the cache
+# client: the server finishes the build, closes its cache client and goes
+# idle, while the client waits on their loopback connection, whose server end
+# is gone; the client learns so only when it next sends, from a reset. The
+# silence starts during the build's largest cache downloads. The captures are
+# in https://github.com/rusty-photon/rusty-photon/issues/765.
+#
+# The two settings below guard the cache client against hangs of its own.
+# Neither prevents the wedge.
 #
 # 0 = uncapped, and that is the point. Any positive value makes the cache
 # client build its channel pool as a netty `FixedChannelPool` via the 3-arg
@@ -608,30 +611,28 @@ build:macos --remote_max_connections=0
 
 # `--jobs` on macOS: cap how many actions — and so how many concurrent
 # remote-cache operations — may be outstanding at once. `build:ci --jobs=64`
-# above deliberately decouples network-bound cache traffic from the CPU pool,
-# which is the right trade wherever the cache client can keep up. It cannot
-# here. Bazel's HTTP cache client runs on exactly two netty event-loop threads
-# (hardcoded, and unaffected by --remote_max_connections above), and it writes
-# each downloaded blob into its output file with a blocking write *on* those
-# threads. The read-idle bound --remote_timeout installs is an ALL_IDLE
-# handler scheduled on the same loop, so a thread that stalls inside one of
-# those writes takes down every other transfer sharing it — and its own
-# timeout with it. That is precisely what a wedged macOS leg looks like: dozens
-# of actions outstanding, none running, and silence far past every timeout
-# this file sets. Feeding 64 concurrent transfers through two threads maximises
-# the exposure; HOST_CPUS*2 (6 on the 3-core hosted runners) cuts it by an
-# order of magnitude. Local compilation is unaffected either way — the CPU
-# resource pool already holds that to the real core count, below 6. Platform
-# config appends after build:ci, so this outranks the 64 above exactly like
-# the download-mode override does.
+# above deliberately decouples network-bound cache traffic from the CPU pool.
+# On macOS the cap stays low. Bazel's HTTP cache client runs on exactly two
+# netty event-loop threads (hardcoded, and unaffected by
+# --remote_max_connections above), and it writes each downloaded blob into its
+# output file with a blocking write *on* those threads. The read-idle bound
+# --remote_timeout installs is an ALL_IDLE handler scheduled on the same loop,
+# so a thread that stalled inside one of those writes would take down every
+# other transfer sharing it — and its own timeout with it. Feeding 64
+# concurrent transfers through two threads maximises that exposure;
+# HOST_CPUS*2 (6 on the 3-core hosted runners) cuts it by an order of
+# magnitude. Local compilation is unaffected either way — the CPU resource
+# pool already holds that to the real core count, below 6. Platform config
+# appends after build:ci, so this outranks the 64 above exactly like the
+# download-mode override does.
 #
 # If the build phase becomes too slow, raise the multiplier rather than
-# reverting to 64. The wedge survives this ceiling too, so the concurrency axis
-# is exhausted and a smaller number is not the next move. bazel.yml's macOS
-# build runs under the bazel-stall-probe action instead, which dumps the
-# server's threads and logs, its connections to the cache and to the Bazel
-# client, the client's stacks and the kernel's network buffers when the
-# build goes silent.
+# reverting to 64. A smaller number is no remedy for the wedge, which happens
+# under this cap too. bazel.yml's macOS build runs under the bazel-stall-probe
+# action, which dumps the server's threads and logs, its connections to the
+# cache and to the Bazel client, each change to the latter and the packets
+# that crossed it since before the build, the client's stacks and the
+# kernel's network buffers when the build goes silent.
 build:macos --jobs=HOST_CPUS*2
 
 # --- Conformu config -------------------------------------------------------

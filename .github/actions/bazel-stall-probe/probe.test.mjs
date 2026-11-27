@@ -6,7 +6,25 @@ import { afterEach, test } from 'node:test';
 
 import { io } from '../lib/helpers.mjs';
 import { capture } from '../lib/testing.mjs';
-import { callGraph, commandPort, connections, diagnose, ENOBUFS, JVM_OUT_LINES, jvmOutSince, LOG_LINES, MAX_DUMPS, redact, watch } from './probe.mjs';
+import {
+  callGraph,
+  commandPort,
+  connections,
+  diagnose,
+  endpoints,
+  ENOBUFS,
+  JVM_OUT_LINES,
+  jvmOutSince,
+  LAST_PACKETS,
+  LOG_LINES,
+  MAX_DUMPS,
+  packets,
+  redact,
+  trace,
+  TRACE_LISTINGS,
+  TRACE_MS,
+  watch,
+} from './probe.mjs';
 
 function tempDir() {
   const base = process.env.TEST_TMPDIR ?? path.join(process.cwd(), '.tmp');
@@ -449,6 +467,212 @@ test('diagnose prints all of jvm.out at its first dump and only what the file ga
   // A new server's shorter jvm.out is printed from its start.
   writeFileSync(jvmOut, 'new server\n');
   assert.match((await dump())['server/jvm.out'], /^new server\n/);
+});
+
+// A stand-in for what `trace` returns, without netstat or tcpdump behind it.
+function traced({ kept = [], dropped = 0, failure = null } = {}) {
+  return { port: 9000, file: '/runner/temp/bazel-stall-probe.pcap', listings: () => ({ kept, dropped }), failure: () => failure };
+}
+
+const PACKETS = [
+  '2026-11-27 05:16:23.500000 IP6 ::1.9001 > ::1.9000: Flags [S], seq 1, win 65535, length 0',
+  '2026-11-27 05:16:23.500100 IP6 ::1.9000 > ::1.9001: Flags [S.], seq 7, ack 2, win 65535, length 0',
+  '2026-11-27 05:18:28.100000 IP6 ::1.9000 > ::1.9001: Flags [P.], seq 8:120, ack 2, win 6371, length 112',
+  '',
+].join('\n');
+
+test('diagnose prints each change the trace kept, with its time, and the packets tcpdump has written', async () => {
+  const f = fakes({ answers: { ...ANSWERS, tcpdump: PACKETS } });
+  const kept = [
+    { at: Date.UTC(2026, 10, 27, 5, 16, 23, 400), listing: 'listener only' },
+    { at: Date.UTC(2026, 10, 27, 5, 18, 29, 500), listing: 'client end only' },
+  ];
+  const { stdout } = await capture(() => diagnose({ silentForMs: SILENCE, enobufs: null, outputBase: null, trace: traced({ kept, dropped: 2 }), platform: 'darwin', ...f }));
+  const dump = sections(stdout);
+  assert.equal(
+    dump[`each change to the TCP connections on port 9000 since before the build (listed every ${TRACE_MS / 1000} s)`],
+    '(2 earlier changes left out)\n2026-11-27T05:16:23.400Z\nlistener only\n2026-11-27T05:18:29.500Z\nclient end only',
+  );
+  assert.equal(dump['packets on lo0 to or from port 9000 (tcpdump)'], packets(PACKETS));
+  assert.deepEqual(
+    f.runs.filter(([program]) => program === 'tcpdump'),
+    [['tcpdump', '-n', '-tttt', '-r', '/runner/temp/bazel-stall-probe.pcap']],
+  );
+});
+
+test('diagnose prints how tcpdump ended instead of reading its file, and nothing of a trace there is not', async () => {
+  const ended = fakes();
+  const { stdout } = await capture(() =>
+    diagnose({ silentForMs: SILENCE, enobufs: null, outputBase: null, trace: traced({ failure: 'tcpdump exited with 1: sudo: a password is required' }), platform: 'darwin', ...ended }),
+  );
+  assert.equal(sections(stdout)['packets on lo0 to or from port 9000 (tcpdump)'], '(tcpdump exited with 1: sudo: a password is required)');
+  assert.deepEqual(
+    ended.runs.filter(([program]) => program === 'tcpdump'),
+    [],
+  );
+  const none = fakes();
+  const without = await capture(() => diagnose({ silentForMs: SILENCE, enobufs: null, outputBase: null, platform: 'linux', ...none }));
+  assert.doesNotMatch(without.stdout, /each change to|tcpdump/);
+});
+
+// --- trace ----------------------------------------------------------------------------
+
+const HEADER = 'Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)';
+const LISTENER = 'tcp6       0      0  ::1.9000               *.*                    LISTEN';
+const serverEnd = (queue) => `tcp6  ${queue}      0  ::1.9000               ::1.9001               ESTABLISHED`;
+const clientEnd = (queue) => `tcp6       0 ${queue}  ::1.9001               ::1.9000               ESTABLISHED`;
+const netstat = (...lines) => ['Active Internet connections', HEADER, ...lines, 'tcp4       0      0  10.0.0.1.50000         1.2.3.4.443            ESTABLISHED'].join('\n');
+
+// Starts `trace` on an output base whose server listens on [::1]:9000, with
+// `node -e FAKE`, the fake Bazel's program, in tcpdump's place, netstat
+// answering from `listings` in turn (the listener alone once they run out),
+// and a clock the test moves and a listing it runs. Records every program
+// run; the stop's `sudo kill` sends the fake SIGTERM. The stop lets go of the
+// fake, so no test waits for it to exit after one.
+async function tracing({ listings = [], sayOnStart = null } = {}) {
+  const runs = [];
+  const spawns = [];
+  let child;
+  let ready;
+  const isReady = new Promise((resolve) => {
+    ready = resolve;
+  });
+  const fakeSpawn = (program, args, opts) => {
+    spawns.push({ program, args, opts });
+    child = spawn(process.execPath, ['-e', FAKE], { ...opts, stdio: [...opts.stdio, 'ipc'] });
+    LIVE.add(child);
+    child.on('close', () => LIVE.delete(child));
+    child.on('message', () => ready());
+    return child;
+  };
+  const queue = [...listings];
+  const clock = { t: 0, list: null, period: null, cancelled: false };
+  const run = async (program, args) => {
+    runs.push([program, ...args]);
+    if (program === 'sudo') {
+      process.kill(Number(args.at(-1)), 'SIGTERM');
+      return '';
+    }
+    const answer = queue.length > 0 ? queue.shift() : netstat(LISTENER);
+    if (answer instanceof Error) throw answer;
+    return answer;
+  };
+  const started = trace({
+    outputBase: outputBase({ port: '[::1]:9000' }),
+    file: '/runner/temp/bazel-stall-probe.pcap',
+    platform: 'darwin',
+    run,
+    spawn: fakeSpawn,
+    now: () => clock.t,
+    repeat: (ms, fn) => {
+      clock.list = fn;
+      clock.period = ms;
+      return () => {
+        clock.cancelled = true;
+      };
+    },
+  });
+  await isReady;
+  const exited = new Promise((resolve) => child.on('close', resolve));
+  if (sayOnStart) child.send(sayOnStart);
+  // Moves the clock on by TRACE_MS and runs one listing to its end.
+  const tick = async () => {
+    clock.t += TRACE_MS;
+    await clock.list();
+  };
+  return { traced: started, runs, spawns, clock, tick, exited, pid: child.pid };
+}
+
+// Bounded so that a stop that never reaches the fake tcpdump fails by this test's name.
+test('trace keeps each listing whose connections or states change, with its time, not one whose queues alone move, and stops tcpdump through sudo', { timeout: 30_000 }, async () => {
+  const listings = [
+    netstat(LISTENER),
+    netstat(serverEnd(0), clientEnd(0), LISTENER),
+    netstat(serverEnd(130000), clientEnd(52), LISTENER),
+    netstat(clientEnd(0), LISTENER),
+  ];
+  // The first listing runs as the trace starts, at 0 ms.
+  const t = await tracing({ listings });
+  assert.equal(t.clock.period, TRACE_MS);
+  assert.equal(t.traced.port, 9000);
+  assert.equal(t.traced.file, '/runner/temp/bazel-stall-probe.pcap');
+  assert.deepEqual(
+    t.spawns.map(({ program, args }) => [program, ...args]),
+    [['sudo', '-n', 'tcpdump', '-i', 'lo0', '--immediate-mode', '-U', '-s', '128', '-w', '/runner/temp/bazel-stall-probe.pcap', 'tcp', 'port', '9000']],
+  );
+  assert.equal(t.spawns[0].opts.stdio[0], 'ignore');
+  assert.equal(t.spawns[0].opts.shell, undefined);
+  await t.tick();
+  await t.tick();
+  await t.tick();
+  assert.deepEqual(t.traced.listings(), {
+    kept: [
+      { at: 0, listing: connections(listings[0], 9000) },
+      { at: TRACE_MS, listing: connections(listings[1], 9000) },
+      { at: 3 * TRACE_MS, listing: connections(listings[3], 9000) },
+    ],
+    dropped: 0,
+  });
+  assert.equal(t.traced.failure(), null);
+  await t.traced.stop();
+  assert.deepEqual(t.runs.at(-1), ['sudo', '-n', 'kill', '-TERM', String(t.pid)]);
+  assert.equal(t.clock.cancelled, true);
+});
+
+test('trace keeps the latest listings, counts those it dropped, and keeps a netstat that fails once', { timeout: 30_000 }, async () => {
+  const changing = Array.from({ length: TRACE_LISTINGS + 5 }, (_, i) => netstat(i % 2 ? clientEnd(0) : LISTENER));
+  const failed = new Error('netstat exited with 1');
+  const t = await tracing({ listings: [...changing, failed, failed] });
+  for (let i = 0; i < TRACE_LISTINGS + 6; i += 1) await t.tick();
+  const { kept, dropped } = t.traced.listings();
+  assert.equal(kept.length, TRACE_LISTINGS);
+  assert.equal(dropped, 6);
+  assert.deepEqual(kept.at(-1), { at: (TRACE_LISTINGS + 5) * TRACE_MS, listing: '(netstat exited with 1)' });
+  assert.equal(kept.at(-2).at, (TRACE_LISTINGS + 4) * TRACE_MS);
+  assert.equal(kept[0].at, 6 * TRACE_MS);
+  await t.traced.stop();
+});
+
+test('trace says how tcpdump ended when it ends early, and sends it no stop then', { timeout: 30_000 }, async () => {
+  const t = await tracing({ sayOnStart: { err: 'tcpdump: listening on lo0\nsudo: a password is required\n', exit: 1 } });
+  await t.exited;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(t.traced.failure(), 'tcpdump exited with 1: sudo: a password is required');
+  await t.traced.stop();
+  assert.deepEqual(
+    t.runs.filter(([program]) => program === 'sudo'),
+    [],
+  );
+});
+
+test('trace watches nothing off macOS, without an output base, or before the server has written its port', () => {
+  const never = () => {
+    throw new Error('nothing may run');
+  };
+  const options = { file: '/runner/temp/bazel-stall-probe.pcap', run: never, spawn: never, repeat: never };
+  assert.equal(trace({ ...options, outputBase: outputBase(), platform: 'linux' }), null);
+  assert.equal(trace({ ...options, outputBase: null, platform: 'darwin' }), null);
+  assert.equal(trace({ ...options, outputBase: outputBase({ port: null }), platform: 'darwin' }), null);
+});
+
+test('endpoints drops the column header and the queues, and keeps the rest of each line', () => {
+  const listing = [HEADER, serverEnd(130000), clientEnd(52), LISTENER, '(2 in TIME_WAIT left out)'].join('\n');
+  assert.equal(
+    endpoints(listing),
+    ['tcp6 ::1.9000 ::1.9001 ESTABLISHED', 'tcp6 ::1.9001 ::1.9000 ESTABLISHED', 'tcp6 ::1.9000 *.* LISTEN', '(2 in TIME_WAIT left out)'].join('\n'),
+  );
+  assert.equal(endpoints('(netstat exited with 1)'), '(netstat exited with 1)');
+});
+
+test('packets keeps every SYN, FIN and reset and the last packets, in order, under the count', () => {
+  const packet = (i, flags) => `2026-11-27 05:18:00.${String(i).padStart(6, '0')} IP6 ::1.9000 > ::1.9001: Flags [${flags}], seq ${i}, length 1`;
+  const flags = (i) => ({ 0: 'S', 1: 'S.', 10: 'F.', 11: 'FP.', 20: 'R', 21: 'R.' })[i] ?? (i % 2 ? 'P.' : '.');
+  const total = LAST_PACKETS + 50;
+  const lines = Array.from({ length: total }, (_, i) => packet(i, flags(i)));
+  const shown = packets(`${lines.join('\n')}\n`).split('\n');
+  assert.equal(shown[0], `(${total} packets: each SYN, FIN and reset, and the last ${LAST_PACKETS})`);
+  assert.deepEqual(shown.slice(1), [0, 1, 10, 11, 20, 21].map((i) => lines[i]).concat(lines.slice(-LAST_PACKETS)));
+  assert.equal(packets(''), `(0 packets: each SYN, FIN and reset, and the last ${LAST_PACKETS})`);
 });
 
 test('connections keeps the column header and the live connections to port 443, and counts those in TIME_WAIT', () => {

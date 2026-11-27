@@ -302,11 +302,12 @@ jobs:
       # The same build on macOS, under the stall probe. macOS runners
       # intermittently wedge: the build goes silent mid-build and dies at
       # this step's timeout (the `build:macos` settings in .bazelrc say what
-      # has been tried against it). When the build prints nothing for five
-      # minutes, the probe dumps what the wedge leaves to read while it
-      # lasts: the server's threads and logs, the connections to the cache
-      # and between the Bazel client and its server, the client's stacks and
-      # the kernel's network buffers. It retries and stops nothing, so a
+      # is known of it). When the build prints nothing for five minutes, the
+      # probe dumps what the wedge leaves to read while it lasts: the
+      # server's threads and logs, the connections to the cache and between
+      # the Bazel client and its server, each change to the latter and the
+      # packets that crossed it since before the build, the client's stacks
+      # and the kernel's network buffers. It retries and stops nothing, so a
       # wedge still ends at the 30-minute timeout, as it would without it.
       - name: bazel build (macOS, watched for a stall)
         id: build-macos
@@ -534,14 +535,15 @@ jobs:
           body: |
             The nightly bazel workflow's `bazel / macos-latest` leg failed.
 
-            Likely causes: the known macOS remote-cache wedge
+            Likely causes: the known macOS wedge
             (https://github.com/rusty-photon/rusty-photon/issues/765), in which
-            `bazel build` hangs in the remote cache's download tail until the
-            step's 30-minute timeout; or a build or test failure on macOS
+            `bazel build` goes silent mid-build, during its cache downloads,
+            until the step's 30-minute timeout; or a build or test failure on macOS
             alone. Inspect the failed job in the linked run: a `bazel build
             (macOS, watched for a stall)` step that ran to its timeout points at
             the wedge, a failing target at a genuine break. That step's
             `bazel-stall-probe: no output for N s` log groups hold what the
             wedge left to read: the Bazel server's threads and logs, its
-            connections to the cache and to the Bazel client, the client's
-            stacks and the kernel's network buffers.
+            connections to the cache and to the Bazel client, each change to
+            the latter and the packets that crossed it, the client's stacks
+            and the kernel's network buffers.
