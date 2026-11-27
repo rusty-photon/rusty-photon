@@ -1993,8 +1993,9 @@ fn no_capture_step(train_id: &str) -> FocusModelError {
 /// # Errors
 ///
 /// Returns the resolution errors of [`resolve_train`], the filter
-/// errors of [`TrainContext::check_filter`], and the sizing error of a
-/// train with incomplete optics and no configured sweep.
+/// errors of [`TrainContext::check_filter`], the refusal of a preview
+/// whose wheel cannot be read, and the sizing error of a train with
+/// incomplete optics and no configured sweep.
 pub async fn get_sweep_plan(
     rig: &dyn FocusRig,
     store: &FocusStore,
@@ -2011,7 +2012,10 @@ pub async fn get_sweep_plan(
             Some(filter.to_owned())
         }
         None => match &ctx.filter_wheel_id {
-            Some(wheel) => rig.get_filter(wheel).await?,
+            Some(wheel) => rig
+                .get_filter(wheel)
+                .await
+                .map_err(|e| unreadable_wheel(&ctx.train_id, wheel, e))?,
             None => None,
         },
     };
@@ -2040,6 +2044,21 @@ pub async fn get_sweep_plan(
         measured_slope,
         configured: configured_sweep(&train),
     })
+}
+
+/// The refusal of a preview whose wheel cannot be read. The filter in
+/// the path is unknown, and a plan for any other filter would not say
+/// so; a named filter is planned without reading the wheel, so the
+/// refusal points at the argument. A cancellation stays one.
+fn unreadable_wheel(train_id: &str, wheel: &str, err: FocusModelError) -> FocusModelError {
+    if err.is_cancelled() {
+        return err;
+    }
+    FocusModelError::Workflow(format!(
+        "train '{train_id}' cannot preview the filter in the path: wheel '{wheel}' could not be \
+         read ({}); pass filter to preview a named filter without reading the wheel",
+        err.tool_message()
+    ))
 }
 
 /// A train's overrides, or null when it sets neither.
@@ -4043,6 +4062,82 @@ mod tests {
             view.plan.wavelength_nm, 656.0,
             "the wheel's filter, not the 550 nm default"
         );
+    }
+
+    /// A wheel that cannot be read leaves the filter in the path
+    /// unknown, so the preview is refused naming the train and the
+    /// wheel, with the wheel's own error and the argument that plans
+    /// without it.
+    #[tokio::test]
+    async fn the_sweep_plan_refuses_a_wheel_it_cannot_read() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_filter().returning(|_| {
+            Box::pin(async {
+                Err(FocusModelError::ToolCall(
+                    "get_filter: failed to get filter position: ASCOM error NOT_CONNECTED: \
+                     The communications channel is not connected."
+                        .to_owned(),
+                ))
+            })
+        });
+        rig.expect_get_refocus_plan()
+            .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
+        let rig = base_rig(rig, &position);
+
+        let err = get_sweep_plan(&rig, &store, &config(CONFIGURED), "main", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.tool_message(),
+            "train 'main' cannot preview the filter in the path: wheel 'main-fw' could not be \
+             read (get_filter: failed to get filter position: ASCOM error NOT_CONNECTED: The \
+             communications channel is not connected.); pass filter to preview a named filter \
+             without reading the wheel"
+        );
+    }
+
+    /// A caller that cancels during the wheel read gets the
+    /// cancellation, not a refusal of the wheel.
+    #[tokio::test]
+    async fn a_cancelled_wheel_read_stays_a_cancellation() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_filter().returning(|_| {
+            Box::pin(async {
+                Err(FocusModelError::Cancelled(
+                    "the caller cancelled".to_owned(),
+                ))
+            })
+        });
+        rig.expect_get_refocus_plan()
+            .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
+        let rig = base_rig(rig, &position);
+
+        let err = get_sweep_plan(&rig, &store, &config(CONFIGURED), "main", None)
+            .await
+            .unwrap_err();
+        assert!(err.is_cancelled(), "{err}");
+    }
+
+    /// A named filter is planned from configuration and the record, so
+    /// the preview answers without reading the wheel.
+    #[tokio::test]
+    async fn the_sweep_plan_for_a_named_filter_reads_no_wheel() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_filter().never();
+        rig.expect_get_refocus_plan()
+            .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
+        let rig = base_rig(rig, &position);
+
+        let view = get_sweep_plan(&rig, &store, &config(CONFIGURED), "main", Some("Ha"))
+            .await
+            .unwrap();
+        assert_eq!(view.filter.as_deref(), Some("Ha"));
     }
 
     /// The reset adopts the train as it stands and says which fields

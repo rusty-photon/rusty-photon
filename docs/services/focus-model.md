@@ -650,9 +650,17 @@ used), `wavelength_nm`, `cfz_steps`, `hfr_focus`, `predicted_slope`
 and `measured_slope` (the filter's most recent run's `wing_slope`, or
 null), both in pixels per 100 steps, and `configured` (the train's
 override block, or null). With no `filter` argument it previews the
-filter in the path, as `focus_train` would, and reports it. Writes
-nothing, moves nothing. Errors: incomplete optics with no configured
-sweep, naming the missing fact; a `filter` not on the wheel.
+filter in the path, as `focus_train` would, and reports it, which
+means reading the wheel. A wheel that cannot be read — powered off,
+disconnected — refuses the preview, naming the train and the wheel,
+keeping the wheel's own error, and pointing at the argument: a named
+`filter` is planned from configuration and the record without reading
+the wheel, so it answers with the wheel unpowered. The preview does not
+fall back to the reference filter instead, because that would size a
+sweep for a filter that may not be in the path, and nothing in the
+result would say so. Writes nothing, moves nothing. Errors: incomplete
+optics with no configured sweep, naming the missing fact; a `filter`
+not on the wheel; with no `filter`, a wheel that cannot be read.
 
 ### `get_focus_model {train_id}`
 
@@ -851,6 +859,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `filter` on a train without a wheel | `train 'x' has no filter wheel; do not pass filter` |
 | Unknown filter name | `filter 'Ha' is not on train 'x' (wheel 'main-fw' has: Luminance, Red, Green, Blue)` |
 | Incomplete optics and no configured sweep | `train 'x' has no derived sweep: aperture_mm is unknown; set trains.x.step_size and half_width in focus-model.json or the fact in rp's config` |
+| `get_sweep_plan` without `filter` on a train whose wheel cannot be read | `train 'x' cannot preview the filter in the path: wheel 'main-fw' could not be read (get_filter: filter wheel not connected: main-fw); pass filter to preview a named filter without reading the wheel` |
 | The sweep failed after every attempt | `not enough stars: …`, `monotonic curve: …` or `poor fit: fit_r_squared 0.412 is below min_fit_r_squared 0.6`, then `; attempts: 2; attempts_log: [{…}]; prediction: {…}; curve_points: [{…}]` — `curve_points` is the last field the sweep writes: a put-back, record or guiding note below may follow it after `; `, so a reader takes one JSON array from the start of what follows `curve_points: ` |
 | The put-back itself failed | the sweep's error, then `; the focuser could not be restored to 29740: …` |
 | An `rp` tool failed mid-run (device error, aborted exposure) | the `rp` message, after the put-back |
@@ -1633,8 +1642,10 @@ tools appear in the catalog ungated; `get_sweep_plan` derives the
 worked example's numbers from the optics, the obstructed train's
 narrower sweep among them, takes the focuser's `StepSize`
 when the config sets none, reports `mixed` and `configured` for
-overrides, and names the missing fact; `focus_train` takes a reference
-frame, which lists no star, walks the grid all the same,
+overrides, and names the missing fact, and on a train whose wheel `rp`
+cannot reach refuses the preview of the filter in the path, naming the
+train and the wheel, while a named filter is planned all the same;
+`focus_train` takes a reference frame, which lists no star, walks the grid all the same,
 persists a frame per point, retries once on the same grid — a starless
 sweep says nothing about a side — restores the starting position,
 records the run with its curve points, its prediction and an attempts
@@ -1729,7 +1740,9 @@ credential — and that `tools/list` answers with no `rp` running.
   attempts log of a run that shifted, repeated, ran out of attempts or
   of grid, the wing slope.
 - Workflow, against a `mockall` rig: the resolution errors, the filter
-  switch, the guard on failure and cancellation, the guiding
+  switch, the sweep plan's refusal of a wheel it cannot read — a
+  cancellation staying one — and a named filter's plan reading no
+  wheel, the guard on failure and cancellation, the guiding
   handshake and its skips, the record written for each outcome, the
   shared walk's stop-at-failure, and its refusal of a step whose
   focuser its run train does not end in. The temperature source: a

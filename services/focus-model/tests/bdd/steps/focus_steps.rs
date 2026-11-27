@@ -297,6 +297,28 @@ async fn rp_with_train_without_wheel(world: &mut FocusModelWorld) {
 }
 
 #[given(
+    "rp is running with a focus train whose filter wheel rp cannot reach and focus-model registered as a tool provider"
+)]
+async fn rp_with_unreachable_wheel(world: &mut FocusModelWorld) {
+    configure_rig(world, Some(APERTURE_MM));
+    // The wheel stays in the train and its names in rp's config, so
+    // get_train_info reports it as it reports a reachable one; only a
+    // read of it fails, as a powered-off wheel's does.
+    for wheel in &mut world.filter_wheels {
+        wheel.alpaca_url = "not-a-url".to_string();
+    }
+    push_train(
+        world,
+        vec![
+            "main-fw".to_string(),
+            "main-focuser".to_string(),
+            "main-cam".to_string(),
+        ],
+    );
+    start_provider_then_rp(world).await;
+}
+
+#[given(
     "rp is running with a focus train sharing its focuser with an offline guiding train and focus-model registered as a tool provider"
 )]
 async fn rp_with_shared_focuser(world: &mut FocusModelWorld) {

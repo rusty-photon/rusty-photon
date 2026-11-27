@@ -166,6 +166,28 @@ Feature: Focus tools served through rp
     And the error message should contain "aperture_mm is unknown"
     And the error message should contain "trains.main.step_size"
 
+  # With no filter argument the preview reads the wheel for the filter in
+  # the path, as focus_train would. A wheel rp cannot reach, as a
+  # powered-off one is, leaves that filter unknown, and a plan for any
+  # other filter would not say so. A named filter needs no wheel read.
+  Scenario: A preview of the filter in the path is refused when the wheel cannot be read
+    Given a running Alpaca simulator
+    And rp is running with a focus train whose filter wheel rp cannot reach and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "get_sweep_plan" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "train 'main' cannot preview the filter in the path: wheel 'main-fw' could not be read"
+    And the error message should contain "filter wheel not connected: main-fw"
+    And the error message should contain "pass filter to preview a named filter without reading the wheel"
+
+  Scenario: A named filter is planned without reading the wheel
+    Given a running Alpaca simulator
+    And rp is running with a focus train whose filter wheel rp cannot reach and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "get_sweep_plan" with {"train_id": "main", "filter": "Ha"}
+    Then the tool call should succeed
+    And the tool result at "/filter" should be the JSON "Ha"
+
   Scenario: A filter the wheel does not have is refused naming the wheel's filters
     Given a running Alpaca simulator
     And rp is running with a focus train on the simulator and focus-model registered as a tool provider
