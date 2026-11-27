@@ -169,12 +169,48 @@ const fn unknown_fix_op() -> FixOp {
     FixOp::Unknown
 }
 
+/// The device a check's verdict says is missing.
+///
+/// The service's device when both fields are `None`, or the one device of
+/// `device_type` at `device_number`. Central doctor reads it to look up the
+/// device's power (docs/services/doctor.md §Powered-off devices), never the
+/// check's wording.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Absent {
+    /// The ASCOM device type (`Camera`, `FilterWheel`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_number: Option<u32>,
+}
+
+impl Absent {
+    /// The service's device, whichever of its devices that is.
+    #[must_use]
+    pub const fn service() -> Self {
+        Self {
+            device_type: None,
+            device_number: None,
+        }
+    }
+
+    /// One device: `device_type` at `device_number`.
+    #[must_use]
+    pub fn device(device_type: &str, device_number: u32) -> Self {
+        Self {
+            device_type: Some(device_type.to_string()),
+            device_number: Some(device_number),
+        }
+    }
+}
+
 /// One diagnosis: a stable name, the service it concerns (when
 /// service-scoped), the outcome, and a human-readable detail.
 ///
 /// `suggestion` carries a concrete remedy as text where doctor can offer
 /// one; `fixes` carries the machine-applicable plan `--fix` applies, where
-/// the correct value is derivable rather than a judgment call.
+/// the correct value is derivable rather than a judgment call. `absent`
+/// marks a verdict that a device is missing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Check {
     pub name: String,
@@ -188,6 +224,8 @@ pub struct Check {
     pub suggestion: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixes: Vec<FixOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absent: Option<Absent>,
 }
 
 impl Check {
@@ -227,6 +265,7 @@ impl Check {
             detail: detail.into(),
             suggestion,
             fixes: Vec::new(),
+            absent: None,
         }
     }
 
@@ -234,6 +273,13 @@ impl Check {
     #[must_use]
     pub fn with_fixes(mut self, fixes: Vec<FixOp>) -> Self {
         self.fixes = fixes;
+        self
+    }
+
+    /// Mark the verdict as a missing device.
+    #[must_use]
+    pub fn with_absent(mut self, absent: Absent) -> Self {
+        self.absent = Some(absent);
         self
     }
 }
@@ -372,6 +418,27 @@ mod tests {
         assert_eq!(back.checks[0].fixes, vec![fix.clone()]);
         assert_eq!(back.fixes_applied[0].op, fix);
         assert!(back.has_failures());
+    }
+
+    #[test]
+    fn test_absent_round_trips_and_is_omitted_when_unset() {
+        let checks = vec![
+            Check::warn("hardware.sdk-devices", None, "zero", None).with_absent(Absent::service()),
+            Check::warn("usb-devices.resolve", None, "empty port", None)
+                .with_absent(Absent::device("Camera", 1)),
+            Check::ok("config.full-shape", None, "parses"),
+        ];
+        let json = serde_json::to_string(&checks).unwrap();
+        assert!(json.contains(r#""absent":{}"#), "{json}");
+        assert!(
+            json.contains(r#""absent":{"device_type":"Camera","device_number":1}"#),
+            "{json}"
+        );
+        assert_eq!(json.matches("absent").count(), 2, "{json}");
+        let back: Vec<Check> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back[0].absent, Some(Absent::service()));
+        assert_eq!(back[1].absent, Some(Absent::device("Camera", 1)));
+        assert_eq!(back[2].absent, None);
     }
 
     #[test]

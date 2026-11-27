@@ -7,6 +7,8 @@ rusty-photon install: packages put bytes on disk, services self-create their
 default configs, and doctor makes the result coherent. It audits **service
 facts** — ports, TLS, auth, service-to-service references, unit wiring — and
 never learns device usage (which camera is the guide cam belongs to `rp`).
+It reads `rp`'s power map only to tell a device that is powered off from
+one that is missing (§Powered-off devices).
 [ADR-016](../decisions/016-service-config-ownership-and-doctor.md) records
 why a standalone doctor, and not the installers or the services, wires
 what spans services.
@@ -40,10 +42,11 @@ graph LR
     hw["device surface<br/>/dev, sysfs, group db, udev rules<br/>(via rusty-photon-doctor-checks)"] -->|read-only probes| doctor
     svc_up["running Alpaca service<br/>/management/v1/configureddevices"] -->|HTTP query| doctor
     svc_down["installed, stopped service<br/>rusty-photon-&lt;svc&gt; doctor --json"] -->|shell-out| doctor
+    power["power box's driver<br/>/api/v1/switch/N/getswitch"] -->|HTTP query| doctor
     doctor --> report["report<br/>text or --json"]
 ```
 
-Six inputs, one output. A default run is read-only: config files are
+Seven inputs, one output. A default run is read-only: config files are
 parsed but never written, every service-manager interaction is a query
 (`list-unit-files`, `show`), never a verb, and every hardware probe is a
 stat, a directory listing, or a read-only inventory query — doctor never
@@ -52,7 +55,8 @@ contend for it). Only `--fix` and the `tls`/`auth` subcommands write —
 config files through `rusty_photon_config::save`'s atomic path, plus the
 pki tree (D6a) — and nothing ever runs a service-manager verb. Doctor's
 own network traffic is the HTTP probes of §Aggregation and §The fake-mount
-hazard and, on an ACME install, the name lookups of `dns.unresolvable` —
+hazard, the power-box reads of §Powered-off devices and, on an ACME
+install, the name lookups of `dns.unresolvable` —
 all made once, for the final report — plus the ACME order and the DNS
 provider's API calls, which only `tls issue --acme`, `tls flip-to-acme`
 and `tls renew` make.
@@ -985,7 +989,9 @@ every service whose serial gate is open: it holds no fact about any
 service's device for unit state to weigh, and a warning would let doctor
 exit 0 having checked nothing. A device absent from the bus, and a COM port
 absent from a listing that was read (an empty one included), keep the rule
-above.
+above, unless the power-box output that feeds the device reads off: then
+the device is powered off, not missing, and the check is `ok`
+(§Powered-off devices).
 
 | Check | Platforms | Trigger |
 |---|---|---|
@@ -1163,6 +1169,123 @@ For hermetic tests the mock seam extends accordingly: staged unit facts
 carry the binary path (BDD points it at a stub that emits a canned
 report), and the HTTP probe targets whatever port the staged config
 declares, so a scenario can stand up a stub management endpoint.
+
+## Powered-off devices
+
+A rig on the daily power cycle keeps its devices off whenever nothing
+needs them, so in the day a device missing from the bus is the normal
+case, not a fault
+([daily-power-cycle.md](../plans/daily-power-cycle.md#decisions),
+decision 9). Before doctor reports a device missing, it reads the
+power-box output that feeds the device, from the box's own driver, and
+judges the check by what it reads:
+
+- **Off:** the check is `ok`. Its detail says the device is powered off
+  and names the output that reads off, ahead of what the check found.
+- **On:** the check keeps its verdict, since the device should be there,
+  and its detail adds that the output reads on.
+- **Not read:** the check keeps its verdict, and its detail adds why the
+  output could not be read. A power box doctor cannot read says nothing
+  about the device.
+
+The reading needs no schedule and keeps no state, so it holds after an
+`rp` restart, and a device that dies in the day on an output that reads
+on is reported at once.
+
+### The checks it covers
+
+Each check below has one verdict that a device is missing, and the
+reading judges that verdict alone:
+
+| Check | The verdict | The devices looked up |
+|---|---|---|
+| `hardware.usb-device` | No working device on the bus matches the service's identity | Every roster device on the service |
+| `hardware.serial-node` | The serial device does not exist, or the COM port is not among the host's | Every roster device on the service |
+| `hardware.sdk-devices` | The SDK enumerates zero devices | Every roster device on the service |
+| `usb-devices.resolve` | No working camera is enumerated on a listed entry's port | The roster camera at the entry's number |
+| `service.devices` | A placeholder holds a listed number | The roster device of the placeholder's type at its number |
+
+Every other verdict of these checks keeps its own: a scan or listing that
+could not run, a device on the bus that is not working, a node that is
+not a character device, an SDK enumeration that errors, and a listed port
+that holds another device, a look-alike or a model the driver does not
+know each say something a cut output does not explain.
+
+A placeholder stands in for a camera its driver could not place when it
+started, whatever the reason, and a camera that was off then is one: its
+driver serves the placeholder until the driver restarts. So a placeholder
+whose camera's output reads off is reported as powered off, and its
+detail says that dusk's `power_up`, which restarts the service once the
+output is on, places a camera that was only off
+([session-runner.md § Night Schedule](session-runner.md#night-schedule)).
+
+### Finding a device's outputs
+
+Doctor reads both halves of the lookup from `rp`'s config
+([rp.md § The power map](rp.md#the-power-map)):
+
+- **The roster:** each device's `id`, `alpaca_url` and `device_number`,
+  under `equipment.<kind>[]`, and the mount's under `equipment.mount`,
+  whose id is `mount`. A device is on a service when its `alpaca_url`
+  joins that service by the client-target joins' rule (§Client-target
+  joins, **Resolution**): a loopback host, or on an ACME install the
+  service's own `<svc>.<domain>`, at the service's effective port. A
+  device on another host is on no service doctor scans. Its kind gives
+  its ASCOM device type (`cameras` a `Camera`, `filter_wheels` a
+  `FilterWheel`, the mount a `Telescope`, and so on), which a check about
+  one device matches, ignoring ASCII case, together with its number.
+- **The power map:** `equipment.switches[].outputs[]`, each output's
+  `name` and the roster ids in its `devices`.
+
+A device is powered off when an output that lists it reads off. A device
+may sit on several outputs, its 12 V on one and the hub its USB runs
+through on another, and a cut of either can take it off the bus, so one
+output reading off is enough. A check about the whole service is `ok`
+only when every roster device on the service is powered off: a device
+whose outputs read on, or one the power map puts on no output, should
+still be there, and the detail names it. A check none of whose devices
+the power map puts on an output, and one whose service no roster device
+is on, keep their verdict with nothing added: there is no output to read.
+
+### Reading an output
+
+Doctor reaches the power box's driver as `rp` does: at the `switches[]`
+entry's `alpaca_url` and `device_number`, with the entry's `auth`, else
+the observatory credential, and for `https` trusting doctor's CA on a
+self-signed install and the platform store on an ACME one, as the
+fake-mount probe connects. Over the Alpaca API it asks `maxswitch`, then
+`getswitchname` for each switch until one names the output exactly, as
+`rp` matches names, then `getswitch`. Each request is bounded by the
+devices probe's 15 s deadline (§Aggregation).
+
+An output is not read, and its detail says which, when:
+
+- the entry's URL does not parse;
+- a request fails or outruns its deadline;
+- an answer is not a success, or does not parse;
+- the driver answers with an Alpaca error. A driver that is not
+  connected answers `0x407`. Doctor never writes `Connected`: a default
+  run is read-only, and `Connected` is shared by every client of the
+  device. `rp` keeps its power boxes connected;
+- no switch carries the output's name.
+
+Each output is read at most once in a run, and only for a check that
+needs it, so on a rig whose devices are all present doctor sends a power
+box nothing. The reading runs once, for the final report, after the
+aggregation probes, whose merged checks it reads. Like them, it never
+runs on a `--fix` round.
+
+### Per-service checks
+
+A per-service doctor knows nothing of `rp`'s config. Central doctor
+applies the reading to the checks it merges, and a per-service doctor run
+by hand reports a missing device as it always does. A check whose verdict
+is a missing device carries `absent` in the report (§Report): `{}` when
+the verdict is about the service's device, `{device_type,
+device_number}` when it is about one device. Central doctor finds the
+checks to judge by that field, its own included, and never by their
+wording. A report from a binary that predates the field carries none, and
+its checks are merged as they are.
 
 ## Repair — `--fix` (D3)
 
@@ -1743,6 +1866,11 @@ aggregated report.
   what a real run would write, distinct from `fixes_applied` because
   nothing was. Omitted when empty, tolerated as an unknown field by
   older consumers — the same permissive contract as everything else.
+- `absent` (per check, omitted when not set) marks a check whose verdict
+  is a missing device: `{}` when the verdict is about the service's
+  device, `{"device_type": "Camera", "device_number": 0}` when it is about
+  one device. Central doctor reads it to look up the device's power
+  (§Powered-off devices), and a check the reading turns `ok` keeps it.
 
 `ok` checks are included (an empty report is indistinguishable from a doctor
 that skipped everything); the text renderer summarizes them, prints
@@ -1833,7 +1961,14 @@ unattended — not configuration of doctor's own behavior.)
   fixes carry the derived values and respect present ones; the staging
   downgrade holds for every check in the family; and the DNS judgment is
   case-insensitive and driven by staged or gathered facts, with the resolver
-  helper tested against deterministic names only.
+  helper tested against deterministic names only. For powered-off
+  devices: a roster device's join to a service and its device type, one
+  output reading off for a device on two, the every-device rule for a
+  check about the service, a device on no output, a check with no device
+  on an output left as it is, the reading against a stub driver (off, on,
+  an Alpaca error, a name no switch carries, an answer that does not
+  parse), and `absent` on each verdict the reading covers and on no
+  other.
 - **BDD** (`services/doctor/tests`, built with the `mock` feature) — seed a
   scratch config dir and a platform-facts file with known-broken states (port
   collision, dangling watchdog service, sentinel's retired `services` map, unparseable JSON,
@@ -1867,7 +2002,13 @@ unattended — not configuration of doctor's own behavior.)
   stub binaries (canned report, canned garbage, canned clap error for the
   skew case) and the HTTP probe at a stub management endpoint; assert the
   merge, the `service` attribution, and that a degraded probe warns
-  instead of failing.
+  instead of failing. For powered-off devices: staged hardware facts, an
+  `rp` config with a power map and a stub power box. A device missing
+  from the bus or its node whose output reads off is `ok`, one whose
+  output reads on or whose box does not answer keeps its verdict, a stub
+  per-service doctor's check that carries `absent` and an active
+  service's placeholder are judged the same way, and a rig whose devices
+  are present sends the box nothing.
 - **Per-service BDD** — the subcommand itself follows the smoke-suite
   convention of `bdd-infra`'s tls-auth smoke: one scenario per service asserting
   `doctor --json` exits 0 on a valid config and exits 1 naming the key on

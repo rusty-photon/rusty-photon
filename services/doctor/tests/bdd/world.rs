@@ -46,6 +46,8 @@ pub struct DoctorWorld {
     pub stub_shutdowns: Vec<tokio::sync::oneshot::Sender<()>>,
     /// The stub per-service binary staged for the shell-out probe.
     pub stub_binary: Option<PathBuf>,
+    /// The stub power box's port and state (`steps::power_steps`).
+    pub power_box: Option<(u16, std::sync::Arc<crate::steps::power_steps::PowerBoxStub>)>,
     /// The scenario's private Pebble + challtestsrv (killed on drop).
     pub pebble: Option<crate::pebble::PebbleHandle>,
     /// The file a staged post-renewal hook writes.
@@ -95,6 +97,7 @@ impl DoctorWorld {
             stub_port: None,
             stub_shutdowns: Vec::new(),
             stub_binary: None,
+            power_box: None,
             pebble: None,
             pebble_marker: None,
             hot_reload_addr: None,
@@ -126,9 +129,18 @@ impl DoctorWorld {
             .replace('\\', "/")
     }
 
-    /// Expand the `{missing}` token against this scenario's world.
+    /// Expand the `{missing}` token against this scenario's world, and the
+    /// `{power_box}` and `{stub_endpoint}` tokens to the stub power box's
+    /// and the stub management endpoint's URLs once they are started.
     pub fn expand(&self, text: &str) -> String {
-        text.replace("{missing}", &self.missing_dir())
+        let mut text = text.replace("{missing}", &self.missing_dir());
+        if let Some((port, _)) = &self.power_box {
+            text = text.replace("{power_box}", &format!("http://localhost:{port}"));
+        }
+        if let Some(port) = self.stub_port {
+            text = text.replace("{stub_endpoint}", &format!("http://localhost:{port}"));
+        }
+        text
     }
 
     /// The credential plaintext from the canonical pki copy.

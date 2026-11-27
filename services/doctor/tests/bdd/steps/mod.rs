@@ -5,6 +5,7 @@ pub mod fix_steps;
 pub mod flip_steps;
 pub mod hardware_steps;
 pub mod pebble_steps;
+pub mod power_steps;
 pub mod provisioning_steps;
 pub mod report_steps;
 pub mod run_steps;

@@ -19,7 +19,7 @@ use serde_json::Value;
 use crate::catalog;
 use crate::checks::Context;
 use crate::facts::{Platform, PlatformFacts};
-use crate::report::{Check, Mode};
+use crate::report::{Absent, Check, Mode};
 use crate::scan::ServiceScan;
 
 /// The user every packaged unit runs as.
@@ -182,19 +182,22 @@ fn serial_node(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &m
         return;
     }
     match hw.paths.get(&path) {
-        None => checks.push(fail_or_warn(
-            ctx,
-            scan,
-            "hardware.serial-node",
-            format!(
-                "serial device {path} does not exist — the device is unplugged, \
-                 powered down, or the path is wrong"
-            ),
-            Some(format!(
-                "plug the device in, or point {} at the right node",
-                pointer_hint(scan)
-            )),
-        )),
+        None => checks.push(
+            fail_or_warn(
+                ctx,
+                scan,
+                "hardware.serial-node",
+                format!(
+                    "serial device {path} does not exist — the device is unplugged, \
+                     powered down, or the path is wrong"
+                ),
+                Some(format!(
+                    "plug the device in, or point {} at the right node",
+                    pointer_hint(scan)
+                )),
+            )
+            .with_absent(Absent::service()),
+        ),
         Some(facts) if facts.kind != PathKind::CharDevice => checks.push(fail_or_warn(
             ctx,
             scan,
@@ -371,6 +374,7 @@ fn com_port_node(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, path: &s
             pointer_hint(scan)
         )),
     )
+    .with_absent(Absent::service())
 }
 
 fn pointer_hint(scan: &ServiceScan) -> String {
@@ -434,16 +438,19 @@ fn usb_device(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mu
             Some(USB_FAULT_REMEDY.to_string()),
         ));
     } else {
-        checks.push(fail_or_warn(
-            ctx,
-            scan,
-            "hardware.usb-device",
-            format!(
-                "no USB device matching {identity} is on the bus — the device is \
-                 unplugged, unpowered, or behind a hub that dropped it"
-            ),
-            Some("check the cable, power, and hub; then re-run doctor".to_string()),
-        ));
+        checks.push(
+            fail_or_warn(
+                ctx,
+                scan,
+                "hardware.usb-device",
+                format!(
+                    "no USB device matching {identity} is on the bus — the device is \
+                     unplugged, unpowered, or behind a hub that dropped it"
+                ),
+                Some("check the cable, power, and hub; then re-run doctor".to_string()),
+            )
+            .with_absent(Absent::service()),
+        );
     }
 }
 

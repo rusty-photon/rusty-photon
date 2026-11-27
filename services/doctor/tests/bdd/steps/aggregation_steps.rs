@@ -372,6 +372,37 @@ fn stub_doctor_binary(world: &mut DoctorWorld, service: String, check: String) {
     ));
 }
 
+#[given(expr = "a stub per-service doctor for {string} whose report holds:")]
+fn stub_doctor_report_holds(
+    world: &mut DoctorWorld,
+    service: String,
+    step: &cucumber::gherkin::Step,
+) {
+    let check: serde_json::Value =
+        serde_json::from_str(step.docstring.as_deref().expect("step needs a docstring"))
+            .expect("the docstring is one check as JSON");
+    let report = serde_json::json!({
+        "schema_version": 1,
+        "doctor_version": "9.9.9",
+        "mode": "service",
+        "service": service,
+        "config_dir": format!("/etc/rusty-photon/{service}.json"),
+        "checks": [ check ],
+    });
+    let report_file = format!("{service}-doctor-report.json");
+    std::fs::write(
+        world.temp.path().join(&report_file),
+        serde_json::to_string(&report).expect("stub report"),
+    )
+    .expect("stub report file");
+    world.stub_binary = Some(write_stub_script(
+        world.temp.path(),
+        &format!("stub-{service}"),
+        &format!("#!/bin/sh\ncat \"$(dirname \"$0\")/{report_file}\"\n"),
+        &format!("@echo off\r\ntype \"%~dp0{report_file}\"\r\n"),
+    ));
+}
+
 #[given(expr = "a stub per-service binary for {string} that does not know the doctor subcommand")]
 fn stub_predates_subcommand(world: &mut DoctorWorld, service: String) {
     world.stub_binary = Some(write_stub_script(
