@@ -58,7 +58,7 @@ these away, the decision is wrong.
 | [filemonitor](services/filemonitor.md) | SafetyMonitor | 11111 | `docs/services/filemonitor.md` |
 | [ppba-driver](services/ppba-driver.md) | Switch + ObservingConditions | 11112 | `docs/services/ppba-driver.md` |
 | [qhy-focuser](services/qhy-focuser.md) | Focuser | 11113 | `docs/services/qhy-focuser.md` |
-| [guider](services/guider.md) | — (guider service; Alpaca client of one Camera and one Telescope; being built: it guides, and is not packaged yet) | 11129 | `docs/services/guider.md` (rusty-photon's own guider: the guiding core `rp-guiding` in a headless service that `rp` reaches over the contract in `crates/rp-guider`; [ADR-024](decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)) |
+| [guider](services/guider.md) | — (guider service; Alpaca client of one Camera and one Telescope) | 11129 | `docs/services/guider.md` (rusty-photon's own guider: the guiding core `rp-guiding` in a headless service that `rp` reaches over the contract in `crates/rp-guider`; [ADR-024](decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)) |
 | [sentinel](services/sentinel.md) | — (monitoring service) | 11114 | `docs/services/sentinel.md` |
 | [rp](services/rp.md) | — (equipment gateway) | 11115 | `docs/services/rp.md` |
 | [plate-solver](services/plate-solver.md) | — (rp-managed service wrapping ASTAP) | 11131 | `docs/services/plate-solver.md` |

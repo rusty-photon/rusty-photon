@@ -8,18 +8,11 @@ measures how far a set of guide stars has moved, and corrects the mount
 with `PulseGuide` on one ASCOM Alpaca Telescope. `rp` commands it over
 an HTTP API.
 
-**The service is being built.** This document is the design the
-implementation is written against. Of the service, the configuration
-and its validation, the lifecycle and the state directory, the device
-clients and their poll, the camera loop and the sensor handling,
-`loop`, `star/reselect` and `guiding/stop`, the requests' turns, the
-metrics window, `stats`, `frame/latest`, the mount check and the pulses,
-`calibrate` and the calibration store, guiding with its pause, dither
-and settling, the statistics and the running totals, the guide log,
-`GET /api/v1/devices`, `/health` and `guider doctor` are built; the
-setup page and the packages are not yet. Of the guiding core,
-`crates/rp-guiding`, the star selection, the measurement, the
-calibration, the control, dither and settling are built.
+**The service is built and has not yet guided on sky.** This document
+is the design the implementation is written against. The service, its
+setup page and its packages are built, and so is the guiding core,
+`crates/rp-guiding`: the star selection, the measurement, the
+calibration, the control, dither and settling.
 [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)
 records why rusty-photon guides with a guider of its own and why that
 guider is a standalone service.
@@ -269,8 +262,8 @@ after another. One cycle is:
 **Frame settings.** Each time the guider leaves `idle` it writes the
 binning, the region (the full frame at that binning: `CameraXSize` and
 `CameraYSize` divided by the binning, rounded down) and, when
-`camera.gain` or `camera.offset` is set, the gain and the offset. A
-`null` gain or offset leaves the camera's value as the last client left
+`camera.gain` or `camera.offset` is set, the gain and the offset. An
+unset gain or offset leaves the camera's value as the last client left
 it. The settings are written again after every frame failure. `rp`
 writes the camera's settings only for captures it makes while the
 guider is `idle`
@@ -790,7 +783,7 @@ settles: see [Dither, settle and abort](#dither-settle-and-abort)) or
 `"off"` (no Dec corrections).
 
 **The minimum move.** An axis whose error is smaller than
-`control.min_move_px` gets no correction in that frame. With `null` the
+`control.min_move_px` gets no correction in that frame. Unset, the
 guider uses `max(0.1515 + 0.1548 ÷ scale, 0.15)` pixels, where `scale`
 is the pixel scale in arcseconds per pixel, and 0.15 pixels when the
 pixel scale is not a positive number.
@@ -1386,7 +1379,7 @@ left out when there is nothing to attach):
 |------|-------------|---------|
 | `invalid_request` | 400 | A body that does not match its schema, an unparseable duration, a non-positive or non-finite amount or tolerance, both or neither of a pixel and an arcsecond field. Refused before anything else happens |
 | `no_frame` | 404 | `frame/latest` with no measured frame |
-| `not_configured` | 409 | `loop`, `calibrate` or `guiding/start` while `devices.camera`, `devices.mount` or `optics.focal_length_mm` is not set |
+| `not_configured` | 409 | `loop`, `calibrate` or `guiding/start` while `devices.camera.alpaca_url`, `devices.mount.alpaca_url` or `optics.focal_length_mm` is not set |
 | `not_guiding` | 409 | `dither` outside `guiding`; `pause` or `resume` outside a run that guides |
 | `not_idle` | 409 | `loop`, `calibrate` or `calibration/clear` in a run state |
 | `not_exposing` | 409 | `star/reselect` while no frames are taken |
@@ -1540,7 +1533,15 @@ are all a rig has to supply.
   own server serves no Alpaca device. The file-only fields, named on
   the page and edited in the file, are `server.tls` and the two device
   `auth` blocks, which `doctor --fix` writes from the observatory
-  credential ([doctor.md](doctor.md) § Client-target joins).
+  credential ([doctor.md](doctor.md) § Client-target joins). A field
+  that `--port` or `--bind-address` pins shows what the service runs
+  with, and a save leaves it as the file has it.
+- **A device's credential stays with its server.** Each device's
+  `auth` is bound to that device's `alpaca_url` and to `ca_cert`, the
+  root that verifies the server there. A save that changes either asks
+  before it removes the block, so the page cannot send a server's
+  password to whatever address is typed on it
+  ([rusty-photon-setup.md § Credentials](../crates/rusty-photon-setup.md#credentials)).
 - **A save waits for the restart.** The service has no reload path (the
   `Restart` disposition): a save is persisted, and its answer names the
   fields that take effect at the next start and how to restart the
@@ -1550,11 +1551,16 @@ are all a rig has to supply.
   ends a guiding run. A save never restarts the service by itself and
   never reaches a device.
 - **What a save is held to.** The rules of
-  [Configuration validation at startup](#configuration-validation-at-startup).
-  A value that would stop the next start is refused beside its field
-  and not saved.
-- **No file, no page.** A service that runs with no configuration file
-  to save to answers `/setup` with `404` and says so.
+  [Configuration validation at startup](#configuration-validation-at-startup):
+  a value that would stop the next start is refused, and nothing is
+  saved. A number outside the bounds its field states, a `ca_cert` that
+  cannot be read or holds no certificate, and a state directory that
+  cannot be created or written are refused beside the field; the check of
+  the state directory creates nothing. Any other
+  value the configuration refuses as it is read is named above the
+  form, in a message that names the field: a duration that does not
+  parse, a number at a bound it may not reach, an address that is not
+  an `http://` or `https://` URL, a field held to another.
 
 The page shows no frame and no status. `GET /api/v1/frame/latest` and
 `GET /api/v1/guiding/stats` are where those are.
@@ -1610,20 +1616,16 @@ the first start
 
 ```json
 {
-  "server": { "port": 11129, "bind_address": "0.0.0.0", "tls": null, "auth": null },
-  "ca_cert": null,
-  "state_dir": null,
+  "server": { "port": 11129, "bind_address": "0.0.0.0" },
   "devices": {
-    "camera": { "alpaca_url": "http://localhost:11121", "device_number": 0, "auth": null },
-    "mount": { "alpaca_url": "http://localhost:11117", "device_number": 0, "auth": null },
+    "camera": { "alpaca_url": "http://localhost:11121", "device_number": 0 },
+    "mount": { "alpaca_url": "http://localhost:11117", "device_number": 0 },
     "poll_interval": "10s"
   },
   "optics": { "focal_length_mm": 200.0 },
   "camera": {
     "exposure": "2s",
     "binning": 1,
-    "gain": null,
-    "offset": null,
     "frame_timeout": "10s",
     "max_frame_failures": 3
   },
@@ -1651,7 +1653,6 @@ the first start
   "control": {
     "ra": { "aggression": 0.7, "hysteresis": 0.1 },
     "dec": { "mode": "auto", "aggression": 1.0, "reversal_frames": 3 },
-    "min_move_px": null,
     "runaway": { "frames": 15, "min_error_px": 3.0 }
   },
   "settling": { "pixels": 0.5, "time": "10s", "timeout": "60s" },
@@ -1660,21 +1661,26 @@ the first start
 }
 ```
 
-The example shows a configured rig. In the default file
-`devices.camera`, `devices.mount` and `optics.focal_length_mm` are
-`null`.
+The example shows a configured rig. An optional field that is unset
+is left out of the file, never written as `null`
+([ADR-016](../decisions/016-service-config-ownership-and-doctor.md),
+amendment 8), and the default file leaves out
+`devices.camera.alpaca_url`, `devices.mount.alpaca_url` and
+`optics.focal_length_mm`.
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
 | `server` | No | port 11129, `0.0.0.0`, no TLS, no auth | The shared `ServerConfig` of `crates/rusty-photon-server-config` ([ADR-016](../decisions/016-service-config-ownership-and-doctor.md)) |
-| `ca_cert` | No | `null` | A PEM file. When set it is the only root the device clients trust ([ADR-002](../decisions/002-tls-for-inter-service-communication.md)) |
-| `state_dir` | No | `null` | Overrides the [state directory](#state-directory) |
-| `devices.camera`, `devices.mount` | To guide | `null` | `alpaca_url`, `device_number` (default 0) and an optional `auth` (`{username, password}`) |
+| `ca_cert` | No | unset | A PEM file. When set it is the only root the device clients trust ([ADR-002](../decisions/002-tls-for-inter-service-communication.md)) |
+| `state_dir` | No | unset | Overrides the [state directory](#state-directory) |
+| `devices.camera.alpaca_url`, `devices.mount.alpaca_url` | To guide | unset | The server of the guide camera and of the mount, an `http://` or `https://` URL |
+| `devices.camera.device_number`, `devices.mount.device_number` | No | `0` | The device's position among its server's devices of its kind |
+| `devices.camera.auth`, `devices.mount.auth` | No | unset | The server's HTTP Basic Auth credential, `{username, password}` |
 | `devices.poll_interval` | No | `"10s"` | How often `Connected` and the server's device list are read for both devices |
-| `optics.focal_length_mm` | To guide | `null` | The guide scope's focal length; the same number as the `focal_length_mm` of `rp`'s guiding train |
+| `optics.focal_length_mm` | To guide | unset | The guide scope's focal length; the same number as the `focal_length_mm` of `rp`'s guiding train |
 | `camera.exposure` | No | `"2s"` | The exposure of every frame |
 | `camera.binning` | No | `1` | Hardware binning of a `Monochrome` camera; must be 1 for an `RGGB` camera |
-| `camera.gain`, `camera.offset` | No | `null` | Written to the camera when set; `null` leaves the camera's value alone |
+| `camera.gain`, `camera.offset` | No | unset | Written to the camera when set; unset leaves the camera's value alone |
 | `camera.frame_timeout` | No | `"10s"` | How long after its exposure a frame may take to arrive |
 | `camera.max_frame_failures` | No | `3` | Consecutive failed frames that stop the loop |
 | `mount.min_pulse` | No | `"20ms"` | A shorter correction is not sent |
@@ -1693,7 +1699,7 @@ The example shows a configured rig. In the default file
 | `control.ra.aggression`, `control.ra.hysteresis` | No | `0.7`, `0.1` | See [Control](#control) |
 | `control.dec.mode` | No | `"auto"` | `"auto"`, `"north"`, `"south"` or `"off"` |
 | `control.dec.aggression`, `control.dec.reversal_frames` | No | `1.0`, `3` | See [Control](#control) |
-| `control.min_move_px` | No | `null` | `null` uses the formula in [Control](#control) |
+| `control.min_move_px` | No | unset | Unset uses the formula in [Control](#control) |
 | `control.runaway.frames`, `control.runaway.min_error_px` | No | `15`, `3.0` | See [Control](#control) |
 | `settling` | No | `0.5` px, `"10s"`, `"60s"` | The settle defaults of `guiding/start` and `dither`: `pixels`, `time`, `timeout` |
 | `stop_timeout` | No | `"10s"` | How long `guiding/stop` waits for the loop to end |
@@ -1764,8 +1770,15 @@ and its Bazel targets, the service table of the root `README.md` and of
 `tools/rusty-photon-ci`, a `pkg/` directory with its unit, its package
 scripts and its `doctor.toml`, the doctor catalog, sentinel's list of
 services that are not Alpaca devices, and a fragment of the Windows
-installer. Doctor's client-target joins cover the guider's two device
-clients as they cover `rp`'s.
+installer. Its Homebrew formula is made from its `pkg/` directory and
+its `Cargo.toml`. Doctor's client-target joins cover the guider's two
+device clients as they cover `rp`'s.
+
+It is packaged as a service that runs on its defaults: the first start
+writes the default configuration, and `/health` answers `503` while the
+camera, the mount and the focal length are not named. The packages'
+verifiers take that `503` as proof that the service serves
+([packaging.md § Verifying a build](../packaging.md#verifying-a-build)).
 
 ## Testing
 
@@ -1792,6 +1805,12 @@ clients as they cover `rp`'s.
   simulated devices, and every bound a scenario configures would race
   the machine.
 - **The guide log.** Fixture tests, as [Guide log](#guide-log) says.
+- **The setup page.** `setup_pages.feature` holds the page to
+  [Setup page](#setup-page) through the shared steps every service's
+  pages use: the fields a rig names, a save that waits for the restart
+  and reaches no device, a refusal beside its field and one above the
+  form, the credentials kept in the file and bound to their servers,
+  the login, and a save from another site.
 - **Not ConformU.** The guider is no Alpaca device, so there is nothing
   for ConformU to check.
 

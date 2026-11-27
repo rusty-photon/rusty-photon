@@ -50,6 +50,7 @@ pub mod mount;
 pub mod preview;
 pub mod routes;
 pub mod sensor;
+pub mod setup;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod test_camera;
@@ -74,17 +75,29 @@ use crate::guider::Guider;
 /// Builder for the guider server.
 pub struct ServerBuilder {
     config: Option<Config>,
+    setup: Option<setup::Pages>,
 }
 
 impl ServerBuilder {
     #[must_use]
     pub const fn new() -> Self {
-        Self { config: None }
+        Self {
+            config: None,
+            setup: None,
+        }
     }
 
     #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    /// Serve the setup page at `/setup`, behind the listener's TLS and
+    /// Basic Auth (guider.md § Setup page).
+    #[must_use]
+    pub fn with_setup_pages(mut self, pages: setup::Pages) -> Self {
+        self.setup = Some(pages);
         self
     }
 
@@ -118,18 +131,8 @@ impl ServerBuilder {
         debug!(path = %state_dir.display(), "state directory ready");
 
         let ca_cert = config.ca_cert_path();
-        let camera = config
-            .devices
-            .camera
-            .as_ref()
-            .map(|address| DeviceClient::new(address, ca_cert).map(Arc::new))
-            .transpose()?;
-        let mount = config
-            .devices
-            .mount
-            .as_ref()
-            .map(|address| DeviceClient::new(address, ca_cert).map(Arc::new))
-            .transpose()?;
+        let camera = DeviceClient::of(&config.devices.camera, ca_cert)?.map(Arc::new);
+        let mount = DeviceClient::of(&config.devices.mount, ca_cert)?.map(Arc::new);
         let (poll, devices) = DevicePoll::new(
             camera.clone(),
             mount.clone(),
@@ -150,8 +153,12 @@ impl ServerBuilder {
         ));
         let router =
             routes::build_router(routes::AppState::new(config, devices, Arc::clone(&guider)));
+        let router = match self.setup {
+            Some(pages) => router.merge(setup::router(pages)),
+            None => router,
+        };
         // Layer HTTP Basic Auth when configured (server.auth): it guards
-        // the API and /health alike.
+        // the API, the setup page and /health alike.
         let router = match &server.auth {
             Some(auth) => {
                 if server.tls.is_none() {
@@ -195,7 +202,7 @@ impl Default for ServerBuilder {
 }
 
 /// `ca_cert` holds at least one certificate.
-fn check_ca_cert(path: &Path) -> Result<()> {
+pub(crate) fn check_ca_cert(path: &Path) -> Result<()> {
     let failed = |message: String| GuiderError::CaCert {
         path: path.to_path_buf(),
         message,
@@ -217,10 +224,51 @@ fn prepare_state_dir(path: &Path) -> Result<()> {
         message,
     };
     std::fs::create_dir_all(path).map_err(|e| failed(format!("cannot be created: {e}")))?;
-    let probe = path.join(format!(".guider-write-check-{}", std::process::id()));
-    std::fs::write(&probe, b"").map_err(|e| failed(format!("cannot be written: {e}")))?;
-    std::fs::remove_file(&probe).map_err(|e| failed(format!("cannot be written: {e}")))?;
-    Ok(())
+    probe_write(path).map_err(|e| failed(format!("cannot be written: {e}")))
+}
+
+/// Whether [`prepare_state_dir`] could create the state directory and
+/// write to it, without creating anything: the directory itself when it
+/// exists, else the nearest directory above it that does, is proved
+/// writable by a probe file written and removed again.
+pub(crate) fn check_state_dir(path: &Path) -> Result<()> {
+    let failed = |message: String| GuiderError::StateDir {
+        path: path.to_path_buf(),
+        message,
+    };
+    let mut existing = path;
+    loop {
+        match std::fs::metadata(existing) {
+            Ok(meta) if meta.is_dir() => break,
+            Ok(_) => {
+                return Err(failed(format!(
+                    "cannot be created: {} is not a directory",
+                    existing.display()
+                )))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                existing = match existing.parent() {
+                    Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+                    Some(parent) => parent,
+                    None => return Err(failed(format!("cannot be created: {e}"))),
+                };
+            }
+            Err(e) => return Err(failed(format!("cannot be created: {e}"))),
+        }
+    }
+    let verb = if existing == path {
+        "written"
+    } else {
+        "created"
+    };
+    probe_write(existing).map_err(|e| failed(format!("cannot be {verb}: {e}")))
+}
+
+/// Write a probe file into `dir` and remove it again.
+fn probe_write(dir: &Path) -> std::io::Result<()> {
+    let probe = dir.join(format!(".guider-write-check-{}", std::process::id()));
+    std::fs::write(&probe, b"")?;
+    std::fs::remove_file(&probe)
 }
 
 /// A fully bound guider server ready to accept connections.
@@ -341,6 +389,40 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         let error = prepare_state_dir(&file.join("state")).unwrap_err();
         assert!(error.to_string().contains("cannot be created"), "{error}");
+    }
+
+    #[test]
+    fn a_state_directory_that_exists_and_can_be_written_passes_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        check_state_dir(dir.path()).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_check_of_a_missing_state_directory_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("a").join("b");
+        check_state_dir(&state).unwrap();
+        assert!(!dir.path().join("a").exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_check_refuses_a_state_directory_under_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        let error = check_state_dir(&file.join("state")).unwrap_err();
+        assert!(error.to_string().contains("cannot be created"), "{error}");
+    }
+
+    #[test]
+    fn the_check_refuses_a_state_directory_that_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        let error = check_state_dir(&file).unwrap_err();
+        assert!(error.to_string().contains("is not a directory"), "{error}");
     }
 
     #[tokio::test]

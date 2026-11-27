@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  rusty-photon-guider — Windows service fragment (suite MSI).
+  Port 11129/tcp. The fragment contract (service name, exe rename,
+  failure actions + failure-actions flag, firewall port, start and stop) is
+  checked by tools/rusty-photon-ci/src/pkg_assets.rs.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall">
+  <Fragment>
+    <ComponentGroup Id="GuiderComponents" Directory="INSTALLFOLDER">
+      <Component Id="GuiderExe">
+        <File Id="GuiderExeFile" Name="rusty-photon-guider.exe" Source="!(bindpath.bin)\guider.exe" KeyPath="yes" />
+        <ServiceInstall Id="GuiderService"
+                        Name="rusty-photon-guider"
+                        DisplayName="rusty-photon-guider"
+                        Description="The guider for Rusty Photon: keeps a mount on its target from the frames of an Alpaca Camera, with PulseGuide on an Alpaca Telescope, commanded by rp over HTTP."
+                        Start="auto"
+                        Type="ownProcess"
+                        ErrorControl="normal"
+                        Account="LocalSystem"
+                        Arguments="--service"
+                        Vital="yes">
+          <!-- systemd Restart=on-failure / RestartSec=5 translation: restart
+               after 5 s on every failure, indefinitely (failure count resets
+               daily). -->
+          <util:ServiceConfig FirstFailureActionType="restart"
+                              SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart"
+                              RestartServiceDelayInSeconds="5"
+                              ResetPeriodInDays="1" />
+          <!-- SERVICE_CONFIG_FAILURE_ACTIONS_FLAG: the SCM wrapper reports a
+               failed run closure as SERVICE_STOPPED + ServiceSpecific(1) (see
+               rusty-photon-service-lifecycle runner/scm.rs), which only counts as
+               a failure — and triggers the restart actions above — with this
+               flag set. Without it the serial drivers' eager-validation exits
+               would stop the service permanently. -->
+          <ServiceConfig FailureActionsWhen="failedToStopOrReturnedError"
+                         OnInstall="yes"
+                         OnReinstall="yes" />
+        </ServiceInstall>
+        <ServiceControl Id="GuiderServiceControl"
+                        Name="rusty-photon-guider"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+        <!-- Alpaca/HTTP over the LAN is the service's whole point; Windows
+             Firewall blocks inbound by default. Scope=any, not localSubnet:
+             multi-subnet observatory networks are the norm here (Linux ships
+             no firewall config at all — parity is "reachable"). -->
+        <fw:FirewallException Id="GuiderFirewall"
+                              Name="rusty-photon-guider"
+                              Description="Inbound TCP for the rusty-photon-guider service (port 11129)"
+                              Port="11129"
+                              Protocol="tcp"
+                              Scope="any" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

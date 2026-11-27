@@ -14,12 +14,12 @@ function tempDir() {
 }
 
 // Every package with a bdd target in the workspace, as cargo's messages name
-// them: rp, session-runner, polar-align, filemonitor and 21 more.
+// them: rp, session-runner, polar-align, filemonitor and 22 more.
 const WORKSPACE = [
   'calibrator-flats', 'doctor', 'dsd-fp2', 'filemonitor', 'focus-model', 'gemini-powerbox-adv3-driver',
-  'operation-watchdog-e2e', 'pa-falcon-rotator', 'pa-scops-oag', 'planetarium-bridge', 'plate-solver',
-  'polar-align', 'ppba-driver', 'qhy-camera', 'qhy-focuser', 'rp', 'sentinel', 'session-runner',
-  'sky-survey-camera', 'star-adventurer-gti', 'svbony-camera', 'ui-htmx', 'upbv2-driver',
+  'guider', 'operation-watchdog-e2e', 'pa-falcon-rotator', 'pa-scops-oag', 'planetarium-bridge',
+  'plate-solver', 'polar-align', 'ppba-driver', 'qhy-camera', 'qhy-focuser', 'rp', 'sentinel',
+  'session-runner', 'sky-survey-camera', 'star-adventurer-gti', 'svbony-camera', 'ui-htmx', 'upbv2-driver',
   'zwo-camera', 'zwo-focuser',
 ];
 
@@ -28,7 +28,7 @@ const WORKSPACE = [
 // between its first and its last. Each suite is a process, and a stream
 // starts its suites one after another; on a loaded 4-core Windows runner a
 // process takes about a second to start, so the whole workspace's rest
-// stream, 21 suites in a row, would put this file past its 60 s budget.
+// stream, 22 suites in a row, would put this file past its 60 s budget.
 const SMALL = ['calibrator-flats', 'doctor', 'dsd-fp2', 'filemonitor', 'polar-align', 'rp', 'session-runner'];
 
 // What `cargo test --no-run --message-format=json` prints for `artifacts`:

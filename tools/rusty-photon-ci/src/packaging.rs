@@ -57,7 +57,15 @@ pub const HEALTH_PROBED: &[&str] = &[
     "session-runner",
     "polar-align",
     "focus-model",
+    "guider",
 ];
+
+/// Services whose `/health` answers 503 while their devices are not named.
+///
+/// A fresh install names none, so a verifier takes a 503 from one of them
+/// as proof that its listener serves (docs/services/guider.md, `GET
+/// /health`).
+pub const UNCONFIGURED_503: &[&str] = &["guider"];
 
 /// Each packaged service's port, which a verifier probes and a `WiX` fragment
 /// opens in the firewall.
@@ -79,6 +87,7 @@ pub const PORTS: &[(&str, u16)] = &[
     ("svbony-camera", 11125),
     ("planetarium-bridge", 11126),
     ("upbv2-driver", 11127),
+    ("guider", 11129),
     ("plate-solver", 11131),
     ("gemini-powerbox-adv3-driver", 11132),
     ("calibrator-flats", 11170),

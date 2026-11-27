@@ -7,11 +7,20 @@
 //! read (parse-don't-validate), so a file the service cannot run with
 //! fails the load naming the field (guider.md § Configuration validation
 //! at startup).
+//!
+//! The types derive the schema the setup page renders (guider.md § Setup
+//! page). A bounded number's schema states the inclusive bounds the form
+//! can check beside its field; a bound it may not reach is the type's to
+//! refuse. An unset optional field is left out of the file, never written
+//! as `null` (ADR-016, amendment 8).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use std::borrow::Cow;
+
 use rp_auth::config::ClientAuthConfig;
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 pub use rusty_photon_server_config::ServerConfig;
@@ -24,7 +33,9 @@ pub const DEFAULT_PORT: u16 = 11129;
 /// A bounded config value: `$name($inner)` accepted when `$check(value)`
 /// holds, refused at deserialize with a message naming the field. The
 /// inner type is spelled twice because `serde`'s `try_from` takes the
-/// type as a string literal.
+/// type as a string literal. Its schema is the inner type's, inlined so an
+/// optional one stays a nullable number the page renders, with `schema`'s
+/// keywords (the inclusive bounds the form checks) added.
 macro_rules! bounded {
     (
         $(#[$meta:meta])*
@@ -33,10 +44,12 @@ macro_rules! bounded {
         $check:expr,
         $message:literal
         $(, also: $extra:ident)?
+        $(, schema: { $($key:literal = $value:expr),+ })?
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, $($extra,)? Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, $($extra,)? Serialize, Deserialize, JsonSchema)]
         #[serde(try_from = $inner_lit)]
+        #[schemars(inline $(, extend($($key = $value),+))?)]
         pub struct $name($inner);
 
         impl TryFrom<$inner> for $name {
@@ -76,8 +89,9 @@ macro_rules! duration {
         zero: $zero:literal
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
         #[serde(try_from = "String", into = "String")]
+        #[schemars(inline)]
         pub struct $name(Duration);
 
         impl TryFrom<String> for $name {
@@ -139,7 +153,8 @@ bounded!(
     "camera.binning",
     |v| v >= 1,
     "at least 1",
-    also: Eq
+    also: Eq,
+    schema: { "minimum" = 1 }
 );
 bounded!(
     /// Consecutive failed frames that stop the loop.
@@ -147,7 +162,8 @@ bounded!(
     "camera.max_frame_failures",
     |v| v >= 1,
     "at least 1",
-    also: Eq
+    also: Eq,
+    schema: { "minimum" = 1 }
 );
 bounded!(
     /// Consecutive cycles with a failed mount call that stop the run.
@@ -155,7 +171,8 @@ bounded!(
     "mount.max_failures",
     |v| v >= 1,
     "at least 1",
-    also: Eq
+    also: Eq,
+    schema: { "minimum" = 1 }
 );
 bounded!(
     /// The fewest usable guide stars a frame needs.
@@ -163,7 +180,8 @@ bounded!(
     "stars.min",
     |v| v >= 1,
     "at least 1",
-    also: Eq
+    also: Eq,
+    schema: { "minimum" = 1 }
 );
 bounded!(
     /// How far from where it was last usable a star is looked for, in
@@ -186,7 +204,8 @@ bounded!(
     MassChange(f64 as "f64"),
     "stars.mass_change",
     |v| v.is_finite() && v > 0.0 && v <= 1.0,
-    "a number in (0, 1]"
+    "a number in (0, 1]",
+    schema: { "maximum" = 1.0 }
 );
 bounded!(
     /// How far a calibration leg moves the stars, in pixels.
@@ -208,21 +227,24 @@ bounded!(
     RaAggression(f64 as "f64"),
     "control.ra.aggression",
     |v| v.is_finite() && v > 0.0 && v <= 2.0,
-    "a number in (0, 2]"
+    "a number in (0, 2]",
+    schema: { "maximum" = 2.0 }
 );
 bounded!(
     /// `control.ra.hysteresis`.
     Hysteresis(f64 as "f64"),
     "control.ra.hysteresis",
     |v| v.is_finite() && (0.0..1.0).contains(&v),
-    "a number in [0, 1)"
+    "a number in [0, 1)",
+    schema: { "minimum" = 0.0 }
 );
 bounded!(
     /// `control.dec.aggression`.
     DecAggression(f64 as "f64"),
     "control.dec.aggression",
     |v| v.is_finite() && v > 0.0 && v <= 2.0,
-    "a number in (0, 2]"
+    "a number in (0, 2]",
+    schema: { "maximum" = 2.0 }
 );
 bounded!(
     /// Frames the Dec error stays across the lock before Dec reverses.
@@ -230,14 +252,16 @@ bounded!(
     "control.dec.reversal_frames",
     |v| v >= 1,
     "at least 1",
-    also: Eq
+    also: Eq,
+    schema: { "minimum" = 1 }
 );
 bounded!(
     /// `control.min_move_px`, when set.
     MinMove(f64 as "f64"),
     "control.min_move_px",
     |v| v.is_finite() && v >= 0.0,
-    "a finite number of at least 0"
+    "a finite number of at least 0",
+    schema: { "minimum" = 0.0 }
 );
 bounded!(
     /// Consecutive one-way corrections the error does not follow before
@@ -246,14 +270,16 @@ bounded!(
     "control.runaway.frames",
     |v| v >= 1,
     "at least 1",
-    also: Eq
+    also: Eq,
+    schema: { "minimum" = 1 }
 );
 bounded!(
     /// The error each of the runaway frames must reach, in pixels.
     RunawayMinError(f64 as "f64"),
     "control.runaway.min_error_px",
     |v| v.is_finite() && v >= 0.0,
-    "a finite number of at least 0"
+    "a finite number of at least 0",
+    schema: { "minimum" = 0.0 }
 );
 bounded!(
     /// The settle tolerance, in pixels.
@@ -338,16 +364,20 @@ duration!(
 );
 
 /// The guider's configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// The listener, its TLS and its Basic Auth.
     pub server: ServerConfig,
     /// The only root the device clients trust for an `https://` address,
     /// when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-setup-hint" = "A PEM file: when set, the only root the device clients trust for an https:// address."))]
     pub ca_cert: Option<PathBuf>,
     /// Where the calibration store and the guide logs are kept, when set;
     /// the platform state directory otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-setup-hint" = "Where the calibration and the guide logs are kept; unset, the platform state directory."))]
     pub state_dir: Option<PathBuf>,
     pub devices: DevicesConfig,
     pub optics: OpticsConfig,
@@ -362,9 +392,9 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// The default file: no camera, no mount and no focal length, so the
-    /// service runs and reports what is missing (guider.md § Starting
-    /// idle).
+    /// The default file: no camera address, no mount address and no focal
+    /// length, so the service runs and reports what is missing (guider.md
+    /// § Starting idle).
     fn default() -> Self {
         Self {
             server: ServerConfig::new(DEFAULT_PORT),
@@ -432,54 +462,120 @@ fn default_state_dir() -> Result<PathBuf> {
 }
 
 /// The camera and the mount the guider is a client of, and how often it
-/// reads them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// reads them. Each device's address is checked as the block is read, so
+/// a refusal names which device's it is.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "DevicesFields")]
 pub struct DevicesConfig {
-    /// The guide camera; `null` until an operator names it.
-    pub camera: Option<DeviceAddress>,
-    /// The mount; `null` until an operator names it.
-    pub mount: Option<DeviceAddress>,
+    pub camera: DeviceConfig,
+    pub mount: DeviceConfig,
     pub poll_interval: PollInterval,
 }
 
 impl Default for DevicesConfig {
     fn default() -> Self {
         Self {
-            camera: None,
-            mount: None,
+            camera: DeviceConfig::default(),
+            mount: DeviceConfig::default(),
             poll_interval: PollInterval(Duration::from_secs(10)),
         }
     }
 }
 
-/// Where a device is: the server, the device's position among that
-/// server's devices of its kind, and the server's credential.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DeviceAddress {
-    pub alpaca_url: DeviceUrl,
-    #[serde(default)]
+/// A device the guider is a client of: its server, the device's position
+/// among that server's devices of its kind, and the server's credential.
+/// The configuration names the device once `alpaca_url` is set.
+#[derive(Debug, Clone, Default, Serialize, JsonSchema)]
+pub struct DeviceConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpaca_url: Option<DeviceUrl>,
     pub device_number: u32,
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<ClientAuthConfig>,
 }
 
-/// An `http://` or `https://` URL of an Alpaca server.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct DeviceUrl(String);
+/// [`DevicesConfig`] as the file holds it, before each device's address
+/// is checked.
+#[derive(Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+struct DevicesFields {
+    camera: DeviceFields,
+    mount: DeviceFields,
+    poll_interval: PollInterval,
+}
 
-impl TryFrom<String> for DeviceUrl {
+impl Default for DevicesFields {
+    fn default() -> Self {
+        Self {
+            camera: DeviceFields::default(),
+            mount: DeviceFields::default(),
+            poll_interval: DevicesConfig::default().poll_interval,
+        }
+    }
+}
+
+/// [`DeviceConfig`] as the file holds it.
+#[derive(Default, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+struct DeviceFields {
+    #[schemars(extend("x-setup-hint" = "The device's Alpaca server, an http:// or https:// URL such as http://localhost:11121; unset until the device is named."))]
+    alpaca_url: Option<String>,
+    #[schemars(extend("x-setup-hint" = "The device's position among its server's devices of its kind, from 0."))]
+    device_number: u32,
+    auth: Option<ClientAuthConfig>,
+}
+
+impl DeviceFields {
+    /// The device as the configuration names it, its address checked as
+    /// the field `field`.
+    fn named(self, field: &str) -> std::result::Result<DeviceConfig, String> {
+        Ok(DeviceConfig {
+            alpaca_url: self
+                .alpaca_url
+                .map(|text| DeviceUrl::parse(field, text))
+                .transpose()?,
+            device_number: self.device_number,
+            auth: self.auth,
+        })
+    }
+}
+
+impl TryFrom<DevicesFields> for DevicesConfig {
     type Error = String;
 
-    fn try_from(text: String) -> std::result::Result<Self, Self::Error> {
+    fn try_from(fields: DevicesFields) -> std::result::Result<Self, Self::Error> {
+        Ok(Self {
+            camera: fields.camera.named("devices.camera.alpaca_url")?,
+            mount: fields.mount.named("devices.mount.alpaca_url")?,
+            poll_interval: fields.poll_interval,
+        })
+    }
+}
+
+/// An `http://` or `https://` URL of an Alpaca server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(into = "String")]
+pub struct DeviceUrl(String);
+
+impl DeviceUrl {
+    /// `text` as the URL of the field `field`.
+    ///
+    /// # Errors
+    ///
+    /// A message naming `field` when `text` is not an `http://` or
+    /// `https://` URL.
+    pub fn parse(field: &str, text: String) -> std::result::Result<Self, String> {
         match reqwest::Url::parse(&text) {
             Ok(url) if matches!(url.scheme(), "http" | "https") => Ok(Self(text)),
             _ => Err(format!(
-                "alpaca_url must be an http:// or https:// URL (got {text:?})"
+                "{field} must be an http:// or https:// URL (got {text:?})"
             )),
         }
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -489,30 +585,27 @@ impl From<DeviceUrl> for String {
     }
 }
 
-impl DeviceUrl {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// The guide scope.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct OpticsConfig {
-    /// `null` until an operator names it.
+    /// Unset until an operator names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-setup-hint" = "The guide scope's focal length in millimetres: the same number as the focal_length_mm of rp's guiding train."))]
     pub focal_length_mm: Option<FocalLength>,
 }
 
 /// The frames the guider takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CameraConfig {
     pub exposure: Exposure,
     pub binning: Binning,
-    /// Written to the camera when set; `null` leaves its value alone.
+    /// Written to the camera when set; unset leaves its value alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub gain: Option<i32>,
-    /// Written to the camera when set; `null` leaves its value alone.
+    /// Written to the camera when set; unset leaves its value alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<i32>,
     pub frame_timeout: FrameTimeout,
     pub max_frame_failures: MaxFrameFailures,
@@ -532,7 +625,7 @@ impl Default for CameraConfig {
 }
 
 /// The pulses. `min_pulse` is shorter than `max_pulse`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "MountFields")]
 pub struct MountConfig {
     pub min_pulse: MinPulse,
@@ -554,7 +647,7 @@ impl Default for MountConfig {
 
 /// [`MountConfig`] as the file holds it, before the two pulse bounds are
 /// held to each other.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct MountFields {
     min_pulse: MinPulse,
@@ -601,7 +694,7 @@ impl TryFrom<MountFields> for MountConfig {
 }
 
 /// The guide stars. `min` is at most `max`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "StarsFields")]
 pub struct StarsConfig {
     /// The most guide stars kept.
@@ -625,7 +718,7 @@ impl Default for StarsConfig {
 }
 
 /// [`StarsConfig`] as the file holds it, before `min` is held to `max`.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct StarsFields {
     max: u32,
@@ -676,7 +769,7 @@ impl TryFrom<StarsFields> for StarsConfig {
 }
 
 /// The calibration. `steps` is at least 4 and at most `max_steps`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "CalibrationFields")]
 pub struct CalibrationConfig {
     pub distance_px: CalibrationDistance,
@@ -705,10 +798,11 @@ impl Default for CalibrationConfig {
 
 /// [`CalibrationConfig`] as the file holds it, before `steps` is held to
 /// its bounds.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct CalibrationFields {
     distance_px: CalibrationDistance,
+    #[schemars(extend("minimum" = MIN_CALIBRATION_STEPS))]
     steps: u32,
     max_steps: u32,
     backlash_clear_px: BacklashClear,
@@ -768,18 +862,19 @@ impl TryFrom<CalibrationFields> for CalibrationConfig {
 }
 
 /// The controllers (guider.md § Control).
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ControlConfig {
     pub ra: RaControl,
     pub dec: DecControl,
-    /// `null` uses the formula of guider.md § Control.
+    /// Unset uses the formula of guider.md § Control.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_move_px: Option<MinMove>,
     pub runaway: RunawayConfig,
 }
 
 /// `control.ra`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RaControl {
     pub aggression: RaAggression,
@@ -796,7 +891,7 @@ impl Default for RaControl {
 }
 
 /// `control.dec`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DecControl {
     pub mode: DecMode,
@@ -855,8 +950,23 @@ impl From<DecMode> for &'static str {
     }
 }
 
+/// The four names, so the page offers them as a choice.
+impl JsonSchema for DecMode {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "DecMode".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({ "type": "string", "enum": ["auto", "north", "south", "off"] })
+    }
+}
+
 /// `control.runaway`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunawayConfig {
     pub frames: RunawayFrames,
@@ -873,7 +983,7 @@ impl Default for RunawayConfig {
 }
 
 /// The settle defaults of `guiding/start` and `dither`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SettlingConfig {
     pub pixels: SettlePixels,
@@ -892,7 +1002,7 @@ impl Default for SettlingConfig {
 }
 
 /// The guide log (guider.md § Guide log).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct GuideLogConfig {
     pub enabled: bool,
@@ -964,7 +1074,7 @@ mod tests {
     use super::*;
 
     /// The default file holds every default of guider.md § Configuration,
-    /// with no camera, no mount and no focal length.
+    /// with no camera address, no mount address and no focal length.
     #[test]
     fn the_default_file_holds_the_documented_defaults() {
         let scaffold = default_scaffold().unwrap();
@@ -972,15 +1082,15 @@ mod tests {
             scaffold,
             json!({
                 "server": { "port": 11129, "bind_address": "0.0.0.0" },
-                "ca_cert": null,
-                "state_dir": null,
-                "devices": { "camera": null, "mount": null, "poll_interval": "10s" },
-                "optics": { "focal_length_mm": null },
+                "devices": {
+                    "camera": { "device_number": 0 },
+                    "mount": { "device_number": 0 },
+                    "poll_interval": "10s"
+                },
+                "optics": {},
                 "camera": {
                     "exposure": "2s",
                     "binning": 1,
-                    "gain": null,
-                    "offset": null,
                     "frame_timeout": "10s",
                     "max_frame_failures": 3
                 },
@@ -1008,7 +1118,6 @@ mod tests {
                 "control": {
                     "ra": { "aggression": 0.7, "hysteresis": 0.1 },
                     "dec": { "mode": "auto", "aggression": 1.0, "reversal_frames": 3 },
-                    "min_move_px": null,
                     "runaway": { "frames": 15, "min_error_px": 3.0 }
                 },
                 "settling": { "pixels": 0.5, "time": "10s", "timeout": "1m" },
@@ -1038,23 +1147,20 @@ mod tests {
     #[test]
     fn the_documented_example_loads() {
         let config: Config = serde_json::from_value(json!({
-            "server": { "port": 11129, "bind_address": "0.0.0.0", "tls": null, "auth": null },
-            "ca_cert": null,
-            "state_dir": null,
+            "server": { "port": 11129, "bind_address": "0.0.0.0" },
             "devices": {
-                "camera": { "alpaca_url": "http://localhost:11121", "device_number": 0, "auth": null },
-                "mount": { "alpaca_url": "http://localhost:11117", "device_number": 0, "auth": null },
+                "camera": { "alpaca_url": "http://localhost:11121", "device_number": 0 },
+                "mount": { "alpaca_url": "http://localhost:11117", "device_number": 0 },
                 "poll_interval": "10s"
             },
             "optics": { "focal_length_mm": 200.0 },
-            "camera": { "exposure": "2s", "binning": 1, "gain": null, "offset": null, "frame_timeout": "10s", "max_frame_failures": 3 },
+            "camera": { "exposure": "2s", "binning": 1, "frame_timeout": "10s", "max_frame_failures": 3 },
             "mount": { "min_pulse": "20ms", "max_pulse": "2500ms", "pulse_timeout": "2s", "max_failures": 3 },
             "stars": { "max": 8, "min": 1, "search_region_px": 15, "min_snr": 3.0, "mass_change": 0.5 },
             "calibration": { "distance_px": 25, "steps": 12, "max_steps": 60, "backlash_clear_px": 3, "fallback_step": "750ms", "timeout": "10m" },
             "control": {
                 "ra": { "aggression": 0.7, "hysteresis": 0.1 },
                 "dec": { "mode": "auto", "aggression": 1.0, "reversal_frames": 3 },
-                "min_move_px": null,
                 "runaway": { "frames": 15, "min_error_px": 3.0 }
             },
             "settling": { "pixels": 0.5, "time": "10s", "timeout": "60s" },
@@ -1068,28 +1174,54 @@ mod tests {
             config.optics.focal_length_mm.map(FocalLength::get),
             Some(200.0)
         );
-        let camera = config.devices.camera.unwrap();
-        assert_eq!(camera.alpaca_url.as_str(), "http://localhost:11121");
+        let camera = config.devices.camera;
+        assert_eq!(
+            camera.alpaca_url.as_ref().map(DeviceUrl::as_str),
+            Some("http://localhost:11121")
+        );
         assert_eq!(camera.device_number, 0);
     }
 
-    #[test]
-    fn a_device_address_takes_device_number_0_and_no_auth_by_default() {
-        let address: DeviceAddress =
-            serde_json::from_value(json!({ "alpaca_url": "https://rig.local:11121" })).unwrap();
-        assert_eq!(address.device_number, 0);
-        assert!(address.auth.is_none());
+    fn devices(value: serde_json::Value) -> std::result::Result<DevicesConfig, String> {
+        serde_json::from_value(value).map_err(|e| e.to_string())
     }
 
     #[test]
-    fn a_device_address_refuses_a_field_it_does_not_have() {
-        let error = serde_json::from_value::<DeviceAddress>(
-            json!({ "alpaca_url": "http://rig:11121", "number": 1 }),
-        )
-        .unwrap_err();
-        assert!(
-            error.to_string().contains("unknown field `number`"),
-            "{error}"
+    fn a_device_takes_device_number_0_and_no_auth_by_default() {
+        let devices =
+            devices(json!({ "camera": { "alpaca_url": "https://rig.local:11121" } })).unwrap();
+        assert_eq!(devices.camera.device_number, 0);
+        assert!(devices.camera.auth.is_none());
+        assert!(devices.mount.alpaca_url.is_none());
+    }
+
+    #[test]
+    fn a_device_refuses_a_field_it_does_not_have() {
+        let error = devices(json!({ "camera": { "alpaca_url": "http://rig:11121", "number": 1 } }))
+            .unwrap_err();
+        assert!(error.contains("unknown field `number`"), "{error}");
+    }
+
+    #[test]
+    fn an_address_that_is_not_http_names_its_device() {
+        assert_eq!(
+            devices(json!({ "camera": { "alpaca_url": "ftp://camera:1" } })).unwrap_err(),
+            "devices.camera.alpaca_url must be an http:// or https:// URL (got \"ftp://camera:1\")"
+        );
+        assert_eq!(
+            devices(json!({ "mount": { "alpaca_url": "localhost:11117" } })).unwrap_err(),
+            "devices.mount.alpaca_url must be an http:// or https:// URL (got \"localhost:11117\")"
+        );
+    }
+
+    #[test]
+    fn a_device_without_an_address_is_not_named_and_keeps_its_number() {
+        let devices = devices(json!({ "mount": { "device_number": 2 } })).unwrap();
+        assert!(devices.mount.alpaca_url.is_none());
+        assert_eq!(devices.mount.device_number, 2);
+        assert_eq!(
+            serde_json::to_value(&devices.mount).unwrap(),
+            json!({ "device_number": 2 })
         );
     }
 
@@ -1223,5 +1355,167 @@ mod tests {
         CliOverrides::default().apply(&mut config);
         assert_eq!(config.server.port, DEFAULT_PORT);
         assert_eq!(config.server.bind_address.to_string(), "0.0.0.0");
+    }
+}
+
+/// What the setup page renders of the configuration's schema
+/// (guider.md § Setup page): the walker's view of each field the page
+/// relies on.
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod setup_schema {
+    use rusty_photon_setup::{FieldKind, FieldModel};
+
+    use super::Config;
+
+    fn model() -> FieldModel {
+        let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();
+        FieldModel::from_schema(&schema)
+    }
+
+    fn kind(name: &str) -> FieldKind {
+        model()
+            .field(name)
+            .unwrap_or_else(|| panic!("the page has no field {name}"))
+            .kind()
+            .clone()
+    }
+
+    #[test]
+    fn each_device_is_an_address_the_page_can_clear_and_a_number() {
+        for device in ["camera", "mount"] {
+            assert_eq!(
+                kind(&format!("devices.{device}.alpaca_url")),
+                FieldKind::Str { nullable: true }
+            );
+            assert!(matches!(
+                kind(&format!("devices.{device}.device_number")),
+                FieldKind::Int {
+                    nullable: false,
+                    min: Some(0),
+                    ..
+                }
+            ));
+            assert_eq!(kind(&format!("devices.{device}.auth")), FieldKind::FileOnly);
+        }
+    }
+
+    #[test]
+    fn the_focal_length_and_the_minimum_move_are_numbers_the_page_can_clear() {
+        assert!(matches!(
+            kind("optics.focal_length_mm"),
+            FieldKind::Num { nullable: true, .. }
+        ));
+        assert_eq!(
+            kind("control.min_move_px"),
+            FieldKind::Num {
+                nullable: true,
+                min: Some(0.0),
+                max: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_number_states_the_inclusive_bounds_the_form_checks() {
+        assert_eq!(
+            kind("camera.binning"),
+            FieldKind::Int {
+                nullable: false,
+                min: Some(1),
+                max: Some(255)
+            }
+        );
+        assert!(matches!(
+            kind("calibration.steps"),
+            FieldKind::Int { min: Some(4), .. }
+        ));
+        assert_eq!(
+            kind("stars.mass_change"),
+            FieldKind::Num {
+                nullable: false,
+                min: None,
+                max: Some(1.0)
+            }
+        );
+        assert_eq!(
+            kind("control.ra.hysteresis"),
+            FieldKind::Num {
+                nullable: false,
+                min: Some(0.0),
+                max: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_dec_mode_is_a_choice_of_its_four_names() {
+        let FieldKind::Choice { options } = kind("control.dec.mode") else {
+            panic!("control.dec.mode is not a choice");
+        };
+        let values: Vec<&str> = options.iter().map(|o| o.value.as_str()).collect();
+        assert_eq!(values, ["auto", "north", "south", "off"]);
+    }
+
+    #[test]
+    fn durations_and_paths_are_text() {
+        assert_eq!(kind("camera.exposure"), FieldKind::Str { nullable: false });
+        assert_eq!(kind("stop_timeout"), FieldKind::Str { nullable: false });
+        assert_eq!(kind("ca_cert"), FieldKind::Str { nullable: true });
+        assert_eq!(kind("state_dir"), FieldKind::Str { nullable: true });
+    }
+
+    #[test]
+    fn the_listeners_tls_is_edited_in_the_file() {
+        assert_eq!(kind("server.tls"), FieldKind::FileOnly);
+    }
+
+    #[test]
+    fn the_device_fields_carry_their_hints() {
+        let model = model();
+        let hint = |name: &str| model.field(name).and_then(|f| f.hint()).unwrap_or_default();
+        assert!(hint("devices.camera.alpaca_url").contains("http://"));
+        assert!(hint("optics.focal_length_mm").contains("guiding train"));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod persisted_config_shape {
+    use rusty_photon_server_config::unset::explicit_nulls;
+
+    use super::Config;
+
+    /// An unset optional field is spelled by its key's absence, never by an
+    /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
+    /// A field that grows without `skip_serializing_if` trips here rather
+    /// than filling operators' config files with nulls.
+    #[test]
+    fn the_default_config_persists_no_explicit_nulls() {
+        let persisted = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(
+            explicit_nulls(&persisted),
+            Vec::<String>::new(),
+            "unset optional fields must be omitted, not written as null: {persisted}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod doctor_toml_parity {
+    use rusty_photon_server_config::doctor_toml::{parse, ServerClass};
+
+    use super::Config;
+
+    /// `pkg/doctor.toml` is this service's catalog entry for
+    /// `rusty-photon-doctor` and must match the config defaults
+    /// (docs/services/doctor.md §The derived catalog).
+    #[test]
+    fn pkg_doctor_toml_matches_config_defaults() {
+        let meta = parse(include_str!("../pkg/doctor.toml")).unwrap();
+        assert_eq!(meta.port, Config::default().server.port);
+        assert_eq!(meta.class, ServerClass::Core);
+        assert!(!meta.config_gated);
     }
 }

@@ -44,6 +44,7 @@ installed.
 | svbony-camera | 11125 | USB camera; its SDK installed on the target by a helper (below) |
 | planetarium-bridge | 11126 | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | serial (dialout; deb adds plugdev) |
+| guider | 11129 | guider: Alpaca client of a camera and a mount; `/health` answers 503 while they are not named |
 | gemini-powerbox-adv3-driver | 11132 | serial (dialout; deb adds plugdev) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
@@ -535,7 +536,9 @@ enabled-but-not-started contract before starting each unit itself, its
 `dnf install` doubles as the proof that every rpm's declared requires
 resolve (nothing is preinstalled to compensate), and erase is verified as
 remove-not-purge — config and state must survive. Gated
-services verify enabled-but-inactive-and-not-failed instead. The serial
+services verify enabled-but-inactive-and-not-failed instead. The guider
+names no device on a fresh install, so its probe takes a `503` from
+`/health` as the answer it is. The serial
 drivers are held to handshake-attempted plus config-self-created, since
 with no device attached they exit and restart rather than serve; the port
 probe applies to them only once a driver settles into a steady `active`
