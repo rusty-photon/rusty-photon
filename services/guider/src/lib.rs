@@ -218,16 +218,57 @@ pub(crate) fn check_ca_cert(path: &Path) -> Result<()> {
 }
 
 /// Create the state directory and prove it can be written to.
-pub(crate) fn prepare_state_dir(path: &Path) -> Result<()> {
+fn prepare_state_dir(path: &Path) -> Result<()> {
     let failed = |message: String| GuiderError::StateDir {
         path: path.to_path_buf(),
         message,
     };
     std::fs::create_dir_all(path).map_err(|e| failed(format!("cannot be created: {e}")))?;
-    let probe = path.join(format!(".guider-write-check-{}", std::process::id()));
-    std::fs::write(&probe, b"").map_err(|e| failed(format!("cannot be written: {e}")))?;
-    std::fs::remove_file(&probe).map_err(|e| failed(format!("cannot be written: {e}")))?;
-    Ok(())
+    probe_write(path).map_err(|e| failed(format!("cannot be written: {e}")))
+}
+
+/// Whether [`prepare_state_dir`] could create the state directory and
+/// write to it, without creating anything: the directory itself when it
+/// exists, else the nearest directory above it that does, is proved
+/// writable by a probe file written and removed again.
+pub(crate) fn check_state_dir(path: &Path) -> Result<()> {
+    let failed = |message: String| GuiderError::StateDir {
+        path: path.to_path_buf(),
+        message,
+    };
+    let mut existing = path;
+    loop {
+        match std::fs::metadata(existing) {
+            Ok(meta) if meta.is_dir() => break,
+            Ok(_) => {
+                return Err(failed(format!(
+                    "cannot be created: {} is not a directory",
+                    existing.display()
+                )))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                existing = match existing.parent() {
+                    Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+                    Some(parent) => parent,
+                    None => return Err(failed(format!("cannot be created: {e}"))),
+                };
+            }
+            Err(e) => return Err(failed(format!("cannot be created: {e}"))),
+        }
+    }
+    let verb = if existing == path {
+        "written"
+    } else {
+        "created"
+    };
+    probe_write(existing).map_err(|e| failed(format!("cannot be {verb}: {e}")))
+}
+
+/// Write a probe file into `dir` and remove it again.
+fn probe_write(dir: &Path) -> std::io::Result<()> {
+    let probe = dir.join(format!(".guider-write-check-{}", std::process::id()));
+    std::fs::write(&probe, b"")?;
+    std::fs::remove_file(&probe)
 }
 
 /// A fully bound guider server ready to accept connections.
@@ -348,6 +389,40 @@ mod tests {
         std::fs::write(&file, b"").unwrap();
         let error = prepare_state_dir(&file.join("state")).unwrap_err();
         assert!(error.to_string().contains("cannot be created"), "{error}");
+    }
+
+    #[test]
+    fn a_state_directory_that_exists_and_can_be_written_passes_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        check_state_dir(dir.path()).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_check_of_a_missing_state_directory_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("a").join("b");
+        check_state_dir(&state).unwrap();
+        assert!(!dir.path().join("a").exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_check_refuses_a_state_directory_under_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        let error = check_state_dir(&file.join("state")).unwrap_err();
+        assert!(error.to_string().contains("cannot be created"), "{error}");
+    }
+
+    #[test]
+    fn the_check_refuses_a_state_directory_that_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        let error = check_state_dir(&file).unwrap_err();
+        assert!(error.to_string().contains("is not a directory"), "{error}");
     }
 
     #[tokio::test]

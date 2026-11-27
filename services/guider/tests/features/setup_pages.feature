@@ -45,6 +45,12 @@ Feature: The guider's setup page
     When I submit the server setup page setting "state_dir" to a directory under a file
     Then the page answers 422 with the error "cannot be created" on "state_dir"
 
+  Scenario: A refused save leaves no state directory behind
+    Given the guider is started for its setup page
+    When I submit the server setup page setting "camera.binning" to "0" and "state_dir" to a directory that does not exist yet
+    Then the page answers 422 with the error "must be a whole number between 1 and 255" on "camera.binning"
+    And the submitted state directory does not exist
+
   # A value the configuration refuses as it is read is refused before the
   # form knows which field it was, so it is named above the form, in a
   # message that names the field.

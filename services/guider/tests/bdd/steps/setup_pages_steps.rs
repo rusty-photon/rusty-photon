@@ -63,6 +63,36 @@ async fn submit_directory_under_file(world: &mut GuiderWorld, name: String) {
     submit(world, &name, &value).await;
 }
 
+#[when(
+    expr = "I submit the server setup page setting {string} to {string} and {string} to a directory that does not exist yet"
+)]
+async fn submit_with_new_directory(
+    world: &mut GuiderWorld,
+    name: String,
+    value: String,
+    directory_field: String,
+) {
+    let directory = world
+        .scratch_path()
+        .join("not-yet")
+        .join("state")
+        .to_string_lossy()
+        .into_owned();
+    setup_pages::submit(
+        world.setup_pages(),
+        setup_pages::SERVER_PATH,
+        &[(&name, &value), (&directory_field, &directory)],
+        None,
+    )
+    .await;
+}
+
+#[then("the submitted state directory does not exist")]
+fn new_directory_absent(world: &mut GuiderWorld) {
+    let top = world.scratch_path().join("not-yet");
+    assert!(!top.exists(), "{} was created", top.display());
+}
+
 #[when(expr = "I submit the server setup page setting {string} to the suite's CA certificate")]
 async fn submit_ca_certificate(world: &mut GuiderWorld, name: String) {
     let pki = tls_auth::shared_pki(env!("CARGO_PKG_NAME")).await;

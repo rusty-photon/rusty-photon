@@ -36,9 +36,9 @@ impl ConfigurableDriver for GuiderDriver {
 
     /// What the next start checks on disk: a `ca_cert` that cannot be read
     /// or holds no certificate, and a state directory that cannot be
-    /// created or written. The state directory is created, as the next
-    /// start would create it. Every other rule is the configuration's own,
-    /// held as it is read.
+    /// created or written. The check creates nothing, so a save that is
+    /// refused, or waits for a confirmation, leaves the disk as it was.
+    /// Every other rule is the configuration's own, held as it is read.
     fn validate(config: &Config) -> Vec<FieldError> {
         let mut errors = Vec::new();
         if let Some(path) = config.ca_cert_path() {
@@ -48,7 +48,7 @@ impl ConfigurableDriver for GuiderDriver {
         }
         if let Err(error) = config
             .state_dir()
-            .and_then(|dir| crate::prepare_state_dir(&dir))
+            .and_then(|dir| crate::check_state_dir(&dir))
         {
             errors.push(field_error("state_dir", error));
         }
@@ -221,11 +221,11 @@ mod tests {
     }
 
     #[test]
-    fn a_state_directory_it_can_write_and_no_ca_cert_are_valid() {
+    fn a_state_directory_it_could_create_and_no_ca_cert_are_valid_and_nothing_is_created() {
         let dir = tempfile::tempdir().unwrap();
         let config = config(json!({ "state_dir": dir.path().join("state") }));
         assert_eq!(GuiderDriver::validate(&config), Vec::new());
-        assert!(dir.path().join("state").is_dir());
+        assert!(!dir.path().join("state").exists());
     }
 
     #[test]

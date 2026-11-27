@@ -106,7 +106,7 @@ process boundary:
 | Category | What | Examples | Process boundary | Supervised by |
 |----------|------|----------|------------------|---------------|
 | **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
-| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP); the [`guider`](guider.md), being built, is the control loop | one process per service | Sentinel restarts on hang/crash |
+| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP); the [`guider`](guider.md) is the control loop | one process per service | Sentinel restarts on hang/crash |
 | **Plugins (extension)** | Separate processes that follow the plugin protocol (event, tool provider): third-party extensions, and first-party capabilities that do not belong in `rp`'s process. | Custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` applies the per-tool safety gate and bounds each webhook delivery and each provider dial, but not a proxied tool call, which runs until the provider answers or the call is cancelled; Sentinel may restart configurable plugins |
 
 The category boundary is **process supervision and lifecycle role**, not
@@ -1487,8 +1487,8 @@ identical to MCP clients:
 1. **Built-in tools** — implemented directly in `rp` (hardware primitives,
    image analysis, planner, V-curve auto-focus, iterative centering).
 2. **rp-managed service tools** — built-in tool surface that proxies to a
-   separate process Sentinel supervises: the plate solver, and the guider,
-   whose service is being built (§ [Guider Service](#guider-service)). The MCP tool itself lives in `rp`; the
+   separate process Sentinel supervises: the plate solver, and the guider
+   (§ [Guider Service](#guider-service)). The MCP tool itself lives in `rp`; the
    wrapped logic runs in the supervised service.
 3. **Third-party plugin tools** — aggregated from plugins running their own
    MCP servers. Discovered at startup via `tools/list` and proxied through

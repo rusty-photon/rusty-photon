@@ -1555,7 +1555,8 @@ are all a rig has to supply.
   a value that would stop the next start is refused, and nothing is
   saved. A number outside the bounds its field states, a `ca_cert` that
   cannot be read or holds no certificate, and a state directory that
-  cannot be created or written are refused beside the field. Any other
+  cannot be created or written are refused beside the field; the check of
+  the state directory creates nothing. Any other
   value the configuration refuses as it is read is named above the
   form, in a message that names the field: a duration that does not
   parse, a number at a bound it may not reach, an address that is not
