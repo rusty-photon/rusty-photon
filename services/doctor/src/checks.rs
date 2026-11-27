@@ -1972,13 +1972,14 @@ fn client_target_joins(ctx: &Context) -> Vec<Check> {
 /// The client-target registry: every URL/CA/auth pointer site the join
 /// family judges, in one table — ui-htmx's `rp` target, rp's
 /// plate-solver/guider clients plus the generic equipment roster and
-/// dialed plugin registrations, sentinel's watchdog `rp_url` and Alpaca
-/// monitors, and the MCP clients' URLs of rp (docs/services/doctor.md
-/// §Client-target joins).
+/// dialed plugin registrations, the guider's camera and mount, sentinel's
+/// watchdog `rp_url` and Alpaca monitors, and the MCP clients' URLs of rp
+/// (docs/services/doctor.md §Client-target joins).
 fn client_targets(ctx: &Context) -> Vec<ClientTarget> {
     let mut targets = Vec::new();
     targets.extend(ui_htmx_targets(ctx));
     targets.extend(rp_targets(ctx));
+    targets.extend(guider_targets(ctx));
     targets.extend(sentinel_targets(ctx));
     targets.extend(mcp_client_targets(ctx));
     targets
@@ -2186,6 +2187,47 @@ fn rp_target(
             current: auth,
         }),
     }
+}
+
+/// The guider's two device clients, `devices.camera` and `devices.mount`
+/// (docs/services/guider.md § Devices and connections): each an
+/// `alpaca_url` with its own `auth`, and both trusting the guider's single
+/// top-level `ca_cert`, the shape rp's equipment roster has. Both checks
+/// are fully fix-eligible, with the same "absent gets it, present is
+/// operator intent" contract as rp's targets.
+fn guider_targets(ctx: &Context) -> Vec<ClientTarget> {
+    let Some(guider) = ctx
+        .scan("guider")
+        .and_then(|s| scan::view::<scan::GuiderView>(s)?.ok())
+    else {
+        return Vec::new();
+    };
+    let ca_cert_present = guider.ca_cert.as_deref().is_some_and(|p| !p.is_empty());
+    let Some(devices) = guider.devices else {
+        return Vec::new();
+    };
+    [("camera", devices.camera), ("mount", devices.mount)]
+        .into_iter()
+        .filter_map(|(kind, device)| {
+            let device = device?;
+            let url = device.alpaca_url?;
+            let field = format!("devices.{kind}.alpaca_url");
+            Some(ClientTarget {
+                client: "guider",
+                transport_field: field.clone(),
+                locator: TargetLocator::Url {
+                    url,
+                    pointer: format!("/devices/{kind}/alpaca_url"),
+                },
+                ca_cert: ("/ca_cert".to_string(), ca_cert_present),
+                auth: Some(AuthTarget {
+                    field,
+                    pointer: format!("/devices/{kind}/auth"),
+                    current: device.auth,
+                }),
+            })
+        })
+        .collect()
 }
 
 /// sentinel's other client targets: the operation watchdog's `rp_url`
@@ -4410,8 +4452,8 @@ mod tests {
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
-            "sentinel.json",
-            serde_json::json!({ "server": { "port": 11114,
+            "guider.json",
+            serde_json::json!({ "server": { "port": 11129,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4419,7 +4461,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 },
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11114" } } } }),
+                                           "guiding": { "url": "http://localhost:11129" } } } }),
         );
         let ctx = config_only_ctx(dir.path());
         let checks = client_target_joins(&ctx);
@@ -4455,8 +4497,8 @@ mod tests {
         let hash = rp_auth::credentials::hash_password("correct-pw").unwrap();
         write_json(
             dir.path(),
-            "sentinel.json",
-            serde_json::json!({ "server": { "port": 11114,
+            "guider.json",
+            serde_json::json!({ "server": { "port": 11129,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4464,7 +4506,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 },
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11114",
+                                           "guiding": { "url": "http://localhost:11129",
                                                         "auth": { "username": "observatory", "password": "wrong-pw" } } } } }),
         );
         let ctx = config_only_ctx(dir.path());
@@ -4481,13 +4523,80 @@ mod tests {
     }
 
     #[test]
+    fn test_guider_device_auth_absent_is_flagged_and_fixed_at_its_own_block() {
+        let dir = tempfile::tempdir().unwrap();
+        stage_pki(dir.path(), "s3cret-pw");
+        let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
+        write_json(
+            dir.path(),
+            "zwo-camera.json",
+            serde_json::json!({ "server": { "port": 11122,
+                "auth": { "username": "observatory", "password_hash": hash } } }),
+        );
+        write_json(
+            dir.path(),
+            "guider.json",
+            serde_json::json!({ "server": { "port": 11129 },
+                "devices": { "camera": { "alpaca_url": "http://localhost:11122" } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = client_target_joins(&ctx);
+        let auth = checks
+            .iter()
+            .find(|c| c.name == "joins.client-auth")
+            .expect("a missing credential must be reported");
+        assert_eq!(auth.status, Status::Warn);
+        assert!(
+            auth.detail.contains("devices.camera.alpaca_url"),
+            "{}",
+            auth.detail
+        );
+        match &auth.fixes[..] {
+            [crate::report::FixOp::SetObject {
+                service,
+                pointer,
+                value,
+            }] => {
+                assert_eq!(service, "guider");
+                assert_eq!(pointer, "/devices/camera/auth");
+                assert_eq!(value["password"], "s3cret-pw");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_a_guider_device_with_no_address_joins_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "star-adventurer-gti.json",
+            serde_json::json!({ "server": { "port": 11117,
+                "tls": { "cert": "/pki/cert.pem", "key": "/pki/key.pem" } } }),
+        );
+        write_json(
+            dir.path(),
+            "guider.json",
+            serde_json::json!({ "server": { "port": 11129 },
+                "devices": { "mount": { "device_number": 0 } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(
+            client_target_joins(&ctx)
+                .iter()
+                .all(|c| c.service.as_deref() != Some("guider")),
+            "a device the guider does not name is no client target"
+        );
+    }
+
+    #[test]
     fn test_rp_guider_matching_credential_and_scheme_is_silent() {
         let dir = tempfile::tempdir().unwrap();
         let hash = rp_auth::credentials::hash_password("s3cret-pw").unwrap();
         write_json(
             dir.path(),
-            "sentinel.json",
-            serde_json::json!({ "server": { "port": 11114,
+            "guider.json",
+            serde_json::json!({ "server": { "port": 11129,
                 "auth": { "username": "observatory", "password_hash": hash } } }),
         );
         write_json(
@@ -4495,7 +4604,7 @@ mod tests {
             "rp.json",
             serde_json::json!({ "server": { "port": 11115 }, "ca_cert": "/pki/ca.pem",
                 "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                           "guiding": { "url": "http://localhost:11114",
+                                           "guiding": { "url": "http://localhost:11129",
                                                         "auth": { "username": "observatory", "password": "s3cret-pw" } } } } }),
         );
         let ctx = config_only_ctx(dir.path());

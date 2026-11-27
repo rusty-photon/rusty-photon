@@ -2,7 +2,10 @@ load("@cr//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 exports_files(
-    ["Cargo.toml"],
+    [
+        "Cargo.toml",
+        "pkg/doctor.toml",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -14,6 +17,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-rolling-stats:rusty-photon-rolling-stats",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rusty-photon-setup:rusty-photon-setup",
     "//crates/rusty-photon-tls:rusty-photon-tls",
 ]
 
@@ -48,6 +52,8 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
+    # The doctor.toml parity test include_str!s the catalog entry.
+    compile_data = ["pkg/doctor.toml"],
     crate = ":guider_lib",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -133,6 +139,14 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# pkg/, which the tools crate's packaging guard reads
+# (tools/rusty-photon-ci/src/pkg_assets.rs).
+filegroup(
+    name = "pkg",
+    srcs = glob(["pkg/**"]),
+    visibility = ["//tools/rusty-photon-ci:__pkg__"],
 )
 
 # The files the tools crate's bare-reference guard reads

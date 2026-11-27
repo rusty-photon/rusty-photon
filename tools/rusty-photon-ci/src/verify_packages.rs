@@ -16,6 +16,8 @@
 //! - a [`SERIAL`] driver exits on its absent device and systemd restarts
 //!   it: it is checked for its handshake attempt in the journal and its
 //!   config, and held to serving only if it settles active;
+//! - an [`UNCONFIGURED_503`] service names no device on a fresh install, so
+//!   its `/health` answers 503, which still shows its listener serves;
 //! - svbony-camera's package does not ship the SDK it links: the
 //!   run checks it is absent and installs it with the helper the package
 //!   carries, as an operator would, before the ordinary checks;
@@ -44,7 +46,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::build_packages::RUNPATH;
-use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL};
+use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL, UNCONFIGURED_503};
 use crate::process::{self, Clock, Cmd, Runner};
 
 /// The packages a run verifies, and how.
@@ -493,14 +495,42 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         let url = format!("http://127.0.0.1:{port}{path}");
         // `--max-time`: a service that binds its port and never answers is
         // what the probe is for.
-        let answered = self.wait_until(30, |run| {
-            run.ok(&["curl", "-fsS", "--max-time", "5", "-o", "/dev/null", &url])
-        });
-        self.require(
-            answered,
-            service,
-            &format!("no HTTP response on port {port} ({path})"),
-        )?;
+        if UNCONFIGURED_503.contains(&service) {
+            let mut last = String::new();
+            let answered = self.wait_until(30, |run| {
+                let code = run.read(&[
+                    "curl",
+                    "-s",
+                    "--max-time",
+                    "5",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    &url,
+                ]);
+                last = if code.is_empty() {
+                    "000".to_owned()
+                } else {
+                    code
+                };
+                last == "200" || last == "503"
+            });
+            self.require(
+                answered,
+                service,
+                &format!("no HTTP response on port {port} ({path}; last code {last})"),
+            )?;
+        } else {
+            let answered = self.wait_until(30, |run| {
+                run.ok(&["curl", "-fsS", "--max-time", "5", "-o", "/dev/null", &url])
+            });
+            self.require(
+                answered,
+                service,
+                &format!("no HTTP response on port {port} ({path})"),
+            )?;
+        }
         match service {
             "sentinel" => self.sentinel(service)?,
             "zwo-camera" => {
@@ -1358,6 +1388,42 @@ mod tests {
                 "podman exec <c> journalctl -u rusty-photon-filemonitor --no-pager -n 40",
                 "podman rm -f <c>",
             ]
+        );
+    }
+
+    #[test]
+    fn the_guider_passes_on_a_503_and_fails_naming_the_last_code_on_no_answer() {
+        let linux = Linux::new(&["guider"]);
+        let mut runner = container_script().on(&c("curl -s "), || Ok("503".to_owned()));
+        linux.verify(&mut runner, &request(None, false)).unwrap();
+        assert!(
+            runner
+                .lines
+                .iter()
+                .any(|line| line.ends_with("http://127.0.0.1:11129/health")),
+            "{:?}",
+            runner.lines
+        );
+        let mut runner = container_script().on(&c("curl -s "), || Err(()));
+        let error = linux
+            .verify(&mut runner, &request(None, false))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "FAIL [guider]: no HTTP response on port 11129 (/health; last code 000)"
+        );
+    }
+
+    #[test]
+    fn the_guider_fails_on_an_answer_that_is_neither_200_nor_503() {
+        let linux = Linux::new(&["guider"]);
+        let mut runner = container_script().on(&c("curl -s "), || Ok("500".to_owned()));
+        let error = linux
+            .verify(&mut runner, &request(None, false))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "FAIL [guider]: no HTTP response on port 11129 (/health; last code 500)"
         );
     }
 

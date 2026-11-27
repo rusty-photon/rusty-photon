@@ -647,17 +647,19 @@ impl Cycle {
 
     /// The guide log's name of the camera.
     fn camera_name(&self) -> String {
-        self.config.devices.camera.as_ref().map_or_else(
+        let camera = &self.config.devices.camera;
+        camera.alpaca_url.as_ref().map_or_else(
             || "Alpaca Camera".to_owned(),
-            |camera| format!("Alpaca Camera {}", camera.device_number),
+            |_| format!("Alpaca Camera {}", camera.device_number),
         )
     }
 
     /// The guide log's name of the mount.
     fn mount_name(&self) -> String {
-        self.config.devices.mount.as_ref().map_or_else(
+        let mount = &self.config.devices.mount;
+        mount.alpaca_url.as_ref().map_or_else(
             || "Alpaca Telescope".to_owned(),
-            |mount| format!("Alpaca Telescope {}", mount.device_number),
+            |_| format!("Alpaca Telescope {}", mount.device_number),
         )
     }
 
@@ -1562,6 +1564,18 @@ mod tests {
         assert_eq!(sensor.max_adu, 4_095);
     }
 
+    /// A client of a server that does not listen: every call to it fails.
+    fn unanswered_client() -> DeviceClient {
+        let device = crate::config::DeviceConfig {
+            alpaca_url: Some(
+                crate::config::DeviceUrl::parse("alpaca_url", "http://127.0.0.1:9".to_owned())
+                    .unwrap(),
+            ),
+            ..crate::config::DeviceConfig::default()
+        };
+        DeviceClient::of(&device, None).unwrap().unwrap()
+    }
+
     fn exposer(camera: Arc<FakeCamera>) -> Exposer {
         Exposer {
             camera,
@@ -1622,10 +1636,7 @@ mod tests {
         exposer.in_flight = Some(exposer.in_flight_from(Instant::now()));
         // A server that does not listen: the read after the ended exposure
         // fails.
-        let address: crate::config::DeviceAddress =
-            serde_json::from_value(serde_json::json!({ "alpaca_url": "http://127.0.0.1:9" }))
-                .unwrap();
-        let client = DeviceClient::new(&address, None).unwrap();
+        let client = unanswered_client();
         let mut sensor = camera_of(2.0);
         let written =
             write_settings(Settings::AfterFailure, &client, &mut sensor, &mut exposer).await;
@@ -1704,9 +1715,6 @@ mod tests {
             "optics": { "focal_length_mm": 200.0 }
         }))
         .unwrap();
-        let address: crate::config::DeviceAddress =
-            serde_json::from_value(serde_json::json!({ "alpaca_url": "http://127.0.0.1:9" }))
-                .unwrap();
         let sensor = camera_of(2.0);
         let reading = Reading {
             sensor: rp_guiding::SensorType::Monochrome,
@@ -1718,7 +1726,7 @@ mod tests {
             params: star_params(&config),
             max_failures: 3,
             exposer: exposer(Arc::new(FakeCamera::default())),
-            client: Arc::new(DeviceClient::new(&address, None).unwrap()),
+            client: Arc::new(unanswered_client()),
             sensor,
             reading,
             devices,

@@ -15,8 +15,9 @@
 //!   and its log says why;
 //! - a [`SERIAL`] driver writes its config and logs its handshake attempt,
 //!   and the first of them a second attempt, which only a restart makes;
-//! - the rest run, write their config and answer their port, and
-//!   ui-htmx's config names rp and no drivers. qhy-camera is one of them
+//! - the rest run, write their config and answer their port, an
+//!   [`UNCONFIGURED_503`] service's `/health` with 503 while its config
+//!   names no device, and ui-htmx's config names rp and no drivers. qhy-camera is one of them
 //!   whether or not `qhyccd.dll`, the operator's, is installed: without it
 //!   the service serves no camera, and its log must name the DLL. A loader
 //!   crash, which its delay-load link prevents, would neither run nor serve;
@@ -47,7 +48,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL};
+use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL, UNCONFIGURED_503};
 use crate::process::{self, Clock, Cmd, Runner};
 
 /// The MSI a run verifies, and how.
@@ -753,11 +754,25 @@ impl<R: Runner, C: Clock> Run<'_, R, C> {
         if let Some(credential) = &credential {
             args.extend(["-K", credential]);
         }
-        args.extend(["-fsS", &url]);
-        let probe = Cmd::new("curl", &args);
-        let answered = self.wait_until(60, |run| {
-            run.runner.code(&probe).is_ok_and(|code| code == Some(0))
-        });
+        let answered = if UNCONFIGURED_503.contains(&service) {
+            // Its config names no device on a fresh install, so its
+            // `/health` answers 503, which still shows the listener serves.
+            args.extend(["-s", "-w", "%{http_code}", &url]);
+            let probe = Cmd::new("curl", &args);
+            self.wait_until(60, |run| {
+                run.runner
+                    .read(&probe)
+                    .ok()
+                    .and_then(|code| code.trim().parse::<u16>().ok())
+                    .is_some_and(|code| code == 200 || code == 503)
+            })
+        } else {
+            args.extend(["-fsS", &url]);
+            let probe = Cmd::new("curl", &args);
+            self.wait_until(60, |run| {
+                run.runner.code(&probe).is_ok_and(|code| code == Some(0))
+            })
+        };
         self.require(
             answered,
             service,
@@ -1241,6 +1256,7 @@ mod tests {
     const SERVICES: &[&str] = &[
         "filemonitor",
         "focus-model",
+        "guider",
         "ppba-driver",
         "qhy-camera",
         "sentinel",
@@ -1656,7 +1672,7 @@ mod tests {
         let fixture = Fixture::new();
         let sim = fixture.sim();
         let (result, lines) = fixture.verify(&sim, Script::default(), &Request::default());
-        assert_eq!(result.unwrap(), 9, "svbony-camera is not in the MSI");
+        assert_eq!(result.unwrap(), 10, "svbony-camera is not in the MSI");
         let msi = "<dist>/0.1.0/rusty-photon-0.1.0-x64.msi";
         assert_eq!(
             lines,
@@ -1665,6 +1681,7 @@ mod tests {
                 powershell(SERVICES_PS),
                 format!("msiexec /i {msi} /qn /norestart /l*v <temp>/rusty-photon-msi-install.log ADDLOCAL=ALL"),
                 curl(11111, "/management/apiversions"),
+                "curl --max-time 5 -o NUL -s -w %{http_code} http://127.0.0.1:11129/health".to_owned(),
                 curl(11121, "/management/apiversions"),
                 curl(11114, "/health"),
                 curl(11120, "/health"),
@@ -1758,6 +1775,8 @@ mod tests {
             (Box::new(|sim| sim.broken = Some(Broken::GatedConfig)), Script::default(), "FAIL [focus-model]: config exists on a fresh install of a gated service"),
             (Box::new(|sim| sim.broken = Some(Broken::NoConfig("filemonitor"))), Script::default(), "FAIL [filemonitor]: timed out after 30s waiting for config self-created at "),
             (Box::new(|sim| sim.broken = Some(Broken::NoConfig("qhy-camera"))), Script::default(), "FAIL [qhy-camera]: timed out after 30s waiting for config self-created at "),
+            (Box::new(|sim| sim.broken = Some(Broken::NoConfig("guider"))), Script::default(), "FAIL [guider]: timed out after 30s waiting for config self-created at "),
+            (Box::new(|_| ()), Script::default().on("curl --max-time 5 -o NUL -s -w", || Ok("500".to_owned())), "FAIL [guider]: timed out after 60s waiting for an HTTP response on http://127.0.0.1:11129/health"),
             (Box::new(|sim| sim.broken = Some(Broken::NoLog)), Script::default(), "FAIL [zwo-focuser]: no rolling log file under "),
             (Box::new(|sim| sim.broken = Some(Broken::FeatureRemoveKeeps("rusty-photon-zwo-camera.exe"))), Script::default(), "FAIL [zwo-camera]: exe still present after feature remove"),
             (Box::new(|sim| sim.broken = Some(Broken::FeatureRemoveTakes("EAF_focuser.dll"))), Script::default(), "FAIL [zwo-focuser]: EAF_focuser.dll disappeared with the zwo-camera feature"),
@@ -1793,7 +1812,7 @@ mod tests {
         };
         assert_eq!(
             doctor("--json", 1).unwrap(),
-            9,
+            10,
             "a diagnosis with problems passes"
         );
         assert_eq!(
@@ -1875,7 +1894,7 @@ mod tests {
         let sim = fixture.sim();
         sim.borrow_mut().qhy_log = "Service started successfully\n";
         let (result, lines) = fixture.verify(&sim, Script::default(), &Request::default());
-        assert_eq!(result.unwrap(), 9, "{lines:#?}");
+        assert_eq!(result.unwrap(), 10, "{lines:#?}");
     }
 
     #[test]
@@ -1944,7 +1963,7 @@ mod tests {
             Ok(String::new())
         });
         let (result, lines) = fixture.verify(&sim, script, &upgrade(&fixture));
-        assert_eq!(result.unwrap(), 9);
+        assert_eq!(result.unwrap(), 10);
         assert_eq!(sim.borrow().logs_cleared_at_install, Some(true));
         assert_eq!(*credential.borrow(), "user = \"observatory:s3cret\"\n");
         let msi = format!("<dist>/{NIGHTLY}/rusty-photon-{NIGHTLY}-x64.msi");
@@ -1972,6 +1991,7 @@ mod tests {
         for service in [
             "filemonitor",
             "focus-model",
+            "guider",
             "qhy-camera",
             "sentinel",
             "ui-htmx",
@@ -2141,7 +2161,7 @@ mod tests {
                 let path = format!("{}: ", logs.display());
                 assert!(error.starts_with(&path), "{error}");
             } else {
-                assert_eq!(result.unwrap(), 9);
+                assert_eq!(result.unwrap(), 10);
             }
         }
     }
@@ -2179,7 +2199,7 @@ mod tests {
             ..Request::default()
         };
         let (result, lines) = fixture.verify(&sim, Script::default(), &request);
-        assert_eq!(result.unwrap(), 9);
+        assert_eq!(result.unwrap(), 10);
         assert!(sim.borrow().installed);
         assert!(
             lines.last().unwrap().ends_with("REMOVE=ZwoCamera"),
@@ -2308,6 +2328,7 @@ mod tests {
             active,
             [
                 "filemonitor",
+                "guider",
                 "qhy-camera",
                 "sentinel",
                 "ui-htmx",

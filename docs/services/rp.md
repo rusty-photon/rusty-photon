@@ -5275,9 +5275,9 @@ credentials to an auth-enabled guider; `doctor --fix` wires it from
 the observatory credential once the guider's own `server.auth` is on
 (`joins.client-auth`, `docs/services/doctor.md` §Client-target joins).
 
-**The guider service is being built** ([`guider.md`](guider.md)): it
-guides, and is not packaged yet, so no rig guides under `rp` yet. `rp`'s
-side of its contract is built: the guider tools, the check and the
+**The guider service is built** ([`guider.md`](guider.md)) and has not
+yet guided on sky, so no rig guides under `rp` yet. `rp`'s side of its
+contract is built: the guider tools, the check and the
 watch below, the [guide camera guard](#the-guide-camera-guard) that a
 capture through the guide camera, a guiding train's
 [train lease](#train-lease) and a start of guiding hold, the

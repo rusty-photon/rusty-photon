@@ -292,28 +292,28 @@ async fn health(State(state): State<AppState>) -> (StatusCode, Json<HealthBody>)
 /// answer, is not listed or is not connected.
 fn problems(config: &Config, devices: &DevicesState) -> Vec<String> {
     let mut problems = Vec::new();
-    if config.devices.camera.is_none() {
+    if config.devices.camera.alpaca_url.is_none() {
         problems.push("the configuration names no camera".to_owned());
     }
-    if config.devices.mount.is_none() {
+    if config.devices.mount.alpaca_url.is_none() {
         problems.push("the configuration names no mount".to_owned());
     }
     if config.optics.focal_length_mm.is_none() {
         problems.push("the configuration names no focal length".to_owned());
     }
-    if let (Some(camera), Some(address)) = (&devices.camera, &config.devices.camera) {
+    if let Some(camera) = &devices.camera {
         problems.extend(reach_problem(
             "camera",
             "camera",
-            address.device_number,
+            config.devices.camera.device_number,
             camera.reach,
         ));
     }
-    if let (Some(mount), Some(address)) = (&devices.mount, &config.devices.mount) {
+    if let Some(mount) = &devices.mount {
         problems.extend(reach_problem(
             "mount",
             "telescope",
-            address.device_number,
+            config.devices.mount.device_number,
             mount.reach,
         ));
     }

@@ -494,16 +494,18 @@ struct ClientWiring {
     service: &'static str,
     /// `false` for services with only a `ca_cert` setting — no
     /// `service_auth`, because they carry no shared client pair. `rp`'s
-    /// outbound Alpaca / plate-solver / guider clients trust the
-    /// observatory CA the same way, but carry a credential per target
-    /// (`auth` beside each address), which `joins.client-auth` wires.
+    /// outbound Alpaca / plate-solver / guider clients and the guider's
+    /// camera and mount clients trust the observatory CA the same way, but
+    /// carry a credential per target (`auth` beside each address), which
+    /// `joins.client-auth` wires.
     wire_auth: bool,
     prefix: &'static str,
     /// The keys beside the pair, under `prefix`, that hold the client's
     /// URLs of rp — the addresses the pair authenticates, which
     /// `joins.client-transport` judges ([`rp_url_fields`]). Empty for
     /// sentinel, whose watchdog `rp_url` nests deeper and is judged with
-    /// its monitors, and for rp, the target itself.
+    /// its monitors, for rp, the target itself, and for the guider, which
+    /// is no client of rp.
     rp_urls: &'static [&'static str],
 }
 
@@ -546,6 +548,12 @@ const CLIENT_WIRING: &[ClientWiring] = &[
     },
     ClientWiring {
         service: "rp",
+        wire_auth: false,
+        prefix: "",
+        rp_urls: &[],
+    },
+    ClientWiring {
+        service: "guider",
         wire_auth: false,
         prefix: "",
         rp_urls: &[],

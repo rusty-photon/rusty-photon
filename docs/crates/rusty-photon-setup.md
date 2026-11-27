@@ -346,9 +346,11 @@ so a default the file leaves out, written back by the page, or a blank
 optional field submitted as `null` is no change — and a block the save itself
 rewrote is kept, as the operator's for the new server. The BFF
 binds `rp.auth` to `rp.base_url` and `rp.ca_cert_path`
-([ui-htmx.md](../services/ui-htmx.md) § Setup page), and planetarium-bridge
+([ui-htmx.md](../services/ui-htmx.md) § Setup page), planetarium-bridge
 binds `rp.service_auth` to `rp.mcp_server_url` and `rp.ca_cert`
-([planetarium-bridge.md](../services/planetarium-bridge.md) § Setup pages).
+([planetarium-bridge.md](../services/planetarium-bridge.md) § Setup pages),
+and the guider binds each device's `auth` to that device's `alpaca_url`
+and to `ca_cert` ([guider.md](../services/guider.md) § Setup page).
 
 ## Cross-site protection
 

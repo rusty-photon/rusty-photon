@@ -50,6 +50,7 @@ pub mod mount;
 pub mod preview;
 pub mod routes;
 pub mod sensor;
+pub mod setup;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod test_camera;
@@ -74,17 +75,29 @@ use crate::guider::Guider;
 /// Builder for the guider server.
 pub struct ServerBuilder {
     config: Option<Config>,
+    setup: Option<setup::Pages>,
 }
 
 impl ServerBuilder {
     #[must_use]
     pub const fn new() -> Self {
-        Self { config: None }
+        Self {
+            config: None,
+            setup: None,
+        }
     }
 
     #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    /// Serve the setup page at `/setup`, behind the listener's TLS and
+    /// Basic Auth (guider.md § Setup page).
+    #[must_use]
+    pub fn with_setup_pages(mut self, pages: setup::Pages) -> Self {
+        self.setup = Some(pages);
         self
     }
 
@@ -118,18 +131,8 @@ impl ServerBuilder {
         debug!(path = %state_dir.display(), "state directory ready");
 
         let ca_cert = config.ca_cert_path();
-        let camera = config
-            .devices
-            .camera
-            .as_ref()
-            .map(|address| DeviceClient::new(address, ca_cert).map(Arc::new))
-            .transpose()?;
-        let mount = config
-            .devices
-            .mount
-            .as_ref()
-            .map(|address| DeviceClient::new(address, ca_cert).map(Arc::new))
-            .transpose()?;
+        let camera = DeviceClient::of(&config.devices.camera, ca_cert)?.map(Arc::new);
+        let mount = DeviceClient::of(&config.devices.mount, ca_cert)?.map(Arc::new);
         let (poll, devices) = DevicePoll::new(
             camera.clone(),
             mount.clone(),
@@ -150,8 +153,12 @@ impl ServerBuilder {
         ));
         let router =
             routes::build_router(routes::AppState::new(config, devices, Arc::clone(&guider)));
+        let router = match self.setup {
+            Some(pages) => router.merge(setup::router(pages)),
+            None => router,
+        };
         // Layer HTTP Basic Auth when configured (server.auth): it guards
-        // the API and /health alike.
+        // the API, the setup page and /health alike.
         let router = match &server.auth {
             Some(auth) => {
                 if server.tls.is_none() {
@@ -195,7 +202,7 @@ impl Default for ServerBuilder {
 }
 
 /// `ca_cert` holds at least one certificate.
-fn check_ca_cert(path: &Path) -> Result<()> {
+pub(crate) fn check_ca_cert(path: &Path) -> Result<()> {
     let failed = |message: String| GuiderError::CaCert {
         path: path.to_path_buf(),
         message,
@@ -211,7 +218,7 @@ fn check_ca_cert(path: &Path) -> Result<()> {
 }
 
 /// Create the state directory and prove it can be written to.
-fn prepare_state_dir(path: &Path) -> Result<()> {
+pub(crate) fn prepare_state_dir(path: &Path) -> Result<()> {
     let failed = |message: String| GuiderError::StateDir {
         path: path.to_path_buf(),
         message,

@@ -18,8 +18,8 @@ Feature: Configuration validation at startup
     Examples:
       | pointer                           | value                              | named                                                      |
       | /stars/maximum                    | 8                                  | unknown field `maximum`                                    |
-      | /devices/camera                   | {"alpaca_url": "ftp://camera:1"}   | alpaca_url must be an http:// or https:// URL              |
-      | /devices/mount                    | {"alpaca_url": "localhost:11117"}  | alpaca_url must be an http:// or https:// URL              |
+      | /devices/camera                   | {"alpaca_url": "ftp://camera:1"}   | devices.camera.alpaca_url must be an http:// or https:// URL |
+      | /devices/mount                    | {"alpaca_url": "localhost:11117"}  | devices.mount.alpaca_url must be an http:// or https:// URL |
       | /optics/focal_length_mm           | 0                                  | optics.focal_length_mm must be a finite number greater than 0 |
       | /optics/focal_length_mm           | -200                               | optics.focal_length_mm must be a finite number greater than 0 |
       | /camera/exposure                  | "2 parsecs"                        | camera.exposure is not a duration                          |

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use ascom_alpaca::api::{Camera, TypedDevice};
 use ascom_alpaca::Client;
 use bdd_infra::doctor_smoke::{DoctorSmokeState, DoctorSmokeWorld};
+use bdd_infra::setup_pages::{SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
@@ -137,6 +138,7 @@ pub struct GuiderWorld {
     pub noted_exposures: usize,
     pub tls_auth: TlsAuthState,
     pub doctor_smoke: DoctorSmokeState,
+    pub setup_pages: SetupPagesState,
 }
 
 impl GuiderWorld {
@@ -168,6 +170,7 @@ impl GuiderWorld {
             noted_exposures: 0,
             tls_auth: TlsAuthState::default(),
             doctor_smoke: DoctorSmokeState::default(),
+            setup_pages: SetupPagesState::default(),
         }
     }
 
@@ -498,6 +501,12 @@ pub fn set_pointer(target: &mut Value, pointer: &str, value: Value) {
         node = &mut node[*segment];
     }
     node[*last] = value;
+}
+
+impl SetupPagesWorld for GuiderWorld {
+    fn setup_pages(&mut self) -> &mut SetupPagesState {
+        &mut self.setup_pages
+    }
 }
 
 impl DoctorSmokeWorld for GuiderWorld {

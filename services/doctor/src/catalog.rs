@@ -76,6 +76,7 @@ static RAW: &[(&str, &str)] = &[
         "gemini-powerbox-adv3-driver",
         include_str!("../../gemini-powerbox-adv3-driver/pkg/doctor.toml"),
     ),
+    ("guider", include_str!("../../guider/pkg/doctor.toml")),
     (
         "pa-falcon-rotator",
         include_str!("../../pa-falcon-rotator/pkg/doctor.toml"),
