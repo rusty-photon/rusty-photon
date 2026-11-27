@@ -390,7 +390,7 @@ impl FocusHandler {
     }
 
     #[tool(
-        description = "The sweep focus_train would run for a train and filter, without running it: step_size, half_width, points, end_ratio and source (derived, configured or mixed), the optics the derivation used, the critical focus zone in steps, the focused HFR it was sized from, and the predicted and last measured wing slopes side by side, both in pixels per 100 steps. Writes nothing, moves nothing. Ungated."
+        description = "The sweep focus_train would run for a train and filter, without running it: step_size, half_width, points, end_ratio and source (derived, configured or mixed), the optics the derivation used, the critical focus zone in steps, the focused HFR it was sized from, and the predicted and last measured wing slopes side by side, both in pixels per 100 steps. With no filter it reads the wheel for the one in the path, and a wheel that cannot be read refuses the call; a named filter is planned without reading the wheel. Writes nothing, moves nothing. Ungated."
     )]
     async fn get_sweep_plan(
         &self,
