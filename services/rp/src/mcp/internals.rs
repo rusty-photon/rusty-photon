@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ascom_alpaca::api::camera::{CameraState, ImageArray};
-use ascom_alpaca::api::Camera;
+use ascom_alpaca::api::{Camera, Focuser};
 use chrono::{DateTime, TimeDelta, Utc};
 use rp_fits::writer::Keyword;
 use tokio::sync::OwnedRwLockReadGuard;
@@ -29,7 +29,7 @@ use crate::config::naming_template;
 use crate::equipment::camera::{optional_read, CameraInvariants};
 use crate::equipment::trains::TrainDeviceKind;
 use crate::equipment::{DeviceSlot, SlotGuard};
-use crate::events::EventEnvelope;
+use crate::events::{EventBus, EventEnvelope};
 use crate::guide_camera::{GuardHold, User};
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::fits_header;
@@ -198,6 +198,18 @@ pub(crate) struct FocuserMovePlan {
     pub(crate) backlash_compensated: bool,
     pub(crate) predicted_ms: u64,
     pub(crate) max_ms: u64,
+}
+
+impl FocuserMovePlan {
+    /// The move's ceiling: its legs' deadlines summed. Each leg runs on
+    /// its own deadline from its own start, so counted from the first
+    /// leg's start this bounds them all.
+    fn ceiling(&self) -> Duration {
+        self.legs
+            .iter()
+            .map(|leg| leg.deadline)
+            .fold(Duration::ZERO, Duration::saturating_add)
+    }
 }
 
 /// One leg of a planned focuser move: the position to command and the
@@ -836,6 +848,89 @@ fn wind_down(
         }
         hold.release();
     });
+}
+
+/// How often a cancelled focuser move's wind-down reads `IsMoving`.
+const FOCUSER_WIND_DOWN_POLL: Duration = Duration::from_millis(100);
+
+/// What a cancelled focuser move's wind-down reports when it ends: the
+/// `move_focuser_failed` that closes the move's triple, and the instant
+/// the move's ceiling passes.
+struct CancelledMove {
+    focuser_id: String,
+    operation_id: String,
+    started_at: DateTime<Utc>,
+    error: String,
+    ceiling: Instant,
+}
+
+/// Wind down a cancelled focuser move (rp.md § Focuser Tool Details,
+/// Kept while a cancelled move winds down): keep the focuser's slot,
+/// and under a train lease the call under it, until the focuser reads
+/// not moving, and at most until the move's ceiling. Then emit
+/// `move_focuser_failed` carrying where the focuser came to rest, and
+/// give the slot back. A focuser goes on moving for a moment after its
+/// `Halt` returns, and one that does not implement `Halt` goes on to its
+/// leg's target; the next move through it must not be commanded
+/// meanwhile, since a ZWO EAF answers a `Move` sent then without an
+/// error and never makes it.
+fn wind_down_focuser(
+    foc: Option<Arc<dyn Focuser>>,
+    hold: DeviceHold,
+    event_bus: Arc<EventBus>,
+    cancelled: CancelledMove,
+) {
+    tokio::spawn(async move {
+        let position = match foc {
+            Some(foc) => rest_position(&*foc, &cancelled.focuser_id, cancelled.ceiling).await,
+            None => None,
+        };
+        let mut failed = EventEnvelope::failed(
+            "move_focuser",
+            &cancelled.operation_id,
+            cancelled.started_at,
+            &cancelled.error,
+        );
+        if let Some(payload) = failed.payload.as_object_mut() {
+            payload.insert("position".to_string(), position.into());
+        }
+        // Emitted before the slot goes back, so it precedes the
+        // `move_focuser_started` of a move queued behind this one.
+        event_bus.emit_operation(failed);
+        drop(hold);
+    });
+}
+
+/// Wait for a halted focuser to stop, reading `IsMoving` every
+/// [`FOCUSER_WIND_DOWN_POLL`] until `ceiling`, and read where it came to
+/// rest. `None` when it still read moving, or could not be read, at the
+/// ceiling, or when its position could not be read once it stopped.
+async fn rest_position(foc: &dyn Focuser, focuser_id: &str, ceiling: Instant) -> Option<i32> {
+    loop {
+        let state = match foc.is_moving().await {
+            Ok(false) => break,
+            Ok(true) => "moving".to_string(),
+            Err(e) => format!("unreadable ({e})"),
+        };
+        if Instant::now() >= ceiling {
+            warn!(focuser_id, %state, "a cancelled move's focuser still was not idle at the move's ceiling; giving its slot back");
+            return None;
+        }
+        tokio::time::sleep(FOCUSER_WIND_DOWN_POLL).await;
+    }
+    match foc.position().await {
+        Ok(position) => {
+            debug!(
+                focuser_id,
+                position, "a cancelled move's focuser has stopped; its slot is free"
+            );
+            Some(position)
+        }
+        Err(e) => {
+            debug!(focuser_id, error = %e, "a cancelled move's focuser has stopped, but its position could not be read");
+            None
+        }
+    }
 }
 
 /// Why a wait for a frame ended without one.
@@ -3108,7 +3203,8 @@ impl McpHandler {
     /// holds the focuser's slot, or the lease's slot for it, from its
     /// plan to its last leg's settle (§ Focuser Tool Details), so a
     /// lease refusal or a cancelled wait is a plain error before any
-    /// event.
+    /// event. A cancelled move answers at once and hands the slot to
+    /// [`wind_down_focuser`], which keeps it until the focuser stops.
     pub(crate) async fn do_move_focuser_under(
         &self,
         focuser_id: &str,
@@ -3121,7 +3217,7 @@ impl McpHandler {
             .equipment
             .find_focuser(focuser_id)
             .map(|entry| &entry.slot);
-        let _hold = self
+        let hold = self
             .device_hold(("focuser", focuser_id), slot, lease_id, cancel)
             .await?;
         let operation_id = Uuid::new_v4().to_string();
@@ -3176,6 +3272,12 @@ impl McpHandler {
         };
         self.event_bus.emit_operation(started_event);
 
+        // A budget too large for the clock degrades to an already-passed
+        // ceiling (a cancelled move's wind-down reads once), not a panic.
+        let legs_started = Instant::now();
+        let ceiling = legs_started
+            .checked_add(plan.ceiling())
+            .unwrap_or(legs_started);
         let result = self
             .run_focuser_legs(focuser_id, &plan, progress, cancel)
             .await;
@@ -3186,6 +3288,20 @@ impl McpHandler {
                 started_at,
                 serde_json::json!({ "focuser_id": focuser_id, "position": outcome.position }),
             )),
+            Err(e) if cancel.is_cancelled() => wind_down_focuser(
+                self.equipment
+                    .find_focuser(focuser_id)
+                    .and_then(crate::equipment::FocuserEntry::device),
+                hold,
+                self.event_bus.clone(),
+                CancelledMove {
+                    focuser_id: focuser_id.to_string(),
+                    operation_id,
+                    started_at,
+                    error: e.clone(),
+                    ceiling,
+                },
+            ),
             Err(e) => self.event_bus.emit_operation(EventEnvelope::failed(
                 "move_focuser",
                 &operation_id,
@@ -3298,9 +3414,11 @@ impl McpHandler {
                 biased;
                 () = cancel.cancelled() => {
                     // Stop-class counterpart (rp.md § In-Flight Tool
-                    // Calls): halt the move where it is.
+                    // Calls): halt the move where it is. A failed halt
+                    // may have left it moving, which the wind-down then
+                    // waits out.
                     if let Err(e) = foc.halt().await {
-                        debug!(error = %e, "focuser halt after cancellation failed");
+                        warn!(focuser_id, error = %e, "focuser halt after cancellation failed; the focuser may still be moving");
                     }
                     return Err(cancel.error());
                 }

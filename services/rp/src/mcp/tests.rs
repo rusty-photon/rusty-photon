@@ -846,6 +846,9 @@ struct MockFocuser {
     /// `0` (default) keeps the `stuck_moving` behavior.
     is_moving_true_count: u32,
     is_moving_calls: std::sync::atomic::AtomicU32,
+    /// `true` ⇒ `is_moving` reports `false` whatever else is set: the
+    /// test stops a halted focuser that `stuck_moving` kept going.
+    idle_now: std::sync::atomic::AtomicBool,
     /// `halt` calls seen — the stop-class counterpart a cancelled
     /// `do_move_focuser_blocking` must issue.
     halt_calls: std::sync::atomic::AtomicU32,
@@ -870,6 +873,7 @@ impl Default for MockFocuser {
             stuck_moving: false,
             is_moving_true_count: 0,
             is_moving_calls: std::sync::atomic::AtomicU32::new(0),
+            idle_now: std::sync::atomic::AtomicBool::new(false),
             halt_calls: std::sync::atomic::AtomicU32::new(0),
             temperature_value: 0.0,
             position_value: 0,
@@ -888,6 +892,9 @@ impl ascom_alpaca::api::Focuser for MockFocuser {
     async fn is_moving(&self) -> ascom_alpaca::ASCOMResult<bool> {
         if self.fail_is_moving {
             return Err(ASCOMError::invalid_operation("encoder fault"));
+        }
+        if self.idle_now.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(false);
         }
         if self.is_moving_true_count > 0 {
             let n = self
@@ -13423,6 +13430,162 @@ async fn do_move_focuser_blocking_cancelled_between_legs_commands_no_second_leg(
     assert_eq!(err, "cancelled: safety");
     assert_eq!(*foc.move_targets.lock().unwrap(), vec![400]);
     assert_eq!(calls(&foc.halt_calls), 0);
+}
+
+/// A move cancelled between its legs leaves the focuser idle at the
+/// overshoot, and its `move_focuser_failed` says so.
+#[tokio::test]
+async fn a_move_cancelled_between_its_legs_reports_the_overshoot_as_where_it_stands() {
+    use crate::config::focuser::BacklashApproach;
+    let cancel = Cancel::never();
+    let foc = Arc::new(MockFocuser {
+        position_value: 1000,
+        cancel_on_settle: std::sync::Mutex::new(Some(cancel.clone())),
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry_with_backlash(
+        foc.clone(),
+        None,
+        None,
+        Some(backlash(BacklashApproach::Out, 100)),
+    ));
+    let mut rx = handler.event_bus.subscribe();
+
+    handler
+        .do_move_focuser_blocking("foc", 500, None, &cancel)
+        .await
+        .expect_err("a move cancelled between its legs must fail");
+
+    let started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_eq!(failed.event, "move_focuser_failed");
+    assert_end_mirrors_start(&started, &failed);
+    assert_eq!(failed.payload["error"], "cancelled: safety");
+    assert_eq!(failed.payload["position"], 400);
+}
+
+/// The put-back queued behind a cancelled move is not commanded while
+/// the halted focuser still reads moving: a ZWO EAF answers a `Move`
+/// sent then without an error and never makes it.
+#[tokio::test(start_paused = true)]
+async fn a_move_queued_behind_a_cancelled_one_is_commanded_once_the_focuser_stops() {
+    let foc = Arc::new(MockFocuser {
+        stuck_moving: true,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry(foc.clone(), None, None));
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+    let err = handler
+        .do_move_focuser_blocking("foc", 1000, None, &cancel)
+        .await
+        .expect_err("a cancelled focuser move must fail");
+    assert_eq!(err, "cancelled: client disconnected");
+
+    let put_back = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .do_move_focuser_blocking("foc", 500, None, &Cancel::never())
+                .await
+        })
+    };
+    // Inside the move's 5 s ceiling, which ends about 4 s from here.
+    for _ in 0..30 {
+        assert_eq!(
+            *foc.move_targets.lock().unwrap(),
+            vec![1000],
+            "the put-back was commanded while the halted focuser still read moving"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    foc.idle_now
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let outcome = tokio::time::timeout(Duration::from_secs(10), put_back)
+        .await
+        .expect("the put-back stayed queued after the focuser stopped")
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome.position, 500);
+    assert_eq!(*foc.move_targets.lock().unwrap(), vec![1000, 500]);
+}
+
+/// A cancelled move's `move_focuser_failed` waits for the focuser to
+/// stop, and carries where it came to rest.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_moves_failed_event_follows_the_stop_and_carries_where_it_came_to_rest() {
+    let foc = Arc::new(MockFocuser {
+        stuck_moving: true,
+        hold_position: true,
+        position_value: 250,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry(foc.clone(), None, None));
+    let mut rx = handler.event_bus.subscribe();
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    handler
+        .do_move_focuser_blocking("foc", 1000, None, &cancel)
+        .await
+        .expect_err("a cancelled focuser move must fail");
+
+    let started = next_event(&mut rx).await;
+    assert_eq!(started.event, "move_focuser_started");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .is_err(),
+        "move_focuser_failed was emitted while the halted focuser still read moving"
+    );
+
+    foc.idle_now
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let failed = next_event(&mut rx).await;
+    assert_eq!(failed.event, "move_focuser_failed");
+    assert_end_mirrors_start(&started, &failed);
+    assert_eq!(failed.payload["error"], "cancelled: safety");
+    assert_eq!(failed.payload["position"], 250);
+    assert_no_more_events(&mut rx).await;
+}
+
+/// A focuser that never reads idle after its `Halt` keeps the slot
+/// only until the move's ceiling, and the event then names no rest
+/// position.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_move_whose_focuser_never_stops_gives_its_slot_back_at_the_ceiling() {
+    let foc = Arc::new(MockFocuser {
+        stuck_moving: true,
+        ..Default::default()
+    });
+    let handler = test_handler(focuser_registry(foc.clone(), None, None));
+    let mut rx = handler.event_bus.subscribe();
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    handler
+        .do_move_focuser_blocking("foc", 1000, None, &cancel)
+        .await
+        .expect_err("a cancelled focuser move must fail");
+
+    // 1000 steps at the default 500 steps/s is 4 s with the headroom,
+    // raised to the 5 s floor, from the leg's start about CANCEL_AT ago.
+    let entry = handler.equipment.find_focuser("foc").unwrap();
+    let before = tokio::time::timeout(
+        Duration::from_millis(3500),
+        entry.slot.take("focuser", "foc"),
+    );
+    assert!(
+        before.await.is_err(),
+        "the slot went back before the move's ceiling"
+    );
+    tokio::time::timeout(Duration::from_secs(1), entry.slot.take("focuser", "foc"))
+        .await
+        .expect("the slot stayed held past the move's ceiling");
+
+    let _started = next_event(&mut rx).await;
+    let failed = next_event(&mut rx).await;
+    assert_eq!(failed.event, "move_focuser_failed");
+    assert_eq!(failed.payload["position"], serde_json::Value::Null);
 }
 
 /// A handle that is already cancelled when the helper starts must
