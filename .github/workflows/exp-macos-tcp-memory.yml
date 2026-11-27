@@ -1,0 +1,56 @@
+# Throwaway proof, exp/ branch only, never merged: does a lower TCP
+# receive-buffer ceiling keep the macOS build's cache downloads from filling
+# TCP's memory account, and with it the loopback drops behind the macOS wedge?
+# Each job is bazel.yml's macOS build, reading the cache anonymously and
+# uploading nothing, with TCP's account sampled and its counters read around it.
+name: exp-macos-tcp-memory
+on:
+  push:
+    branches: [exp/macos-tcp-memory-proof]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        rcvbuf: ["default", "1048576"]
+        run: [1, 2, 3]
+    runs-on: macos-latest
+    name: macos rcvbuf=${{ matrix.rcvbuf }} run ${{ matrix.run }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CACHE_WRITE_TOKEN: ""
+      LAN_CACHE_WRITE_AUTH: ""
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/remote-cache
+      - uses: bazelbuild/setup-bazelisk@v3
+        with:
+          bazelisk-version: 1.28.1
+      - run: bazel --version
+      - uses: ./.github/actions/install-omnisim
+      - uses: ./.github/actions/install-pebble
+      - run: brew install libusb
+      - uses: ivonnyssen/qhyccd-sdk-install@v4
+        with:
+          version: "26.06.04"
+      - uses: ./.github/actions/install-zwo-sdk
+      - name: Lower the TCP receive-buffer ceiling
+        if: matrix.rcvbuf != 'default'
+        run: sudo sysctl -w net.inet.tcp.autorcvbufmax=${{ matrix.rcvbuf }}
+      - name: Before the build
+        run: |
+          sudo python3 -I exp-tcp-memory/measure.py before
+          sudo nohup python3 -I exp-tcp-memory/measure.py sample "$RUNNER_TEMP/tcp-memory.txt" >/dev/null 2>&1 &
+      - name: bazel build (watched for a stall)
+        timeout-minutes: 15
+        uses: ./.github/actions/bazel-stall-probe
+        with:
+          args: build --config=ci --config=ci-remote //...
+      - name: After the build
+        if: always()
+        run: sudo python3 -I exp-tcp-memory/measure.py after "$RUNNER_TEMP/tcp-memory.txt"
