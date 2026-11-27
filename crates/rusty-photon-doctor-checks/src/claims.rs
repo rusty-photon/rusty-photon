@@ -32,7 +32,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::facts::{UsbDevice, UsbScan};
-use crate::report::{Check, Status};
+use crate::report::{Absent, Check, Status};
 
 /// The ASCOM error number a placeholder's `Connected = true` fails with.
 ///
@@ -685,6 +685,28 @@ impl<'a> Claims<'a> {
             .find(|d| d.port.as_deref() == Some(port))
     }
 
+    /// Whether `port` holds nothing on a scan that ran: no camera, no working
+    /// record and no fault. Of the reasons a placeholder holds a listed
+    /// port, this is the one a camera that is powered off explains
+    /// (docs/services/doctor.md §Powered-off devices).
+    #[must_use]
+    pub fn port_is_empty(&self, port: &str) -> bool {
+        let Ok(joined) = &self.joined else {
+            return false;
+        };
+        joined.placement.camera_on(port).is_none()
+            && !joined
+                .scan
+                .devices
+                .iter()
+                .any(|d| d.port.as_deref() == Some(port))
+            && !joined
+                .scan
+                .faults
+                .iter()
+                .any(|f| f.location.as_deref() == Some(port))
+    }
+
     /// What a listed port resolves to: the camera placed there, or why a
     /// placeholder holds it — the first reason that applies (U4): the scan
     /// failed; a fault located at the port; a look-alike or an unrecognised
@@ -1299,15 +1321,22 @@ impl Claims<'_> {
             .iter()
             .filter_map(|entry| match self.resolve(&entry.usb_port) {
                 Resolution::Camera(_) => None,
-                Resolution::Placeholder(reason) => Some(Check::warn(
-                    RESOLVE,
-                    None,
-                    format!(
-                        "device {} ({}) would be a placeholder: {reason}",
-                        entry.device_number, entry.usb_port
-                    ),
-                    None,
-                )),
+                Resolution::Placeholder(reason) => {
+                    let check = Check::warn(
+                        RESOLVE,
+                        None,
+                        format!(
+                            "device {} ({}) would be a placeholder: {reason}",
+                            entry.device_number, entry.usb_port
+                        ),
+                        None,
+                    );
+                    Some(if self.port_is_empty(&entry.usb_port) {
+                        check.with_absent(Absent::device("Camera", entry.device_number))
+                    } else {
+                        check
+                    })
+                }
             })
             .collect();
         if checks.is_empty() {
@@ -3165,6 +3194,52 @@ mod tests {
                 "device 1 (1-4.9) would be a placeholder: no working camera is enumerated on 1-4.9"
             ),
             "{resolve:?}"
+        );
+    }
+
+    #[test]
+    fn only_an_empty_listed_port_marks_its_camera_absent() {
+        // 1-4.2 holds a camera, 1-4.9 nothing, 1-4.7 a record that is not a
+        // working device, and 1-4.5 a device that is not a camera.
+        let mut bus = scan(vec![
+            record("9a0b", "1-4.2"),
+            UsbDevice {
+                vendor: "046d".to_string(),
+                ..record("c52b", "1-4.5")
+            },
+        ]);
+        bus.faults.push(fault(Some("f266"), Some("1-4.7")));
+        let bus = claims(Ok(bus), vec![camera("SV705C")]);
+        let checks = bus.checks(
+            Some(&[
+                entry(0, "1-4.2", None),
+                entry(1, "1-4.9", None),
+                entry(2, "1-4.7", None),
+                entry(3, "1-4.5", None),
+            ]),
+            None,
+        );
+        let absent: Vec<_> = checks
+            .iter()
+            .filter(|c| c.name == RESOLVE)
+            .map(|c| (c.detail.split(':').next().unwrap(), c.absent.clone()))
+            .collect();
+        assert_eq!(
+            absent,
+            [
+                (
+                    "device 1 (1-4.9) would be a placeholder",
+                    Some(Absent::device("Camera", 1))
+                ),
+                ("device 2 (1-4.7) would be a placeholder", None),
+                ("device 3 (1-4.5) would be a placeholder", None),
+            ]
+        );
+        assert!(!bus.port_is_empty("1-4.2"), "a placed camera");
+        let failed = claims(Err("timed out".to_string()), Vec::new());
+        assert!(
+            !failed.port_is_empty("1-4.9"),
+            "a scan that failed says nothing about a port"
         );
     }
 

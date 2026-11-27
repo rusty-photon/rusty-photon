@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crate::report::{Check, Report};
+use crate::report::{Absent, Check, Report};
 
 /// What SDK enumeration saw.
 ///
@@ -79,7 +79,8 @@ pub fn sdk_devices_check(outcome: SdkOutcome) -> Check {
             None,
             "the SDK enumerated zero devices",
             Some("connect and power the device if tonight needs it".to_string()),
-        ),
+        )
+        .with_absent(Absent::service()),
         SdkOutcome::Devices(models) => Check::ok(
             "hardware.sdk-devices",
             None,
@@ -231,10 +232,16 @@ mod tests {
         assert_eq!(report.checks[1].status, Status::Ok);
         assert!(report.checks[1].detail.contains("2 device(s)"));
         assert!(report.checks[1].detail.contains("QHY178M, QHY5III715C"));
+        assert_eq!(report.checks[1].absent, None);
 
         let (report, code) = run_json(&path, |_| Ok(()), Some(SdkOutcome::Devices(vec![])));
         assert_eq!(code, 0, "zero devices warns; warnings are not failures");
         assert_eq!(report.checks[1].status, Status::Warn);
+        assert_eq!(
+            report.checks[1].absent,
+            Some(Absent::service()),
+            "zero devices is a missing device, whose power central doctor reads"
+        );
 
         let (report, code) = run_json(
             &path,
@@ -247,6 +254,10 @@ mod tests {
         assert_eq!(code, 1);
         assert_eq!(report.checks[1].status, Status::Fail);
         assert!(report.checks[1].detail.contains("SDK enumeration failed"));
+        assert_eq!(
+            report.checks[1].absent, None,
+            "a blind SDK is not a missing device"
+        );
         assert!(report.checks[1]
             .suggestion
             .as_deref()

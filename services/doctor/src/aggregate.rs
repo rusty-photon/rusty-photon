@@ -23,7 +23,7 @@ use tracing::debug;
 
 use crate::checks::Context;
 use crate::facts::UnitFacts;
-use crate::report::{Check, Report};
+use crate::report::{Absent, Check, Report};
 use crate::scan::ServiceScan;
 use rusty_photon_server_config::doctor_toml::ServerClass;
 
@@ -38,7 +38,7 @@ use rusty_photon_server_config::doctor_toml::ServerClass;
 /// resolution, the `localhost` → `::1` → `127.0.0.1` fallback that
 /// costs 300 ms there, connect, response), so 5 s produced false
 /// "does not answer" failures; 15 s keeps 3× headroom over that.
-const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The inactive-unit probe: a per-service doctor may run an SDK bus scan,
 /// which takes seconds — but never a minute.
@@ -121,7 +121,7 @@ pub fn checks(ctx: &Context) -> Vec<Check> {
 /// present but unreadable — the probes then keep the self-signed shape
 /// rather than guess at names, the same rule the client-target join
 /// resolver follows (`checks::resolve_join_target`).
-fn acme_probe_domain(config_dir: &std::path::Path) -> Option<String> {
+pub(crate) fn acme_probe_domain(config_dir: &std::path::Path) -> Option<String> {
     Some(crate::provision::active_acme_config(config_dir)?.domain)
 }
 
@@ -394,10 +394,7 @@ fn inventory_checks(
     )];
     for placeholder in placeholders {
         let port = placeholder_port(&placeholder.unique_id).unwrap_or_default();
-        let kind = match placeholder.device_type.as_str() {
-            "FilterWheel" => "filter wheel".to_string(),
-            other => other.to_lowercase(),
-        };
+        let kind = device_kind(&placeholder.device_type);
         let mut detail = format!(
             "{} #{} is a placeholder for {port}, not a {kind}: run `{command}` for the reason",
             placeholder.device_type, placeholder.number
@@ -415,16 +412,31 @@ fn inventory_checks(
                 device.product
             );
         }
-        checks.push(Check::warn(
+        let check = Check::warn(
             "service.devices",
             Some(service.to_string()),
             detail,
             Some(format!(
                 "run `{command}`; once the camera is fixed, restart {service}"
             )),
-        ));
+        );
+        // A working device on the port is on the bus, so the placeholder holds
+        // the port for a reason a cut output does not explain.
+        checks.push(if on_the_port.is_some() {
+            check
+        } else {
+            check.with_absent(Absent::device(&placeholder.device_type, placeholder.number))
+        });
     }
     checks
+}
+
+/// An ASCOM device type as a detail names it: `filter wheel`, `camera`.
+pub(crate) fn device_kind(device_type: &str) -> String {
+    match device_type {
+        "FilterWheel" => "filter wheel".to_string(),
+        other => other.to_lowercase(),
+    }
 }
 
 /// Ask an active Alpaca service for its configured devices, following the
@@ -527,7 +539,7 @@ async fn fetch_devices(
 /// request was sent with — so "nothing listens" and "answers, but not
 /// within the bound" read differently. The URL is dropped from the text —
 /// the check's detail already names it.
-fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
+pub(crate) fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
     use std::fmt::Write as _;
     let e = e.without_url();
     let mut text = e.to_string();
@@ -1010,6 +1022,15 @@ mod tests {
         assert!(checks
             .iter()
             .all(|c| c.service.as_deref() == Some("qhy-camera")));
+        assert_eq!(
+            checks.iter().map(|c| c.absent.clone()).collect::<Vec<_>>(),
+            [
+                None,
+                Some(Absent::device("Camera", 1)),
+                Some(Absent::device("FilterWheel", 0)),
+            ],
+            "each placeholder marks the device it stands in for absent"
+        );
     }
 
     #[test]
@@ -1041,6 +1062,10 @@ mod tests {
             "{}",
             checks[1].detail
         );
+        assert_eq!(
+            checks[1].absent, None,
+            "a working device on the port is not missing, so its power is not read"
+        );
 
         let failed = HardwareFacts {
             usb_unavailable: Some("powershell.exe timed out".to_string()),
@@ -1051,6 +1076,11 @@ mod tests {
             !checks[1].detail.contains("USB scan shows"),
             "a failed scan names nothing on the port: {}",
             checks[1].detail
+        );
+        assert_eq!(
+            checks[1].absent,
+            Some(Absent::device("Camera", 0)),
+            "a failed scan cannot show the port holds a device"
         );
     }
 
