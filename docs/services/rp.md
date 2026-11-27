@@ -1190,7 +1190,7 @@ Point events (e.g. `filter_switch`, `safety_changed`) carry no
 | `sync_mount_failed` | error | Mount sync failed |
 | `move_focuser_started` | focuser_id, position, backlash_compensated | Focuser begins move to the target position; `backlash_compensated` is `true` when the move runs as an overshoot-then-approach pair (see [Focuser Tool Details](#focuser-tool-details)) |
 | `move_focuser_complete` | focuser_id, position | Focuser settled at the read-back position |
-| `move_focuser_failed` | error | Focuser move failed or timed out |
+| `move_focuser_failed` | error, position (a cancelled move only) | Focuser move failed, timed out or was cancelled. A cancelled move's event follows once the focuser has stopped, and `position` is where it came to rest, `null` when that is unknown (see [Focuser Tool Details](#focuser-tool-details)) |
 | `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder paused the guider's corrections for this move |
 | `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains, guiding_ladder | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it, `guiding_ladder` the ladder outcome (`null` when it did not engage) |
 | `move_rotator_failed` | error | Rotator move failed or timed out (the guide stars re-selected and the corrections resumed best-effort when the ladder paused them) |
@@ -2321,11 +2321,34 @@ a move holds it from its plan (the pre-move position read) to its last
 leg's settle. A second `move_focuser`, or a step of `auto_focus`,
 through a focuser whose slot is held waits its turn,
 raced against its own cancellation as a capture's wait for its camera
-is. A cancelled move halts the focuser and gives the slot back once the
-halt has been sent, so a put-back queued behind it starts from where
-the focuser stopped. A [train lease](#train-lease) takes the slot of
-every focuser it moves or holds still: a move that names the lease runs
-under it, and one that names none waits for the lease to end.
+is. A [train lease](#train-lease) takes the slot of every focuser it
+moves or holds still: a move that names the lease runs under it, and
+one that names none waits for the lease to end.
+
+**Kept while a cancelled move winds down.** A cancelled move sends
+`Halt` and answers its caller at once with `cancelled: <reason>`. It
+keeps the focuser's slot until the focuser reads not moving, reading
+`IsMoving` every 100 ms, and at most until the move's ceiling: its
+legs' deadlines summed from the start of its first leg, which is the
+`max_duration_ms` of its `move_focuser_started`, or the 120 s fallback
+ceiling when that envelope carries none. A focuser does not stop the
+moment its `Halt` returns. A ZWO EAF reads moving for about 165 ms
+afterwards, and a `Move` sent in that window is answered without an
+error and never made, so a put-back queued behind a cancelled move
+starts only once the focuser has stopped, and from where it stopped. A
+focuser that does not implement `Halt`, which ASCOM permits, goes on
+to the leg's target, and the ceiling covers that travel. A `Halt` that
+fails is logged as a warning, since the motion may not have stopped.
+At the ceiling the slot is released with a warning, so every wait
+behind it stays bounded. A move under a train lease keeps its call
+under the lease as long, so the lease keeps the focuser too.
+`move_focuser_failed` is emitted just before the slot goes back, so it
+precedes the `move_focuser_started` of a move queued behind it, and it
+carries `position`, where the focuser came to rest: `null` when the
+focuser still read moving at the ceiling or its position could not be
+read. A move cancelled before its first `Move`, or between its legs,
+has nothing in flight: the focuser reads idle at the first read, and
+the event carries where it stands.
 
 **Travel bounds.** Every move rp makes through a focuser stays inside
 its travel bounds. ASCOM fixes an absolute focuser's travel: "The
@@ -7857,7 +7880,7 @@ returns without moving anything.
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
 | `capture`, and the captures inside `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish — a bounded one gives up at its 3 s deadline as usual — and the frame is downloaded and kept. Only a read that deadline does not bound, still out at it (a wedged wheel a templated capture is waiting out), makes the capture answer `cancelled: <reason>` and release the camera at the deadline |
-| `move_focuser`, and the moves inside `auto_focus` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
+| `move_focuser`, and the moves inside `auto_focus` | focuser `Halt` on the leg in flight; the move keeps the focuser's slot until the focuser reads idle, bounded by the move's ceiling ([Focuser Tool Details](#focuser-tool-details)). A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |
 | `start_guiding` | stop guiding — the half-started loop is undone |
