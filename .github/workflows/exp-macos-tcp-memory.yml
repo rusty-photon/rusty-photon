@@ -1,8 +1,9 @@
-# Throwaway proof, exp/ branch only, never merged: does a lower TCP
-# receive-buffer ceiling keep the macOS build's cache downloads from filling
-# TCP's memory account, and with it the loopback drops behind the macOS wedge?
+# Throwaway proof, exp/ branch only, never merged: does a longer TCP
+# retransmit slop let the Bazel client's loopback connection outlast the bursts
+# of loss that, past ~18 s, make the server's kernel drop it (the macOS wedge)?
 # Each job is bazel.yml's macOS build, reading the cache anonymously and
-# uploading nothing, with TCP's account sampled and its counters read around it.
+# uploading nothing, with the kernel's counters read around it and the stall
+# probe's capture of the client-server connection read after it.
 name: exp-macos-tcp-memory
 on:
   push:
@@ -14,10 +15,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rcvbuf: ["default", "1048576"]
-        run: [1, 2, 3]
+        slop: ["3000"]
+        run: [1, 2, 3, 4, 5, 6, 7, 8]
+        include:
+          - slop: "default"
+            run: 1
+          - slop: "default"
+            run: 2
     runs-on: macos-latest
-    name: macos rcvbuf=${{ matrix.rcvbuf }} run ${{ matrix.run }}
+    name: macos slop=${{ matrix.slop }} run ${{ matrix.run }}
     timeout-minutes: 45
     defaults:
       run:
@@ -39,9 +45,9 @@ jobs:
         with:
           version: "26.06.04"
       - uses: ./.github/actions/install-zwo-sdk
-      - name: Lower the TCP receive-buffer ceiling
-        if: matrix.rcvbuf != 'default'
-        run: sudo sysctl -w net.inet.tcp.autorcvbufmax=${{ matrix.rcvbuf }}
+      - name: Lengthen the TCP retransmit slop
+        if: matrix.slop != 'default'
+        run: sudo sysctl -w net.inet.tcp.rexmt_slop=${{ matrix.slop }}
       - name: Before the build
         run: |
           sudo python3 -I exp-tcp-memory/measure.py before
@@ -53,4 +59,4 @@ jobs:
           args: build --config=ci --config=ci-remote //...
       - name: After the build
         if: always()
-        run: sudo python3 -I exp-tcp-memory/measure.py after "$RUNNER_TEMP/tcp-memory.txt"
+        run: sudo python3 -I exp-tcp-memory/measure.py after "$RUNNER_TEMP/tcp-memory.txt" "$RUNNER_TEMP/bazel-stall-probe.pcap"

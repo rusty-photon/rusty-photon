@@ -1,11 +1,12 @@
-"""Throwaway proof (exp/ branch only): TCP's memory account and drop counters around the macOS build.
+"""Throwaway proof (exp/ branch only): the loopback connection's stalls and the kernel's counters around the macOS build.
 
-  measure.py before          print the limits and counters, zero TCP's peak, save the counters
-  measure.py sample <file>   append "epoch allocated" for TCP's account to <file> every 250 ms, forever
-  measure.py after <file>    print the counters' change, TCP's peak, the time spent over each limit,
-                             and the kernel's own "memacct" log lines since `before`
+  measure.py before                 print the TCP settings, save `netstat -s`, zero TCP's memory peak
+  measure.py sample <file>          append "epoch mbuf-denials tcp-allocated" to <file> every second, forever
+  measure.py after <file> <pcap>    print every `netstat -s` counter the build changed, the client-server
+                                    connection's waits for an ACK (from the stall probe's capture), the mbuf
+                                    denials during each long wait, and TCP's memory peak
 
-Run as root (sudo): zeroing the peak writes a sysctl, and `log show` may need it.
+Run as root (sudo): zeroing the peak writes a sysctl.
 """
 import ctypes
 import ctypes.util
@@ -21,13 +22,8 @@ STATE = '/tmp/exp-tcp-memory.json'
 MEM_ACCT_PEAK = 1
 MEM_ACCT_ALL_STATISTICS = 7
 STATS = struct.Struct('<QqQQ16s')  # peak, allocated, softlimit, hardlimit, name
-COUNTERS = {
-    'memdrop': re.compile(r'(\d+) received packets? dropped due to low memory'),
-    'timeoutdrop': re.compile(r'(\d+) connections? dropped by rexmit timeout'),
-    'rstchallenge': re.compile(r'(\d+) challenge ACKs? sent due to unexpected RST'),
-    'rexmttimeo': re.compile(r'(\d+) retransmit timeouts?'),
-    'badrst': re.compile(r'(\d+) bad resets?'),
-}
+LONG_WAIT = 2.0
+BUDGET = 18.0
 
 libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
 
@@ -51,112 +47,162 @@ def sysctl(m, size, new=None):
     return buf.raw[:oldlen.value]
 
 
-def accounts():
+def tcp_account():
     raw = sysctl(mib('kern.memacct') + [MEM_ACCT_ALL_STATISTICS, 0], STATS.size * 8)
-    out = []
     for i in range(len(raw) // STATS.size):
         peak, allocated, soft, hard, name = STATS.unpack_from(raw, i * STATS.size)
-        out.append({'index': i, 'name': name.split(b'\0')[0].decode(), 'peak': peak,
-                    'allocated': allocated, 'soft': soft, 'hard': hard})
+        if name.split(b'\0')[0] == b'TCP':
+            return {'index': i, 'peak': peak, 'allocated': allocated, 'soft': soft, 'hard': hard}
+    raise LookupError('no TCP memory account')
+
+
+def netstat_s():
+    """Every counter line of `netstat -s`, keyed by protocol and the line's text with its number taken out."""
+    text = subprocess.run(['netstat', '-s'], capture_output=True, text=True).stdout
+    out, proto = {}, '?'
+    for line in text.splitlines():
+        if line and not line[0].isspace():
+            proto = line.rstrip(':')
+            continue
+        m = re.match(r'\s*(\d+)\s+(.*)', line)
+        if m:
+            key = f'{proto}: {m[2].strip()}'
+            out[key] = out.get(key, 0) + int(m[1])
     return out
 
 
-def tcp():
-    return next(a for a in accounts() if a['name'] == 'TCP')
-
-
-def counters():
-    text = subprocess.run(['netstat', '-s', '-p', 'tcp'], capture_output=True, text=True, check=True).stdout
-    found = {}
-    for key, pattern in COUNTERS.items():
-        m = pattern.search(text)
-        found[key] = int(m[1]) if m else None
-    return found
+def mbuf_denials():
+    text = subprocess.run(['netstat', '-m'], capture_output=True, text=True).stdout
+    m = re.search(r'(\d+) requests for memory denied', text)
+    return int(m[1]) if m else -1
 
 
 def mib_text(n):
     return f'{n / 1048576:.1f} MiB'
 
 
-def show_accounts():
-    for a in accounts():
-        print(f"  {a['name']:<8} allocated {mib_text(a['allocated'])}, peak {mib_text(a['peak'])}, "
-              f"soft {mib_text(a['soft'])}, hard {mib_text(a['hard'])}")
+def hms(ts):
+    return time.strftime('%H:%M:%S', time.gmtime(ts)) + f'.{int(ts % 1 * 1000):03d}'
 
 
 def before():
-    for name in ['hw.memsize', 'net.inet.tcp.autorcvbufmax', 'net.inet.tcp.autosndbufmax', 'kern.ipc.maxsockbuf']:
+    for name in ['hw.memsize', 'net.inet.tcp.rexmt_slop', 'net.inet.tcp.rtt_min', 'net.inet.tcp.autorcvbufmax']:
         print(subprocess.run(['sysctl', name], capture_output=True, text=True).stdout.strip())
-    print('memory accounts before:')
-    show_accounts()
-    t = tcp()
+    t = tcp_account()
     sysctl(mib('kern.memacct') + [MEM_ACCT_PEAK, t['index']], 8, struct.pack('<Q', 0))
-    print(f"TCP peak zeroed; now {mib_text(tcp()['peak'])}")
-    c = counters()
-    print('tcp counters before:', c)
+    print(f"TCP memory: soft {mib_text(t['soft'])}, hard {mib_text(t['hard'])}; peak zeroed")
+    print(f'mbuf requests for memory denied: {mbuf_denials()}')
     with open(STATE, 'w') as f:
-        json.dump({'start': time.time(), 'counters': c}, f)
+        json.dump({'start': time.time(), 'netstat': netstat_s()}, f)
 
 
 def sample(path):
     with open(path, 'a', buffering=1) as f:
         while True:
-            f.write(f"{time.time():.3f} {tcp()['allocated']}\n")
-            time.sleep(0.25)
+            f.write(f"{time.time():.3f} {mbuf_denials()} {tcp_account()['allocated']}\n")
+            time.sleep(1)
 
 
-def spans(rows, limit):
-    out, start = [], None
-    for ts, v in rows:
-        if v > limit and start is None:
-            start = ts
-        elif v <= limit and start is not None:
-            out.append((start, ts))
-            start = None
-    if start is not None:
-        out.append((start, rows[-1][0]))
-    return out
+PACKET = re.compile(r'^(\d+\.\d+) IP6? (\S+)\.(\d+) > (\S+)\.(\d+): Flags \[([^\]]*)\](?:, seq (\d+)(?::(\d+))?)?(?:, ack (\d+))?.*?length (\d+)')
 
 
-def hms(ts):
-    return time.strftime('%H:%M:%S', time.gmtime(ts)) + f'.{int(ts % 1 * 1000):03d}'
+def waits(pcap):
+    """The longest-lived connection in the capture: its server-to-client waits for an ACK, retransmissions, and end."""
+    out = subprocess.run(['tcpdump', '-n', '-tt', '-S', '-r', pcap], capture_output=True, text=True)
+    return analyze(out.stdout), out.stderr.strip()[-300:]
 
 
-def after(path):
+def analyze(text):
+    conns = {}
+    for line in text.splitlines():
+        m = PACKET.match(line)
+        if not m:
+            continue
+        ts, sp, dp, flags = float(m[1]), int(m[3]), int(m[5]), m[6]
+        key = tuple(sorted((sp, dp)))
+        c = conns.setdefault(key, {'packets': [], 'bytes': {}})
+        length = int(m[10])
+        c['bytes'][sp] = c['bytes'].get(sp, 0) + length
+        c['packets'].append((ts, sp, flags, int(m[7]) if m[7] else None, int(m[8]) if m[8] else None,
+                             int(m[9]) if m[9] else None, length))
+    if not conns:
+        return None
+    key, c = max(conns.items(), key=lambda kv: len(kv[1]['packets']))
+    server = max(c['bytes'], key=c['bytes'].get)
+    sent = []          # (start, end, first-sent time) of each byte range on its first transmission
+    snd_max = una = None
+    rexmits = 0
+    result = {'ports': key, 'server': server, 'packets': len(c['packets']), 'waits': [], 'reset': None, 'unacked_at_end': None}
+    for ts, sp, flags, start, end, ack, length in c['packets']:
+        if sp == server:
+            if 'R' in flags:
+                result['reset'] = ts
+            if start is not None and end is not None and end > start:
+                if snd_max is None:
+                    snd_max = start
+                if start < snd_max:
+                    rexmits += 1
+                if end > snd_max:
+                    sent.append((max(start, snd_max), end, ts))
+                    snd_max = end
+        elif ack is not None:
+            if una is None or ack > una:
+                if una is not None:
+                    first = next((t for s, e, t in sent if s <= una < e), None)
+                    if first is not None:
+                        result['waits'].append((first, ts, ts - first))
+                una = ack
+    if snd_max is not None and una is not None and snd_max > una:
+        first = next((t for s, e, t in sent if s <= una < e), None)
+        result['unacked_at_end'] = (first, snd_max - una)
+    result['rexmits'] = rexmits
+    return result
+
+
+def after(path, pcap):
     with open(STATE) as f:
         state = json.load(f)
-    c = counters()
-    print('tcp counters after:', c)
-    print('change over the build:', {k: (c[k] - state['counters'][k]) if c[k] is not None and state['counters'][k] is not None else None for k in c})
-    print('memory accounts after:')
-    show_accounts()
-    t = tcp()
+    now = netstat_s()
+    print('netstat -s counters the build changed:')
+    for k in sorted(now):
+        d = now[k] - state['netstat'].get(k, 0)
+        if d:
+            print(f'  {d:>10}  {k}')
     rows = []
     try:
         with open(path) as f:
             for line in f:
                 parts = line.split()
-                if len(parts) == 2:
-                    rows.append((float(parts[0]), int(parts[1])))
+                if len(parts) == 3:
+                    rows.append((float(parts[0]), int(parts[1]), int(parts[2])))
     except FileNotFoundError:
         pass
-    print(f'{len(rows)} samples of TCP allocated; max {mib_text(max((v for _, v in rows), default=0))}; '
-          f"peak since before {mib_text(t['peak'])}; soft {mib_text(t['soft'])}; hard {mib_text(t['hard'])}")
-    for label, limit in [('soft', t['soft']), ('hard', t['hard'])]:
-        s = spans(rows, limit)
-        total = sum(b - a for a, b in s)
-        print(f'over the {label} limit: {len(s)} spans, {total:.1f} s in all')
-        for a, b in s[:60]:
-            print(f'  {hms(a)} to {hms(b)} ({b - a:.2f} s)')
-    start = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state['start']))
-    log = subprocess.run(['log', 'show', '--style', 'compact', '--start', start,
-                          '--predicate', 'eventMessage CONTAINS "memacct"'], capture_output=True, text=True)
-    lines = [l for l in log.stdout.splitlines() if 'memacct' in l]
-    print(f'kernel memacct log lines since before: {len(lines)}')
-    for l in lines[:200]:
-        print(' ', l)
-    if log.returncode != 0:
-        print('log show failed:', log.stderr.strip()[-500:])
+    t = tcp_account()
+    print(f"TCP memory peak {mib_text(t['peak'])} (soft {mib_text(t['soft'])}, hard {mib_text(t['hard'])}); "
+          f'{len(rows)} samples')
+    if rows:
+        print(f'mbuf denials over the samples: {rows[0][1]} -> {rows[-1][1]} (+{rows[-1][1] - rows[0][1]})')
+
+    def denied(a, b):
+        inside = [r[1] for r in rows if a <= r[0] <= b + 1]
+        return (max(inside) - min(inside)) if inside else None
+
+    result, err = waits(pcap)
+    if result is None:
+        print(f'no capture to read: {err}')
+        return
+    w = result['waits']
+    long = [x for x in w if x[2] > LONG_WAIT]
+    print(f"client-server connection {result['ports']} (server port {result['server']}): {result['packets']} packets, "
+          f"{result['rexmits']} retransmitted segments, {len(w)} ACK advances; longest wait {max((x[2] for x in w), default=0):.2f} s; "
+          f'waits over {LONG_WAIT:.0f} s: {len(long)}; over {BUDGET:.0f} s: {len([x for x in w if x[2] > BUDGET])}')
+    for first, acked, d in long:
+        print(f'  {hms(first)} to {hms(acked)}: {d:5.2f} s, mbuf denials during it: {denied(first, acked)}')
+    if result['unacked_at_end']:
+        first, n = result['unacked_at_end']
+        print(f'  UNACKED at the end: {n} bytes, first sent {hms(first) if first else "?"}')
+    if result['reset']:
+        print(f"  server reset at {hms(result['reset'])}")
 
 
 if __name__ == '__main__':
@@ -166,6 +212,6 @@ if __name__ == '__main__':
     elif mode == 'sample':
         sample(sys.argv[2])
     elif mode == 'after':
-        after(sys.argv[2])
+        after(sys.argv[2], sys.argv[3])
     else:
         raise SystemExit(f'unknown mode {mode}')
