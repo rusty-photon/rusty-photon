@@ -1,0 +1,35 @@
+# Throwaway: proves the stall probe's connection trace on hosted macOS.
+# A genrule that sleeps with --noshow_progress keeps the Bazel client
+# connected and silent, so the probe dumps against a live client and server
+# while the trace runs. The last step shows tcpdump was stopped and what the
+# whole capture holds, the client's close at the build's end included.
+name: exp-stall-probe-trace-proof
+on:
+  push:
+    branches: [exp/stall-probe-trace-proof]
+permissions:
+  contents: read
+jobs:
+  proof:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: bazelbuild/setup-bazelisk@v3
+      - name: quiet build under the probe
+        timeout-minutes: 20
+        uses: ./.github/actions/bazel-stall-probe
+        with:
+          args: build --noshow_progress //exp-stall-proof:quiet
+          silence-seconds: "40"
+      - name: tcpdump stopped, and the whole capture
+        if: always()
+        run: |
+          pgrep -lx tcpdump || echo "no tcpdump left running"
+          ls -l "$RUNNER_TEMP/bazel-stall-probe.pcap"
+          echo "--- every SYN, FIN and reset ---"
+          tcpdump -n -tttt -r "$RUNNER_TEMP/bazel-stall-probe.pcap" | grep -E 'Flags \[[^]]*[SFR]' || true
+          echo "--- the last 15 packets ---"
+          tcpdump -n -tttt -r "$RUNNER_TEMP/bazel-stall-probe.pcap" | tail -n 15

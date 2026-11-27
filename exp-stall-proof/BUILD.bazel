@@ -1,0 +1,10 @@
+# Throwaway: a quiet action for the stall probe's proof run.
+genrule(
+    name = "quiet",
+    outs = ["quiet.txt"],
+    cmd = "sleep 150 && echo done > $@",
+    tags = [
+        "no-cache",
+        "no-remote",
+    ],
+)
