@@ -1,6 +1,9 @@
+import os from 'node:os';
+import path from 'node:path';
+
 import { execute, fail, getInput, run, warning } from '../lib/helpers.mjs';
 import { exitText } from '../lib/processes.mjs';
-import { diagnose, watch } from './probe.mjs';
+import { diagnose, trace, watch } from './probe.mjs';
 
 // The runner stops a cancelled step, one that timed out included, with
 // SIGINT, then SIGTERM 7.5 s later and a kill 2.5 s after that (actions/runner,
@@ -21,12 +24,19 @@ await run(async () => {
   }
   // How much of jvm.out the dumps have printed, so each prints only what it gained.
   const printed = { jvmOut: 0 };
-  const ended = await watch({
-    args,
-    silenceMs: Number(seconds) * 1000,
-    diagnose: (seen) => diagnose({ ...seen, outputBase, printed }),
-    signal: stop.signal,
-  });
+  // Started after `bazel info`, which starts the server, and before the build's client connects to it.
+  const traced = trace({ outputBase, file: path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'bazel-stall-probe.pcap') });
+  let ended;
+  try {
+    ended = await watch({
+      args,
+      silenceMs: Number(seconds) * 1000,
+      diagnose: (seen) => diagnose({ ...seen, outputBase, printed, trace: traced }),
+      signal: stop.signal,
+    });
+  } finally {
+    await traced?.stop();
+  }
   if (ended.code !== 0) {
     fail(`bazel ${args[0]} ${exitText(ended)}`);
     process.exitCode = ended.code || 1;
