@@ -299,6 +299,25 @@ jobs:
             ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-build.json.gz' || '' }} \
             //...
 
+      # macOS: a longer TCP retransmit slop, so that the Bazel client's
+      # loopback connection to its server outlasts the kernel's bursts of
+      # packet loss. On the hosted runners with 7 GiB the kernel runs short
+      # of mbufs during the build's cache downloads and drops loopback
+      # packets for seconds at a time. Loopback's retransmit timer starts
+      # from about 30 ms, so at the default slop of 200 ms the twelve
+      # retransmissions the kernel allows last about 18 s. A longer burst
+      # makes the server's kernel drop the connection and reset it at a
+      # sequence number the client's kernel refuses (RFC 5961), and the
+      # client waits until the step's timeout: the macOS wedge the
+      # `build:macos` settings in .bazelrc describe. At 3 s the twelve last
+      # about 50 s, past the waits these runners show, which reach about half
+      # a minute. The slop delays only recovery by retransmit timeout, on
+      # every connection this job makes, and changes nothing while no packet
+      # is lost.
+      - name: Lengthen TCP's retransmit slop (macOS)
+        if: runner.os == 'macOS'
+        run: sudo -n sysctl -w net.inet.tcp.rexmt_slop=3000
+
       # The same build on macOS, under the stall probe. macOS runners
       # intermittently wedge: the build goes silent mid-build and dies at
       # this step's timeout (the `build:macos` settings in .bazelrc say what
@@ -306,9 +325,10 @@ jobs:
       # probe dumps what the wedge leaves to read while it lasts: the
       # server's threads and logs, the connections to the cache and between
       # the Bazel client and its server, each change to the latter and the
-      # packets that crossed it since before the build, the client's stacks
-      # and the kernel's network buffers. It retries and stops nothing, so a
-      # wedge still ends at the 30-minute timeout, as it would without it.
+      # packets that crossed it since before the build, the client's stacks,
+      # the kernel's network buffers and TCP's retransmission and drop
+      # counters. It retries and stops nothing, so a wedge still ends at the
+      # 30-minute timeout, as it would without it.
       - name: bazel build (macOS, watched for a stall)
         id: build-macos
         if: runner.os == 'macOS'
@@ -545,5 +565,6 @@ jobs:
             `bazel-stall-probe: no output for N s` log groups hold what the
             wedge left to read: the Bazel server's threads and logs, its
             connections to the cache and to the Bazel client, each change to
-            the latter and the packets that crossed it, the client's stacks
-            and the kernel's network buffers.
+            the latter and the packets that crossed it, the client's stacks,
+            the kernel's network buffers and TCP's retransmission and drop
+            counters.

@@ -3,12 +3,13 @@
 // When the command prints nothing for `silenceMs`, `watch` hands `diagnose`
 // what it saw, and `diagnose` prints what the wedge leaves to read while it
 // lasts: the Bazel server's threads and logs, the TCP connections to the
-// cache and between the Bazel client and its server, the client's stacks
-// and the kernel's network buffers. On macOS `trace` also watches the
-// connection between the client and its server from before the build, so a
-// dump can say when the server's end of it went and which packets crossed
-// it. The probe retries nothing and stops nothing but its own tracing: the
-// step's timeout ends a wedged build as it would without the probe.
+// cache and between the Bazel client and its server, the client's stacks,
+// the kernel's network buffers and TCP's retransmission and drop counters.
+// On macOS `trace` also watches the connection between the client and its
+// server from before the build, so a dump can say when the server's end of
+// it went and which packets crossed it. The probe retries nothing and stops
+// nothing but its own tracing: the step's timeout ends a wedged build as it
+// would without the probe.
 // Conventions: docs/skills/ci-logic.md §An action that runs processes.
 
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -280,6 +281,23 @@ export function packets(text) {
   return [`(${lines.length} packets: each SYN, FIN and reset, and the last ${LAST_PACKETS})`, ...kept].join('\n');
 }
 
+/**
+ * The lines of `netstat -s -p tcp` that count the wedge's chain, trimmed:
+ * retransmit timeouts, the connections they dropped, the packets dropped
+ * for low memory, and the resets the kernel refused, with the challenge
+ * ACKs it sent for them. macOS's netstat prints its count of min-MSS drops
+ * under the same label as those challenge ACKs, on the line after them, so
+ * the bad resets are what count the refused resets alone.
+ */
+export function tcpCounters(text) {
+  const counted = /retransmit timeouts?$|dropped by rexmit timeout$|dropped due to low memory$|bad resets?$|challenge ACKs? sent due to unexpected RST$/;
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => counted.test(line))
+    .join('\n');
+}
+
 /** `sample`'s report up to its list of loaded images, which says nothing about where a thread waits. */
 export function callGraph(report) {
   const at = report.search(/^Binary Images:/m);
@@ -333,7 +351,8 @@ export function jvmOutSince(jvmOut, from) {
  * carry the build's output to the client; when `trace`, what the function
  * `trace` returned, watches that port, each change it kept, with its time,
  * and the packets tcpdump has written (`packets`), or how tcpdump ended; on
- * macOS the kernel's network buffers (`netstat -m`) and memory (`vm_stat`),
+ * macOS the kernel's network buffers (`netstat -m`), TCP's retransmission
+ * and drop counters (`netstat -s -p tcp`, `tcpCounters`) and memory (`vm_stat`),
  * and the stacks of the bazel process `bazelPid` and of its children
  * (`sample`, `callGraph`), since bazelisk runs the Bazel client as its
  * child; and, when `outputBase`
@@ -382,6 +401,7 @@ export async function diagnose({ silentForMs, enobufs, bazelPid, outputBase, pri
     }
     if (platform === 'darwin') {
       await show('network buffers (netstat -m)', 'netstat', ['-m']);
+      await show('TCP retransmissions and drops (netstat -s -p tcp)', 'netstat', ['-s', '-p', 'tcp'], tcpCounters);
       await show('memory (vm_stat)', 'vm_stat', []);
       if (bazelPid) {
         // pgrep exits 1 when the process has no children.

@@ -577,13 +577,19 @@ try-import %workspace%/ci-remote.bazelrc
 
 # macOS runners intermittently wedge: the step goes totally silent mid-build
 # and dies at its timeout, leaving an orphan java + bazel for the runner to
-# reap, while the same commit builds normally on Linux and Windows. Its
-# captures put it between the Bazel client and its server, not in the cache
-# client: the server finishes the build, closes its cache client and goes
-# idle, while the client waits on their loopback connection, whose server end
-# is gone; the client learns so only when it next sends, from a reset. The
-# silence starts during the build's largest cache downloads. The captures are
-# in https://github.com/rusty-photon/rusty-photon/issues/765.
+# reap, while the same commit builds normally on Linux and Windows. It sits
+# in the kernel, between the Bazel client and its server, not in the cache
+# client. On the hosted runners with 7 GiB the kernel runs short of mbufs
+# during the build's largest cache downloads and drops loopback packets for
+# seconds at a time. A burst that outlasts the retransmissions of the
+# server's end of the client's connection, about 18 s on loopback, makes the
+# server's kernel drop that connection and reset it at a sequence number the
+# client's kernel refuses (RFC 5961). The server's build ends, completed or
+# interrupted, and the server goes idle, while the client waits on a
+# connection whose server end is gone. bazel.yml's macOS leg lengthens TCP's
+# retransmit slop so that those retransmissions outlast the bursts. The
+# captures and the measurements are in
+# https://github.com/rusty-photon/rusty-photon/issues/765.
 #
 # The two settings below guard the cache client against hangs of its own.
 # Neither prevents the wedge.
@@ -631,8 +637,9 @@ build:macos --remote_max_connections=0
 # under this cap too. bazel.yml's macOS build runs under the bazel-stall-probe
 # action, which dumps the server's threads and logs, its connections to the
 # cache and to the Bazel client, each change to the latter and the packets
-# that crossed it since before the build, the client's stacks and the
-# kernel's network buffers when the build goes silent.
+# that crossed it since before the build, the client's stacks, the kernel's
+# network buffers and TCP's retransmission and drop counters when the build
+# goes silent.
 build:macos --jobs=HOST_CPUS*2
 
 # --- Conformu config -------------------------------------------------------

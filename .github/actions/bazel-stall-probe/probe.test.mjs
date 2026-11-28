@@ -20,6 +20,7 @@ import {
   MAX_DUMPS,
   packets,
   redact,
+  tcpCounters,
   trace,
   TRACE_LISTINGS,
   TRACE_MS,
@@ -322,6 +323,7 @@ const ANSWERS = {
     'Active LOCAL (UNIX) domain sockets\nAddress          Type   Recv-Q Send-Q\n',
   vm_stat: 'Pages free: 1234.\n',
   children: '2182\n',
+  tcp: 'tcp:\n\t9000 packets sent\n\t\t1 bad reset\n\t72 retransmit timeouts\n\t\t1 connection dropped by rexmit timeout\n',
   sample: 'Call graph:\n    1 Thread_1\n      1 __recvmsg\n\nBinary Images:\n    0x100000000 - 0x100ffffff +bazel\n',
   jstack: '"netty-event-loop-1" RUNNABLE\n',
 };
@@ -338,6 +340,7 @@ function fakes({ answers = ANSWERS, alive = true } = {}) {
       runs.push([program, ...args]);
       let answer = answers[program];
       if (program === 'netstat' && args[0] === '-m') answer = '512 mbufs in use\n';
+      if (program === 'netstat' && args[0] === '-s') answer = answers.tcp;
       if (program === 'pgrep' && args[0] === '-P') answer = answers.children;
       if (answer instanceof Error) throw answer;
       return answer ?? '';
@@ -353,7 +356,7 @@ function fakes({ answers = ANSWERS, alive = true } = {}) {
   };
 }
 
-test('diagnose dumps the processes, the connections to the cache and to the server, the network buffers, the client’s stacks, the server threads and its logs, in a group', async () => {
+test('diagnose dumps the processes, the connections to the cache and to the server, the network buffers, the TCP counters, the client’s stacks, the server threads and its logs, in a group', async () => {
   const f = fakes();
   const dir = outputBase({ jvm: 'JVM warning\nException in thread "grpc-command-0"\nFull thread dump OpenJDK\n"main" WAITING\nAuthorization: Bearer abc123\n' });
   const { stdout } = await capture(() =>
@@ -375,6 +378,7 @@ test('diagnose dumps the processes, the connections to the cache and to the serv
   assert.match(server, /127\.0\.0\.1\.9000 +\*\.\* +LISTEN/);
   assert.doesNotMatch(server, /443/);
   assert.match(dump['network buffers (netstat -m)'], /512 mbufs in use/);
+  assert.equal(dump['TCP retransmissions and drops (netstat -s -p tcp)'], '1 bad reset\n72 retransmit timeouts\n1 connection dropped by rexmit timeout');
   assert.match(dump['memory (vm_stat)'], /Pages free: 1234\./);
   // The bazel process and its child, each to the end of its call graph.
   for (const pid of [2181, 2182]) {
@@ -393,6 +397,7 @@ test('diagnose dumps the processes, the connections to the cache and to the serv
     ['netstat', '-an'],
     ['netstat', '-an'],
     ['netstat', '-m'],
+    ['netstat', '-s', '-p', 'tcp'],
     ['vm_stat'],
     ['pgrep', '-P', '2181'],
     ['sample', '2181', '1'],
@@ -673,6 +678,35 @@ test('packets keeps every SYN, FIN and reset and the last packets, in order, und
   assert.equal(shown[0], `(${total} packets: each SYN, FIN and reset, and the last ${LAST_PACKETS})`);
   assert.deepEqual(shown.slice(1), [0, 1, 10, 11, 20, 21].map((i) => lines[i]).concat(lines.slice(-LAST_PACKETS)));
   assert.equal(packets(''), `(0 packets: each SYN, FIN and reset, and the last ${LAST_PACKETS})`);
+});
+
+test('tcpCounters keeps the counts of the wedge’s chain, trimmed and in order, and no other line', () => {
+  const stats = [
+    'tcp:',
+    '\t12345 packets sent',
+    '\t\t2 challenge ACKs sent due to unexpected SYN',
+    '\t\t1 challenge ACK sent due to unexpected RST',
+    '\t\t0 challenge ACKs sent due to unexpected RST',
+    '\t\t1169 received packets dropped due to low memory',
+    '\t\t1 bad reset',
+    '\t72 retransmit timeouts',
+    '\t\t1 connection dropped by rexmit timeout',
+    '\t\t3 times retransmit timeout triggered after probe',
+    '\t0 persist timeouts',
+    '',
+  ].join('\n');
+  assert.equal(
+    tcpCounters(stats),
+    [
+      '1 challenge ACK sent due to unexpected RST',
+      '0 challenge ACKs sent due to unexpected RST',
+      '1169 received packets dropped due to low memory',
+      '1 bad reset',
+      '72 retransmit timeouts',
+      '1 connection dropped by rexmit timeout',
+    ].join('\n'),
+  );
+  assert.equal(tcpCounters(''), '');
 });
 
 test('connections keeps the column header and the live connections to port 443, and counts those in TIME_WAIT', () => {
