@@ -1,9 +1,13 @@
-# Throwaway proof, exp/ branch only, never merged: does a longer TCP
-# retransmit slop let the Bazel client's loopback connection outlast the bursts
-# of loss that, past ~18 s, make the server's kernel drop it (the macOS wedge)?
-# Each job is bazel.yml's macOS build, reading the cache anonymously and
-# uploading nothing, with the kernel's counters read around it and the stall
-# probe's capture of the client-server connection read after it.
+# Throwaway proof, exp/ branch only, never merged: do fewer cache downloads,
+# or fewer at once, keep the macOS build's loopback connection free of the
+# bursts of loss behind the wedge? Under `--config=ci` on the command line,
+# build:ci's --jobs=64 and --remote_download_outputs=toplevel outrank
+# build:macos's HOST_CPUS*2 and minimal, which come in at rc-file priority
+# through --enable_platform_specific_config. Each job is bazel.yml's macOS
+# build and fast tests, at the kernel's default retransmit slop, reading the
+# cache anonymously and uploading nothing, with the kernel's counters read
+# and the stall probe's capture of the client-server connection read around
+# each step.
 name: exp-macos-tcp-memory
 on:
   push:
@@ -15,22 +19,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slop: ["3000"]
-        run: [1, 2, 3, 4, 5, 6, 7, 8]
+        variant: ["base", "intended", "minimal", "jobs6"]
+        run: [1, 2, 3]
         include:
-          - slop: "default"
-            run: 1
-          - slop: "default"
-            run: 2
+          - variant: "intended"
+            run: 4
+          - variant: "intended"
+            run: 5
     runs-on: macos-latest
-    name: macos slop=${{ matrix.slop }} run ${{ matrix.run }}
-    timeout-minutes: 45
+    name: macos ${{ matrix.variant }} run ${{ matrix.run }}
+    timeout-minutes: 50
     defaults:
       run:
         shell: bash
     env:
       CACHE_WRITE_TOKEN: ""
       LAN_CACHE_WRITE_AUTH: ""
+      FLAGS: ${{ fromJSON('{"base":"","intended":"--jobs=HOST_CPUS*2 --remote_download_outputs=minimal","minimal":"--remote_download_outputs=minimal","jobs6":"--jobs=HOST_CPUS*2"}')[matrix.variant] }}
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/remote-cache
@@ -45,9 +50,6 @@ jobs:
         with:
           version: "26.06.04"
       - uses: ./.github/actions/install-zwo-sdk
-      - name: Lengthen the TCP retransmit slop
-        if: matrix.slop != 'default'
-        run: sudo sysctl -w net.inet.tcp.rexmt_slop=${{ matrix.slop }}
       - name: Before the build
         run: |
           sudo python3 -I exp-tcp-memory/measure.py before
@@ -56,7 +58,20 @@ jobs:
         timeout-minutes: 15
         uses: ./.github/actions/bazel-stall-probe
         with:
-          args: build --config=ci --config=ci-remote //...
+          args: build --config=ci --config=ci-remote ${{ env.FLAGS }} //...
       - name: After the build
         if: always()
-        run: sudo python3 -I exp-tcp-memory/measure.py after "$RUNNER_TEMP/tcp-memory.txt" "$RUNNER_TEMP/bazel-stall-probe.pcap"
+        run: |
+          echo "=== after the build (${{ matrix.variant }}: ${FLAGS:-no extra flags})"
+          sudo python3 -I exp-tcp-memory/measure.py after "$RUNNER_TEMP/tcp-memory.txt" "$RUNNER_TEMP/bazel-stall-probe.pcap"
+          sudo python3 -I exp-tcp-memory/measure.py before
+      - name: bazel test (fast, watched for a stall)
+        timeout-minutes: 15
+        uses: ./.github/actions/bazel-stall-probe
+        with:
+          args: test --config=ci --config=ci-remote ${{ env.FLAGS }} --test_tag_filters=-requires-cargo,-bdd,-conformu //...
+      - name: After the fast tests
+        if: always()
+        run: |
+          echo "=== after the fast tests (${{ matrix.variant }}: ${FLAGS:-no extra flags})"
+          sudo python3 -I exp-tcp-memory/measure.py after "$RUNNER_TEMP/tcp-memory.txt" "$RUNNER_TEMP/bazel-stall-probe.pcap"

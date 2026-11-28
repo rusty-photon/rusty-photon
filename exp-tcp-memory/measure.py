@@ -77,6 +77,20 @@ def mbuf_denials():
     return int(m[1]) if m else -1
 
 
+def en0_bytes():
+    """en0's input bytes, from `netstat -ibn -I en0`'s link-level row, or -1."""
+    text = subprocess.run(['netstat', '-ibn', '-I', 'en0'], capture_output=True, text=True).stdout
+    lines = text.splitlines()
+    if not lines:
+        return -1
+    header = lines[0].split()
+    for line in lines[1:]:
+        fields = line.split()
+        if len(fields) >= len(header) and fields[2].startswith('<Link'):
+            return int(fields[header.index('Ibytes')])
+    return -1
+
+
 def mib_text(n):
     return f'{n / 1048576:.1f} MiB'
 
@@ -93,7 +107,7 @@ def before():
     print(f"TCP memory: soft {mib_text(t['soft'])}, hard {mib_text(t['hard'])}; peak zeroed")
     print(f'mbuf requests for memory denied: {mbuf_denials()}')
     with open(STATE, 'w') as f:
-        json.dump({'start': time.time(), 'netstat': netstat_s()}, f)
+        json.dump({'start': time.time(), 'netstat': netstat_s(), 'en0': en0_bytes()}, f)
 
 
 def sample(path):
@@ -163,7 +177,9 @@ def after(path, pcap):
     with open(STATE) as f:
         state = json.load(f)
     now = netstat_s()
-    print('netstat -s counters the build changed:')
+    received = en0_bytes() - state.get('en0', -1)
+    print(f'en0 received during the step: {mib_text(received)}')
+    print('netstat -s counters the step changed:')
     for k in sorted(now):
         d = now[k] - state['netstat'].get(k, 0)
         if d:
