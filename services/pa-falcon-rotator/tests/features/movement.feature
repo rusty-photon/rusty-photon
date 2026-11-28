@@ -56,6 +56,13 @@ Feature: Movement
     And I read TargetPosition
     Then TargetPosition should be 147.84 degrees
 
+  Scenario: MoveAbsolute to negative zero sends MD:0.00
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And the rotator reports mechanical position 90.00 degrees
+    And I call MoveAbsolute with -0.00
+    Then MD:0.00 should have been sent
+
   Scenario Outline: MoveAbsolute rejects non-finite angles with INVALID_VALUE
     Given a running pa-falcon-rotator service
     When I connect the rotator
