@@ -412,10 +412,11 @@ impl FormEcho {
     }
 }
 
-/// `254.0` renders as `254`, `121.25` as `121.25` — the field holds what
-/// an operator would type, not float formatting noise.
+/// `254.0` renders as `254`, `121.25` as `121.25`, and `-0.0` as `0` —
+/// the field holds what an operator would type, not float formatting
+/// noise.
 fn trim_float(value: f64) -> String {
-    let mut text = format!("{value}");
+    let mut text = format!("{}", value + 0.0);
     if text.ends_with(".0") {
         text.truncate(text.len().saturating_sub(2));
     }
@@ -583,7 +584,8 @@ fn goal_row_markup(goal: &Goal, join: &ConfigJoin) -> Markup {
 
 /// The position-angle tri-state: blank submits an explicit JSON `null`
 /// (clear back to inherit), a parseable number submits that number — so
-/// `"0"` is an explicit north-up, never collapsed with blank. Only
+/// `"0"` is an explicit north-up, never collapsed with blank, and `"-0"`
+/// submits `0.0` (`+ 0.0`) rather than a negative zero. Only
 /// numeric-ness is checked here; the domain rule (`[0, 360)`, finite) is
 /// rp's, surfaced from its own error.
 fn parse_position_angle(raw: &str) -> Result<Value, String> {
@@ -594,7 +596,7 @@ fn parse_position_angle(raw: &str) -> Result<Value, String> {
     trimmed
         .parse::<f64>()
         .ok()
-        .and_then(serde_json::Number::from_f64)
+        .and_then(|angle| serde_json::Number::from_f64(angle + 0.0))
         .map(Value::Number)
         .ok_or_else(|| {
             "not a number — degrees east of north, or blank to inherit the train default"
@@ -978,6 +980,14 @@ mod tests {
     }
 
     #[test]
+    fn negative_zero_angle_submits_zero() {
+        // `json!(-0.0) == json!(0.0)`, so the serialized form is what the
+        // assertion reads.
+        let angle = parse_position_angle("-0").unwrap();
+        assert_eq!(angle.to_string(), "0.0");
+    }
+
+    #[test]
     fn numeric_angles_pass_through_unvalidated() {
         // Domain validation ([0, 360), finite) is rp's — even 360 passes
         // here and comes back as rp's own field error.
@@ -1000,6 +1010,7 @@ mod tests {
     fn explicit_angle_renders_typed_not_float_noise() {
         assert_eq!(trim_float(254.0), "254");
         assert_eq!(trim_float(121.25), "121.25");
+        assert_eq!(trim_float(-0.0), "0");
     }
 
     // --- the goals editor ---------------------------------------------------

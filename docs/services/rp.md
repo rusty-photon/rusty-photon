@@ -2219,7 +2219,9 @@ tracks the move open with no timer, and the ceiling ends it.
 ASCOM `Position` frame, which honors any sync offset the driver
 holds — in degrees, `0.0 ≤ angle < 360.0`. The angle is validated
 before any motion; a non-finite or out-of-range value errors without
-touching the device. The tool then polls `IsMoving` every 100 ms
+touching the device. The range admits `-0.0`, which the tool takes as
+`0.0`, so neither the device nor the `move_rotator_started` event is
+handed a negative zero. The tool then polls `IsMoving` every 100 ms
 until idle, bounded by a fixed 120 s ceiling: the rotator config has
 no rate to size a prediction from, so the `move_rotator_started`
 envelope carries no `predicted_duration_ms`/`max_duration_ms`.
@@ -4762,8 +4764,8 @@ Semantics:
 - `default_position_angle_degrees` is the train's default framing
   angle in degrees east of north, sky frame — the same domain as
   `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected
-  at load otherwise. Optional. It is layer two of the three-layer
-  effective position angle (target value → this default → `0.0`
+  at load otherwise; a `-0.0` loads as `0.0`. Optional. It is layer
+  two of the three-layer effective position angle (target value → this default → `0.0`
   north-up; [Target Store → Position angle](#position-angle)): for a
   rotator-less train it documents the camera's
   fixed mounting angle as a physical fact of that light path — set it
@@ -7127,7 +7129,9 @@ Semantics that differ from an operator add:
   trailing `.0` stripped and a component under 0.05′ omitted) — reads
   as *how this framing differs*. No hit falls back to the IAU-style
   truncated coordinate form `"J2059+4432"` (`Jhhmm±ddmm`), whose slug
-  (`j2059p4432`, `p`/`m` for the sign) matches by construction. Names
+  (`j2059p4432`, `p`/`m` for the sign) matches by construction. Its RA
+  part runs from `J0000` to `J2359`: an RA a hair below 24 h, which
+  rounding to the micro-minute carries to 24h00m, names as `J2359`. Names
   are initial values only: `display_name` stays freely editable, and
   existing rows are never retroactively renamed when a second framing
   or a wider catalog arrives. Catalog coverage bounds naming quality,
@@ -7139,8 +7143,9 @@ Semantics that differ from an operator add:
 `Target` carries `position_angle_degrees` — the sky position angle
 this target should be framed at, in degrees east of north
 (`0.0 ≤ angle < 360.0`, finite; the same sky frame as
-`move_rotator`'s `angle`). The **effective** angle is a three-layer
-fallback resolved at read time, homed per optical train:
+`move_rotator`'s `angle`; a `-0.0` is stored as `0.0`). The
+**effective** angle is a three-layer fallback resolved at read time,
+homed per optical train:
 
 1. the target's own `position_angle_degrees` — an explicit angle
    freezes framing and is never reinterpreted;
@@ -7593,7 +7598,9 @@ after each exposure, after each target switch, or when conditions change.
 > `exposure.duration_secs` are the recommended target's first
 > **incomplete** plan entry in plan order (`exposure` is null when the
 > target defines none) — 40 completed Luminance frames rotate the
-> recommendation to the plan's Red entry.
+> recommendation to the plan's Red entry. `duration_secs` is the
+> goal's `exposure_duration` as the nearest `f64`, so a `4.56s` goal
+> reads `4.56`.
 > Not implemented:
 >
 > - **Bullet 1 set-time elimination** — `get_next_target` does *not*

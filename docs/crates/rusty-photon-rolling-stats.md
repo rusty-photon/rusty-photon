@@ -91,6 +91,16 @@ number. This is project tenet 2.
 It stays a **read-side filter**: `get_mean` takes `&self` and the buffer is
 unchanged until the next insert.
 
+## A steady reading averages to itself
+
+`get_mean` adds up each sample's offset from the oldest sample inside the
+window and adds the mean offset to that sample: `x₀ + Σ(xᵢ − x₀) / n`. A
+plain sum divided by the count rounds at every partial sum, so sixty samples
+of 27.4 come to 27.400000000000023 and three to 27.399999999999995; at sixty
+samples most one-decimal readings carry such a residue. The offsets of equal
+readings are all zero, so a sensor that holds steady reads back exactly the
+value it reports, which is what a client compares against its own display.
+
 ## `sample_count` counts the buffer, not the window
 
 `sample_count` returns buffer occupancy, which between a sample aging out and

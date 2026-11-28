@@ -221,6 +221,9 @@ impl PositionAngleDegrees {
     /// The single validating constructor, shared with the per-target
     /// field's boundary check in the target MCP tools.
     ///
+    /// The range admits `-0.0`, which is held as `0.0` (`+ 0.0`), so
+    /// the angle never reads back or serializes as `-0.0`.
+    ///
     /// # Errors
     ///
     /// Returns a message if `value` is non-finite or outside `0.0..360.0`.
@@ -231,7 +234,7 @@ impl PositionAngleDegrees {
                  and below 360.0, got {value}"
             ));
         }
-        Ok(Self(value))
+        Ok(Self(value + 0.0))
     }
 
     /// The angle in degrees east of north.
@@ -815,6 +818,14 @@ mod tests {
             err.contains("position angle must be a finite number of degrees"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_negative_zero_position_angle_is_held_as_zero() {
+        // `-0.0 == 0.0`, so the sign is what the assertions read.
+        let angle: PositionAngleDegrees = serde_json::from_str("-0.0").unwrap();
+        assert!(angle.value().is_sign_positive(), "{angle:?}");
+        assert_eq!(serde_json::to_string(&angle).unwrap(), "0.0");
     }
 
     #[test]

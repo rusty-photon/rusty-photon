@@ -334,7 +334,8 @@ north-up" distinguishable (rp.md § Position angle):
 - **Submitted:** blank → `update_target` is sent an **explicit `null`**
   (clear back to inherit — idempotent when already inheriting); a
   parseable number → sent as that number, so `"0"` is an explicit
-  `0.0`, never collapsed with blank; a non-numeric value → a BFF-side
+  `0.0`, never collapsed with blank, and `"-0"` is sent as `0.0`
+  rather than a negative zero; a non-numeric value → a BFF-side
   field error re-rendering the form with the input preserved. Domain
   errors (out of `[0, 360)`, non-finite) come back from rp's validator
   naming the field and re-render the same way — the BFF parses
@@ -402,7 +403,8 @@ server-rendered fragments — no hand-written JavaScript.
   title, payload-specific detail line (target coordinates, exposure
   duration, HFR, RMS error, error messages, a `guide_stopped`'s `reason`
   and the guider's `stop_reason` beside it, how long a guide star has
-  been lost, …),
+  been lost, …; a fractional number shows at most four decimals, and
+  one that rounds to zero reads `0`, never `-0`),
   monospace timestamp, and the operation duration when `elapsed_ms` is
   present. Unknown event types render a generic card (event name + compact
   payload) so new rp events degrade gracefully rather than vanish.

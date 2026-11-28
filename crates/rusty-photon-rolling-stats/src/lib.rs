@@ -117,26 +117,30 @@ impl SensorMean {
     /// produces while its session stays open. Reporting an hour-old
     /// temperature as current is the kind of quiet wrong answer that costs a
     /// night, so a stale window reads as "no value" instead.
+    ///
+    /// The mean is the oldest sample inside the window plus the mean of
+    /// every sample's offset from it, so a steady reading averages to
+    /// itself exactly: the offsets of equal readings are all zero. Summed
+    /// directly and divided, sixty samples of 27.4 come to
+    /// 27.400000000000023.
     #[must_use]
     pub fn get_mean(&self, now: Instant) -> Option<f64> {
-        let mut sum = 0.0_f64;
-        // Counted rather than `len()`d because the filter decides membership;
-        // saturating because the count is a `u32` for the lossless conversion
-        // below, and the window is poll-rate bounded nowhere near 2^32.
-        let mut count: u32 = 0;
-        for sample in self
+        let mut values = self
             .samples
             .iter()
             .filter(|sample| self.is_in_window(sample, now))
-        {
-            sum += sample.value;
+            .map(|sample| sample.value);
+        let oldest = values.next()?;
+        let mut offsets = 0.0_f64;
+        // Counted rather than `len()`d because the filter decides membership;
+        // saturating because the count is a `u32` for the lossless conversion
+        // below, and the window is poll-rate bounded nowhere near 2^32.
+        let mut count: u32 = 1;
+        for value in values {
+            offsets += value - oldest;
             count = count.saturating_add(1);
         }
-
-        if count == 0 {
-            return None;
-        }
-        Some(sum / f64::from(count))
+        Some(oldest + offsets / f64::from(count))
     }
 
     /// Time elapsed at `now` since the instant of the newest sample.
@@ -238,6 +242,30 @@ mod tests {
         mean.add_sample(30.0, t0 + 2 * SECOND);
         assert_eq!(mean.sample_count(), 3);
         assert_eq!(mean.get_mean(t0 + 2 * SECOND), Some(20.0));
+    }
+
+    #[test]
+    fn a_steady_reading_averages_to_itself() {
+        // Every one-decimal reading from -20.0 to 40.0, held steady for
+        // the three samples of the instantaneous window and for sixty. A
+        // plain sum over the count misses 137 of these at three samples
+        // and 470 at sixty: 27.4 comes to 27.399999999999995 and
+        // 27.400000000000023.
+        let t0 = start();
+        for samples in [3_u32, 60] {
+            for tenths in -200..=400 {
+                let reading = f64::from(tenths) / 10.0;
+                let mut mean = SensorMean::new(Duration::from_mins(5));
+                for i in 0..samples {
+                    mean.add_sample(reading, t0 + i * SECOND);
+                }
+                assert_eq!(
+                    mean.get_mean(t0 + samples * SECOND),
+                    Some(reading),
+                    "{samples} samples of {reading}"
+                );
+            }
+        }
     }
 
     #[test]

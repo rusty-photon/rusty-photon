@@ -14,12 +14,14 @@ pub struct PointingState {
 }
 
 impl PointingState {
+    /// Rotation wraps into `[0, 360)`, and a negative zero in RA or Dec,
+    /// which the `POST` range checks admit, is stored as `0.0`.
     #[must_use]
     pub fn new(ra_deg: f64, dec_deg: f64, rotation_deg: f64) -> Self {
         Self {
-            ra_deg,
-            dec_deg,
-            rotation_deg: wrap_rotation(rotation_deg),
+            ra_deg: ra_deg + 0.0,
+            dec_deg: dec_deg + 0.0,
+            rotation_deg: wrap_360(rotation_deg),
         }
     }
 }
@@ -167,7 +169,7 @@ pub fn validate_pointing(
 /// the cone-error analog). Per F1, the snapshot computes
 ///
 /// ```text
-/// ra_deg  = (mount_ra_hours * 15 + offset_ra_arcsec  / 3600).rem_euclid(360)
+/// ra_deg  = wrap_360(mount_ra_hours * 15 + offset_ra_arcsec  / 3600)
 /// dec_deg = clamp(mount_dec_deg     + offset_dec_arcsec / 3600, -90, +90)
 /// ```
 ///
@@ -193,7 +195,7 @@ impl TelescopeFollow {
         Self {
             reader,
             rotator,
-            rotation_deg: wrap_rotation(rotation_deg),
+            rotation_deg: wrap_360(rotation_deg),
             offset_ra_arcsec,
             offset_dec_arcsec,
         }
@@ -218,7 +220,7 @@ impl TelescopeFollow {
         // F5: RA wraps; Dec clamps. A clamp on Dec produces a `warn!`
         // because reaching ±90 on top of a sane mount usually means
         // the offset is misconfigured.
-        let ra_deg = raw_ra_deg.rem_euclid(360.0);
+        let ra_deg = wrap_360(raw_ra_deg);
         let dec_deg = if (-90.0..=90.0).contains(&raw_dec_deg) {
             raw_dec_deg
         } else {
@@ -235,7 +237,7 @@ impl TelescopeFollow {
         // failed rotator read aborts the snapshot the same way a failed
         // mount read does (UNSPECIFIED_ERROR via F2/F8).
         let rotation_deg = match &self.rotator {
-            Some(rotator) => wrap_rotation(rotator.position_angle().await?),
+            Some(rotator) => wrap_360(rotator.position_angle().await?),
             None => self.rotation_deg,
         };
         Ok(PointingState {
@@ -278,10 +280,15 @@ impl PointingSource {
     }
 }
 
-fn wrap_rotation(rotation_deg: f64) -> f64 {
-    let wrapped = rotation_deg.rem_euclid(360.0);
-    // rem_euclid can produce values exactly equal to 360 in pathological
-    // floating point cases; clamp back into [0, 360).
+/// Folds an angle in degrees into `[0, 360)` (`wrap_360` in the design
+/// doc's § Pointing Offset Simulation): RA in follow mode, and rotation.
+///
+/// `rem_euclid` rounds a value a hair below 0 up to exactly 360 — a mount
+/// at RA 0h00m00.7s under a −10.5″ offset sums to about −4e-19° — so 360
+/// folds to 0. It also keeps the sign of a zero (`-360.0` and `-0.0` give
+/// `-0.0`), which `+ 0.0` turns into `0.0`.
+fn wrap_360(deg: f64) -> f64 {
+    let wrapped = deg.rem_euclid(360.0) + 0.0;
     if wrapped >= 360.0 {
         0.0
     } else {
@@ -295,12 +302,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wrap_rotation_keeps_in_range() {
-        assert_eq!(wrap_rotation(0.0), 0.0);
-        assert_eq!(wrap_rotation(180.0), 180.0);
-        assert_eq!(wrap_rotation(360.0), 0.0);
-        assert!((wrap_rotation(370.0) - 10.0).abs() < 1e-9);
-        assert!((wrap_rotation(-10.0) - 350.0).abs() < 1e-9);
+    fn wrap_360_keeps_in_range() {
+        assert_eq!(wrap_360(0.0), 0.0);
+        assert_eq!(wrap_360(180.0), 180.0);
+        assert_eq!(wrap_360(360.0), 0.0);
+        assert!((wrap_360(370.0) - 10.0).abs() < 1e-9);
+        assert!((wrap_360(-10.0) - 350.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn wrap_360_folds_a_value_a_hair_below_zero_to_zero() {
+        // `rem_euclid` gives exactly 360 for this.
+        assert_eq!(wrap_360(-4e-19), 0.0);
+    }
+
+    #[test]
+    fn wrap_360_writes_a_zero_as_positive_zero() {
+        // `-0.0 == 0.0`, so the sign is what the assertion reads; both
+        // `rem_euclid` to `-0.0`.
+        for deg in [-360.0, -0.0] {
+            assert!(wrap_360(deg).is_sign_positive(), "{deg}");
+        }
+    }
+
+    #[test]
+    fn pointing_state_stores_a_negative_zero_as_zero() {
+        let state = PointingState::new(-0.0, -0.0, -0.0);
+        assert!(state.ra_deg.is_sign_positive(), "{state:?}");
+        assert!(state.dec_deg.is_sign_positive(), "{state:?}");
+        assert!(state.rotation_deg.is_sign_positive(), "{state:?}");
+    }
+
+    #[tokio::test]
+    async fn telescope_follow_keeps_ra_below_360_when_the_offset_lands_a_hair_below_zero() {
+        // Mount RA 0h00m00.7s is 0.0029166…°, and a −10.5″ offset is
+        // −0.0029166…°: the sum is about −4e-19°.
+        let reader = mock_reader_returning(MountPosition {
+            ra_hours: 0.7 / 3600.0,
+            dec_deg: 0.0,
+        });
+        let follow = TelescopeFollow::new(Arc::new(reader), None, 0.0, -10.5, 0.0);
+        let snap = follow.snapshot().await.unwrap();
+        assert_eq!(snap.ra_deg, 0.0);
     }
 
     #[tokio::test]

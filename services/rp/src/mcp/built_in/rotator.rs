@@ -109,6 +109,8 @@ impl McpHandler {
                 angle
             ));
         }
+        // The range admits `-0.0`; the device and the events take it as 0.
+        let angle = angle + 0.0;
         let (entry, rot) = resolve_device!(self, find_rotator, &rotator_id, "rotator");
         // One rotation through a rotator at a time, held for the whole
         // call, ladder included; a rotator a train lease holds still
