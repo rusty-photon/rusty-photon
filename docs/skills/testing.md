@@ -1368,7 +1368,8 @@ blocking step freezes the one poll loop every scenario shares, and an
 in-flight response that had already delivered its headers sits unread
 until the loop resumes. Concurrency compounds it — up to 64 scenarios,
 most suites spawning a service process each, several suites at once via
-`--local_test_jobs=HOST_CPUS*1.25`, on 4-vCPU Windows and macOS runners.
+`--local_test_jobs` (`HOST_CPUS*1.25` on the 3-core macOS runners,
+`HOST_CPUS` on the 4-vCPU Windows ones).
 
 Fixing the blocking step is the cure; this section is the client side of
 the same problem, and it holds regardless. Four rules for any step helper

@@ -456,7 +456,8 @@ build:windows --spawn_strategy=local
 # --jobs on Windows CI: HOST_CPUS*2, where ci-linux gives Linux a flat 64. It
 # scales with the box: 8 on the 4-vCPU hosted fallback, the value tuned
 # there, and twice the cores on a pool clone, where the LAN remote cache
-# makes over-subscribing past the core count pay off (see build:ci above).
+# makes over-subscribing past the core count pay off (see ci-linux's
+# --jobs above).
 #
 # Memory has never been measured against this ceiling. Windows processes are
 # heavier than Linux ones: one cold build peaked at about half again Linux's
@@ -625,8 +626,9 @@ try-import %workspace%/ci-remote.bazelrc
 build:macos --remote_max_connections=0
 
 # `--jobs` on macOS: cap how many actions — and so how many concurrent
-# remote-cache operations — may be outstanding at once. `build:ci --jobs=64`
-# above deliberately decouples network-bound cache traffic from the CPU pool.
+# remote-cache operations — may be outstanding at once. `build:ci-linux
+# --jobs=64` above deliberately decouples network-bound cache traffic from the
+# CPU pool.
 # On macOS the cap stays low. Bazel's HTTP cache client runs on exactly two
 # netty event-loop threads (hardcoded, and unaffected by
 # --remote_max_connections above), and it writes each downloaded blob into its
@@ -716,8 +718,8 @@ build:profile --experimental_profile_additional_tasks=vfs_md5
 # --- Coverage config -------------------------------------------------------
 
 # Activate with: bazel coverage --config=coverage //...
-# In CI also add --config=ci --config=ci-remote (see the bazel-coverage action,
-# .github/actions/bazel-coverage/coverage.mjs).
+# In CI also add --config=ci --config=ci-linux --config=ci-remote (see the
+# bazel-coverage action, .github/actions/bazel-coverage/coverage.mjs).
 #
 # Reproduces cargo-llvm-cov's coverage contract under Bazel:
 #
