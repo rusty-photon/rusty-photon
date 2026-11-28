@@ -1318,7 +1318,7 @@ dangerous combination. The rule bifurcates by runner kind
     actions transfer regardless of warmup path; only the external-repo fetch
     is path-sensitive, and that is what the nightly coverage toolchain is.)
     Run it as the `ci` user with the runner's own CI flags —
-    `bazel coverage --config=ci --config=coverage --config=remote-cache //...`
+    `bazel coverage --config=ci --config=ci-linux --config=coverage --config=remote-cache //...`
     plus the LAN-cache override the pool jobs apply
     (`--remote_cache="$RP_LAN_CACHE_URL"` after `--config=remote-cache`, the
     URL sourced from the runner's `.env`, never the repo) — so the warmup

@@ -427,9 +427,9 @@ together are what let the qhyccd-rs sim doctest target run on Windows.
 manifest.** windows-latest intermittently leaves a runfiles-tree entry as a
 *dangling symlink* (`file=false symlink=true len=0` with a real parent
 directory), which no open-retry can outlast. The manifest's
-execroot target is a real file — `build:windows --remote_download_outputs=all`
-outranks `build:ci`'s `toplevel` because platform config appends last — so
-RF() substitutes it and sidesteps the tree. That covers the `--arg-file`
+execroot target is a real file, since Windows CI downloads every output
+(`ci-windows`'s `--remote_download_outputs=all` in `.bazelrc`), so RF()
+substitutes it and sidesteps the tree. That covers the `--arg-file`
 values in both spellings: `external/…/_bs.linksearchpaths` for a crates.io
 build script, and bare workspace-relative
 `crates/…/build_script.linksearchpaths` for a first-party path dependency's
