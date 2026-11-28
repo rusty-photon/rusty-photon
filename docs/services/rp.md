@@ -5653,7 +5653,12 @@ is then compared against its focuser's **baseline**:
   becomes the new baseline. A drift below the delta leaves the
   baseline where it was, so the delta is measured from the **last
   emission**, not from the previous poll: a probe creeping 0.3 °C per
-  poll still emits once it has moved 0.5 °C in total.
+  poll still emits once it has moved 0.5 °C in total. The difference
+  and the delta are compared to 0.001 °C
+  ([Temperature comparisons](#temperature-comparisons)), so a move of
+  exactly the delta emits: 15.9 → 16.4 °C from a tenth-degree probe,
+  and 15.8 → 16.3 °C from a probe that reports an `f32`, like a ZWO
+  EAF.
 - **No probe**: a focuser whose `Temperature` property answers
   `NOT_IMPLEMENTED` is noted once at `debug!` per session, never
   emits, and is still read every interval — one cheap request, and a
@@ -5827,6 +5832,28 @@ dawn. Transient `CCDTemperature`/`CoolerPower` read failures during the
 pass are retried like any idempotent Alpaca read and otherwise skip a
 sample; they never abort the pass.
 
+### Temperature comparisons
+
+Each threshold a temperature is held against — the cooling tolerance,
+plateau threshold and regulation margin, and the
+[Focuser Temperature Watch](#focuser-temperature-watch)'s event delta —
+is compared with a difference between two temperatures, both rounded
+to 0.001 °C. The readings and the thresholds are decimals, but their
+binary difference misses the decimal one by a residue: −19.7 − (−20)
+computes as 0.3000000000000007, 16.4 − 15.9 as 0.4999999999999982, and
+a probe value reported as an `f32` and widened to `f64` carries about
+10⁻⁶. 0.001 °C is far below any sensor's resolution and far above that
+residue, so a reading of exactly a threshold falls on the side the
+threshold's wording puts it:
+
+| Comparison | At exactly the threshold |
+|------------|--------------------------|
+| At the rung: within `tolerance_c` of it (stabilization, adoption) | At the rung: −19.7 °C, a ZWO camera's tenth-degree reading, is at a −20 °C rung with a 0.3 °C tolerance |
+| Floor: warmer than rung + `tolerance_c` | Not warmer. Every sample is exactly one of at the rung, warmer than rung + tolerance, or colder than rung − tolerance |
+| Plateau: movement below `plateau_threshold_c` | No plateau: a window from −7.7 to −8.2 °C has moved 0.5 °C |
+| Snap: the lowest rung at or above floor + `regulation_margin_c` | The rung qualifies: −30 °C clears a −32.3 °C floor by a 2.3 °C margin |
+| `temperature_changed`: moved by at least `temperature_event_delta_c` | Emits |
+
 ### Across an rp restart
 
 `rp` never touches a cooler on its own: not at startup, not on a
@@ -5864,7 +5891,9 @@ cleared immediately (frames captured during the ramp are off the grid),
 `cooler_warmup_started` is emitted, the setpoint rises +5 °C every
 `cooling.warmup_step_interval` until it reaches the warm target
 (`HeatSinkTemperature` when the camera implements it, else
-`cooling.warm_target_c`), then the cooler switches off and
+`cooling.warm_target_c`), each setpoint sent rounded to 0.01 °C (a
+ramp from −9.7 °C sends −4.7, 0.3 and 5.3 °C, never the
+−4.699999999999999 a bare `f64` sum gives), then the cooler switches off and
 `cooler_warmup_complete` is emitted. The ramp avoids thermal shock and
 condensation/frost on the sensor window. A camera without a ladder is
 never touched, nor one with a ladder whose cooler reads stopped. Idempotent:
@@ -8768,6 +8797,11 @@ services/rp/src/
                         by the next one's first reading),
                         temperature_changed emission on a delta —
                         events only, never actions
+  temperature_delta.rs  TemperatureDelta: a difference between two
+                        temperatures rounded to 0.001 °C, the one
+                        comparison the cooling controller and the
+                        temperature watch hold thresholds against
+                        (§ Temperature comparisons)
 
   # Equipment layer
   equipment/

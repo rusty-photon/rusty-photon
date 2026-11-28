@@ -49,6 +49,7 @@ pub mod planner;
 pub mod routes;
 pub mod safety;
 pub mod setup;
+pub mod temperature_delta;
 pub mod temperature_watch;
 pub mod train_lease;
 
