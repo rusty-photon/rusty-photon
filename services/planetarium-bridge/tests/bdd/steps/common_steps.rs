@@ -1,10 +1,11 @@
 //! Steps shared across the bridge features: config knobs, service lifecycle,
 //! the Align gesture, and ASCOM error assertions.
 
+use bdd_infra::restart_relay::RestartRelay;
 use cucumber::{given, then, when};
 
 use crate::stub_rp::StubRp;
-use crate::world::{ascom_code, unreachable_rp_url, BridgeWorld, FloorSetting, DEAD_RP_PORT};
+use crate::world::{ascom_code, BridgeWorld, FloorSetting};
 
 // --- Config knobs (set before the bridge starts) ---
 
@@ -15,9 +16,15 @@ async fn stub_rp_running(world: &mut BridgeWorld) {
     world.stub_rp = Some(stub);
 }
 
+/// rp's address is a relay that drops every connection, as against an rp
+/// that is down, and keeps the address the scenario's own until "the stub
+/// rp comes up at the configured rp address" puts a stub behind it
+/// (testing.md §5.1).
 #[given("rp is unreachable")]
 async fn rp_unreachable(world: &mut BridgeWorld) {
-    world.rp_url = Some(unreachable_rp_url().await);
+    let relay = RestartRelay::start().await;
+    world.rp_url = Some(format!("{}/mcp", relay.base_url()));
+    world.rp_relay = Some(relay);
 }
 
 #[given(expr = "the reported-position altitude floor is {float} degrees")]
@@ -87,13 +94,13 @@ async fn bridge_restarted(world: &mut BridgeWorld) {
 #[when("the stub rp comes up at the configured rp address")]
 async fn stub_comes_up(world: &mut BridgeWorld) {
     assert!(world.stub_rp.is_none(), "a stub rp is already running");
-    let port = world.configured_rp_port();
-    assert_ne!(
-        port, DEAD_RP_PORT,
-        "the configured rp address is the default dead URL, which no stub can bind: \
-         say 'rp is unreachable' first, so the scenario gets a port of its own"
+    let relay = world.rp_relay.as_ref().expect(
+        "the configured rp address is the default dead URL, which no stub can come up at: \
+         say 'rp is unreachable' first, so the scenario gets an address of its own",
     );
-    world.stub_rp = Some(StubRp::start_on(port).await);
+    let stub = StubRp::start().await;
+    relay.forward_to(stub.port());
+    world.stub_rp = Some(stub);
 }
 
 // --- The Align gesture ---
