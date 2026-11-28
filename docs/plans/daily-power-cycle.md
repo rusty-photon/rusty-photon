@@ -602,7 +602,7 @@ program over `qhyccd-rs` and `libqhyccd-sys`, not the service. It switched
 | … scanning from a second thread through the exposure and the blocking readout? | No. 4 exposures of 3 s with 25 scans each. Every scan took under 1 ms and returned the same camera |
 | Does scanning every 250 ms during power-up disturb the firmware load? | No. The scan reported the camera as soon as it appeared, and it opened and exposed normally |
 | An open handle power-cycled with nothing touching it while off (0.15 s and 10 s off) | Clean. The first call after the camera returned failed at once (no stall, no blank frame), the close succeeded, and a reopen by id with no scan exposed normally |
-| An open handle that a call reaches while the camera is off | A raw `CurTemp` read returned −722.2 °C instead of failing; the close and the reopen after power returned were clean. The service's `CCDTemperature` checks the cooler's availability first, which the departure contract treats as a presence question; that path is not yet exercised through the service |
+| An open handle that a call reaches while the camera is off | A raw `CurTemp` read returned −722.2 °C instead of failing; the close and the reopen after power returned were clean. The service's `CCDTemperature` checks the cooler's availability first, which the departure contract treats as a presence question, and answers `NOT_CONNECTED` there ([2026-11-28](#qhy-linux-a-temperature-read-with-the-camera-off-2026-11-28)) |
 
 ### QHY, Windows (2026-11-03)
 
@@ -742,6 +742,24 @@ accounts were throwaway standard users in Remote Desktop Users.
 
 Not run: PHD2 itself in such a session, a reboot, and rig2's own
 hardware. Decision 10 dropped the session on 2026-11-14.
+
+### QHY, Linux: a temperature read with the camera off (2026-11-28)
+
+The dev box's QHY178M on the Gemini Advanced 3, wired as on 2026-11-06
+(`USB A` the camera, `DC3` its cooler and its wheel), Fedora 44 (kernel
+7.2.11), QHY SDK 26.06.04, with `qhy-camera` and
+`gemini-powerbox-adv3-driver` started with `cargo run` from `main` at
+`56a6c41a`. Every switch and every camera call went through the services'
+Alpaca APIs. `DC3` was on for 30 s before `qhy-camera` started, and the
+camera and its wheel were connected. After each cut the power came back,
+and 30 s later both devices were disconnected and connected again.
+
+| Question | Result |
+|---|---|
+| `CCDTemperature` with `USB A` and `DC3` cut, the camera off the bus | `NOT_CONNECTED`, 4 of 4: read 15 ms, 10 s and 60 s after the camera left the bus, and once 10 s in with the cooler regulating at 17.7 °C. The service asks whether the cooler is available before it reads, the dead handle answers that it is not, and the service's probe of `CamSingleFrameMode` then finds the camera gone and logs it once (`qhy-camera`'s C9). The SDK's `CurTemp`, which read −722.2 °C on such a handle, is never reached |
+| The camera's other members after that read | The camera and its wheel read `Connected == false`, and `CanSetCCDTemperature`, `CCDTemperature`, `CoolerOn` and `CoolerPower` answered `NOT_CONNECTED` |
+| `CCDTemperature` with `DC3` alone cut, the camera on USB | 25.1 °C, with both devices still connected and nothing marked lost |
+| The reconnect after the power returned | Both devices connected every time, and `CCDTemperature` read 21.8–25.1 °C with the cooler off: a cooler the cut stopped stays off until a client turns it on |
 
 ### Owed
 

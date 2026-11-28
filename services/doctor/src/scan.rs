@@ -611,6 +611,36 @@ pub struct RpClientTarget {
     pub auth: Option<ClientAuthView>,
 }
 
+/// guider: the blocks doctor joins across — the two device clients and the
+/// CA they trust (docs/services/guider.md § Configuration). Every other
+/// block is the guider's own and read leniently past.
+#[derive(Debug, Deserialize, Default)]
+pub struct GuiderView {
+    #[serde(default)]
+    pub ca_cert: Option<String>,
+    #[serde(default)]
+    pub devices: Option<GuiderDevicesView>,
+}
+
+/// guider: `devices`, the camera and the mount it is a client of.
+#[derive(Debug, Deserialize, Default)]
+pub struct GuiderDevicesView {
+    #[serde(default)]
+    pub camera: Option<GuiderDeviceView>,
+    #[serde(default)]
+    pub mount: Option<GuiderDeviceView>,
+}
+
+/// guider: one device's server and the credential the guider presents to
+/// it.
+#[derive(Debug, Deserialize, Default)]
+pub struct GuiderDeviceView {
+    #[serde(default)]
+    pub alpaca_url: Option<String>,
+    #[serde(default)]
+    pub auth: Option<ClientAuthView>,
+}
+
 /// Parse a lenient view out of a scanned config, distinguishing "view not
 /// applicable" (file absent / invalid JSON, `None`) from "the known block
 /// itself does not parse" (`Some(Err)`).

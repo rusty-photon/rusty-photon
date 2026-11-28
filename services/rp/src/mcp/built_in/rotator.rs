@@ -14,21 +14,25 @@
 //! (pause corrections → move → calibration decision → back to
 //! guiding).
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use ascom_alpaca::api::Rotator;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tracing::debug;
+use tokio::time::Instant;
+use tracing::{debug, warn};
 
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
+use super::super::internals::{wait_until_still, wind_down_bound, DeviceHold, MoveError};
 use super::super::{resolve_device, tool_error, tool_success};
 use crate::equipment::trains::TrainDeviceKind;
-use crate::events::EventEnvelope;
+use crate::events::{EventBus, EventEnvelope};
 
 /// Ceiling on the post-move `IsMoving` poll. Rotators have no rate
 /// config to size a predictive deadline from; 120 s mirrors the
@@ -109,7 +113,7 @@ impl McpHandler {
         // One rotation through a rotator at a time, held for the whole
         // call, ladder included; a rotator a train lease holds still
         // waits for the lease to end (rp.md § Rotator Tool Details).
-        let _hold = match self
+        let hold = match self
             .device_hold(("rotator", &rotator_id), Some(&entry.slot), None, cancel)
             .await
         {
@@ -205,33 +209,45 @@ impl McpHandler {
             }
         }
 
-        let move_result: Result<(f64, f64), String> = async {
+        // The move's ceiling, which also bounds the wind-down of a move
+        // that may have left the rotator moving. Unreachable overflow
+        // degrades to an expired ceiling, not a panic.
+        let now = Instant::now();
+        let ceiling = now.checked_add(ROTATOR_MOVE_DEADLINE).unwrap_or(now);
+        let move_result: Result<(f64, f64), MoveError> = async {
             debug!(rotator_id, angle, "moving rotator");
             rot.move_absolute(angle)
                 .await
                 .map_err(|e| format!("failed to move rotator: {e}"))?;
 
-            let now = std::time::Instant::now();
-            // Unreachable overflow degrades to an expired deadline, not a panic.
-            let deadline = now.checked_add(ROTATOR_MOVE_DEADLINE).unwrap_or(now);
             loop {
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => {
                         // Stop-class counterpart (rp.md § In-Flight
                         // Tool Calls): halt the move where it is.
-                        if let Err(e) = rot.halt().await {
-                            debug!(error = %e, "rotator halt after cancellation failed");
-                        }
-                        return Err(cancel.error());
+                        halt_rotator(rot.as_ref(), &rotator_id, "cancellation").await;
+                        return Err(MoveError::Unsettled(cancel.error()));
                     }
                     () = tokio::time::sleep(Duration::from_millis(100)) => {}
                 }
                 match rot.is_moving().await {
                     Ok(false) => break,
-                    Ok(true) if std::time::Instant::now() < deadline => {}
-                    Ok(true) => return Err("timeout waiting for rotator to settle".to_string()),
-                    Err(e) => return Err(format!("error polling rotator is_moving: {e}")),
+                    Ok(true) if Instant::now() < ceiling => {}
+                    // Still moving at the ceiling: halted, as a slew's
+                    // timeout is aborted (rp.md § Rotator Tool Details).
+                    Ok(true) => {
+                        halt_rotator(rot.as_ref(), &rotator_id, "its ceiling").await;
+                        return Err(MoveError::Unsettled(
+                            "timeout waiting for rotator to settle".to_string(),
+                        ));
+                    }
+                    // Its state is unknown, so it may still be moving.
+                    Err(e) => {
+                        return Err(MoveError::Unsettled(format!(
+                            "error polling rotator is_moving: {e}"
+                        )))
+                    }
                 }
             }
 
@@ -264,6 +280,7 @@ impl McpHandler {
                                 started_at,
                                 &msg,
                             ));
+                            drop(hold);
                             return Ok(tool_error!("{}", msg));
                         }
                     }
@@ -280,6 +297,7 @@ impl McpHandler {
                         "guiding_ladder": guiding_ladder,
                     }),
                 ));
+                drop(hold);
                 Ok(tool_success!({
                     "rotator_id": rotator_id,
                     "angle": position,
@@ -289,22 +307,41 @@ impl McpHandler {
                 }))
             }
             Err(e) => {
+                let (unsettled, mut msg) = match e {
+                    MoveError::Unsettled(msg) => (true, msg),
+                    MoveError::Failed(msg) => (false, msg),
+                };
                 // A failed move may still have rotated the field:
                 // re-select and resume best-effort, reporting the move
                 // error as primary (rp.md § Rotator Tool Details).
-                let mut msg = e;
                 if let Some(client) = ladder_client.as_ref().filter(|_| guiding_paused) {
                     if let Err(re) = client.reselect_star().await {
                         debug!(rotator_id, error = %re, "post-failure star re-select failed");
                     }
                     msg.push_str(&resume_note(client.as_ref()).await);
                 }
-                self.event_bus.emit_operation(EventEnvelope::failed(
-                    "move_rotator",
-                    &operation_id,
-                    started_at,
-                    &msg,
-                ));
+                if unsettled {
+                    wind_down_rotator(
+                        rot,
+                        hold,
+                        self.event_bus.clone(),
+                        UnsettledRotation {
+                            rotator_id: rotator_id.clone(),
+                            operation_id,
+                            started_at,
+                            error: msg.clone(),
+                            ceiling,
+                        },
+                    );
+                } else {
+                    self.event_bus.emit_operation(EventEnvelope::failed(
+                        "move_rotator",
+                        &operation_id,
+                        started_at,
+                        &msg,
+                    ));
+                    drop(hold);
+                }
                 Ok(tool_error!("{}", msg))
             }
         }
@@ -487,6 +524,76 @@ impl McpHandler {
             }
         }
     }
+}
+
+/// Halt a rotator whose move rp ends on `why`. A failed halt may have
+/// left it moving, which the wind-down then waits out.
+async fn halt_rotator(rot: &dyn Rotator, rotator_id: &str, why: &str) {
+    if let Err(e) = rot.halt().await {
+        warn!(rotator_id, why, error = %e, "rotator halt failed; the rotator may still be moving");
+    }
+}
+
+/// What a rotator move that may have left the rotator moving reports
+/// when its wind-down ends: the `move_rotator_failed` that closes the
+/// move's triple, and the move's ceiling.
+struct UnsettledRotation {
+    rotator_id: String,
+    operation_id: String,
+    started_at: chrono::DateTime<chrono::Utc>,
+    error: String,
+    ceiling: Instant,
+}
+
+/// Wind down a rotator move that may have left the rotator moving
+/// (rp.md § Rotator Tool Details, Kept while a move that may still be
+/// moving winds down): keep the rotator's slot until the rotator reads
+/// not moving, and at most until [`wind_down_bound`]. Then emit
+/// `move_rotator_failed` carrying the angles it came to rest at, and
+/// give the slot back, so a rotation queued behind this one starts
+/// from a rotator at rest.
+fn wind_down_rotator(
+    rot: Arc<dyn Rotator>,
+    hold: DeviceHold,
+    event_bus: Arc<EventBus>,
+    unsettled: UnsettledRotation,
+) {
+    let bound = wind_down_bound(unsettled.ceiling);
+    tokio::spawn(async move {
+        let rotator_id = unsettled.rotator_id.as_str();
+        let still = wait_until_still("rotator", rotator_id, bound, || {
+            let rot = rot.clone();
+            async move { rot.is_moving().await }
+        })
+        .await;
+        let (angle, mechanical_angle) = if still {
+            let angle = rot.position().await;
+            let mechanical = rot.mechanical_position().await;
+            debug!(
+                rotator_id,
+                ?angle,
+                ?mechanical,
+                "the rotator has stopped after its move; its slot is free"
+            );
+            (angle.ok(), mechanical.ok())
+        } else {
+            (None, None)
+        };
+        let mut failed = EventEnvelope::failed(
+            "move_rotator",
+            &unsettled.operation_id,
+            unsettled.started_at,
+            &unsettled.error,
+        );
+        if let Some(payload) = failed.payload.as_object_mut() {
+            payload.insert("angle".to_string(), angle.into());
+            payload.insert("mechanical_angle".to_string(), mechanical_angle.into());
+        }
+        // Emitted before the slot goes back, so it precedes the
+        // `move_rotator_started` of a rotation queued behind this one.
+        event_bus.emit_operation(failed);
+        drop(hold);
+    });
 }
 
 #[cfg(test)]

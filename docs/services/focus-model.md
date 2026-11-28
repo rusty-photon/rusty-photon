@@ -461,8 +461,9 @@ differences.
    the focuser is at a filter's focus rather than mid-grid. On a call that fails, it is named beside the
    failure, as a failed put-back is for a single sweep.
    `restored.position` is a settled position or null: a move that
-   errored may still be travelling — `rp` answers a focuser it gave up
-   waiting for while it is still moving — so what was read back after
+   errored may still be travelling — `rp` answers a move it gave up on
+   at once, while the focuser it halted may still be coming to rest —
+   so what was read back after
    one goes in the note rather than in a field that means where the
    focuser was left, and so does the reading taken where nothing was
    moved at all — a sweep `rp` abandoned mid-travel can still be
@@ -473,8 +474,8 @@ differences.
    mid-flight and sweep from it. Two agreeing readings is
    the only idleness there is to see — `rp` reports where a focuser
    is, not whether it is moving — and stopping the travel is `rp`'s:
-   a cancelled `move_focuser` halts the focuser and gives its slot
-   back once the halt has been sent ([rp.md § Focuser Tool
+   a `move_focuser` that is cancelled or runs past its deadline halts
+   the focuser and keeps its slot until the focuser reads idle ([rp.md § Focuser Tool
    Details](rp.md#focuser-tool-details)). A procedure whose sweeps left guiding
    paused tries that resume once more on its way out. Every sweep
    resumes what it paused, on its put-back or after the focus it

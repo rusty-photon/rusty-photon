@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use bdd_infra::restart_relay::RestartRelay;
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use tempfile::TempDir;
@@ -23,9 +24,8 @@ pub struct SentinelWorld {
     // Filemonitor config accumulation
     pub fm_rules: Vec<serde_json::Value>,
     pub fm_polling_interval: u64,
-    /// filemonitor's port, reserved at its first start so a restart
-    /// rebinds it.
-    pub fm_port: Option<u16>,
+    /// The port sentinel dials for filemonitor, held across a restart.
+    pub fm_relay: Option<RestartRelay>,
 
     // Sentinel config accumulation
     pub sentinel_monitor_name: String,
@@ -151,7 +151,7 @@ impl SentinelWorld {
                 "case_sensitive": false
             },
             "server": {
-                "port": self.fm_port.unwrap_or(0),
+                "port": 0,
                 "discovery_port": null
             }
         })
@@ -232,9 +232,12 @@ impl SentinelWorld {
         config
     }
 
-    /// Start filemonitor binary with the accumulated config.
+    /// Start filemonitor binary with the accumulated config, behind the
+    /// scenario's [`RestartRelay`] (started on the first call).
     pub async fn start_filemonitor(&mut self) {
-        bdd_infra::reserved_port_once(&mut self.fm_port).await;
+        if self.fm_relay.is_none() {
+            self.fm_relay = Some(RestartRelay::start().await);
+        }
         let config_json = self.build_filemonitor_config();
         let dir = self
             .temp_dir
@@ -245,13 +248,21 @@ impl SentinelWorld {
 
         let handle = ServiceHandle::start("filemonitor", config_path.to_str().unwrap()).await;
 
+        self.fm_relay().forward_to(handle.port());
         self.filemonitor = Some(handle);
     }
 
+    /// The relay in front of the filemonitor [`Self::start_filemonitor`]
+    /// started.
+    const fn fm_relay(&self) -> &RestartRelay {
+        self.fm_relay.as_ref().expect("filemonitor not started")
+    }
+
     /// Stop the running filemonitor; [`Self::start_filemonitor`] brings it
-    /// back on the same port, with its device disconnected, as a restarted
-    /// service is.
+    /// back behind the same relay port, with its device disconnected, as a
+    /// restarted service is.
     pub async fn stop_filemonitor(&mut self) {
+        self.fm_relay().refuse();
         self.filemonitor
             .take()
             .expect("filemonitor not started")
@@ -275,15 +286,16 @@ impl SentinelWorld {
         body["Value"].as_bool() == Some(true)
     }
 
-    /// Add a monitor config entry pointing at the running filemonitor.
+    /// Add a monitor config entry pointing at the running filemonitor,
+    /// through its relay.
     pub fn add_filemonitor_monitor(&mut self, name: &str) {
-        let fm = self.filemonitor.as_ref().expect("filemonitor not started");
+        let port = self.fm_relay().port();
         self.sentinel_monitor_name = name.to_string();
         self.sentinel_monitors.push(serde_json::json!({
             "type": "alpaca_safety_monitor",
             "name": name,
             "host": "127.0.0.1",
-            "port": fm.port(),
+            "port": port,
             "device_number": 0,
             "polling_interval": "1s"
         }));

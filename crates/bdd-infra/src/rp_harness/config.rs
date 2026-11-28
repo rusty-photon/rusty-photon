@@ -392,13 +392,6 @@ pub struct RpConfigBuilder {
     /// block is omitted and rp's defaults apply (10 s polls, 2 m
     /// plateau window — far too slow for test scenarios).
     pub cooling: Option<CoolingOverrides>,
-    /// Pin `server.port`. `None` ⇒ port 0 (ephemeral). A scenario that
-    /// kills and restarts rp pins the first instance's port so a client
-    /// configured with rp's URL — session-runner's `mcp_server_url` —
-    /// finds the restarted instance where it left the old one, as a
-    /// real restart would. A tool provider's suite pins it too, so the
-    /// provider's config can name rp before rp starts.
-    pub port: Option<u16>,
 }
 
 impl RpConfigBuilder {
@@ -563,12 +556,6 @@ impl RpConfigBuilder {
         self
     }
 
-    /// Pin `server.port` (see the field).
-    pub const fn with_port(&mut self, port: u16) -> &mut Self {
-        self.port = Some(port);
-        self
-    }
-
     /// Pin `session.data_directory` to an explicit path. Used by the
     /// cross-restart BDD scenarios to keep two consecutive rp processes
     /// pointing at the same on-disk archive.
@@ -665,8 +652,12 @@ impl RpConfigBuilder {
                 "minimize_filter_changes": true
             },
             "safety": safety,
+            // rp binds port 0 and announces what it got. A client that has
+            // to name rp before rp starts, or keep rp's address across a
+            // restart, dials a `restart_relay::RestartRelay` in front of it
+            // (testing.md §5.1).
             "server": {
-                "port": self.port.unwrap_or(0),
+                "port": 0,
                 "bind_address": "127.0.0.1"
             }
         });
@@ -1058,14 +1049,6 @@ pub fn build_calibrator_flats_config(mcp_server_url: &str, store_path: &str) -> 
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn with_port_pins_the_server_port_and_the_default_stays_ephemeral() {
-        assert_eq!(RpConfigBuilder::new().build()["server"]["port"], 0);
-        let mut builder = RpConfigBuilder::new();
-        builder.with_port(41115);
-        assert_eq!(builder.build()["server"]["port"], 41115);
-    }
 
     #[test]
     fn empty_builder_produces_minimal_config() {

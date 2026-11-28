@@ -1407,6 +1407,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   - **12 V cut, camera still on USB.** A QHY178M whose 12 V is cut stays on USB
     and answers every call. On both platforms, the probes run against it did
     not mark it lost.
+  - **A temperature read with the camera gone** (Linux, 2026-11-28, in the
+    [daily power cycle's validation](../plans/daily-power-cycle.md#qhy-linux-a-temperature-read-with-the-camera-off-2026-11-28)).
+    `CCDTemperature` asks whether the cooler is available before it reads.
+    The dead handle answers that it is not, the presence probe finds the
+    camera gone, and the read answers `NOT_CONNECTED`, 4 of 4, with the
+    cooler regulating or not. The SDK's `CurTemp`, which returns −722.2 °C on
+    that handle (K2), is never reached.
   - **A readout that stalls inside `GetQHYCCDSingleFrame`** (Windows). The call
     neither hangs nor fails: it blocked for about 86 s, until the host dropped
     the device, then returned success with an all-zero frame. That is why a

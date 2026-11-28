@@ -18,6 +18,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [calibrator-flats](services/calibrator-flats) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11170 | `train_flats` / `take_flats` / `get_flat_training` per optical train, flat timing remembered in a redb store |
 | [focus-model](services/focus-model) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11173 | `focus_train` / `determine_filter_offsets` / `calibrate_temperature` / `get_sweep_plan` / `get_focus_model` / `get_focus_runs` / `set_focus_offsets` / `reset_focus_model` per optical train, sweeps sized from the optics and every run remembered in a redb store |
 | [polar-align](services/polar-align) | Orchestrator (MCP client of rp) | 11172 | Plate-solving polar alignment orchestrator for equatorial mounts |
+| [guider](services/guider) | Guider service (Alpaca client of a Camera and a Telescope) | 11129 | rusty-photon's own guider: keeps the mount on target from a guide camera's frames with `PulseGuide`, commanded by rp over HTTP |
 | [sky-survey-camera](services/sky-survey-camera) | ASCOM Camera (simulator) | 11116 | Camera simulator that returns NASA SkyView cutouts for the configured optics |
 | [star-adventurer-gti](services/star-adventurer-gti) | ASCOM Telescope | 11117 | Driver for Sky-Watcher Star Adventurer GTi (USB and WiFi/UDP) |
 | [pa-falcon-rotator](services/pa-falcon-rotator) | ASCOM Rotator + Switch (status) | 11118 | Driver for Pegasus Astro Falcon Rotator (firmware ≥ 1.3) |
@@ -80,6 +81,12 @@ See [docs/services/focus-model.md](docs/services/focus-model.md) for design docu
 Orchestrator plugin that measures how far an equatorial mount's RA axis is from the refracted celestial pole and guides the operator through correcting it. Connects to `rp` as an MCP client and slews the mount to three RA positions near the pole, capturing and plate-solving an image at each to compute the axis direction (the N.I.N.A. Three Point Polar Alignment method). It then enters a live adjustment phase: capturing and solving continuously while the operator turns the mount's azimuth/altitude adjusters, publishing the residual error after every solve.
 
 See [docs/services/polar-align.md](docs/services/polar-align.md) for design documentation.
+
+### Guider
+
+rusty-photon's own guider, a headless service that wraps no other program. It takes frames from one Alpaca Camera, measures how far a set of guide stars has moved, and corrects the mount with `PulseGuide` on one Alpaca Telescope. `rp` commands it over an HTTP API: loop, calibrate, guide, dither, pause and stop, with the statistics of the run and the latest frame. It is idle after every start, keeps its calibration for later nights, writes a guide log in PHD2's format, and configures itself on its own setup page, where the camera's address, the mount's and the guide scope's focal length are all a rig has to supply.
+
+See [docs/services/guider.md](docs/services/guider.md) for design documentation.
 
 ### Sky Survey Camera
 
@@ -233,7 +240,7 @@ rusty-photon/
     bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)
     guide-replay/                    Recorded guide-camera frames replayed through the guider's measurement
     guide-simulator/                 Mount model + star renderer in simulated time, for the guider's tests
-    guide-simulator-alpaca/          The simulator behind an Alpaca Camera and Telescope, for the guider's scenarios
+    guide-simulator-alpaca/          The simulator behind an Alpaca Camera and Telescope, for the guider's scenarios and rp's against it
     rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum + memoised verifier)
     rp-catalog/                      Embedded Messier/NGC/IC catalog with name resolution
     rp-ephemeris/                    Astronomical math (Ephemeris + ERFA wrapper + Site)
@@ -273,6 +280,7 @@ rusty-photon/
     calibrator-flats/      Flat-field tool provider (train_flats / take_flats through rp)
     focus-model/           Focus tool provider (focus_train / determine_filter_offsets / calibrate_temperature through rp)
     polar-align/           Plate-solving polar alignment orchestrator
+    guider/                The guider: guide camera frames in, PulseGuide out, commanded by rp
     plate-solver/          rp-managed HTTP service wrapping the ASTAP CLI
     ui-htmx/               Server-rendered web UI (BFF): activity stream, targets inbox
     doctor/                Install diagnosis and repair CLI

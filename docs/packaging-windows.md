@@ -24,8 +24,8 @@ the GitHub Releases page. The installer presents a feature tree:
   `rusty-photon-doctor.exe tls renew`; uninstall removes the task.
 - **Drivers** (optional, off by default): one sub-feature per device
   driver.
-- **Automation** (optional): `rp`, `session-runner`, `plate-solver`,
-  `calibrator-flats`, `polar-align`, `focus-model`.
+- **Automation** (optional): `rp`, `guider`, `session-runner`,
+  `plate-solver`, `calibrator-flats`, `polar-align`, `focus-model`.
 
 Every selected service installs
 `%ProgramFiles%\rusty-photon\rusty-photon-<svc>.exe` and registers a
@@ -54,6 +54,7 @@ its port:
 | zwo-focuser | 11124 | `ZwoFocuser` | its SDK DLL bundled |
 | planetarium-bridge | 11126 | `PlanetariumBridge` | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | `Upbv2Driver` | serial (COM port) |
+| guider | 11129 | `Guider` | guider: Alpaca client of a camera and a mount; `/health` answers 503 while they are not named |
 | gemini-powerbox-adv3-driver | 11132 | `GeminiPowerboxAdv3Driver` | serial (COM port; Windows needs the vendor's CH341SER driver for the CH340 bridge) |
 | plate-solver | 11131 | `PlateSolver` | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | `CalibratorFlats` | config-gated |

@@ -86,18 +86,9 @@ pub struct StubRp {
 }
 
 impl StubRp {
-    /// Bind on an OS-assigned port.
+    /// Bind on an OS-assigned port. The outage scenarios bring rp back at
+    /// the address they configured by pointing their relay at this port.
     pub async fn start() -> Self {
-        Self::bind(0).await
-    }
-
-    /// Bind on a specific port — the "rp comes back up at the same address"
-    /// half of the outage scenarios.
-    pub async fn start_on(port: u16) -> Self {
-        Self::bind(port).await
-    }
-
-    async fn bind(port: u16) -> Self {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let reject = Arc::new(AtomicBool::new(false));
         let handler = StubHandler {
@@ -116,7 +107,7 @@ impl StubRp {
         );
         let router = axum::Router::new().nest_service("/mcp", service);
 
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind stub rp listener");
         let port = listener.local_addr().expect("stub rp local addr").port();
@@ -138,6 +129,10 @@ impl StubRp {
             shutdown: Some(shutdown_tx),
             join: Some(join),
         }
+    }
+
+    pub const fn port(&self) -> u16 {
+        self.port
     }
 
     pub fn mcp_url(&self) -> String {

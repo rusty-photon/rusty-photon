@@ -108,6 +108,8 @@ fn main() -> ServiceResult {
         &guider::config::default_scaffold()?,
         &[],
     )?;
+    // The overrides are kept, not only applied, so the setup page shows the
+    // fields they pin as pinned and never saves them into the file.
     let overrides = guider::config::CliOverrides {
         port: cli.port,
         bind_address: cli.bind_address,
@@ -119,9 +121,11 @@ fn main() -> ServiceResult {
             debug!(config_path = %config_path.display(), "loading configuration");
             let mut config = guider::config::load_config(&config_path)?;
             overrides.apply(&mut config);
+            let pages = guider::setup::pages(&config, config_path, overrides);
 
             guider::ServerBuilder::new()
                 .with_config(config)
+                .with_setup_pages(pages)
                 .build()
                 .await?
                 .start(shutdown.cancelled())

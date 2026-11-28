@@ -62,6 +62,7 @@ pub const NON_ALPACA_SERVICES: &[&str] = &[
     "focus-model",
     "polar-align",
     "ui-htmx",
+    "guider",
 ];
 
 /// The environment variable selecting the directory-backed stub service

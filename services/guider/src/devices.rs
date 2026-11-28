@@ -23,7 +23,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use crate::config::DeviceAddress;
+use crate::config::{DeviceConfig, DeviceUrl};
 use crate::error::{GuiderError, Result};
 
 /// How long a call to a device may go without an answer before it has
@@ -270,25 +270,39 @@ pub struct DeviceClient {
 }
 
 impl DeviceClient {
-    /// A client of the device at `address`, trusting `ca_cert` alone for an
-    /// `https://` address when it is set.
+    /// A client of `device` on the server at `url`, trusting `ca_cert` alone
+    /// for an `https://` address when it is set.
     ///
     /// # Errors
     ///
     /// Returns [`GuiderError::DeviceClient`] if the HTTP client cannot be
     /// built.
-    pub fn new(address: &DeviceAddress, ca_cert: Option<&Path>) -> Result<Self> {
-        let url = address.alpaca_url.as_str();
+    pub fn new(url: &DeviceUrl, device: &DeviceConfig, ca_cert: Option<&Path>) -> Result<Self> {
+        let url = url.as_str();
         let failed = |message: String| GuiderError::DeviceClient {
             url: url.to_owned(),
             message,
         };
-        let http = http_client(address, ca_cert).map_err(failed)?;
+        let http = http_client(device, ca_cert).map_err(failed)?;
         let client = Client::new_with_client(url, http).map_err(|e| failed(e.to_string()))?;
         Ok(Self {
             client,
-            device_number: address.device_number,
+            device_number: device.device_number,
         })
+    }
+
+    /// A client of `device`, when the configuration names it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuiderError::DeviceClient`] if the HTTP client cannot be
+    /// built.
+    pub fn of(device: &DeviceConfig, ca_cert: Option<&Path>) -> Result<Option<Self>> {
+        device
+            .alpaca_url
+            .as_ref()
+            .map(|url| Self::new(url, device, ca_cert))
+            .transpose()
     }
 
     /// The device's position among its server's devices of its kind.
@@ -360,14 +374,14 @@ pub async fn camera_sensor(
 /// server's Basic Auth credential, and trust in `ca_cert` alone when it is
 /// set.
 fn http_client(
-    address: &DeviceAddress,
+    device: &DeviceConfig,
     ca_cert: Option<&Path>,
 ) -> std::result::Result<reqwest::Client, String> {
     let mut builder = rusty_photon_tls::client::client_builder(ca_cert)
         .map_err(|e| e.to_string())?
         .user_agent("rusty-photon-guider")
         .connect_timeout(CONNECT_TIMEOUT);
-    if let Some(auth) = &address.auth {
+    if let Some(auth) = &device.auth {
         let encoded = BASE64.encode(format!("{}:{}", auth.username, auth.password));
         // Sensitive keeps the credential out of the client's `Debug`, which
         // prints its default headers.
@@ -585,8 +599,12 @@ mod tests {
         format!("http://{addr}")
     }
 
-    fn address(url: &str, auth: serde_json::Value) -> DeviceAddress {
-        serde_json::from_value(json!({ "alpaca_url": url, "auth": auth })).unwrap()
+    fn address(url: &str, auth: serde_json::Value) -> DeviceConfig {
+        DeviceConfig {
+            alpaca_url: Some(DeviceUrl::parse("alpaca_url", url.to_owned()).unwrap()),
+            device_number: 0,
+            auth: serde_json::from_value(auth).unwrap(),
+        }
     }
 
     #[tokio::test]
@@ -712,7 +730,9 @@ mod tests {
     async fn polled_stub(stub: &Stub) -> Polled<CameraKind> {
         let url = stub_camera_server(Arc::clone(stub)).await;
         Polled::new(Arc::new(
-            DeviceClient::new(&address(&url, json!(null)), None).unwrap(),
+            DeviceClient::of(&address(&url, json!(null)), None)
+                .unwrap()
+                .unwrap(),
         ))
     }
 

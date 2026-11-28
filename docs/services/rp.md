@@ -106,7 +106,7 @@ process boundary:
 | Category | What | Examples | Process boundary | Supervised by |
 |----------|------|----------|------------------|---------------|
 | **Built-in tools** | Rust code running inside `rp`'s own process | Equipment primitives, planner, image analysis (`measure_basic`, HFR, FWHM, eccentricity), V-curve auto-focus, iterative centering | none — same process | Sentinel watches `rp` itself |
-| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP); the [`guider`](guider.md), being built, is the control loop | one process per service | Sentinel restarts on hang/crash |
+| **rp-managed services** | Separate processes that wrap external apps `rp` cannot link against, or that run a first-party control loop which must keep running while `rp` restarts; their tools appear as built-in proxies in the catalog | Plate solver service (wraps ASTAP); the [`guider`](guider.md) is the control loop | one process per service | Sentinel restarts on hang/crash |
 | **Plugins (extension)** | Separate processes that follow the plugin protocol (event, tool provider): third-party extensions, and first-party capabilities that do not belong in `rp`'s process. | Custom analyzers (ML quality classifiers, wavefront tools), alternative tool providers, custom event consumers. | one process per plugin | `rp` applies the per-tool safety gate and bounds each webhook delivery and each provider dial, but not a proxied tool call, which runs until the provider answers or the call is cancelled; Sentinel may restart configurable plugins |
 
 The category boundary is **process supervision and lifecycle role**, not
@@ -1190,10 +1190,10 @@ Point events (e.g. `filter_switch`, `safety_changed`) carry no
 | `sync_mount_failed` | error | Mount sync failed |
 | `move_focuser_started` | focuser_id, position, backlash_compensated | Focuser begins move to the target position; `backlash_compensated` is `true` when the move runs as an overshoot-then-approach pair (see [Focuser Tool Details](#focuser-tool-details)) |
 | `move_focuser_complete` | focuser_id, position | Focuser settled at the read-back position |
-| `move_focuser_failed` | error | Focuser move failed or timed out |
+| `move_focuser_failed` | error, position (a move that may have left the focuser moving) | Focuser move failed, timed out or was cancelled. After a cancellation, a timeout or a failed `IsMoving` read the event follows once the focuser has stopped, and `position` is where it came to rest, `null` when that is unknown (see [Focuser Tool Details](#focuser-tool-details)) |
 | `move_rotator_started` | rotator_id, angle, guiding_paused | Rotator move begins (before the ladder's pause, which is part of the operation); `guiding_paused` says whether the rotate-while-guiding ladder paused the guider's corrections for this move |
 | `move_rotator_complete` | rotator_id, angle, mechanical_angle, moved_trains, guiding_ladder | Rotator idle at the read-back angle; `moved_trains` lists the trains containing it, `guiding_ladder` the ladder outcome (`null` when it did not engage) |
-| `move_rotator_failed` | error | Rotator move failed or timed out (the guide stars re-selected and the corrections resumed best-effort when the ladder paused them) |
+| `move_rotator_failed` | error, angle and mechanical_angle (a move that may have left the rotator moving) | Rotator move failed, timed out or was cancelled (the guide stars re-selected and the corrections resumed best-effort when the ladder paused them). After a cancellation, a timeout or a failed `IsMoving` read the event follows once the rotator has stopped, and its angles are where it came to rest, `null` when unknown (see [Rotator Tool Details](#rotator-tool-details)) |
 | `open_cover_started` | calibrator_id | Dust cover begins opening. `calibrator_id` is the resolved calibrator, also when the call addressed its train (see [CoverCalibrator Tool Details](#covercalibrator-tool-details)) |
 | `open_cover_complete` | calibrator_id, status | Cover reports `Open`; `status` is the tool's own, `open` |
 | `open_cover_failed` | error, calibrator_id | Open failed: the device refused it, a cover-state poll failed, the cover was not open within the 60 s ceiling, or the call was cancelled (the cover halted where it is) |
@@ -1487,8 +1487,8 @@ identical to MCP clients:
 1. **Built-in tools** — implemented directly in `rp` (hardware primitives,
    image analysis, planner, V-curve auto-focus, iterative centering).
 2. **rp-managed service tools** — built-in tool surface that proxies to a
-   separate process Sentinel supervises: the plate solver, and the guider,
-   whose service is being built (§ [Guider Service](#guider-service)). The MCP tool itself lives in `rp`; the
+   separate process Sentinel supervises: the plate solver, and the guider
+   (§ [Guider Service](#guider-service)). The MCP tool itself lives in `rp`; the
    wrapped logic runs in the supervised service.
 3. **Third-party plugin tools** — aggregated from plugins running their own
    MCP servers. Discovered at startup via `tools/list` and proxied through
@@ -2224,7 +2224,8 @@ until idle, bounded by a fixed 120 s ceiling: the rotator config has
 no rate to size a prediction from, so the `move_rotator_started`
 envelope carries no `predicted_duration_ms`/`max_duration_ms`.
 On idle it reads back `Position` and `MechanicalPosition` for the
-result.
+result. A rotator still moving at the ceiling is halted, and the call
+is the timeout error.
 
 `moved_trains` on the result lists every optical train containing
 the rotator — the trains whose field orientation the move changed.
@@ -2295,6 +2296,24 @@ against its own cancellation. A [train lease](#train-lease) holds every
 rotator in its train still: `move_rotator` takes no `lease_id`, and a
 rotation of a rotator a lease reserves waits for the lease to end.
 
+**Kept while a move that may still be moving winds down.** As with a
+focuser (§ [Focuser Tool Details](#focuser-tool-details)), three ends
+leave the rotator possibly moving: a cancellation and the 120 s
+ceiling, both of which send `Halt`, and an `IsMoving` read that fails.
+Such a move answers its caller as any failed move does, after the
+ladder's re-selection and resume. It keeps the rotator's slot until
+the rotator reads not moving, reading `IsMoving` every 100 ms, and at
+most until the later of the 120 s ceiling, counted from its
+`MoveAbsolute`, and 5 s after its answer. A rotator does not stop the
+moment its `Halt` returns, and one that does not implement `Halt`
+goes on to its target. A rotation queued behind the move therefore
+starts only once the rotator has stopped. A `Halt` that fails is
+logged as a warning. At the bound the slot is released with a
+warning. `move_rotator_failed` is emitted just before the slot goes
+back and carries `angle` and `mechanical_angle`, where the rotator
+came to rest: `null` when it still read moving, or could not be read,
+at the bound, or its angles could not be read once it stopped.
+
 #### Focuser Tool Details
 
 `move_focuser` moves an absolute focuser to `position`, validated
@@ -2312,7 +2331,8 @@ expires while
 the device is idle but short of the target, the call succeeds with
 the position the device actually reports (`actual_position` is
 always the read-back, never the request) and the shortfall is
-logged; a device still moving at the deadline is the timeout error.
+logged; a device still moving at the deadline is halted, and the call
+is the timeout error (below).
 The same settle rule governs every focuser move rp makes on its own
 behalf: the guide-train `auto_focus` sweep's steps and final move.
 
@@ -2321,11 +2341,40 @@ a move holds it from its plan (the pre-move position read) to its last
 leg's settle. A second `move_focuser`, or a step of `auto_focus`,
 through a focuser whose slot is held waits its turn,
 raced against its own cancellation as a capture's wait for its camera
-is. A cancelled move halts the focuser and gives the slot back once the
-halt has been sent, so a put-back queued behind it starts from where
-the focuser stopped. A [train lease](#train-lease) takes the slot of
-every focuser it moves or holds still: a move that names the lease runs
-under it, and one that names none waits for the lease to end.
+is. A [train lease](#train-lease) takes the slot of every focuser it
+moves or holds still: a move that names the lease runs under it, and
+one that names none waits for the lease to end.
+
+**Kept while a move that may still be moving winds down.** Three ends
+leave the focuser possibly moving: a cancellation, which sends `Halt`;
+a leg still moving at its deadline, which sends `Halt` too, as a
+slew's timeout sends `AbortSlew`; and an `IsMoving` read that fails,
+which leaves the focuser's state unknown. Such a move answers its
+caller at once, with `cancelled: <reason>` or its error. It keeps the
+focuser's slot until the focuser reads not moving, reading `IsMoving`
+every 100 ms, and at most until the later of two bounds: the move's
+ceiling, and 5 s after its answer. The ceiling is the legs' deadlines
+summed from the start of the first leg, which is the
+`max_duration_ms` of its `move_focuser_started`, or the 120 s
+fallback ceiling when that envelope carries none. The 5 s gives a
+`Halt` sent at a deadline time to land. A focuser does not stop the
+moment its `Halt` returns. A ZWO EAF reads moving for about 165 ms
+afterwards, and refuses a `Move` sent in that window, or, sent at
+once, answers it without an error and never makes it. So a put-back
+queued behind such a move starts only once the focuser has stopped,
+and from where it stopped. A focuser that does not implement `Halt`,
+which ASCOM permits, goes on to the leg's target, and the ceiling
+covers that travel. A `Halt` that fails is logged as a warning, since
+the motion may not have stopped. At the bound the slot is released
+with a warning, so every wait behind it stays bounded. A move under a train lease keeps its call
+under the lease as long, so the lease keeps the focuser too.
+`move_focuser_failed` is emitted just before the slot goes back, so it
+precedes the `move_focuser_started` of a move queued behind it, and it
+carries `position`, where the focuser came to rest: `null` when the
+focuser still read moving, or could not be read, at the bound, or its
+position could not be read once it stopped. A move cancelled before its first `Move`, or between its legs,
+has nothing in flight: the focuser reads idle at the first read, and
+the event carries where it stands.
 
 **Travel bounds.** Every move rp makes through a focuser stays inside
 its travel bounds. ASCOM fixes an absolute focuser's travel: "The
@@ -5275,16 +5324,17 @@ credentials to an auth-enabled guider; `doctor --fix` wires it from
 the observatory credential once the guider's own `server.auth` is on
 (`joins.client-auth`, `docs/services/doctor.md` §Client-target joins).
 
-**The guider service is being built** ([`guider.md`](guider.md)): it
-guides, and is not packaged yet, so no rig guides under `rp` yet. `rp`'s
-side of its contract is built: the guider tools, the check and the
+**The guider service is built** ([`guider.md`](guider.md)) and has not
+yet guided on sky, so no rig guides under `rp` yet. `rp`'s side of its
+contract is built: the guider tools, the check and the
 watch below, the [guide camera guard](#the-guide-camera-guard) that a
 capture through the guide camera, a guiding train's
 [train lease](#train-lease) and a start of guiding hold, the
 rotate-while-guiding ladder
 ([Rotator Tool Details](#rotator-tool-details)) and the sidecar's
 `guiding` block ([Rig state](#rig-state)). Its scenarios run against
-`bdd-infra`'s double of the contract
+`bdd-infra`'s double of the contract, and `guider_service.feature`
+runs `rp` against the guider service itself and simulated devices
 (§ [BDD Tests](#bdd-tests-cucumber)). `rp` speaks one guider contract
 and has no backend selector.
 
@@ -7857,8 +7907,8 @@ returns without moving anything.
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
 | `capture`, and the captures inside `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish — a bounded one gives up at its 3 s deadline as usual — and the frame is downloaded and kept. Only a read that deadline does not bound, still out at it (a wedged wheel a templated capture is waiting out), makes the capture answer `cancelled: <reason>` and release the camera at the deadline |
-| `move_focuser`, and the moves inside `auto_focus` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
-| `move_rotator` | rotator `Halt` |
+| `move_focuser`, and the moves inside `auto_focus` | focuser `Halt` on the leg in flight; the move keeps the focuser's slot until the focuser reads idle, within the bound [Focuser Tool Details](#focuser-tool-details) gives. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
+| `move_rotator` | rotator `Halt`; the move keeps the rotator's slot until the rotator reads idle ([Rotator Tool Details](#rotator-tool-details)) |
 | `open_cover` | `HaltCover` |
 | `start_guiding` | stop guiding — the half-started loop is undone |
 | `set_filter`, `close_cover`, `calibrator_on`, `calibrator_off`, `park`, the guide-metric waits inside `auto_focus` | none: the wait ends and the device finishes on its own. A park is never aborted — a mount half-way to its park position is safer left going there, the same reasoning as `park`'s timeout |
@@ -9083,6 +9133,24 @@ Behavioral specifications for `rp`'s responsibilities:
   ladder; `guide_metric_focus.feature` the metric `auto_focus` and the
   guide focus watch; and `guide_focus.feature` what the sweep refuses
   before it reads the guider, and a steady guide focus watch
+- Guiding against the guider service itself (`guider_service.feature`):
+  the `guider` binary guiding `guide-simulator-alpaca`'s camera and
+  mount ([guider.md § Testing](guider.md#testing)), with `rp`'s mount
+  the simulated mount and its guiding train's camera the simulated
+  camera, which `rp` connects as on a rig. A start calibrates, settles
+  and answers the guider's own figures; the check refuses a guider
+  that guides on a camera other than the guiding train's;
+  `get_guiding_stats`, pause and resume, a dither and a stop reach the
+  guider's run; the watch reports the guider's own stop when the mount
+  slews and a loss when the stars leave the frame; the guide camera
+  guard refuses a capture through the guide camera while the guider
+  guides; a frame of another camera records the guide error over its
+  exposure; the safety stop ends the guider's run and parks the mount;
+  and a start the guider refuses reaches the caller with its code.
+  These scenarios hold the guider's figures to how they relate, not to
+  values. The stub stays for what the service cannot be made to give
+  on demand: a refusal of each code, a guider that stops answering or
+  times out, the requests it received, and the figures it settles with
 - Power failure recovery (`startup_recovery.feature`: derived
   progress survives an rp restart on disk — see § What Survives an rp
   Restart; the end-to-end restart of a run against a real engine lives

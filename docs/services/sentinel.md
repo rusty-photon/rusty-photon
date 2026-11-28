@@ -236,18 +236,14 @@ The probe path follows the service's **probe class**:
 - **Alpaca drivers** answer `GET {base}/management/v1/configureddevices` — no
   device number needed, so no device knowledge leaks into sentinel.
 - **Non-Alpaca services** (`rp`, `plate-solver`, `session-runner`,
-  `calibrator-flats`, `focus-model`, `polar-align`, `ui-htmx`) answer
-  `GET {base}/health`.
+  `calibrator-flats`, `focus-model`, `polar-align`, `ui-htmx`, `guider`)
+  answer `GET {base}/health`.
   These are exactly the supervised services that are not Alpaca servers,
   and each defines a `/health` route. An Alpaca server is probed through its
   management API even where it serves `/health` as well, as
   planetarium-bridge does. The set is a compile-time constant; a new
   non-Alpaca service must be added to it (a unit test asserts every listed
   name is a directory under `services/`).
-
-**Designed and not yet built.** `guider` joins the non-Alpaca set with
-its package
-([guider.md § Supervision and recovery](guider.md#supervision-and-recovery)).
 
 A missing or unreadable `<svc>.json` means no probe URL can be derived: the
 service's health reports `unknown`, nothing is restarted because of it, and

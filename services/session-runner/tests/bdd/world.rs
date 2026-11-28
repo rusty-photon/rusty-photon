@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use bdd_infra::restart_relay::RestartRelay;
 use bdd_infra::rp_harness::{
     AlpacaDeviceStub, CameraConfig, CoverCalibratorConfig, FilterWheelConfig, FocuserConfig,
     GuiderConfig, GuiderStub, IcrsCoord, MountConfig, OpticalTrainConfig, PlateSolverConfig,
@@ -89,10 +90,10 @@ pub struct SessionRunnerWorld {
     /// The `POST /runs` body (`workflow` + `params`), staged by the
     /// Given steps and posted by "a run is started".
     pub run_request: Option<Value>,
-    /// The port rp bound on its first start. A restart pins it so the
-    /// run's configured `mcp_server_url` finds the new instance where
-    /// it left the old one.
-    pub rp_port: Option<u16>,
+    /// The port session-runner's `mcp_server_url` and the focus-model
+    /// provider dial for rp, held across an rp restart, so the run finds
+    /// the new instance where it left the old one.
+    pub rp_relay: Option<RestartRelay>,
 
     // --- Recovery scenario state ---
     /// The blackboard's frame counter, read when the run reports paused
@@ -181,6 +182,13 @@ impl SessionRunnerWorld {
             .expect("rp must be started before accessing its URL")
     }
 
+    /// The relay in front of rp.
+    pub const fn rp_relay(&self) -> &RestartRelay {
+        self.rp_relay
+            .as_ref()
+            .expect("rp's relay must be started before it is used")
+    }
+
     /// Build the rp config JSON by feeding accumulated equipment and plugin
     /// entries through [`RpConfigBuilder`].
     pub fn build_rp_config(&self) -> Value {
@@ -223,9 +231,6 @@ impl SessionRunnerWorld {
         }
         for plugin in &self.plugin_configs {
             builder.add_plugin(plugin.clone());
-        }
-        if let Some(port) = self.rp_port {
-            builder.with_port(port);
         }
         builder.build()
     }

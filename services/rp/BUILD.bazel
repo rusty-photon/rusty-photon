@@ -145,6 +145,7 @@ rust_test(
         ":rp",
         "//services/calibrator-flats",
         "//services/filemonitor",
+        "//services/guider",
         "//services/sky-survey-camera",
     ] + glob([
         "tests/features/**",
@@ -156,9 +157,10 @@ rust_test(
         "BDD_PACKAGE_DIR": "services/rp",
         "CALIBRATOR_FLATS_BINARY": "$(rootpath //services/calibrator-flats:calibrator-flats)",
         "FILEMONITOR_BINARY": "$(rootpath //services/filemonitor:filemonitor)",
+        "GUIDER_BINARY": "$(rootpath //services/guider:guider)",
         "RP_BINARY": "$(rootpath :rp)",
         "SKY_SURVEY_CAMERA_BINARY": "$(rootpath //services/sky-survey-camera:sky-survey-camera)",
-        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/calibrator-flats:calibrator-flats):$(rootpath //services/filemonitor:filemonitor):$(rootpath :rp):$(rootpath //services/sky-survey-camera:sky-survey-camera)",
+        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath //services/calibrator-flats:calibrator-flats):$(rootpath //services/filemonitor:filemonitor):$(rootpath //services/guider:guider):$(rootpath :rp):$(rootpath //services/sky-survey-camera:sky-survey-camera)",
     },
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
@@ -196,6 +198,8 @@ rust_test(
     deps = [
         ":rp_lib",
         "//crates/bdd-infra:bdd-infra_rp_harness_tls_auth",
+        "//crates/guide-simulator",
+        "//crates/guide-simulator-alpaca",
     ] + _INTRA_WORKSPACE_DEPS + [
         _RP_PLATE_SOLVER,
         _RP_GUIDER,

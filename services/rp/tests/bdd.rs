@@ -112,6 +112,11 @@ bdd_infra::bdd_main! {
                     if let Some(rp) = world.rp.as_mut() {
                         rp.stop().await;
                     }
+                    // The guider and its simulated devices after rp, which
+                    // is their client.
+                    if let Some(service) = world.guider_service.take() {
+                        service.stop().await;
+                    }
                     // Stop the sky-survey-camera process, if any. Drop
                     // would handle this lazily, but doing it here keeps
                     // teardown deterministic for the @e2e-centering

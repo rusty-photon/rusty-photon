@@ -139,6 +139,7 @@ async fn session_runner_is_restarted(world: &mut SessionRunnerWorld) {
 
 #[when("rp is killed")]
 async fn rp_is_killed(world: &mut SessionRunnerWorld) {
+    world.rp_relay().refuse();
     world.rp.as_mut().expect("rp not started").kill().await;
     world.rp = None;
     // The SSE client died with rp; drop it so a later "watching rp's event
@@ -152,10 +153,10 @@ async fn rp_is_restarted(world: &mut SessionRunnerWorld) {
         world.rp.is_none(),
         "restart follows a kill — the previous instance is still recorded as running"
     );
-    // Same accumulated config, fresh process on the SAME port (pinned
-    // from the first start), so the paused run's configured
-    // mcp_server_url finds it — the restarted rp knows nothing of the
-    // run; the engine's reconnect loop does all the resuming.
+    // Same accumulated config, a fresh process behind the same relay
+    // port, so the paused run's configured mcp_server_url finds it — the
+    // restarted rp knows nothing of the run; the engine's reconnect loop
+    // does all the resuming.
     start_rp_service(world).await;
 }
 

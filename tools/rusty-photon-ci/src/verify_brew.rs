@@ -16,6 +16,8 @@
 //!   launchd would restart it, again and again;
 //! - a [`SERIAL`] driver exits on its absent device, so it is checked for
 //!   its config and its handshake attempt in the log, not a probe;
+//! - an [`UNCONFIGURED_503`] service names no device on a fresh install, so
+//!   its `/health` answers 503, which still shows its listener serves;
 //! - zwo-focuser finds its focuser through the HID APIs, which under launchd
 //!   block until the user grants a privacy permission, which a CI runner
 //!   cannot: it is held to staying alive under launchd, then probed in the
@@ -32,7 +34,7 @@ use std::time::Duration;
 
 use crate::brew_formulas::{self, Channel};
 use crate::build_tarballs::tarball;
-use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL};
+use crate::packaging::{self, io, GATED, HEALTH_PROBED, SERIAL, UNCONFIGURED_503};
 use crate::process::{self, Cmd, Runner};
 
 /// The scratch tap the formulas are rendered into.
@@ -217,6 +219,21 @@ impl<R: Runner> Run<'_, R> {
     fn answers(&mut self, url: &str) -> bool {
         let curl = Cmd::new("curl", &["-fsS", "-o", "/dev/null", url]);
         self.runner.code(&curl).is_ok_and(|code| code == Some(0))
+    }
+
+    /// An [`UNCONFIGURED_503`] service answers 200 or 503, either of which
+    /// shows it serves; `None` when it does, else the last code it gave.
+    fn answers_unconfigured(&mut self, url: &str) -> Option<String> {
+        let mut last = String::new();
+        let answered = self.wait_until(30, |run| {
+            let curl = Cmd::new(
+                "curl",
+                &["-s", "-o", "/dev/null", "-w", "%{http_code}", url],
+            );
+            last = run.runner.read(&curl).unwrap_or_else(|_| "000".to_owned());
+            last == "200" || last == "503"
+        });
+        (!answered).then_some(last)
     }
 
     fn info(&mut self, service: &str) -> String {
@@ -528,12 +545,24 @@ impl<R: Runner> Run<'_, R> {
         if service == "zwo-focuser" {
             return self.hid_gated(service, &url, port);
         }
-        let served = self.wait_until(30, |run| run.answers(&url));
-        self.require(
-            served,
-            service,
-            &format!("no HTTP response on port {port} ({})", probe_path(service)),
-        )?;
+        if UNCONFIGURED_503.contains(&service) {
+            if let Some(last) = self.answers_unconfigured(&url) {
+                return Err(self.fail(
+                    service,
+                    &format!(
+                        "no HTTP response on port {port} ({}; last code {last})",
+                        probe_path(service)
+                    ),
+                ));
+            }
+        } else {
+            let served = self.wait_until(30, |run| run.answers(&url));
+            self.require(
+                served,
+                service,
+                &format!("no HTTP response on port {port} ({})", probe_path(service)),
+            )?;
+        }
         if self_creates_config(service) {
             let created = self.wait_until(15, has_config);
             self.require(
@@ -1112,7 +1141,7 @@ mod tests {
     }
 
     /// A service that installs, writes its config when it starts and
-    /// answers its probe, as zwo-camera and zwo-focuser do.
+    /// answers its probe, as zwo-camera, zwo-focuser and the guider do.
     fn quiet_service(mac: &Mac, service: &'static str) -> Script {
         mac.install(&format!("rusty-photon-{service}"));
         let config = mac.path(&format!(
@@ -1217,6 +1246,31 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "FAIL [sentinel]: rusty-photon-doctor tls renew (nothing due) did not exit 0"
+        );
+    }
+
+    #[test]
+    fn the_guider_answering_503_serves() {
+        let mac = Mac::new(&["guider"]);
+        let request = Mac::request(Some(&["guider"]));
+        let mut runner =
+            quiet_service(&mac, "guider").on("curl -s -o /dev/null -w", || Ok("503".to_owned()));
+        mac.verify(&mut runner, &request).unwrap();
+        assert!(
+            runner
+                .lines
+                .iter()
+                .any(|line| line.ends_with("http://127.0.0.1:11129/health")),
+            "{:?}",
+            runner.lines
+        );
+
+        let mut runner =
+            quiet_service(&mac, "guider").on("curl -s -o /dev/null -w", || Ok("404".to_owned()));
+        let error = mac.verify(&mut runner, &request).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "FAIL [guider]: no HTTP response on port 11129 (/health; last code 404)"
         );
     }
 

@@ -517,6 +517,10 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
   credential pair, generated once per test process on the blocking pool. Steps
   call this, never `PkiFixture::generate` directly; see
   [§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop).
+- `restart_relay::RestartRelay` — a loopback port the test holds for a
+  whole scenario, in front of a service process it stops and starts again:
+  `forward_to(port)` after each start, `refuse()` before each stop. See
+  "A service a scenario stops and brings back" below.
 - `scratch::new_dir(prefix)` — a fresh scratch directory named
   `<prefix><random>`, deleted with its contents when the returned `TempDir`
   guard drops. Created under Bazel's per-action `TEST_TMPDIR` when that is set
@@ -818,9 +822,9 @@ processes whose starts coincide still walk the band together, and the connect
 probe cannot see a port the other has reserved but not yet bound, so each
 reserved port is a small race the announced-port pattern does not have.
 `bdd_infra::reserved_test_port_async()`
-is the shared helper for suites built on `bdd-infra` (calibrator-flats' suite
-pins rp's port with it so the provider's config can name rp before rp
-starts). It probes on the blocking pool, and has no synchronous form outside
+is the shared helper for suites built on `bdd-infra` (zwo-focuser's suite
+takes the port it pins on the command line from it). It probes on the
+blocking pool, and has no synchronous form outside
 the crate, because a probe is a wait
 ([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)).
 
@@ -858,6 +862,30 @@ just the one easiest to poll: a child that survives a lost bind, serving its
 other listeners as if nothing happened, otherwise sails through readiness and
 fails in the middle of a scenario, long past the point where picking another
 port was still possible.
+
+**A service a scenario stops and brings back.** A client that keeps one
+address across the restart (sentinel polling filemonitor, rp reconnecting
+to a device service) needs that port held through the gap, never released
+and rebound: concurrent test binaries take a port freed between a stop and
+a restart often enough to fail a scenario on a healthy tree, and the
+restarted service then fails its bind. So the test owns the socket the
+client dials, for the whole scenario. An in-process stub serves on it and,
+while stopped, accepts each connection and drops it unanswered
+(`rp_harness/held_port.rs`). A service process binds port 0 on every start
+behind a `bdd_infra::restart_relay::RestartRelay` the test holds, which
+forwards each connection to the service's current port and drops each one
+while the service is stopped: sentinel's filemonitor and session-runner's
+rp run behind one. The relay's port exists before the service starts, so
+it also serves a client that has to be configured first, with no band
+port: every tool provider a suite starts before rp (calibrator-flats',
+focus-model's, and session-runner's focus-model) names rp's relay.
+
+The same relay stands in for a service that is down from the start and
+comes up later at the address its client was given. A band port held with
+nothing listening until then is the same race, since another process can
+take it first: planetarium-bridge's "rp is unreachable" names a relay that
+drops every connection instead, and "the stub rp comes up at the
+configured rp address" starts the stub on port 0 behind it.
 
 #### 5.2 Entry Point Structure
 
@@ -1255,13 +1283,12 @@ health wait runs out with its service up and connected: in the measured
 run, 48 of 58 scenarios failed on a service that had done nothing wrong.
 
 So synchronous work a scenario does goes through `off_loop`: steps take a
-port from **`bdd_infra::reserved_test_port_async`** (or keep one with
-`reserved_port_once`), `ServiceHandle`'s async starts find their binary
-and spawn their process there (the lookup stats files and reads
-`Cargo.toml`, and process creation is a synchronous call a loaded host
-makes slow), a binary run to its exit goes through `run_once_async`, and
-doctor's Pebble harness mints its certificates and spawns its pair there
-for every `@pebble` scenario.
+port from **`bdd_infra::reserved_test_port_async`**, `ServiceHandle`'s
+async starts find their binary and spawn their process there (the lookup
+stats files and reads `Cargo.toml`, and process creation is a synchronous
+call a loaded host makes slow), a binary run to its exit goes through
+`run_once_async`, and doctor's Pebble harness mints its certificates and
+spawns its pair there for every `@pebble` scenario.
 
 Off the loop, spawns run in parallel on pool threads, where the loop
 would run them one at a time, so every process creation in a test process

@@ -4,8 +4,9 @@
 //! session-runner checks every `tool` node of a document against rp's tool
 //! catalog when a run starts, so a document that names `focus_train` needs
 //! the provider registered even on paths that never call it. The provider is
-//! started first, on a config naming rp's MCP URL at a port reserved in
-//! advance, because rp dials it at startup and must find it answering.
+//! started first, on a config naming rp's MCP URL at the port of a
+//! `restart_relay::RestartRelay` rp later binds behind, because rp dials it
+//! at startup and must find it answering.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

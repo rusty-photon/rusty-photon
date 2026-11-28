@@ -2,7 +2,7 @@
 //!
 //! Three shapes, all `deny_unknown_fields`: [`ServerConfig`] for services
 //! that serve a plain HTTP API (ui-htmx, sentinel, plate-solver,
-//! session-runner, calibrator-flats, focus-model, polar-align),
+//! session-runner, calibrator-flats, focus-model, polar-align, guider),
 //! [`AlpacaServerConfig`] for Alpaca drivers, which adds the optional UDP
 //! discovery responder port, and [`AdvertisingServerConfig`] for services
 //! that advertise their own URL to another process, which adds

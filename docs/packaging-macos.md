@@ -336,7 +336,8 @@ does, with `file://` URLs into a scratch tap and, per service: install →
 `brew test` → `brew services start` → HTTP probe → config self-created →
 stop → uninstall clean — with the same class exceptions as
 `cargo ci verify-packages` (gated services are never started; serial drivers
-verify config + handshake-attempted from the log; the zwo binaries prove
+verify config + handshake-attempted from the log; the guider's probe takes
+a `503` from `/health`, since it names no device yet; the zwo binaries prove
 via `otool` that each loads exactly its own bundled dylib). An interrupted
 run leaves its scratch formulas installed; the next run refuses to start
 and names the commands that remove them. The nightly

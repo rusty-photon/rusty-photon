@@ -3,15 +3,16 @@ Feature: Client-target joins
   ui-htmx's rp target, rp's plate-solver/guider clients, every
   rp equipment.<kind>[].alpaca_url entry including the singular
   equipment.mount.alpaca_url, the plugin registrations rp dials (an
-  event plugin's webhook_url, a tool provider's mcp_server_url),
-  sentinel's Alpaca monitors, sentinel's operation-watchdog rp_url, and
+  event plugin's webhook_url, a tool provider's mcp_server_url), the
+  guider's devices.camera and devices.mount, sentinel's Alpaca monitors, sentinel's operation-watchdog rp_url, and
   the MCP clients' URLs of rp (planetarium-bridge's rp.mcp_server_url,
   the mcp_server_url of session-runner, calibrator-flats, focus-model
   and polar-align, session-runner's events_url when set).
   These checks join that URL against the *named* service's own
   server.tls/server.auth: a scheme mismatch, or a self-signed target the
   client has no CA-trust field for — ui-htmx's per-target ca_cert_path,
-  rp's and sentinel's single top-level ca_cert, the ca_cert beside an
+  the single top-level ca_cert of rp, the guider and sentinel, the
+  ca_cert beside an
   MCP client's service_auth pair — breaks every request
   (joins.client-transport, fail); a target that requires auth while the
   client carries no working per-target credential 401s every request
@@ -95,23 +96,45 @@ Feature: Client-target joins
     And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
     And the config file "rp.json" has the string "observatory" at "/plate_solver/auth/username"
 
-  # The guider is not in doctor's catalog: sentinel, a catalog service with a
-  # config of its own, stands at the guiding pointer's port in its place.
   Scenario: --fix rewrites rp's guider scheme, CA trust, and credential once the target is provisioned
-    Given a config file "sentinel.json" containing:
+    Given a config file "guider.json" containing:
       """
-      { "server": { "port": 11114, "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      { "server": { "port": 11129, "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
       """
     And a config file "rp.json" containing:
       """
       { "server": { "port": 11115 },
         "equipment": { "mount": { "alpaca_url": "http://localhost:11117",
-                                   "guiding": { "url": "http://localhost:11114" } } } }
+                                   "guiding": { "url": "http://localhost:11129" } } } }
       """
     When I run doctor with --fix and --json
-    Then the config file "rp.json" has the string "https://localhost:11114" at "/equipment/mount/guiding/url"
+    Then the config file "rp.json" has the string "https://localhost:11129" at "/equipment/mount/guiding/url"
     And the config file "rp.json" has "/ca_cert" pointing at the pki file "ca.pem"
     And the config file "rp.json" has the string "observatory" at "/equipment/mount/guiding/auth/username"
+
+  Scenario: --fix rewrites the guider's camera and mount scheme, CA trust, and credential once their targets are provisioned
+    Given a config file "zwo-camera.json" containing:
+      """
+      { "server": { "port": 11122,
+                    "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      """
+    And a config file "star-adventurer-gti.json" containing:
+      """
+      { "server": { "port": 11117,
+                    "auth": { "username": "observatory", "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVmZ2g$aGFuZHNldA" } } }
+      """
+    And a config file "guider.json" containing:
+      """
+      { "server": { "port": 11129 },
+        "devices": { "camera": { "alpaca_url": "http://localhost:11122" },
+                     "mount": { "alpaca_url": "http://localhost:11117" } } }
+      """
+    When I run doctor with --fix and --json
+    Then the config file "guider.json" has the string "https://localhost:11122" at "/devices/camera/alpaca_url"
+    And the config file "guider.json" has the string "https://localhost:11117" at "/devices/mount/alpaca_url"
+    And the config file "guider.json" has "/ca_cert" pointing at the pki file "ca.pem"
+    And the config file "guider.json" has the string "observatory" at "/devices/camera/auth/username"
+    And the config file "guider.json" has the string "observatory" at "/devices/mount/auth/username"
 
   Scenario: --fix rewrites the mount's own scheme, CA trust, and credential once its target is provisioned
     Given a config file "star-adventurer-gti.json" containing:

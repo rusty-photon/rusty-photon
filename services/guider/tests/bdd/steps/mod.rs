@@ -17,6 +17,7 @@ pub mod guide_log_steps;
 pub mod guiding_steps;
 pub mod health_steps;
 pub mod loop_steps;
+pub mod setup_pages_steps;
 pub mod star_reselect_steps;
 pub mod stats_steps;
 pub mod stop_steps;

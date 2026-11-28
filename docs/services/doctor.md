@@ -187,7 +187,7 @@ number, so its `by-id` name is shared with every other such CH340 and the
 driver's own `>H#` handshake is what tells the hub from them
 ([gemini-powerbox-adv3-driver.md](gemini-powerbox-adv3-driver.md#device-identity)).
 
-The catalog (23 packaged services):
+The catalog (24 packaged services):
 
 | Service | Class | Default port |
 |---|---|---|
@@ -208,6 +208,7 @@ The catalog (23 packaged services):
 | svbony-camera | alpaca | 11125 |
 | planetarium-bridge | alpaca | 11126 |
 | upbv2-driver | alpaca | 11127 |
+| guider | core | 11129 |
 | plate-solver | core | 11131 |
 | gemini-powerbox-adv3-driver | alpaca | 11132 |
 | calibrator-flats | core | 11170 |
@@ -782,7 +783,8 @@ rp's `plate_solver.url`, `equipment.mount.guiding.url`,
 every `equipment.<kind>[].alpaca_url` entry including the singular
 `equipment.mount.alpaca_url`, the URL of each plugin
 registration rp dials — an event plugin's `plugins[].webhook_url`
-and a tool provider's `plugins[].mcp_server_url` — sentinel's
+and a tool provider's `plugins[].mcp_server_url` — the guider's
+`devices.camera.alpaca_url` and `devices.mount.alpaca_url`, sentinel's
 `operation_watchdog.rp_url` and each Alpaca `monitors[]` entry, and the
 MCP clients' URLs of rp — planetarium-bridge's `rp.mcp_server_url`, the
 `mcp_server_url` of session-runner, calibrator-flats, focus-model and
@@ -814,8 +816,8 @@ reaches the join exactly as the config spells it.
 
 | Check | Status | Trigger |
 |---|---|---|
-| `joins.client-transport` | fail | Any of: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; the target's certificate **is** the ACME wildcard while the client's host is loopback — the wildcard's only SAN is `*.<domain>`, so hostname verification fails no matter the scheme; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; rp's and sentinel's single top-level `ca_cert`; each MCP client's `ca_cert` beside its `service_auth` pair) — the TLS handshake fails validation. All grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
-| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's, and no check judges an MCP client's `service_auth` pair against rp's `server.auth` — only targets with their own credential field (ui-htmx's `rp` block, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth`, every `equipment.<kind>[].auth` / `equipment.mount.auth`, and each `plugins[].auth`) are judged here. |
+| `joins.client-transport` | fail | Any of: the client's scheme doesn't match the target's `server.tls` state (`http` against a TLS-on target, or `https` against a plain-HTTP one) — the connection fails outright; the target's certificate **is** the ACME wildcard while the client's host is loopback — the wildcard's only SAN is `*.<domain>`, so hostname verification fails no matter the scheme; or the scheme matches, the target's certificate is doctor's self-signed CA (not the publicly-trusted ACME wildcard — judged the way `tls.expiry` distinguishes them, by the resolved cert file's name), and the client has no CA-trust field pointed at it (ui-htmx's per-target `ca_cert_path`; the single top-level `ca_cert` of rp, the guider and sentinel; each MCP client's `ca_cert` beside its `service_auth` pair) — the TLS handshake fails validation. All grade `fail`, mirroring `tls.paths`: a definite break, not a hardware-style installed/enabled split. |
+| `joins.client-auth` | warn | The target has `server.auth` set and the client's credential is absent or does not verify (Argon2id) against it — every request 401s. Mirrors `auth.mismatch`'s severity and its asymmetry: an **absent** credential is fix-eligible (the correct value is derivable), a **present but wrong** one is suggestion-only (hand-set credentials are operator intent, so doctor points at `doctor auth rotate`). sentinel's own `service_auth`/`operation_watchdog.rp_url` pair is `auth.mismatch`'s territory already, not this check's, and no check judges an MCP client's `service_auth` pair against rp's `server.auth` — only targets with their own credential field (ui-htmx's `rp` block, each Alpaca monitor's `auth`, rp's `plate_solver.auth` / `equipment.mount.guiding.auth`, every `equipment.<kind>[].auth` / `equipment.mount.auth`, each `plugins[].auth`, and the guider's `devices.camera.auth` / `devices.mount.auth`) are judged here. |
 
 **What `--fix` can and cannot rewrite.** ui-htmx's `rp` block carries
 `base_url` + `auth` + `ca_cert_path`, so both checks are fully
@@ -870,7 +872,13 @@ those two entry types alone, so walking by field would file a transport
 verdict on a URL rp never calls and offer to write a credential rp never
 reads. That scope mirrors rp's own `config::EVENT_URL_FIELD` /
 `config::TOOL_PROVIDER_URL_FIELD`; the two must agree, or doctor advises
-a fix rp ignores. A CA-trust gap is
+a fix rp ignores. The guider's two device clients have rp's equipment
+shape: each `devices.<kind>.alpaca_url` carries its own `auth`, and both
+trust the guider's single top-level `ca_cert` (its `wire_auth: false` row
+of `CLIENT_WIRING`), so both checks are fully fix-eligible there too, the
+credential written at `/devices/camera/auth` or `/devices/mount/auth`. A
+device the guider does not name yet has no `alpaca_url` and joins
+nothing. A CA-trust gap is
 always reported once a target's certificate is self-signed and the
 client's CA field is absent, regardless of whether doctor's own
 `pki/ca.pem` exists locally yet — only the *fix* is gated on that file's

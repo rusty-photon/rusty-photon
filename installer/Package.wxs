@@ -199,6 +199,9 @@
       <Feature Id="Rp" Title="rp (orchestrator)" Description="Equipment gateway, event bus, and safety enforcer (port 11115)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="RpComponents" />
       </Feature>
+      <Feature Id="Guider" Title="guider (native guider)" Description="Keeps the mount on its target from a guide camera's frames with PulseGuide, commanded by rp; its /health answers 503 while its camera, mount and focal length are not set; its setup page sets them (port 11129)." Level="2" AllowAdvertise="no">
+        <ComponentGroupRef Id="GuiderComponents" />
+      </Feature>
       <Feature Id="SessionRunner" Title="session-runner (workflow runner)" Description="Executes declarative JSON imaging workflows against rp; needs a hand-written config (port 11171)." Level="2" AllowAdvertise="no">
         <ComponentGroupRef Id="SessionRunnerComponents" />
       </Feature>
