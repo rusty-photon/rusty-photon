@@ -69,10 +69,11 @@ test:ci --test_env=RUSTY_PHOTON_REQUIRE_PEBBLE=1
 # (16 rp:bdd + 12 session-runner:bdd + 4 polar-align:bdd shards, plus the
 # 3 unsharded suites calibrator-flats, focus-model and
 # operation-watchdog-e2e = 35); it exists only as a throttle to grab if
-# OmniSim concurrency ever turns flaky (e.g. `test:windows
-# --local_resources=omnisim=1` would serialize one platform —
-# --enable_platform_specific_config appends platform lines after this one,
-# so they win).
+# OmniSim concurrency ever turns flaky. A throttle for one platform cannot
+# live on its platform config (`test:windows --local_resources=omnisim=1`):
+# a plain rc line such as this one outranks a platform config for the same
+# option, whatever their order (see the CI section), so it would change
+# nothing.
 #
 # The throttle is deliberately NOT engaged. It is worth reaching for
 # only on one specific signature: several CHEAP suites failing in the SAME
@@ -253,10 +254,13 @@ build --disk_cache=~/.cache/bazel-disk-cache
 # The per-platform CI values live in ci-<os>, which the workflow names on the
 # command line, and not in build:macos or build:windows. Bazel reads a
 # platform config as an expansion of --enable_platform_specific_config, so it
-# takes that flag's rc-file priority, and a --config given on the command line
-# outranks it whatever the order. A value build:ci set would beat the platform
-# config's value in every CI run. build:ci therefore sets nothing a platform
-# needs to differ on (--jobs, --remote_download_outputs, --local_test_jobs).
+# takes that flag's rc-file priority. A --config given on the command line
+# outranks it whatever the order, and so does a plain build or test line in
+# this file (checked on Bazel 9.2). A value build:ci set would beat the
+# platform config's value in every CI run. build:ci therefore sets nothing a
+# platform needs to differ on (--jobs, --remote_download_outputs,
+# --local_test_jobs), and no plain line here sets an option a platform config
+# also sets.
 
 build:ci --color=yes
 build:ci --show_timestamps
@@ -602,7 +606,9 @@ try-import %workspace%/ci-remote.bazelrc
 # https://github.com/rusty-photon/rusty-photon/issues/765.
 #
 # The two settings below guard the cache client against hangs of its own.
-# Neither prevents the wedge.
+# Against the wedge, ci-macos's `minimal` (above) cuts the downloads that set
+# off the bursts, and bazel.yml's retransmit slop lets the connection outlast
+# them.
 #
 # 0 = uncapped, and that is the point. Any positive value makes the cache
 # client build its channel pool as a netty `FixedChannelPool` via the 3-arg
