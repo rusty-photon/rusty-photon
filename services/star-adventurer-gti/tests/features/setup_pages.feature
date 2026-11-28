@@ -199,9 +199,33 @@ Feature: Setup pages
     And the configuration file holds "/dev/mock" at "/transport/port"
 
   Scenario: An auto-flip offset no flip can happen at is refused beside its field
+    The shipped zone (0.95, 11.05) and margin 0.05 h put the guard entry
+    at 0.95 - 0.05 = 0.9 h, named as that decimal.
     Given a running star-adventurer service
     When I submit the setup page of device "telescope" 0 enabling the auto-flip at an offset of "0.95" hours
-    Then the page answers 422 with the error "names a point no flip can happen at" on "mount.auto_flip.meridian_offset_hours"
+    Then the page answers 422 with the error "names a point no flip can happen at: the tracking guard stops the mount at 0.9 h" on "mount.auto_flip.meridian_offset_hours"
+    And the configuration file holds false at "/mount/auto_flip/enabled"
+
+  Scenario: An auto-flip offset at the low end of its range is saved
+    For a zone (x, 12 - x) the usable offsets are [-x, x - margin). From
+    -x the flip lands on 12 - x, the zone's far edge, which the open zone
+    leaves outside it.
+    Given a star-adventurer service with the CW exclusion zone from 1.12 to 10.88 hours
+    And a running star-adventurer service
+    When I submit the setup page of device "telescope" 0 enabling the auto-flip at an offset of "-1.12" hours
+    Then the page reports the configuration was saved and the service is reloading
+    And the configuration file holds true at "/mount/auto_flip/enabled"
+    And the configuration file holds -1.12 at "/mount/auto_flip/meridian_offset_hours"
+
+  Scenario: An auto-flip offset at the guard entry is refused
+    The range's high end is open: the tracking guard stops the mount at
+    min_hours - tracking_guard_margin_hours, so tracking never reaches an
+    offset there.
+    Given a star-adventurer service with the CW exclusion zone from 0.2 to 11.8 hours
+    And a tracking-guard margin of 0.05 hours
+    And a running star-adventurer service
+    When I submit the setup page of device "telescope" 0 enabling the auto-flip at an offset of "0.15" hours
+    Then the page answers 422 with the error "the tracking guard stops the mount at 0.15 h" on "mount.auto_flip.meridian_offset_hours"
     And the configuration file holds false at "/mount/auto_flip/enabled"
 
   Scenario: A value the mount's config types refuse is rejected with the rule named

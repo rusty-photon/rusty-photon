@@ -71,9 +71,16 @@ fn fold_to_signed(value: f64, period: f64) -> f64 {
 ///
 /// `f64::signum(0.0)` is `+1.0`, so `d = 0` maps to `+180°` (which the
 /// [`MechDec`] fold then canonicalises to `-180°`); both are the same
-/// physical position at the encoder wrap.
+/// physical position at the encoder wrap. Back from there, `-1.0 * 0.0`
+/// is `-0.0`, so a zero result is returned as `0.0`: the equator reads
+/// the same on both pier sides.
 fn through_pole(deg: f64) -> f64 {
-    deg.signum() * (180.0 - deg.abs())
+    let reflected = deg.signum() * (180.0 - deg.abs());
+    if reflected == 0.0 {
+        0.0
+    } else {
+        reflected
+    }
 }
 
 /// Round to the nearest `i32`, saturating at the type's edges (`NaN` lands
@@ -576,6 +583,16 @@ mod tests {
                 back.value()
             );
         }
+    }
+
+    #[test]
+    fn the_equator_reads_positive_zero_back_through_the_flip() {
+        // Dec 0 flipped sits at the encoder wrap, -180°; reading it back
+        // must give +0.0, not the -0.0 a JSON body would carry as `-0.0`.
+        let wrap = Dec::new(0.0).to_mech_flipped();
+        assert_eq!(wrap.value().to_bits(), (-180.0_f64).to_bits());
+        let back = wrap.to_dec_flipped().value();
+        assert_eq!(back.to_bits(), 0.0_f64.to_bits(), "got {back:?}");
     }
 
     // ---- Tick <-> angle conversions --------------------------------------

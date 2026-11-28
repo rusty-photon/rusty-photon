@@ -122,6 +122,26 @@ async fn guide_rate_dec_approx(world: &mut StarAdventurerWorld, expected: f64, t
     );
 }
 
+#[then(expr = "GuideRateRightAscension should be exactly {float}")]
+async fn guide_rate_ra_exact(world: &mut StarAdventurerWorld, expected: f64) {
+    let actual = world.mount().guide_rate_right_ascension().await.unwrap();
+    assert_eq!(
+        actual.to_bits(),
+        expected.to_bits(),
+        "GuideRateRightAscension: got {actual:?}, expected {expected:?}"
+    );
+}
+
+#[then(expr = "GuideRateDeclination should be exactly {float}")]
+async fn guide_rate_dec_exact(world: &mut StarAdventurerWorld, expected: f64) {
+    let actual = world.mount().guide_rate_declination().await.unwrap();
+    assert_eq!(
+        actual.to_bits(),
+        expected.to_bits(),
+        "GuideRateDeclination: got {actual:?}, expected {expected:?}"
+    );
+}
+
 #[then(expr = "the mount should have received exactly {int} {word} frame(s)")]
 async fn frame_count(world: &mut StarAdventurerWorld, expected: usize, frame: String) {
     // Counting one exact frame across the whole post-startup log lets a

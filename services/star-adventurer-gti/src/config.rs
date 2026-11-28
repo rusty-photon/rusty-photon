@@ -356,6 +356,13 @@ impl MountConfig {
     /// tracking enabled from `mech_HA = −10` fires the trigger
     /// immediately and tries to flip to `+2`, inside the shipped zone.
     ///
+    /// The points the rule derives — the guard entry and the flipped
+    /// destinations — are rounded with [`nearest_nanohour`] before they
+    /// are compared, so a bound is the decimal value the config states:
+    /// `−1.12 + 12` is `10.879999999999999` in `f64`, inside a zone that
+    /// ends at `10.88`, and `0.2 − 0.05` is `0.15000000000000002`, past
+    /// an offset of `0.15` sitting exactly at the guard entry.
+    ///
     /// Inert configurations are not errors here: with `auto_flip.enabled
     /// = false` the offset is not consulted, and with the zone disabled
     /// there is no guard and no unreachable side, so this rule passes any
@@ -373,7 +380,7 @@ impl MountConfig {
         }
         let offset = self.auto_flip.meridian_offset_hours;
         let margin = self.tracking_guard_margin_hours.value();
-        let guard_entry = zone_min - margin;
+        let guard_entry = nearest_nanohour(zone_min - margin);
         if offset >= guard_entry {
             return Some(format!(
                 "auto_flip.meridian_offset_hours {offset} names a point no \
@@ -385,7 +392,11 @@ impl MountConfig {
         // The flipped images of every `mech_HA` in `[offset,
         // guard_entry)` — the positions the trigger can fire from —
         // form the sweep from `offset + 12`. None may land in the zone.
-        if path_crosses_binding_zone(offset + 12.0, guard_entry - offset, zone) {
+        if path_crosses_binding_zone(
+            nearest_nanohour(offset + 12.0),
+            nearest_nanohour(guard_entry - offset),
+            zone,
+        ) {
             return Some(format!(
                 "auto_flip.meridian_offset_hours {offset} names a point no \
                  flip can happen at: between it and the guard entry at {guard_entry} h the \
@@ -396,6 +407,21 @@ impl MountConfig {
         }
         None
     }
+}
+
+/// `hours` rounded to the nearest 10⁻⁹ h (3.6 µs).
+///
+/// A sum or difference of decimal hour values carries binary rounding
+/// of about 10⁻¹⁵ h, which is enough to move it across a bound it
+/// equals in decimal. Rounding to the nanohour returns the `f64`
+/// nearest the decimal result for any operands written with up to nine
+/// decimal places, and is still thousands of times finer than an
+/// encoder step (`24 h / CPR` ≈ 6.6 × 10⁻⁶ h on the `GTi`'s RA axis).
+/// The product `hours × 1e9` stays far below 2⁵³ for any hour value the
+/// rule forms, so `round` lands on an exact integer, and dividing by the
+/// exactly representable `1e9` rounds that once to the nearest `f64`.
+fn nearest_nanohour(hours: f64) -> f64 {
+    (hours * 1e9).round() / 1e9
 }
 
 /// Driver-initiated meridian flips while tracking.
@@ -2536,6 +2562,52 @@ mod tests {
         // `-0.95` the destinations run `+11.05` up through the wrap to
         // `-11.1`, never entering `(0.95, 11.05)`.
         assert!(auto_flip_at(-0.95).auto_flip_offset_error().is_none());
+    }
+
+    #[test]
+    fn auto_flip_offset_bounds_are_the_decimal_values_the_config_states() {
+        // For a zone `(x, 12 − x)` and the shipped 0.05 h margin the
+        // usable offsets are `[−x, x − 0.05)`. Every value below is
+        // built from whole hundredths, so it is the `f64` a config file
+        // spelling it in decimal deserialises to, and the rule has to
+        // answer for that decimal rather than for the binary rounding
+        // of the sums it forms: `−1.12 + 12` is `10.879999999999999`,
+        // inside a zone ending at `10.88`, and `0.2 − 0.05` is
+        // `0.15000000000000002`, past an offset of `0.15`. From x =
+        // 0.03 up, `−x` lies below `x − 0.05`, so the range is not empty.
+        let hours = |hundredths: i32| f64::from(hundredths) / 100.0;
+        for x in 3..600 {
+            let (zone_min, zone_max) = (hours(x), hours(1200 - x));
+            let armed = |offset: f64| MountConfig {
+                cw_exclusion_zone: CwExclusionZone::Active(
+                    ActiveZone::try_new(zone_min, zone_max).expect("valid zone"),
+                ),
+                auto_flip: AutoFlip {
+                    enabled: true,
+                    meridian_offset_hours: offset,
+                },
+                ..MountConfig::default()
+            };
+            let zone = format!("zone ({zone_min}, {zone_max})");
+            assert_eq!(
+                armed(hours(-x)).auto_flip_offset_error(),
+                None,
+                "{zone}: from offset {} the flip lands on the zone's far edge",
+                hours(-x)
+            );
+            armed(hours(-x - 1))
+                .auto_flip_offset_error()
+                .unwrap_or_else(|| panic!("{zone}: offset {} flips into it", hours(-x - 1)));
+            assert_eq!(
+                armed(hours(x - 6)).auto_flip_offset_error(),
+                None,
+                "{zone}: offset {} is short of the guard entry",
+                hours(x - 6)
+            );
+            armed(hours(x - 5))
+                .auto_flip_offset_error()
+                .unwrap_or_else(|| panic!("{zone}: offset {} is the guard entry", hours(x - 5)));
+        }
     }
 
     #[test]

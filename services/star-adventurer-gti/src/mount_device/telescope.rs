@@ -1059,27 +1059,25 @@ impl Telescope for MountDevice {
     }
 
     async fn guide_rate_right_ascension(&self) -> ASCOMResult<f64> {
-        let f = self.state.read().await.guide_rate_ra_fraction;
-        Ok(f * SIDEREAL_DEG_PER_SEC)
+        Ok(self.state.read().await.guide_rate_ra_deg_per_sec)
     }
 
     async fn set_guide_rate_right_ascension(
         &self,
         guide_rate_right_ascension: f64,
     ) -> ASCOMResult<()> {
-        let fraction = validate_guide_rate(guide_rate_right_ascension)?;
-        self.state.write().await.guide_rate_ra_fraction = fraction;
+        validate_guide_rate(guide_rate_right_ascension)?;
+        self.state.write().await.guide_rate_ra_deg_per_sec = guide_rate_right_ascension;
         Ok(())
     }
 
     async fn guide_rate_declination(&self) -> ASCOMResult<f64> {
-        let f = self.state.read().await.guide_rate_dec_fraction;
-        Ok(f * SIDEREAL_DEG_PER_SEC)
+        Ok(self.state.read().await.guide_rate_dec_deg_per_sec)
     }
 
     async fn set_guide_rate_declination(&self, guide_rate_declination: f64) -> ASCOMResult<()> {
-        let fraction = validate_guide_rate(guide_rate_declination)?;
-        self.state.write().await.guide_rate_dec_fraction = fraction;
+        validate_guide_rate(guide_rate_declination)?;
+        self.state.write().await.guide_rate_dec_deg_per_sec = guide_rate_declination;
         Ok(())
     }
 
@@ -1132,8 +1130,8 @@ impl Telescope for MountDevice {
             let s = self.state.read().await;
             GuidePulse::resolve(
                 direction,
-                s.guide_rate_ra_fraction,
-                s.guide_rate_dec_fraction,
+                s.guide_rate_ra_deg_per_sec / SIDEREAL_DEG_PER_SEC,
+                s.guide_rate_dec_deg_per_sec / SIDEREAL_DEG_PER_SEC,
                 &params,
                 current_side,
                 self.config.site_latitude_deg,

@@ -105,6 +105,18 @@ async fn declination_should_be(world: &mut StarAdventurerWorld, expected: f64, t
     );
 }
 
+#[then(expr = "Declination should be exactly {float} degrees")]
+async fn declination_should_be_exactly(world: &mut StarAdventurerWorld, expected: f64) {
+    // Bitwise, so `-0.0` fails a `0.0` the `==` of a tolerance check
+    // would let through.
+    let actual = world.mount().declination().await.unwrap();
+    assert_eq!(
+        actual.to_bits(),
+        expected.to_bits(),
+        "Declination: got {actual:?}, expected {expected:?}"
+    );
+}
+
 #[then(expr = "RightAscension should be {float} hours within {float}")]
 async fn ra_should_be(world: &mut StarAdventurerWorld, expected: f64, tolerance: f64) {
     // Snapshot lags the wire by up to one polling cycle, so a

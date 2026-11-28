@@ -53,7 +53,8 @@ Feature: PulseGuide as a temporary rate change
 
   Default `GuideRateRightAscension` / `GuideRateDeclination` is
   0.5 × sidereal (`SIDEREAL_DEG_PER_SEC ≈ 0.00417807`, so the default
-  rate is approximately `0.00208904 deg/sec`).
+  rate is approximately `0.00208904 deg/sec`). A rate a client writes
+  reads back exactly as written.
 
   The shifted period is per-axis. `:I` carries the time between motor
   steps, and the axes have different counts per revolution, so each
@@ -95,17 +96,17 @@ Feature: PulseGuide as a temporary rate change
     When I connect the device
     Then GuideRateDeclination should be approximately 0.00208904 within 0.00001
 
-  Scenario: Setting GuideRateRightAscension within (0, sidereal) succeeds
+  Scenario: GuideRateRightAscension set within (0, sidereal) reads back exactly as written
     Given a running star-adventurer service
     When I connect the device
-    And I set GuideRateRightAscension to 0.001
-    Then GuideRateRightAscension should be approximately 0.001 within 0.00001
+    And I set GuideRateRightAscension to 0.001125
+    Then GuideRateRightAscension should be exactly 0.001125
 
-  Scenario: Setting GuideRateDeclination within (0, sidereal) succeeds
+  Scenario: GuideRateDeclination set within (0, sidereal) reads back exactly as written
     Given a running star-adventurer service
     When I connect the device
-    And I set GuideRateDeclination to 0.003
-    Then GuideRateDeclination should be approximately 0.003 within 0.00001
+    And I set GuideRateDeclination to 0.00135
+    Then GuideRateDeclination should be exactly 0.00135
 
   Scenario: Setting GuideRateRightAscension to zero fails
     Given a running star-adventurer service

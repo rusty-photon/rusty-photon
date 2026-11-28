@@ -29,6 +29,17 @@ Feature: Coordinate reads
     When I connect the device
     Then Declination should be 0.0 degrees within 0.001
 
+  Scenario: Declination at the celestial equator on the counterweight-up side reads 0.0, not -0.0
+    On the counterweight-up side the equator sits at the Dec encoder's
+    wrap, half a revolution from zero. SideOfPier reading East shows the
+    seeded encoder has reached the reads.
+    Given a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
+    And the Dec-axis encoder reports angle 180.0 degrees
+    And a running star-adventurer service
+    When I connect the device
+    Then SideOfPier should be East
+    And Declination should be exactly 0.0 degrees
+
   Scenario: SiderealTime is computed from UTC and SiteLongitude
     Given a star-adventurer service configured with site longitude 0 degrees
     And UTC is "2026-01-01T12:00:00Z"

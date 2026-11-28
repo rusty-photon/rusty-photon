@@ -2691,15 +2691,15 @@ async fn default_guide_rates_are_half_sidereal() {
 }
 
 #[tokio::test]
-async fn set_guide_rate_ra_round_trips_through_fraction() {
+async fn set_guide_rates_read_back_exactly_as_written() {
+    // Both values change in their last bit when read back through the
+    // fraction of sidereal (`x / S * S`): 0.0011249999999999997 and
+    // 0.0013500000000000003.
     let d = connected_device().await;
-    let target = 0.001_f64;
-    d.set_guide_rate_right_ascension(target).await.unwrap();
-    let got = d.guide_rate_right_ascension().await.unwrap();
-    assert!(
-        (got - target).abs() < 1e-9,
-        "round-trip: set {target}, got {got}"
-    );
+    d.set_guide_rate_right_ascension(0.001_125).await.unwrap();
+    d.set_guide_rate_declination(0.001_35).await.unwrap();
+    assert_eq!(d.guide_rate_right_ascension().await.unwrap(), 0.001_125);
+    assert_eq!(d.guide_rate_declination().await.unwrap(), 0.001_35);
 }
 
 #[tokio::test]
@@ -5718,8 +5718,8 @@ const fn driver_state_with_every_field_set() -> DriverState {
         frame_anchored: true,
         preferred_ap_park: Some(ApPark::ApPark3),
         target_pier_side: Some(PierSide::East),
-        guide_rate_ra_fraction: 0.25,
-        guide_rate_dec_fraction: 0.75,
+        guide_rate_ra_deg_per_sec: 0.001,
+        guide_rate_dec_deg_per_sec: 0.003,
         pulse_guiding: PulseGuiding {
             ra: Some(PulseId(1)),
             dec: Some(PulseId(2)),
@@ -5753,8 +5753,8 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
     assert_eq!(s.pulse_guiding.ra, None);
     assert_eq!(s.pulse_guiding.dec, None);
     // Guide rates re-initialise to the default (half-sidereal).
-    assert!((s.guide_rate_ra_fraction - 0.5).abs() < 1e-9);
-    assert!((s.guide_rate_dec_fraction - 0.5).abs() < 1e-9);
+    assert_eq!(s.guide_rate_ra_deg_per_sec, DEFAULT_GUIDE_RATE_DEG_PER_SEC);
+    assert_eq!(s.guide_rate_dec_deg_per_sec, DEFAULT_GUIDE_RATE_DEG_PER_SEC);
 
     // Preserved — mechanical state and operator-tuned override.
     assert!(s.at_park);
@@ -5783,8 +5783,8 @@ fn a_reload_starts_from_at_park_and_the_settle_override_alone() {
     assert!(!s.frame_anchored);
     assert_eq!(s.preferred_ap_park, None);
     assert_eq!(s.target_pier_side, None);
-    assert!((s.guide_rate_ra_fraction - DEFAULT_GUIDE_RATE_FRACTION).abs() < 1e-9);
-    assert!((s.guide_rate_dec_fraction - DEFAULT_GUIDE_RATE_FRACTION).abs() < 1e-9);
+    assert_eq!(s.guide_rate_ra_deg_per_sec, DEFAULT_GUIDE_RATE_DEG_PER_SEC);
+    assert_eq!(s.guide_rate_dec_deg_per_sec, DEFAULT_GUIDE_RATE_DEG_PER_SEC);
     assert_eq!(s.pulse_guiding.ra, None);
     assert_eq!(s.pulse_guiding.dec, None);
     assert_eq!(s.next_pulse_id, 0);
