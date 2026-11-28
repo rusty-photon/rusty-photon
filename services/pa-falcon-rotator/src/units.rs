@@ -239,8 +239,8 @@ mod tests {
 
     #[test]
     fn an_angle_in_range_is_kept_exactly() {
-        // Each of these came back perturbed when every value went through
-        // `((x % 360) + 360) % 360`: 147.84 as 147.84000000000003.
+        // The full wrap, `((x % 360) + 360) % 360`, perturbs each of these:
+        // it turns 147.84 into 147.84000000000003.
         for deg in [147.84, 12.3, 0.01, 200.07, 359.99, 0.0] {
             assert_eq!(MechanicalDegrees::new(deg).value(), deg);
             assert_eq!(SkyDegrees::new(deg).value(), deg);
