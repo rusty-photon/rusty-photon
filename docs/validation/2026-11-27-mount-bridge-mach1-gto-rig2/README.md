@@ -34,7 +34,7 @@ cannot be deselected (see
 | Mount software | APCC Pro 1.9.8.21 (Astro-Physics Command Center), connected to the mount over TCP, with its REST API on port 60001. The Astro-Physics V2 ASCOM driver 5.60.17 (`AstroPhysicsV2.Telescope`, a 32-bit COM local server), set to reach the mount through APCC's REST API |
 | Bridge | ASCOM Remote Server 7.0.1.36689, the 32-bit build the Platform installs (`C:\Program Files\ASCOM\RemoteServer\32bit\RemoteServer.exe`) |
 | `rp` | The nightly suite MSI `0.1.0+nightly.202611071139.g21bfe94`, installed on 2026-11-07, as in the [guide camera's record](../2026-11-17-qhy-camera-qhy5iii678m-windows/README.md) |
-| Time | 2026-11-28 03:40 to 04:45 UTC (21:40 to 22:45 at the rig, 2026-11-27), the roof open |
+| Time | 2026-11-28 03:40 to 04:45 UTC (21:40 to 22:45 at the rig, 2026-11-27), the roof open; and 13:29 to 16:21 UTC on 2026-11-28 for § The morning after, the roof closed |
 
 ## How the rig is set up
 
@@ -49,7 +49,7 @@ Remote Server's defaults.
 | Management Interface Enabled | `True` | `rp` and the guider read `GET /management/v1/configureddevices` on every connect |
 | Alpaca Discovery Enabled | `False` | No client of the bridge finds its devices by discovery |
 | Check For Updates, Check For Pre-release Updates | `False`, `False` | No one is there to answer an update prompt |
-| Server Log Folder, Maximum Retained Files, Maximum File Size | The account's `%LOCALAPPDATA%\ASCOM Remote\Logs`, `5`, `50` MB | The folder it had is in the account's synced Documents folder, and with one retained file the log grows without end |
+| Server Log Folder, Maximum Retained Files, Maximum File Size | The account's `%LOCALAPPDATA%\ASCOM Remote\Logs`, `5`, `50` MB | Meant to keep the logs out of the account's synced Documents folder and bound them. 7.0.1 keeps neither: it has no retention settings, which came to Remote Server's source after it, and it writes to this folder only until its first midnight (§ The morning after) |
 | Served device 0 | Telescope, `AstroPhysicsV2.Telescope`, device number 0, description "Astro-Physics Mach 1 GTO" | Remote Server minted its UniqueID, `7159159E-BEFF-4370-A997-AF8F43FBCC45`, on its first start |
 | Allow Connected Set False (device 0) | `False` | A client that disconnects does not disconnect the driver, so `rp` going away cannot take the mount from the guider. Remote Server answers it and leaves the driver connected |
 
@@ -168,6 +168,34 @@ The launch permission, the S4U tasks and the session-0 APCC were
 removed afterwards; the URL reservations stay, since the desktop
 session needs them too.
 
+## The morning after
+
+At 07:29:04 on 2026-11-28 the roof file read closed, and `rp` parked the
+mount through the bridge: Remote Server's trace shows its `PUT
+/api/v1/telescope/0/park` answered with no error
+([remote-server-logs.txt](remote-server-logs.txt)). At 10:09:17 `rp`,
+started on the nightly `0.1.0+nightly.202611281404.g3e1700e` after its
+install with the roof still closed, parked it again, also answered with
+no error. Both were the first parks `rp` made of rig2's mount, of a mount
+already parked. It read parked before and after
+([mount-snapshots.txt](mount-snapshots.txt)): status `P`, `AtPark` true
+at 10:09:31. Its Dec read 89°59′59.0″ after both, 0.1″ from the night's
+last reading, and the park at 07:29 is the only command on record
+between the two. `rp`'s own log shows
+neither park: it logs a safety park only at debug level (issue
+[#1947](https://github.com/rusty-photon/rusty-photon/issues/1947)).
+
+The trace that shows them was not in Remote Server's configured log
+folder. At its first midnight, 00:00:16, Remote Server 7.0.1 closed its
+log there and opened the new day's trace and access log under the
+account's `Documents\ASCOM\Logs 2026-11-28`, which on rig2 is in OneDrive.
+Its source at the 7.0.1 tag builds the new logger with a constructor
+that marks its folder as automatic before setting the configured
+folder, and the mark wins; its current source passes the folder to the
+constructor. By 10:16 the two files held 1.8 MB, about 4 MB a day with
+`rp` polling the mount, and 7.0.1 bounds neither their size nor their
+number.
+
 ## What this leaves
 
 - **The bridge needs the owner's session signed in.** Disconnected is
@@ -196,6 +224,13 @@ session needs them too.
   Remote Server is stopped and the task is run again (the script starts
   no second copy). The owner chose on 2026-11-27 to leave it so: the
   Mach 1 has stayed powered since 2026-11-22.
+- **Remote Server's logs grow in the synced Documents folder**, a file of
+  each kind a day at about 4 MB a day, from each start's first midnight
+  on, and nothing removes them. A Remote Server built from its current
+  source, which has the retention settings and the rollover fix, would
+  bound them; the newest tag of its repository is 7.0.1. Turning its
+  trace and access log off stops them, at the cost of the record they
+  keep.
 - **APCC in the session means APCC by hand stays as it was**: its
   window is the owner's to use, and a second copy must not be opened.
 - **While the owner's session is signed in, rig2's mount is `rp`'s to

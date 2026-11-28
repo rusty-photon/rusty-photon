@@ -48,3 +48,20 @@ of each run from a Get-Date beside it.
 :GOS#  P99000261P000039#
 :GL#   22:44:03.41#
 :GC#   11/27/26#
+
+== 2026-11-28 10:05:56, after rp's park at 07:29:04 and before the nightly
+   install (the run's output filtered to these three lines)
+:GD#   +89*59:59.0#
+:GOS#  P99000261P000039#
+:GL#   10:05:56.98#
+
+== 2026-11-28 10:09:31, after rp's park at 10:09:17, at its start on the
+   nightly g3e1700e
+:GR#   20:02:13.39#
+:GD#   +89*59:59.0#
+:GA#   +31*32:51.0#
+:GZ#   +00*00:08.2#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   10:09:31.03#
+:GC#   11/28/26#
