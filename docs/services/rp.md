@@ -2246,9 +2246,12 @@ knows the angle has changed
 2. Read the pre-move sky angle, then run the move as usual.
 3. **Calibration decision.** At or below
    `equipment.mount.guiding.recalibrate_above_deg` (default 5°) of
-   |Δθ| (the sky-angle change, folded to [0°, 180°]) the guider's
-   calibrations are kept: the cross-axis leak (sin Δθ) sits inside
-   guiding's noise floor. Above it `rp` empties the guider's
+   |Δθ| (the sky-angle change, folded to [0°, 180°] and rounded to
+   0.01°) the guider's calibrations are kept: the cross-axis leak
+   (sin Δθ) sits inside guiding's noise floor. The rounding keeps the
+   binary residue of a difference out of the decision: unrounded, a
+   turn from 3.05° to 8.05° computes as 5.000000000000001° and would
+   count as above a 5° threshold. Above it `rp` empties the guider's
    calibration store, whether the guider guides or not: the guider
    keeps its records from run to run. The guider refuses the clear
    in a run state, so `rp` stops a run first.
@@ -2280,7 +2283,8 @@ above the threshold is such a failed clear. With no guider configured
 the move runs bare. The result gains `guiding_ladder`: `null` when
 the guiding train did not turn or no guider is configured, else
 `{ "delta_deg": number, "calibration_cleared": bool,
-"guiding_restarted": bool }`.
+"guiding_restarted": bool }`, where `delta_deg` is the |Δθ| the
+decision was made on, to 0.01°.
 
 Both rotator tools address the device as `rotator_id` *or*
 `train_id` — exactly one; passing both or neither is an error.
