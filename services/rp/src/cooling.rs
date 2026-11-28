@@ -31,10 +31,50 @@ use tracing::{debug, info, warn};
 use crate::config::CoolingConfig;
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
+use crate::temperature_delta::TemperatureDelta;
 
 /// Warm-up ramp step (rp.md § Camera Cooling): +5 °C per
 /// `cooling.warmup_step_interval`, matching the ladder grid.
 const WARMUP_STEP_C: f64 = 5.0;
+
+/// Hundredths of a degree in one degree Celsius: the resolution of the
+/// setpoints a warm-up ramp sends.
+const WARMUP_SETPOINT_STEPS_PER_DEGREE: f64 = 100.0;
+
+/// A warm-up setpoint rounded to 0.01 °C. The ramp starts wherever the
+/// cooler stands, often off the grid, and the bare sum of such a start
+/// and the step carries binary residue (−9.7 + 5 computes as
+/// −4.699999999999999) that the device would otherwise be sent.
+fn warmup_setpoint(celsius: f64) -> f64 {
+    (celsius * WARMUP_SETPOINT_STEPS_PER_DEGREE).round() / WARMUP_SETPOINT_STEPS_PER_DEGREE
+}
+
+/// Where a temperature sits against a rung (rp.md § Temperature
+/// comparisons): within the tolerance of it either side, warmer than
+/// rung + tolerance, or colder than rung − tolerance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RungPosition {
+    At,
+    Above,
+    Below,
+}
+
+/// The one classification behind the stabilized verdict, the floor
+/// verdict and adoption, all three at the 0.001 °C resolution of
+/// [`TemperatureDelta`]: a sample is exactly one of at, above or below
+/// the rung, so no reading is left neither at it nor above it. A NaN
+/// reading counts as below — neither at the rung nor a floor.
+fn rung_position(temp: f64, rung: f64, tolerance_c: f64) -> RungPosition {
+    let offset = TemperatureDelta::between(temp, rung);
+    let tolerance = TemperatureDelta::of(tolerance_c);
+    if offset > tolerance {
+        RungPosition::Above
+    } else if offset.abs() <= tolerance {
+        RungPosition::At
+    } else {
+        RungPosition::Below
+    }
+}
 
 /// Which background task a camera's handle is running — what makes a
 /// re-issued `start_cooldown` / `start_warmup` idempotent (a running
@@ -156,6 +196,11 @@ impl<'a> CooldownPhase<'a> {
         self.samples.iter().rev().find_map(|(_, _, p)| *p)
     }
 
+    /// Where `temp` sits against the rung currently commanded.
+    fn position(&self, temp: f64) -> RungPosition {
+        rung_position(temp, f64::from(self.target), self.config.tolerance_c)
+    }
+
     /// Stabilized verdict: a full window with every sample at the rung
     /// (within tolerance) and no sample above the power ceiling.
     fn stabilized(&self, now: Instant) -> bool {
@@ -165,7 +210,7 @@ impl<'a> CooldownPhase<'a> {
         let at_rung = self
             .samples
             .iter()
-            .all(|(_, t, _)| (t - f64::from(self.target)).abs() <= self.config.tolerance_c);
+            .all(|(_, t, _)| self.position(*t) == RungPosition::At);
         // `all` on an empty iterator is true: with no readable power the
         // headroom criterion is disabled.
         let power_ok = self
@@ -177,7 +222,9 @@ impl<'a> CooldownPhase<'a> {
     /// Floor verdict: a plateau that sits above the rung, or holds it
     /// only at pegged power — or the backstop expiring — makes `temp`
     /// tonight's floor. Records it for the eventual `cooler_stabilized`
-    /// payload.
+    /// payload. The window's movement is held against the threshold at
+    /// 0.001 °C, so a window that moved exactly the threshold is no
+    /// plateau.
     fn detect_floor(&mut self, now: Instant, temp: f64, timed_out: bool) -> Option<f64> {
         let plateaued = self.window_spanned(now) && {
             let (min, max) = self
@@ -186,9 +233,10 @@ impl<'a> CooldownPhase<'a> {
                 .fold((f64::MAX, f64::MIN), |(lo, hi), (_, t, _)| {
                     (lo.min(*t), hi.max(*t))
                 });
-            max - min < self.config.plateau_threshold_c
+            TemperatureDelta::between(max, min)
+                < TemperatureDelta::of(self.config.plateau_threshold_c)
         };
-        let above_rung = temp > f64::from(self.target) + self.config.tolerance_c;
+        let above_rung = self.position(temp) == RungPosition::Above;
         // Pegged needs at least one readable sample — peek keeps the
         // non-empty check and the all-pass in a single iterator walk,
         // block-scoped so the borrow ends before `floor_c` is written.
@@ -205,12 +253,14 @@ impl<'a> CooldownPhase<'a> {
     }
 
     /// The lowest rung clearing `floor` by the regulation margin, above
-    /// the current one — selection only moves up.
+    /// the current one — selection only moves up. A rung exactly the
+    /// margin above the floor, at 0.001 °C, clears it.
     fn snap_target(&self, ladder: &[i32], floor: f64) -> Option<i32> {
+        let margin = TemperatureDelta::of(self.config.regulation_margin_c);
         ladder
             .iter()
             .copied()
-            .find(|r| f64::from(*r) >= floor + self.config.regulation_margin_c && *r > self.target)
+            .find(|r| TemperatureDelta::between(f64::from(*r), floor) >= margin && *r > self.target)
     }
 
     /// Re-anchor the window on a newly commanded rung.
@@ -424,7 +474,7 @@ impl CoolingController {
                 return None;
             }
         };
-        if (temp - setpoint).abs() > self.config.tolerance_c {
+        if rung_position(temp, setpoint, self.config.tolerance_c) != RungPosition::At {
             debug!(
                 camera_id,
                 rung_c = rung,
@@ -652,7 +702,8 @@ impl CoolingController {
 
     /// Ramp the setpoint from `from_c` up to the warm target
     /// (`HeatSinkTemperature` when readable, else the configured
-    /// endpoint) in +5 °C steps, then switch the cooler off.
+    /// endpoint) in +5 °C steps, each sent rounded to 0.01 °C, then
+    /// switch the cooler off.
     async fn run_warmup(self: &Arc<Self>, camera_id: &str, from_c: f64) {
         let Some(cam) = self.device(camera_id) else {
             debug!(camera_id, "camera not connected; cannot warm up");
@@ -679,10 +730,12 @@ impl CoolingController {
         );
         // Each rung adds +5 °C and clamps to `warm_target`; the clamp lands
         // the last rung exactly on the target, which ends the sequence. A
-        // NaN endpoint on either side yields no rungs. The ticker paces the
-        // rungs on an absolute schedule, so late wakeups under load don't
-        // stretch the ramp, and skips missed ticks rather than bursting
-        // them; its period must be non-zero or `interval` panics.
+        // NaN endpoint on either side yields no rungs. Only the setpoint
+        // sent is rounded: the sequence runs on the unrounded sums, so the
+        // rounding cannot hold a rung short of the target. The ticker paces
+        // the rungs on an absolute schedule, so late wakeups under load
+        // don't stretch the ramp, and skips missed ticks rather than
+        // bursting them; its period must be non-zero or `interval` panics.
         let rungs = successors(Some(from_c), |&prev| {
             (prev < warm_target).then(|| (prev + WARMUP_STEP_C).min(warm_target))
         });
@@ -693,7 +746,7 @@ impl CoolingController {
         );
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         ticker.tick().await;
-        for setpoint in rungs.skip(1) {
+        for setpoint in rungs.skip(1).map(warmup_setpoint) {
             debug!(camera_id, setpoint_c = setpoint, "warm-up step");
             if let Err(e) = cam.set_set_ccd_temperature(setpoint).await {
                 warn!(camera_id, error = %e, "SetCCDTemperature failed during warm-up; switching the cooler off now");
@@ -843,6 +896,8 @@ pub(crate) mod test_support {
         pub(crate) setpoint_c: f64,
         pub(crate) cooler_on: bool,
         pub(crate) set_setpoint_calls: u32,
+        /// Every `SetCCDTemperature` value written, in order.
+        pub(crate) setpoints_written: Vec<f64>,
     }
 
     impl CoolerSim {
@@ -858,6 +913,7 @@ pub(crate) mod test_support {
                 setpoint_c: 0.0,
                 cooler_on: false,
                 set_setpoint_calls: 0,
+                setpoints_written: Vec::new(),
             }
         }
 
@@ -975,6 +1031,7 @@ pub(crate) mod test_support {
                         }
                         sim.setpoint_c = value;
                         sim.set_setpoint_calls += 1;
+                        sim.setpoints_written.push(value);
                         Json(json!({ "ErrorNumber": 0, "ErrorMessage": "" }))
                     },
                 ),
@@ -1732,5 +1789,137 @@ mod tests {
             "no task for a ladder-less camera"
         );
         assert!(drain(&mut rx).is_empty());
+    }
+
+    // --- temperatures at exactly a threshold (rp.md § Temperature
+    // comparisons) ----------------------------------------------------
+
+    /// The fast profile with a 0.3 °C tolerance, and a backstop short
+    /// enough that a pass which never decides ends quickly.
+    fn tolerance_0_3_config() -> CoolingConfig {
+        CoolingConfig {
+            tolerance_c: 0.3,
+            max_cooldown: Duration::from_secs(2),
+            ..fast_config()
+        }
+    }
+
+    /// A sim whose cooler bottoms out at `floor_c`, with no readable
+    /// power, so only the temperature decides.
+    fn sim_with_floor(floor_c: f64) -> Sim {
+        let mut sim = CoolerSim::new();
+        sim.floor_c = floor_c;
+        sim.can_get_power = false;
+        Arc::new(Mutex::new(sim))
+    }
+
+    /// A ZWO camera reads tenths of a degree: −19.7 against a −20 rung
+    /// is exactly the 0.3 °C tolerance (0.3000000000000007 as a bare
+    /// double), so it is at the rung, which stabilizes with no floor
+    /// measured.
+    #[tokio::test]
+    async fn a_reading_at_exactly_the_tolerance_stabilizes_at_the_rung() {
+        let sim = sim_with_floor(-19.7);
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) =
+            controller_with_config(&stub.url(), &[-20, -15], tolerance_0_3_config()).await;
+
+        ctrl.run_cooldown("main-cam", &[-20, -15]).await;
+
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-20));
+        assert_eq!(sim.lock().unwrap().setpoints_written, vec![-20.0]);
+        let events = drain(&mut rx);
+        let stabilized = events
+            .iter()
+            .find(|e| e.event == "cooler_stabilized")
+            .expect("cooler_stabilized must be emitted");
+        assert_eq!(stabilized.payload["target_c"], json!(-20));
+        assert!(
+            stabilized.payload.get("floor_c").is_none(),
+            "no floor was measured: {}",
+            stabilized.payload
+        );
+    }
+
+    /// A cooler found holding −20 at −19.7 — exactly the tolerance — is
+    /// adopted as it stands, without a command.
+    #[tokio::test]
+    async fn a_cooler_holding_a_rung_at_exactly_the_tolerance_is_adopted() {
+        let sim = sim_with_floor(-19.7);
+        {
+            let mut sim = sim.lock().unwrap();
+            sim.cooler_on = true;
+            sim.setpoint_c = -20.0;
+        }
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, mut rx) =
+            controller_with_config(&stub.url(), &[-20, -15], tolerance_0_3_config()).await;
+
+        ctrl.run_cooldown("main-cam", &[-20, -15]).await;
+
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-20));
+        assert_eq!(
+            sim.lock().unwrap().set_setpoint_calls,
+            0,
+            "adoption must not command the device"
+        );
+        assert!(drain(&mut rx).is_empty(), "adoption emits no events");
+    }
+
+    /// A window from −7.7 to −8.2 has moved exactly the 0.5 °C plateau
+    /// threshold (0.4999999999999991 as a bare double): the cooler is
+    /// still descending, so it is no floor.
+    #[test]
+    fn a_window_that_moved_exactly_the_threshold_is_no_plateau() {
+        let config = fast_config();
+        let start = Instant::now();
+        let end = start + config.plateau_window;
+        let mut phase = CooldownPhase::new(&config, -10, start);
+        phase.record_sample(start, -7.7, None);
+        phase.record_sample(end, -8.2, None);
+
+        assert_eq!(phase.detect_floor(end, -8.2, false), None);
+    }
+
+    /// With a 2.3 °C margin, −30 clears a −32.3 floor by exactly the
+    /// margin (−32.3 + 2.3 is −29.999999999999996 as a bare double), so
+    /// the pass snaps to −30, not past it to −25.
+    #[tokio::test]
+    async fn a_rung_exactly_the_margin_above_the_floor_is_chosen() {
+        let sim = sim_with_floor(-32.3);
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let config = CoolingConfig {
+            regulation_margin_c: 2.3,
+            ..fast_config()
+        };
+        let (ctrl, mut rx) = controller_with_config(&stub.url(), &[-35, -30, -25], config).await;
+
+        ctrl.run_cooldown("main-cam", &[-35, -30, -25]).await;
+
+        assert_eq!(ctrl.rung_for("main-cam"), Some(-30));
+        let events = drain(&mut rx);
+        let stabilized = events
+            .iter()
+            .find(|e| e.event == "cooler_stabilized")
+            .expect("cooler_stabilized must be emitted");
+        assert_eq!(stabilized.payload["target_c"], json!(-30));
+        assert_eq!(stabilized.payload["floor_c"], json!(-32.3));
+    }
+
+    /// A ramp from an off-grid −9.7 sends hundredths of a degree: −4.7,
+    /// 0.3 and 5.3 rather than the bare sums −4.699999999999999,
+    /// 0.3000000000000007 and 5.300000000000001, then the warm target.
+    #[tokio::test]
+    async fn a_warmup_from_off_the_grid_sends_setpoints_in_hundredths() {
+        let sim: Sim = Arc::new(Mutex::new(CoolerSim::new()));
+        let stub = spawn_stub(stub_router(sim.clone())).await;
+        let (ctrl, _rx) = controller_for(&stub.url(), &[-10]).await;
+
+        ctrl.run_warmup("main-cam", -9.7).await;
+
+        assert_eq!(
+            sim.lock().unwrap().setpoints_written,
+            vec![-4.7, 0.3, 5.3, 10.0]
+        );
     }
 }

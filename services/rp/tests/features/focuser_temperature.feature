@@ -6,7 +6,9 @@ Feature: Focuser temperature watch
   with the focuser's config id as "sensor" and the reading in °C as
   "value" once the probe has moved by at least
   equipment.temperature_event_delta_c (default 0.5) since the last
-  emission. The first reading through a session seeds the baseline
+  emission, the difference compared to 0.001 °C so that a move of
+  exactly the delta emits whatever binary residue the two readings
+  carry. The first reading through a session seeds the baseline
   silently; a drift below the delta leaves the baseline alone, so the
   delta accumulates across polls instead of resetting at each one. A
   focuser whose Temperature property is not implemented never emits, a
@@ -35,6 +37,23 @@ Feature: Focuser temperature watch
     Then the first "temperature_changed" event should name sensor "stub-focuser" at 10.6 °C
     And the watch has sampled the stub focuser at least 2 more times
     And exactly 1 "temperature_changed" event should have been received
+
+  Scenario Outline: A move of exactly the delta emits whatever residue the readings carry
+    Given a stub Alpaca service hosting a focuser reporting <baseline> °C
+    And rp is configured with a focuser on the stub service
+    And a focuser temperature poll interval of 200 milliseconds and an event delta of 0.5 °C
+    And a test webhook receiver subscribed to "temperature_changed"
+    When rp starts
+    And the watch has sampled the stub focuser at least 2 more times
+    And the stub focuser reports <moved> °C
+    Then the first "temperature_changed" event should name sensor "stub-focuser" at <moved> °C
+
+    # As binary doubles the two pairs differ by 0.4999999999999982 and
+    # 0.4999990463256836, short of 0.5; compared to 0.001 °C both are 0.5.
+    Examples:
+      | probe                              | baseline           | moved              |
+      | tenths of a degree, a ZWO camera's | 15.9               | 16.4               |
+      | an f32 widened to f64, a ZWO EAF's | 15.800000190734863 | 16.299999237060547 |
 
   Scenario: A failed probe read keeps the baseline
     Given a stub Alpaca service hosting a focuser reporting 10.0 °C

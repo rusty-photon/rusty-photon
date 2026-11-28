@@ -27,6 +27,7 @@ use tracing::{debug, info};
 use crate::config::equipment::TemperatureEventDeltaC;
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
+use crate::temperature_delta::TemperatureDelta;
 
 /// Bound on one `Temperature` read. A probe that never answers must
 /// not wedge the pass — the interval is the cadence, not this.
@@ -76,7 +77,11 @@ enum Baseline {
 /// The pure delta state machine. Feed it one probe read per focuser
 /// per poll; reset a focuser when its session is re-established.
 pub struct WatchCore {
-    delta_c: f64,
+    /// The event delta, held against each reading's move from its
+    /// baseline at 0.001 °C — so a move of exactly the delta emits,
+    /// whatever binary residue the readings carry (rp.md § Temperature
+    /// comparisons).
+    delta: TemperatureDelta,
     baselines: HashMap<String, Baseline>,
 }
 
@@ -84,7 +89,7 @@ impl WatchCore {
     #[must_use]
     pub fn new(delta: TemperatureEventDeltaC) -> Self {
         Self {
-            delta_c: delta.value(),
+            delta: TemperatureDelta::of(delta.value()),
             baselines: HashMap::new(),
         }
     }
@@ -108,7 +113,7 @@ impl WatchCore {
             Probe::Reading(value) if !value.is_finite() => Observation::ReadFailed,
             Probe::Reading(value) => match *slot {
                 Baseline::Value(baseline) => {
-                    if (value - baseline).abs() >= self.delta_c {
+                    if TemperatureDelta::between(value, baseline).abs() >= self.delta {
                         *slot = Baseline::Value(value);
                         Observation::Emit(value)
                     } else {
@@ -385,6 +390,30 @@ mod tests {
             core.observe("f", Probe::Reading(4.5)),
             Observation::Emit(4.5)
         );
+    }
+
+    #[test]
+    fn a_drift_of_exactly_the_delta_emits_whatever_residue_the_readings_carry() {
+        // As bare doubles these moves read 0.4999999999999982 (tenths, a
+        // ZWO camera's), 0.4999990463256836 (an f32 widened to f64, a ZWO
+        // EAF's), 0.2999999999999998 and, cooling, 0.19999999999999973.
+        for (baseline, moved, delta_c) in [
+            (15.9, 16.4, 0.5),
+            (f64::from(15.8_f32), f64::from(16.3_f32), 0.5),
+            (1.1, 1.4, 0.3),
+            (2.3, 2.1, 0.2),
+        ] {
+            let mut core = WatchCore::new(delta(delta_c));
+            assert_eq!(
+                core.observe("f", Probe::Reading(baseline)),
+                Observation::Seeded(baseline)
+            );
+            assert_eq!(
+                core.observe("f", Probe::Reading(moved)),
+                Observation::Emit(moved),
+                "{baseline} to {moved} against a delta of {delta_c}"
+            );
+        }
     }
 
     #[test]
