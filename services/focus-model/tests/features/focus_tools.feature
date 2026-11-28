@@ -107,6 +107,28 @@ Feature: Focus tools served through rp
     And the tool result at "/step_size" should be the JSON 15
     And the tool result at "/points" should be the JSON 9
 
+  # The reference train stopped down to 40 mm is f/12.5. At 560 nm
+  # behind a 0.5 µm/step focuser its CFZ is 4.88 × 0.56 × 12.5² =
+  # 427 µm, exactly 854 steps, so half of it floors the step at 427:
+  # the step counts are worked to a millionth of a step, and the
+  # floating-point 854.0000000000001 is not one step more. The
+  # geometry wants a half width of 830 and an even step of 208, which
+  # the floor overrides; the 1660-step spread holds four steps of 427.
+  Scenario: A critical focus zone of whole steps floors the step at exactly half of it
+    Given a running Alpaca simulator
+    And the focuser is configured with microns_per_step 0.5
+    And the train is configured with an aperture of 40.0 mm
+    And the filter wheel's "Luminance" filter is configured at 560 nm
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "get_sweep_plan" with {"train_id": "main", "filter": "Luminance"}
+    Then the tool call should succeed
+    And the tool result at "/optics/focal_ratio" should be the JSON 12.5
+    And the tool result at "/cfz_steps" should be the JSON 854.0
+    And the tool result at "/half_width" should be the JSON 830
+    And the tool result at "/step_size" should be the JSON 427
+    And the tool result at "/points" should be the JSON 4
+
   # No microns_per_step in the config: the focuser's ASCOM StepSize,
   # 20 µm on the simulator, is the fact instead. The coarser step
   # shrinks the half width to 9 and the CFZ floor of 3.355/2 lifts the
@@ -348,6 +370,29 @@ Feature: Focus tools served through rp
     And the tool result at "/runs/0/prediction/moved" should be the JSON true
     And the tool result at "/runs/0/prediction/missing/0" should be the JSON "temperature_coefficient"
 
+  # Half the reference rig's 26.84-step critical focus zone is 13.42
+  # steps, so a remembered focus 13 steps from where the focuser stands
+  # is the same focus: the provider leaves the focuser where it is and
+  # says why in the run it records. The half zone is rounded up to the
+  # 14 a move of whole steps is compared against.
+  Scenario: A prediction closer than half a critical focus zone is not moved to
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And the focuser is configured with microns_per_step 2.5
+    And a stored focus model for train "main" with a last good position of 25013
+    And the focus provider is configured for train "main" with max_attempts "1"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    And the focuser is at position 25000
+    When the MCP client calls "focus_train" with {"train_id": "main"}
+    Then the tool call should return an error
+    When the MCP client calls "get_focus_runs" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/runs/0/prediction/from_position" should be the JSON 25000
+    And the tool result at "/runs/0/prediction/start" should be the JSON 25013
+    And the tool result at "/runs/0/prediction/moved" should be the JSON false
+    And the tool result at "/runs/0/prediction/skipped" should be the JSON "within 14 steps of the current position"
+
   # The identity fields catch a camera swap: the record predicts
   # nothing, says which field moved on, and the next run replaces it.
   Scenario: A record trained on another camera is stale and the next run resets it
@@ -565,6 +610,30 @@ Feature: Focus tools served through rp
     And the tool result at "/temperature_coefficient" should be the JSON -20.0
     And the tool result at "/coefficient_runs" should be the JSON 5
     And the tool result at "/coefficient_span_c" should be the JSON 12.0
+
+  # A probe reports short decimals, which binary floating point carries
+  # inexactly: 5.1 − 2.1 computes as 2.9999999999999996, and an EAF's
+  # f32 readings of 5.03 and 8.03, widened, are 2.999999523162842
+  # apart. The span is measured to a thousandth of a degree, so five
+  # runs whose readings span exactly 3 °C meet the 3 °C threshold, and
+  # the span reported and written is the 3 the readings show.
+  Scenario Outline: Readings in <readings> that span exactly the threshold fit a coefficient
+    Given a running Alpaca simulator
+    And a stored focus model for train "main" with confirmed runs "<runs>"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    When the MCP client calls "calibrate_temperature" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/runs" should be the JSON 5
+    And the tool result at "/span_c" should be the JSON 3.0
+    When the MCP client calls "get_focus_model" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result at "/coefficient_span_c" should be the JSON 3.0
+
+    Examples:
+      | readings              | runs                                                                                                                      |
+      | tenths of a degree    | 2.1:25000, 2.9:24984, 3.6:24970, 4.4:24954, 5.1:24940                                                                     |
+      | an EAF's widened f32s | 5.03000020980835:25000, 5.829999923706055:24984, 6.53000020980835:24970, 7.329999923706055:24954, 8.029999732971191:24940 |
 
   # A coefficient nothing supports is worse than none, because the
   # predicted start moves the focuser by it. Both thresholds are named

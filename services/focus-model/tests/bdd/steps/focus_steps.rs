@@ -94,6 +94,13 @@ const fn train_obstruction(world: &mut FocusModelWorld, obstruction_mm: f64) {
     world.obstruction_mm_for_train = Some(obstruction_mm);
 }
 
+/// An aperture in place of the reference train's 100 mm, which moves
+/// the focal ratio of its 500 mm focal length.
+#[given(expr = "the train is configured with an aperture of {float} mm")]
+const fn train_aperture(world: &mut FocusModelWorld, aperture_mm: f64) {
+    world.configured_aperture_mm = Some(aperture_mm);
+}
+
 #[given(expr = "the filter wheel's {string} filter is configured at {int} nm")]
 fn filter_wavelength(world: &mut FocusModelWorld, filter: String, nanometres: i64) {
     #[expect(
@@ -684,7 +691,9 @@ async fn seed(world: &mut FocusModelWorld, record: FocusRecord) {
 }
 
 /// The reference rig: camera `main-cam`, focuser `main-focuser` and
-/// filter wheel `main-fw` (Luminance, Ha), all on the simulator.
+/// filter wheel `main-fw` (Luminance, Ha), all on the simulator. A
+/// train with an aperture takes the one the scenario configured, when
+/// it configured one.
 fn configure_rig(world: &mut FocusModelWorld, aperture_mm: Option<f64>) {
     let alpaca_url = world.omnisim_url();
     world.cameras.push(CameraConfig {
@@ -709,7 +718,8 @@ fn configure_rig(world: &mut FocusModelWorld, aperture_mm: Option<f64>) {
         backlash: None,
         microns_per_step: world.focuser_microns_per_step,
     });
-    world.aperture_mm_for_train = aperture_mm;
+    world.aperture_mm_for_train =
+        aperture_mm.map(|reference| world.configured_aperture_mm.unwrap_or(reference));
 }
 
 fn push_train(world: &mut FocusModelWorld, devices: Vec<String>) {

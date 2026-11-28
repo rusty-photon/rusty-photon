@@ -267,9 +267,22 @@ fn distinct_filters(candidates: &[Candidate]) -> BTreeSet<Option<&str>> {
         .collect()
 }
 
-/// The temperature range the samples cover. Not finite when the
-/// readings are far enough apart to overflow the subtraction, which
-/// no probe reports and a hand-written record can still hold.
+/// Thousandths of a degree in a degree: the resolution a span is
+/// measured to.
+const THOUSANDTHS_PER_C: f64 = 1000.0;
+
+/// The temperature range the samples cover, to a thousandth of a
+/// degree. Not finite when the readings are far enough apart to
+/// overflow the subtraction or its count of thousandths, which no
+/// probe reports and a hand-written record can still hold.
+///
+/// A reading is a short decimal — tenths of a degree, or an `f32`
+/// widened to `f64` — that binary floating point carries inexactly,
+/// so the difference of two carries a residue: 5.1 − 2.1 is
+/// 2.9999999999999996, and two widened `f32`s 3.00 apart are up to a
+/// few millionths of a degree off it. To the thousandth, a span is the
+/// one the readings show, so a span that is the threshold in their
+/// decimals meets the threshold, and that is the span written.
 fn span_c(samples: &[Sample]) -> f64 {
     let mut lowest = f64::INFINITY;
     let mut highest = f64::NEG_INFINITY;
@@ -277,7 +290,7 @@ fn span_c(samples: &[Sample]) -> f64 {
         lowest = lowest.min(sample.temperature_c);
         highest = highest.max(sample.temperature_c);
     }
-    highest - lowest
+    ((highest - lowest) * THOUSANDTHS_PER_C).round() / THOUSANDTHS_PER_C
 }
 
 /// The least-squares line through the samples: its slope in steps per
@@ -286,8 +299,10 @@ fn span_c(samples: &[Sample]) -> f64 {
 /// The error is the clause a refusal finishes "their temperatures …"
 /// with. Readings far enough apart overflow the sums the slope is
 /// built from, and readings close enough together underflow the one
-/// it divides by; neither leaves a slope worth writing, and the span
-/// check ahead of this only rules out the second at a sane threshold.
+/// it divides by; neither leaves a slope worth writing. The span
+/// check ahead of this rules out the second, readings less than half
+/// a thousandth apart spanning 0 °C, and the fit refuses it all the
+/// same rather than trust its caller for a finite slope.
 fn fit(samples: &[Sample]) -> std::result::Result<Fit, &'static str> {
     let mut n = 0.0_f64;
     let mut sum_t = 0.0_f64;
@@ -973,19 +988,19 @@ mod tests {
         assert_eq!(record.coefficient_span_c, None);
     }
 
-    /// The span check is the one that keeps a line fittable. A
-    /// threshold small enough to pass runs a hair apart leaves a slope
-    /// nothing can divide, and that is reported rather than written.
+    /// The span check is the one that keeps a line fittable: runs
+    /// less than half a thousandth of a degree apart span 0 °C, which
+    /// a threshold finer than the thousandth still refuses.
     #[tokio::test]
-    async fn temperatures_a_hair_apart_fit_no_line() {
+    async fn temperatures_a_hair_apart_span_nothing_under_any_threshold() {
         let lenient = r#"{
             "mcp_server_url": "http://127.0.0.1:1/mcp",
-            "min_calibration_runs": 3, "min_calibration_span_c": 1e-300
+            "min_calibration_runs": 3, "min_calibration_span_c": 0.0001
         }"#;
         let (store, _dir) = stored(vec![
             confirmed(1, Some("Luminance"), 0.0, 1000),
-            confirmed(2, Some("Luminance"), 1e-300, 990),
-            confirmed(3, Some("Luminance"), 2e-300, 980),
+            confirmed(2, Some("Luminance"), 0.0002, 990),
+            confirmed(3, Some("Luminance"), 0.0004, 980),
         ])
         .await;
 
@@ -995,11 +1010,93 @@ mod tests {
 
         assert_eq!(
             error.tool_message(),
-            "the 3 runs of train 'main' do not fit a line: their temperatures \
-             lie too close together to give a finite coefficient"
+            "a coefficient needs a temperature span of 0.0001 °C (min_calibration_span_c) \
+             and the 3 runs of train 'main' span 0 °C"
         );
         let record = store.get("main").await.unwrap().unwrap();
         assert_eq!(record.temperature_coefficient, None);
+    }
+
+    /// The fit stands on its own as well: samples a hair apart leave a
+    /// slope nothing can divide, which it reports rather than return.
+    #[test]
+    fn a_line_through_temperatures_a_hair_apart_has_no_finite_slope() {
+        let samples = [
+            Sample {
+                temperature_c: 0.0,
+                position: 1000.0,
+            },
+            Sample {
+                temperature_c: 1e-300,
+                position: 990.0,
+            },
+            Sample {
+                temperature_c: 2e-300,
+                position: 980.0,
+            },
+        ];
+
+        let error = fit(&samples).unwrap_err();
+
+        assert_eq!(error, "lie too close together to give a finite coefficient");
+    }
+
+    /// Five runs read in tenths of a degree, 2.1 to 5.1: exactly the
+    /// 3 °C threshold in their own decimals, and 2.9999999999999996
+    /// apart in binary floating point.
+    fn a_span_of_three_in_tenths() -> Vec<FocusRun> {
+        vec![
+            confirmed(1, Some("Luminance"), 2.1, 25_000),
+            confirmed(2, Some("Luminance"), 2.9, 24_984),
+            confirmed(3, Some("Luminance"), 3.6, 24_970),
+            confirmed(4, Some("Luminance"), 4.4, 24_954),
+            confirmed(5, Some("Luminance"), 5.1, 24_940),
+        ]
+    }
+
+    #[tokio::test]
+    async fn readings_in_tenths_that_span_exactly_the_threshold_fit() {
+        let (store, _dir) = stored(a_span_of_three_in_tenths()).await;
+
+        let view = calibrate_temperature(&rig(true), &store, &config(DEFAULTS), "main")
+            .await
+            .unwrap();
+
+        assert_eq!(view.runs, 5);
+        assert_eq!(view.span_c, 3.0);
+    }
+
+    #[tokio::test]
+    async fn the_span_a_record_keeps_is_the_one_the_readings_show() {
+        let (store, _dir) = stored(a_span_of_three_in_tenths()).await;
+
+        calibrate_temperature(&rig(true), &store, &config(DEFAULTS), "main")
+            .await
+            .unwrap();
+
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.coefficient_span_c, Some(3.0));
+    }
+
+    /// A ZWO EAF reports an `f32`, which reaches the record widened:
+    /// 5.03 is 5.03000020980835 and 8.03 is 8.029999732971191, half a
+    /// millionth of a degree short of 3 apart.
+    #[tokio::test]
+    async fn widened_f32_readings_that_span_exactly_the_threshold_fit() {
+        let (store, _dir) = stored(vec![
+            confirmed(1, Some("Luminance"), f64::from(5.03_f32), 25_000),
+            confirmed(2, Some("Luminance"), f64::from(5.83_f32), 24_984),
+            confirmed(3, Some("Luminance"), f64::from(6.53_f32), 24_970),
+            confirmed(4, Some("Luminance"), f64::from(7.33_f32), 24_954),
+            confirmed(5, Some("Luminance"), f64::from(8.03_f32), 24_940),
+        ])
+        .await;
+
+        let view = calibrate_temperature(&rig(true), &store, &config(DEFAULTS), "main")
+            .await
+            .unwrap();
+
+        assert_eq!(view.span_c, 3.0);
     }
 
     /// Tenet 6: a record whose camera moved on predicts nothing, and a

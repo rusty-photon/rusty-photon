@@ -1038,6 +1038,13 @@ fn sweep_params(train: &TrainConfig, plan: &SweepPlan, start: &FocuserPosition) 
 
 /// The smallest prediction move worth making: half a critical focus
 /// zone when the optics know one, the configured floor otherwise.
+///
+/// The half zone is rounded up: a move of whole steps is shorter than
+/// half a zone exactly when it is shorter than that half rounded up,
+/// so the prediction's `<` against it skips every move inside the zone
+/// and none outside. The zone is worked to a millionth of a step
+/// ([`crate::sizing`]), so no floating-point residue rounds it up a
+/// step further.
 fn min_prediction_move(config: &Config, plan: &SweepPlan) -> i32 {
     #[expect(
         clippy::as_conversions,
@@ -1046,7 +1053,7 @@ fn min_prediction_move(config: &Config, plan: &SweepPlan) -> i32 {
     )]
     let half_cfz = plan
         .cfz_steps
-        .map_or(0, |steps| (steps / 2.0).round() as i32);
+        .map_or(0, |steps| (steps / 2.0).ceil() as i32);
     half_cfz.max(config.min_prediction_move.get())
 }
 
@@ -5330,5 +5337,49 @@ mod tests {
         );
         assert!(log.entries().is_empty(), "{:?}", log.entries());
         assert_eq!(store.get("guide").await.unwrap().unwrap().runs.len(), 1);
+    }
+
+    /// A plan whose critical focus zone is `cfz_steps`.
+    fn plan_with_zone(cfz_steps: Option<f64>) -> SweepPlan {
+        SweepPlan {
+            step_size: 17,
+            half_width: 68,
+            points: 9,
+            source: crate::sizing::SweepSource::Derived,
+            end_ratio: 4.0,
+            wavelength_nm: 550.0,
+            cfz_steps,
+            hfr_focus: None,
+            predicted_slope: None,
+        }
+    }
+
+    /// Half of a 160.064-step zone is 80.032 steps, so a move of 80 is
+    /// inside it: the smallest move worth making is 81.
+    #[test]
+    fn the_smallest_prediction_move_is_half_a_zone_rounded_up() {
+        let config = config(r#"{ "mcp_server_url": "http://127.0.0.1:1/mcp" }"#);
+        assert_eq!(
+            min_prediction_move(&config, &plan_with_zone(Some(160.064))),
+            81
+        );
+    }
+
+    /// Half of an 854-step zone is 427 steps exactly, and a move of
+    /// 427 is not inside it.
+    #[test]
+    fn half_a_zone_of_whole_steps_is_the_smallest_prediction_move() {
+        let config = config(r#"{ "mcp_server_url": "http://127.0.0.1:1/mcp" }"#);
+        assert_eq!(
+            min_prediction_move(&config, &plan_with_zone(Some(854.0))),
+            427
+        );
+    }
+
+    #[test]
+    fn the_configured_floor_is_the_smallest_prediction_move_beneath_a_narrow_zone_or_none() {
+        let config = config(r#"{ "mcp_server_url": "http://127.0.0.1:1/mcp" }"#);
+        assert_eq!(min_prediction_move(&config, &plan_with_zone(Some(4.0))), 5);
+        assert_eq!(min_prediction_move(&config, &plan_with_zone(None)), 5);
     }
 }
