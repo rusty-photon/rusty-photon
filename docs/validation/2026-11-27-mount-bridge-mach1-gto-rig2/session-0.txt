@@ -1,0 +1,36 @@
+The session-0 attempts on rig2, 2026-11-27 (rig local time, CST). Lines from
+the commands' output and the rig's logs; the owner's account name is replaced
+by <owner> and its SID by <owner-sid>.
+
+== whoami /groups, from a one-shot S4U task of the owner's account, run level
+   Limited, and from runas /trustlevel:0x20000 inside the same task (the
+   lines naming Administrators and the mandatory label; the probe was run
+   again at 22:25 to keep its lines whole, with the same result)
+S4U task:
+  BUILTIN\Administrators             Alias  S-1-5-32-544  Mandatory group, Enabled by default, Enabled group, Group owner
+  Mandatory Label\High Mandatory Level  Label  S-1-16-12288
+runas /trustlevel:0x20000:
+  BUILTIN\Administrators             Alias  S-1-5-32-544  Group used for deny only
+  Mandatory Label\High Mandatory Level  Label  S-1-16-12288
+
+== Remote Server under the S4U task's token: its trace, then its exception
+   logs (21:42)
+21:42:31.552  CreateInstance   Device AstroPhysicsV2.Telescope connected OK
+21:42:31.695  StartRESTServer  Server started successfully.
+21:42:31.723  Main  Thread exception: System.InvalidOperationException: Showing a modal dialog box or form when the application is not running in UserInteractive mode is not a valid operation. ...
+   at ASCOM.Remote.ServerForm.ServerForm_Load(Object sender, EventArgs e) in ...\Remote Server\ServerForm.cs:line 514
+21:42:31.728  Main  Un-handled exception: System.ComponentModel.Win32Exception (2): An error occurred trying to start process 'ASCOM.RemoteAccessServerException.2142.317230.txt' ...
+   at ASCOM.Remote.Program.Application_ThreadException(...) in ...\Remote Server\Program.cs:line 152
+Application log, .NET Runtime 1026 and Application Error 1000: RemoteServer.exe 7.0.1.36689 terminated (0xe0434352, then 0xc000041d).
+
+== Remote Server under the basic-user token, before a launch permission was
+   added (21:45)
+21:45:59.709  CreateInstance  Error creating device:
+System.UnauthorizedAccessException: Access is denied. (0x80070005 (E_ACCESSDENIED))
+System log, DistributedCOM 10016: The machine-default permission settings do not grant Local Activation permission for the COM Server application with CLSID {B7A708DE-7000-4048-B3F4-9364DB212515} and APPID Unavailable to the user <owner> SID (<owner-sid>) from address LocalHost (Using LRPC) ...
+
+== The same, with a launch permission for <owner> on the driver's AppID
+   (21:48): Remote Server's trace ends at its request; the driver's log ends
+   at its 56th line, before the line its form's load writes
+21:48:24.055  CreateInstance  Creating device: ServedDevice00, ProgID: AstroPhysicsV2.Telescope, Key: telescope/0 on thread 5
+(nothing further from CreateInstance by 21:50:28, when the trace was read; both processes were stopped after)

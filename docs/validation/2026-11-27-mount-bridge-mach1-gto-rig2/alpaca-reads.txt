@@ -1,0 +1,34 @@
+configureddevices: {"DeviceName":"Astro-Physics Mach 1 GTO","DeviceType":"Telescope","DeviceNumber":0,"UniqueID":"7159159E-BEFF-4370-A997-AF8F43FBCC45"}
+connected                True
+name                     AstroPhysicsV2
+description              Astro-Physics Mach 1 GTO Mount
+driverinfo               AstroPhysics V2 ASCOM Mount Driver 5.60.17
+Astro-Physics, Inc.
+Copyright c 2009-2024, Astro-Physics, Inc.
+http://ascom-standards.org/  http://www.astro-physics.com//
+driverversion            5.60.17
+interfaceversion         2
+atpark                   True
+athome                   False
+tracking                 False
+slewing                  False
+ispulseguiding           False
+canpulseguide            True
+canpark                  True
+canunpark                True
+canslew                  True
+cansettracking           True
+guideraterightascension  0.004178075
+guideratedeclination     0.004178075
+sideofpier               1
+rightascension           7.918383333333334
+declination              89.99969444444444
+altitude                 31.547500000000003
+azimuth                  0.00036111111111111115
+siderealtime             1.9195722222222225
+sitelatitude             31.547500000000003
+sitelongitude            -99.38194444444444
+siteelevation            472.44
+equatorialsystem         1
+trackingrate             0
+alignmentmode            2

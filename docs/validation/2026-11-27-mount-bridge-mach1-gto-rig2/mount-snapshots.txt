@@ -1,0 +1,67 @@
+mount-snapshot.ps1 as run on rig2, its output, with the rig's local time (CST)
+of each run from a Get-Date beside it.
+
+== 21:40:56, before APCC, the driver or Remote Server started
+:GR#   07:31:35.64#
+:GD#   +89*59:58.9#
+:GA#   +31*32:50.9#
+:GZ#   +00*02:39.0#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   21:40:51.40#
+:GC#   11/27/26#
+
+== 21:42:14, after APCC connected to the mount
+:GR#   07:32:53.83#
+:GD#   +89*59:58.9#
+:GA#   +31*32:51.0#
+:GZ#   +00*00:08.7#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   21:42:14.36#
+:GC#   11/27/26#
+
+== 22:02:18, after rp bound the mount (the run's output filtered to these four lines)
+:GR#   07:53:01.53#
+:GD#   +89*59:58.9#
+:GOS#  P99000261P000039#
+:GL#   22:02:18.77#
+
+== 22:43:38, with APCC, Remote Server and the driver stopped, before the
+   sign-in task's ordered start
+:GR#   08:34:28.25#
+:GD#   +89*59:58.9#
+:GA#   +31*32:51.0#
+:GZ#   +00*00:08.7#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   22:43:38.71#
+:GC#   11/27/26#
+
+== 22:44:03, after the ordered start: APCC, then Remote Server and the
+   driver's connect
+:GR#   08:34:53.01#
+:GD#   +89*59:58.9#
+:GA#   +31*32:51.0#
+:GZ#   +00*00:08.7#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   22:44:03.41#
+:GC#   11/27/26#
+
+== 2026-11-28 10:05:56, after rp's park at 07:29:04 and before the nightly
+   install (the run's output filtered to these three lines)
+:GD#   +89*59:59.0#
+:GOS#  P99000261P000039#
+:GL#   10:05:56.98#
+
+== 2026-11-28 10:09:31, after rp's park at 10:09:17, at its start on the
+   nightly g3e1700e
+:GR#   20:02:13.39#
+:GD#   +89*59:59.0#
+:GA#   +31*32:51.0#
+:GZ#   +00*00:08.2#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   10:09:31.03#
+:GC#   11/28/26#

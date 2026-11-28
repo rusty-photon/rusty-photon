@@ -1,0 +1,1 @@
+2026-11-28T04:01:59.244921Z  INFO rp::equipment::binding: bound the roster entry to the device its Alpaca server lists at that number kind="mount" id="mount" alpaca_url="http://127.0.0.1:11190" device_number=0 device_name=Astro-Physics Mach 1 GTO unique_id=7159159E-BEFF-4370-A997-AF8F43FBCC45 pinned=true

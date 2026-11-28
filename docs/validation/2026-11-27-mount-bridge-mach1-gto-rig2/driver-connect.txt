@@ -1,0 +1,53 @@
+000001 # AP ASCOM Driver - 5.60.17
+000002 # Controller: GTOCP4
+000003 # Mount Type: Mach 1 GTO
+000004 # Driver Mode: 0 
+000005 # O/S: Windows 8.0
+000006 # Admin: False
+000062 2026-11-27 21:59:04.821:            ASCOM: Info      : SET Connected = True
+000066 2026-11-27 21:59:04.884:        Telescope: Info      : CommandString TX=':V#'
+000070 2026-11-27 21:59:05.184:           Driver: Info      : CommandBlind TX='#:U#'
+000072 2026-11-27 21:59:05.247:        Telescope: Info      : CommandString TX=':GOS#'
+000088 2026-11-27 21:59:05.247:           Driver: Info      : CommandBlind TX=':RG2#'
+000096 2026-11-27 21:59:05.375:           Driver: Info      : CommandBool TX=':APCC#'
+000099 2026-11-27 21:59:05.375:        Telescope: Info      : CommandString TX=':*APCCVERSION#'
+000102 2026-11-27 21:59:05.375:        CheckApcc: Info      : APCC Found!
+000103 2026-11-27 21:59:05.375:        CheckApcc: Info      : APCC Handles Slews: True
+000109 2026-11-27 21:59:05.391:           Driver: Info      : CommandBlind TX=':U#'
+000118 2026-11-27 21:59:05.824:      Connections: Info      : OpenConnection: Scope Clients/Connects=1/1, Focuser Clients/Connects=0/0
+000121 2026-11-27 21:59:05.855:        Telescope: Info      : CommandString TX=':G_E#'
+000124 2026-11-27 21:59:05.887:       InitBasics: Info      : Mount has firmware parks = False
+000125 2026-11-27 21:59:05.887:        Telescope: Info      : CommandString TX=':G_S#'
+000141 2026-11-27 21:59:05.922:           Driver: Info      : CommandBlind TX=':RG2#'
+000143 2026-11-27 21:59:05.983:       InitBasics: Info      : Firmware=VCP4-P02-17, Precision: RA=2, Dec=1, AltAz=1, LatLong=1, MaxMoveRate=999.9999
+000144 2026-11-27 21:59:05.983:           Driver: Info      : CommandString TX=':GOS#'
+000160 2026-11-27 21:59:05.999:           Driver: Info      : CommandBlind TX=':RG2#'
+000162 2026-11-27 21:59:06.062:           Driver: Info      : CommandString TX=':Rc#'
+000195 2026-11-27 21:59:06.207:        Telescope: Info      : CommandString TX=':*TIMESYNC,1#'
+000201 2026-11-27 21:59:06.207:           Driver: Info      : CommandString TX=':pS#'
+000208 2026-11-27 21:59:06.255:           Driver: Info      : CommandBool TX=':B1#'
+000211 2026-11-27 21:59:06.288:           Driver: Info      : CommandString TX=':GOS#'
+000214 2026-11-27 21:59:06.288:           Driver: Info      : CommandString TX=':Rc#'
+000217 2026-11-27 21:59:06.318:           Driver: Info      : CommandString TX=':pS#'
+000221 2026-11-27 21:59:06.318:           Driver: Info      : CommandString TX=':pS#'
+000225 2026-11-27 21:59:06.318:    SLEW COMPLETE: Info      : Completed move to parked position
+000229 2026-11-27 21:59:07.420:           Driver: Info      : CommandString TX=':GOS#'
+000232 2026-11-27 21:59:07.420:           Driver: Info      : CommandString TX=':Rc#'
+000247 2026-11-27 21:59:08.570:           Driver: Info      : CommandString TX=':GOS#'
+000250 2026-11-27 21:59:08.571:           Driver: Info      : CommandString TX=':Rc#'
+000265 2026-11-27 21:59:09.707:           Driver: Info      : CommandString TX=':GOS#'
+000268 2026-11-27 21:59:09.707:           Driver: Info      : CommandString TX=':Rc#'
+000280 2026-11-27 21:59:10.363:           Driver: Info      : CommandString TX=':pS#'
+000287 2026-11-27 21:59:10.844:           Driver: Info      : CommandString TX=':GOS#'
+000290 2026-11-27 21:59:10.844:           Driver: Info      : CommandString TX=':Rc#'
+000314 2026-11-27 21:59:11.869:           Driver: Info      : CommandString TX=':GOS#'
+000317 2026-11-27 21:59:11.884:           Driver: Info      : CommandString TX=':Rc#'
+000332 2026-11-27 21:59:13.004:           Driver: Info      : CommandString TX=':GOS#'
+000335 2026-11-27 21:59:13.004:           Driver: Info      : CommandString TX=':Rc#'
+000350 2026-11-27 21:59:14.154:           Driver: Info      : CommandString TX=':GOS#'
+000353 2026-11-27 21:59:14.154:           Driver: Info      : CommandString TX=':Rc#'
+000362 2026-11-27 21:59:14.490:           Driver: Info      : CommandString TX=':pS#'
+000372 2026-11-27 21:59:15.275:           Driver: Info      : CommandString TX=':GOS#'
+000375 2026-11-27 21:59:15.275:           Driver: Info      : CommandString TX=':Rc#'
+000390 2026-11-27 21:59:16.427:           Driver: Info      : CommandString TX=':GOS#'
+000393 2026-11-27 21:59:16.427:           Driver: Info      : CommandString TX=':Rc#'
