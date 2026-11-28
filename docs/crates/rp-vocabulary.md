@@ -174,7 +174,9 @@ The containing `Target`, `ResolvedTarget` and `PlannerTarget` do not
 `"coord": { "ra_hours": <f64>, "dec_degrees": <f64> }` — one canonical
 shape on disk and on the MCP wire alike. The values inside are plain
 decimal hours and degrees: the type adds validation, not units. Read
-sites call `.ra_hours()` / `.dec_degrees()`.
+sites call `.ra_hours()` / `.dec_degrees()`. Both ranges admit `-0.0`,
+which `try_new` stores as `0.0`, so a coordinate never reads back or
+serializes as `"ra_hours": -0.0`.
 
 ### `Binning` — the `"AxB"` round-trip
 

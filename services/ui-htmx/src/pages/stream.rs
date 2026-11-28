@@ -124,13 +124,14 @@ fn field(payload: &Value, key: &str) -> Option<String> {
 
 /// Compact display for a JSON number: integers verbatim, floats trimmed to at
 /// most 4 decimals (a raw f64 repr like `10.684583333333333` doesn't belong in
-/// a feed card).
+/// a feed card). A float that rounds to zero reads `0`: `-0.0`, and anything
+/// in `(-0.00005, 0)`, trims to `-0`.
 fn num_display(n: &serde_json::Number) -> String {
     match n.as_f64() {
         Some(f) if n.is_f64() => {
             let s = format!("{f:.4}");
             let s = s.trim_end_matches('0').trim_end_matches('.');
-            if s.is_empty() || s == "-" {
+            if s == "-0" {
                 "0".to_string()
             } else {
                 s.to_string()
@@ -1140,6 +1141,18 @@ mod tests {
         assert_eq!(n(json!(10.684_583_333)), "10.6846");
         assert_eq!(n(json!(2.0)), "2");
         assert_eq!(n(json!(-2.25)), "-2.25");
+    }
+
+    #[test]
+    fn num_display_reads_a_float_that_rounds_to_zero_as_0() {
+        let n = |v: Value| match v {
+            Value::Number(n) => num_display(&n),
+            _ => unreachable!(),
+        };
+        assert_eq!(n(json!(-0.0)), "0");
+        assert_eq!(n(json!(-0.000_04)), "0");
+        assert_eq!(n(json!(0.0)), "0");
+        assert_eq!(n(json!(-0.0001)), "-0.0001");
     }
 
     // --- the gap divider + stream_error card -----------------------------------

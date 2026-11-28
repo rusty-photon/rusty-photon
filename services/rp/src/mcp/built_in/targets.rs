@@ -922,14 +922,16 @@ fn reject_import_incompatible_fields(
 /// Boundary validation for the per-target framing angle, sharing the
 /// domain (and validator) of the per-train config default
 /// ([`crate::config::PositionAngleDegrees`]), with the error naming
-/// the tool parameter.
+/// the tool parameter. The angle returned is the one the validator
+/// holds, so a `-0.0` is stored as `0.0`.
 fn validate_position_angle(value: Option<f64>) -> Result<Option<f64>, String> {
-    let errors = super::plan_validation::validate_position_angle(value, "position_angle_degrees");
-    if errors.is_empty() {
-        Ok(value)
-    } else {
-        Err(render_first(&errors))
-    }
+    value
+        .map(|v| {
+            crate::config::PositionAngleDegrees::try_new(v)
+                .map(crate::config::PositionAngleDegrees::value)
+                .map_err(|e| format!("position_angle_degrees: {e}"))
+        })
+        .transpose()
 }
 
 /// Renders the first [`FieldError`] of a validation pass into the flat
@@ -1022,13 +1024,20 @@ fn offset_component(value_arcmin: f64, axis: char) -> Option<String> {
     Some(format!("{sign}{rendered}\u{2032}{axis}"))
 }
 
+/// The last minute of right ascension, 23h59m. `IcrsCoord` bounds RA to
+/// `[0, 24)`, but [`truncated_minutes`]' rounding to the micro-minute
+/// carries an RA a hair below 24 h to 24h00m, which names as this.
+const RA_LAST_MINUTE: u32 = 24 * 60 - 1;
+
+/// The last minute of declination, ±90°00′, which the pole reaches.
+const DEC_LAST_MINUTE: u32 = 90 * 60;
+
 /// The display name and slug for an import with no catalog neighbor:
 /// IAU-style truncation `Jhhmm±ddmm` (`"J2059+4432"`) and its matching
 /// slug shape (`"j2059p4432"`, `p`/`m` for the sign).
 fn coordinate_forms(ra_hours: f64, dec_degrees: f64) -> (String, String) {
-    let (ra_hh, ra_mm) = truncated_minutes(ra_hours);
-    let ra_hh = ra_hh.min(23); // IcrsCoord bounds RA to [0, 24)
-    let (dec_dd, dec_mm) = truncated_minutes(dec_degrees.abs());
+    let (ra_hh, ra_mm) = truncated_minutes(ra_hours, RA_LAST_MINUTE);
+    let (dec_dd, dec_mm) = truncated_minutes(dec_degrees.abs(), DEC_LAST_MINUTE);
     let display_sign = if dec_degrees < 0.0 { '-' } else { '+' };
     let slug_sign = if dec_degrees < 0.0 { 'm' } else { 'p' };
     (
@@ -1042,14 +1051,15 @@ fn coordinate_forms(ra_hours: f64, dec_degrees: f64) -> (String, String) {
 /// `1.9` h sit a hair *below* the exact minute boundary in binary
 /// floating point (`1.9 * 60` = 53.999…96), so round to a micro-minute
 /// first: truncation then reflects the intended coordinate, not its
-/// representation.
+/// representation. The minutes stop at `last_minute`, the last one the
+/// coordinate's range holds.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 #[expect(
     clippy::as_conversions,
     reason = "coordinates are bounded (RA < 1,440 arc-minutes, |dec| <= 5,400), far inside u32; no total f64-to-u32 spelling exists"
 )]
-fn truncated_minutes(value: f64) -> (u32, u32) {
-    let total_minutes = ((value * 60.0 * 1e6).round() / 1e6) as u32;
+fn truncated_minutes(value: f64, last_minute: u32) -> (u32, u32) {
+    let total_minutes = (((value * 60.0 * 1e6).round() / 1e6) as u32).min(last_minute);
     (total_minutes / 60, total_minutes % 60)
 }
 
@@ -1196,6 +1206,19 @@ mod tests {
     }
 
     #[test]
+    fn coordinate_forms_name_an_ra_a_hair_below_24h_as_its_last_minute() {
+        // Rounding to the micro-minute carries both to 24h00m; the
+        // second is the RA of the largest `f64` below 360°.
+        for ra_hours in [23.999_999_992, 359.999_999_999_999_94 / 15.0] {
+            assert_eq!(
+                coordinate_forms(ra_hours, 90.0),
+                ("J2359+9000".to_string(), "j2359p9000".to_string()),
+                "{ra_hours}"
+            );
+        }
+    }
+
+    #[test]
     fn flat_separation_is_wrap_correct_in_ra() {
         let separation = flat_separation_degrees(23.999, 0.0, 0.001, 0.0);
         assert!(separation < 0.05, "wrapped separation was {separation}");
@@ -1259,5 +1282,12 @@ mod tests {
             let err = validate_position_angle(Some(bad)).unwrap_err();
             assert!(err.contains("position_angle_degrees"), "{err}");
         }
+    }
+
+    #[test]
+    fn a_negative_zero_position_angle_is_stored_as_zero() {
+        // `-0.0 == 0.0`, so the sign is what the assertion reads.
+        let angle = validate_position_angle(Some(-0.0)).unwrap().unwrap();
+        assert!(angle.is_sign_positive(), "{angle:?}");
     }
 }

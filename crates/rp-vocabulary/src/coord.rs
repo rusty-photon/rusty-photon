@@ -21,6 +21,10 @@ pub struct IcrsCoord {
 impl IcrsCoord {
     /// Validates `ra_hours ∈ [0, 24)` and `dec_degrees ∈ [-90, 90]`.
     ///
+    /// Both ranges admit `-0.0`, which is stored as `0.0` (`+ 0.0` is
+    /// zero for either sign of zero and the identity for every other
+    /// value), so a coordinate never reads back or serializes as `-0.0`.
+    ///
     /// # Errors
     ///
     /// [`CoordError::RaOutOfRange`] or [`CoordError::DecOutOfRange`],
@@ -33,8 +37,8 @@ impl IcrsCoord {
             return Err(CoordError::DecOutOfRange { dec_degrees });
         }
         Ok(Self {
-            ra_hours,
-            dec_degrees,
+            ra_hours: ra_hours + 0.0,
+            dec_degrees: dec_degrees + 0.0,
         })
     }
 
@@ -137,6 +141,20 @@ mod tests {
         let v = serde_json::to_value(c).unwrap();
         assert_eq!(v, serde_json::json!({"ra_hours": 1.0, "dec_degrees": 2.0}));
         assert_eq!(serde_json::from_value::<IcrsCoord>(v).unwrap(), c);
+    }
+
+    #[test]
+    fn a_negative_zero_is_stored_and_serialized_as_zero() {
+        // `-0.0 == 0.0`, so the sign is what the assertions read.
+        let c = IcrsCoord::try_new(-0.0, -0.0).unwrap();
+        assert!(c.ra_hours().is_sign_positive(), "{c:?}");
+        assert!(c.dec_degrees().is_sign_positive(), "{c:?}");
+        let wire: IcrsCoord =
+            serde_json::from_str(r#"{"ra_hours": -0.0, "dec_degrees": -0.0}"#).unwrap();
+        assert_eq!(
+            serde_json::to_string(&wire).unwrap(),
+            r#"{"ra_hours":0.0,"dec_degrees":0.0}"#
+        );
     }
 
     #[test]

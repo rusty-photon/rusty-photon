@@ -8512,6 +8512,28 @@ async fn ladder_result(handler: &McpHandler, angle: f64) -> serde_json::Value {
     json["guiding_ladder"].clone()
 }
 
+/// `-0.0 == 0.0`, so the serialized angle is what the test reads: the
+/// device moves to `0.0`, the started event carries `0.0`, and the
+/// result reads back what the device was handed.
+#[tokio::test]
+async fn move_rotator_takes_a_negative_zero_angle_as_zero() {
+    let handler = test_handler(rotator_registry(Arc::new(MockRotator::default())));
+    let mut rx = handler.event_bus.subscribe();
+    let json = ok_text(
+        handler
+            .move_rotator_inner(move_rot_params(-0.0), &Cancel::never())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(serde_json::to_string(&json["angle"]).unwrap(), "0.0");
+    let started = rx.try_recv().unwrap();
+    assert_eq!(started.event, "move_rotator_started");
+    assert_eq!(
+        serde_json::to_string(&started.payload["angle"]).unwrap(),
+        "0.0"
+    );
+}
+
 #[tokio::test]
 async fn ladder_pause_failure_aborts_before_any_motion() {
     let handler = ladder_handler(MockRotator::default(), |mock| {

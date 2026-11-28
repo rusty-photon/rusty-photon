@@ -80,8 +80,12 @@ impl SurveyRequest {
     }
 }
 
+/// `value` rounded to a multiple of `step`. A value that rounds to zero
+/// gives `0.0` whatever its sign (`+ 0.0`): the cache key hashes the
+/// bits, and `-0.0` and `0.0` differ there.
 fn round_to(value: f64, step: f64) -> f64 {
-    (value / step).round() * step
+    let rounded = (value / step).round() * step;
+    rounded + 0.0
 }
 
 #[derive(Debug)]
@@ -293,5 +297,25 @@ mod tests {
         let key_a = a.cache_key();
         a.ra_deg = 1e-7; // way below the 1e-4 tolerance
         assert_eq!(key_a, a.cache_key());
+    }
+
+    #[test]
+    fn cache_key_is_one_entry_either_side_of_zero() {
+        // Each rounds to zero, but `round` keeps the sign of the
+        // negative one.
+        let request = |dec_deg: f64| SurveyRequest {
+            survey: "DSS2 Red".into(),
+            ra_deg: 0.0,
+            dec_deg,
+            rotation_deg: 0.0,
+            pixels_x: 100,
+            pixels_y: 100,
+            size_x_deg: 0.1,
+            size_y_deg: 0.1,
+        };
+        assert_eq!(
+            request(-0.000_01).cache_key(),
+            request(0.000_01).cache_key()
+        );
     }
 }

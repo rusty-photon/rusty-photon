@@ -425,9 +425,16 @@ In telescope-following mode the camera adds a fixed angular offset to
 the mount-reported RA/Dec before forming the SkyView request:
 
 ```text
-cutout_ra_deg  = (mount_ra_deg + offset_ra_arcsec  / 3600).rem_euclid(360)
+cutout_ra_deg  = wrap_360(mount_ra_deg + offset_ra_arcsec  / 3600)
 cutout_dec_deg = clamp(mount_dec_deg + offset_dec_arcsec / 3600, -90, +90)
 ```
+
+`wrap_360` folds an angle into `[0, 360)`: `rem_euclid(360)`, with a
+result of exactly 360 folded to 0 and a negative zero written as 0.
+`rem_euclid` rounds a value a hair below 0 up to 360 — a mount at RA
+0h00m00.7s with `offset_ra_arcsec = -10.5` sums to about −4e-19° —
+and an RA of 360 is outside the range the cutout request and
+`GET /sky-survey/position` promise. Rotation wraps the same way.
 
 **Why this exists.** OmniSim's Telescope is mechanically perfect: a
 slew to `(RA, Dec)` produces a mount that reports exactly `(RA, Dec)`.
@@ -470,6 +477,7 @@ Validation:
 - `ra_deg` ∈ [0, 360); values outside the range are 400.
 - `dec_deg` ∈ [-90, +90]; out-of-range values are 400.
 - `rotation_deg` is wrapped into [0, 360) before storage.
+- A negative zero in any field is stored as zero.
 - `POST` while disconnected returns 409 (the device must be connected
   to accept new pointing, mirroring ASCOM's `NotConnected` semantics).
 - `POST` while in telescope-following mode arms a one-shot
@@ -731,7 +739,7 @@ do not apply in static mode.
 - **F1.** With `pointing.telescope` set, every light `StartExposure`
   (`Light = true`) reads `right_ascension` and `declination` fresh
   from the configured ASCOM Telescope and snapshots
-  `PointingState { ra_deg: (mount_ra + offset_ra).rem_euclid(360),
+  `PointingState { ra_deg: wrap_360(mount_ra + offset_ra),
    dec_deg: clamp(mount_dec + offset_dec, -90, +90),
    rotation_deg: <rotator position angle if pointing.rotator set,
    else pointing.initial_rotation_deg> }`.
@@ -757,7 +765,8 @@ do not apply in static mode.
   (notably `rp`) issued between exposures, defeating follow-mode's
   purpose.
 - **F5.** The configured offset is applied as
-  `(mount_ra_deg + offset_ra_arcsec/3600).rem_euclid(360)` for RA and
+  `wrap_360(mount_ra_deg + offset_ra_arcsec/3600)` for RA (see
+  [Pointing Offset Simulation](#pointing-offset-simulation)) and
   `clamp(mount_dec_deg + offset_dec_arcsec/3600, -90, +90)` for Dec.
   A clamp on Dec produces a `warn!` log (it indicates a config error
   worth surfacing). Non-finite offsets are rejected at config load,
@@ -874,7 +883,9 @@ Cache key: a 16-character hex digest from `std::collections::hash_map::
 DefaultHasher` over
 `survey_name | ra_deg | dec_deg | rotation_deg | pixels_x | pixels_y | size_x_deg | size_y_deg`
 with floating-point fields rounded (RA/Dec to 1e-4 deg, sizes to
-1e-6 deg) so that minor drift hits the same entry. Stored as
+1e-6 deg) so that minor drift hits the same entry. A value that
+rounds to zero keys as positive zero, so a Dec of −0.00001° and one
+of +0.00001° share an entry. Stored as
 `<cache_dir>/<hex>.fits`. The cache is local-only and the operator
 clears `cache_dir` manually — `DefaultHasher` is non-cryptographic and
 not stable across Rust versions, but neither property is needed here.

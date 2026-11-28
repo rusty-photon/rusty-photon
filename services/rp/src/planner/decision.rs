@@ -388,12 +388,27 @@ impl From<&rp_targets::Target> for PlannerTarget {
                 .iter()
                 .map(|g| ExposureSpec {
                     filter: (!g.filter.is_empty()).then(|| g.filter.clone()),
-                    duration_secs: g.exposure_duration.as_secs_f64(),
+                    duration_secs: nearest_secs(g.exposure_duration),
                     count: Some(g.desired_count),
                 })
                 .collect(),
         }
     }
+}
+
+/// `d` in seconds, as the `f64` nearest it: a `4.56s` goal is `4.56`.
+///
+/// `Duration::as_secs_f64` adds the whole seconds to a fraction already
+/// rounded on its own, so it rounds twice and reads 4.5600000000000005.
+/// Here the nanosecond count is formed exactly — `mul_add` rounds once,
+/// and the count is exact below 2^53 ns, about 104 days — and the
+/// division by 10^9 is the one rounding. A duration of 2^32 s or more,
+/// which no exposure is, falls back to `as_secs_f64`.
+fn nearest_secs(d: std::time::Duration) -> f64 {
+    u32::try_from(d.as_secs()).map_or_else(
+        |_| d.as_secs_f64(),
+        |secs| f64::from(secs).mul_add(1e9, f64::from(d.subsec_nanos())) / 1e9,
+    )
 }
 
 #[cfg(test)]
@@ -1268,6 +1283,23 @@ mod tests {
                 count: Some(20),
             }]
         );
+    }
+
+    #[test]
+    fn from_store_target_reports_a_fractional_exposure_as_the_nearest_f64() {
+        // `Duration::as_secs_f64` reads these as 4.5600000000000005 and
+        // 1.3599999999999999.
+        for (humantime, secs) in [("4.56s", 4.56), ("1.36s", 1.36), ("300s", 300.0)] {
+            let goal = rp_targets::AcquisitionGoal {
+                filter: "L".to_string(),
+                binning: rp_targets::Binning { x: 1, y: 1 },
+                exposure_duration: humantime::parse_duration(humantime).unwrap(),
+                desired_count: 1,
+            };
+            let t = store_target("ngc7000", None, vec![goal]);
+            let duration_secs = PlannerTarget::from(&t).exposures[0].duration_secs;
+            assert_eq!(duration_secs, secs, "{humantime}");
+        }
     }
 
     // --- get_next_target wire shape ------------------------------------
