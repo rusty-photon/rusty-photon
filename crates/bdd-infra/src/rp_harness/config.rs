@@ -392,12 +392,12 @@ pub struct RpConfigBuilder {
     /// block is omitted and rp's defaults apply (10 s polls, 2 m
     /// plateau window — far too slow for test scenarios).
     pub cooling: Option<CoolingOverrides>,
-    /// Pin `server.port`. `None` ⇒ port 0 (ephemeral). A scenario that
-    /// kills and restarts rp pins the first instance's port so a client
-    /// configured with rp's URL — session-runner's `mcp_server_url` —
-    /// finds the restarted instance where it left the old one, as a
-    /// real restart would. A tool provider's suite pins it too, so the
-    /// provider's config can name rp before rp starts.
+    /// Pin `server.port`. `None` ⇒ port 0 (ephemeral). A tool provider's
+    /// suite pins it, so the provider's config can name rp before rp
+    /// starts. A scenario that restarts rp leaves it unpinned: a port
+    /// released between a stop and a restart can be taken in the gap, so
+    /// rp binds port 0 behind a `restart_relay::RestartRelay`, whose port
+    /// its clients keep (testing.md §5.1).
     pub port: Option<u16>,
 }
 

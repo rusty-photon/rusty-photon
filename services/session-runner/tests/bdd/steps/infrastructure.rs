@@ -5,6 +5,7 @@
 //! request every scenario posts, reused by every feature's step
 //! definitions.
 
+use bdd_infra::restart_relay::RestartRelay;
 use bdd_infra::rp_harness::{start_rp, write_temp_config_file, McpTestClient, OmniSimHandle};
 use bdd_infra::ServiceHandle;
 use serde_json::Value;
@@ -107,7 +108,7 @@ pub async fn configure_default_equipment(world: &mut SessionRunnerWorld) {
 /// package's shipped `workflows/` with the suite's purpose-built
 /// documents from `tests/fixtures/workflows/` (the cucumber runner's cwd
 /// is the package dir — `bdd_main!` chdirs to `BDD_PACKAGE_DIR` under
-/// Bazel), and — when rp is running — `mcp_server_url` pointing at it,
+/// Bazel), and — when rp is running — `mcp_server_url` pointing at its relay,
 /// with a fast `safety_poll_interval` so a safety resume lands in test
 /// time.
 ///
@@ -145,7 +146,9 @@ pub async fn try_start_session_runner_with(
 
 /// Write the scenario's session-runner configuration and return its
 /// path: the directories (created once per scenario), rp's MCP endpoint
-/// when rp is running, and `extra`'s top-level fields.
+/// through its relay when rp is running, and `extra`'s top-level fields.
+/// The `mcp_client_auth` scenarios start an rp of their own, with no
+/// relay, and name its endpoint in `extra`.
 async fn session_runner_config_path(world: &mut SessionRunnerWorld, extra: Value) -> String {
     if world.workflows_dir.is_none() {
         let cwd = std::env::current_dir().expect("cannot read the cwd");
@@ -177,8 +180,8 @@ async fn session_runner_config_path(world: &mut SessionRunnerWorld, extra: Value
         "state_dir": world.state_dir.as_ref().expect("just ensured").path(),
         "safety_poll_interval": "250ms",
     });
-    if let Some(rp) = world.rp.as_ref() {
-        config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", rp.base_url()));
+    if let (Some(_), Some(relay)) = (&world.rp, &world.rp_relay) {
+        config["mcp_server_url"] = serde_json::json!(format!("{}/mcp", relay.base_url()));
     }
     if let Value::Object(extra) = extra {
         let map = config.as_object_mut().expect("config is an object");
@@ -201,19 +204,16 @@ pub fn stage_run(world: &mut SessionRunnerWorld, workflow: &str, parameters: Opt
 /// Start the real focus-model and register it with rp, before rp
 /// starts: the deep-sky document names `focus_train`, and a run's
 /// catalog check needs it in rp's catalog even on paths that never call
-/// it. rp's port is reserved first so the provider's config can name
-/// rp's MCP URL; `start_rp_service` then starts rp on it. An rp restart
+/// it. rp's relay starts first so the provider's config can name rp's
+/// MCP URL; `start_rp_service` then starts rp behind it. An rp restart
 /// keeps the provider and its registration.
 pub async fn ensure_focus_model(world: &mut SessionRunnerWorld) {
     if world.focus_model.is_some() {
         return;
     }
-    if world.rp_port.is_none() {
-        world.rp_port = Some(bdd_infra::reserved_test_port_async().await);
-    }
-    let rp_port = world.rp_port.expect("rp's port was reserved above");
+    ensure_rp_relay(world).await;
     let provider = bdd_infra::rp_harness::FocusModelProvider::start(
-        &format!("http://127.0.0.1:{rp_port}/mcp"),
+        &format!("{}/mcp", world.rp_relay().base_url()),
         serde_json::json!({ "main": bdd_infra::rp_harness::starless_focus_train() }),
     )
     .await;
@@ -221,8 +221,16 @@ pub async fn ensure_focus_model(world: &mut SessionRunnerWorld) {
     world.focus_model = Some(provider.handle);
 }
 
-/// Start rp (or restart it after a kill, on the port it first bound —
-/// see `SessionRunnerWorld::rp_port`).
+/// The scenario's relay in front of rp, started once: every rp the
+/// scenario starts binds a port of its own behind it.
+async fn ensure_rp_relay(world: &mut SessionRunnerWorld) {
+    if world.rp_relay.is_none() {
+        world.rp_relay = Some(RestartRelay::start().await);
+    }
+}
+
+/// Start rp behind the scenario's relay (or restart it after a kill,
+/// behind the same relay — see `SessionRunnerWorld::rp_relay`).
 pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
     if world
         .rp
@@ -232,9 +240,10 @@ pub async fn start_rp_service(world: &mut SessionRunnerWorld) {
         return;
     }
 
+    ensure_rp_relay(world).await;
     let config = world.build_rp_config();
     let rp = start_rp(&config).await;
-    world.rp_port = Some(rp.port());
+    world.rp_relay().forward_to(rp.port());
     world.rp = Some(rp);
 
     assert!(

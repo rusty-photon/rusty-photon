@@ -237,6 +237,7 @@ pub fn __bdd_bazel_chdir() {
 }
 
 pub mod doctor_smoke;
+pub mod restart_relay;
 pub mod scratch;
 pub mod sharding;
 
