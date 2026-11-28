@@ -34,7 +34,7 @@ cannot be deselected (see
 | Mount software | APCC Pro 1.9.8.21 (Astro-Physics Command Center), connected to the mount over TCP, with its REST API on port 60001. The Astro-Physics V2 ASCOM driver 5.60.17 (`AstroPhysicsV2.Telescope`, a 32-bit COM local server), set to reach the mount through APCC's REST API |
 | Bridge | ASCOM Remote Server 7.0.1.36689, the 32-bit build the Platform installs (`C:\Program Files\ASCOM\RemoteServer\32bit\RemoteServer.exe`) |
 | `rp` | The nightly suite MSI `0.1.0+nightly.202611071139.g21bfe94`, installed on 2026-11-07, as in the [guide camera's record](../2026-11-17-qhy-camera-qhy5iii678m-windows/README.md) |
-| Time | 2026-11-28 03:40 to 04:05 UTC (21:40 to 22:05 at the rig), the roof open |
+| Time | 2026-11-28 03:40 to 04:45 UTC (21:40 to 22:45 at the rig, 2026-11-27), the roof open |
 
 ## How the rig is set up
 
@@ -59,16 +59,24 @@ its four prefixes only with a reservation for the owner's account:
 (`netsh http add urlacl`). Without them it would try to run ASCOM's
 SetNetworkPermissions elevated, which prompts.
 
-**Two scheduled tasks** start the two programs in the owner's session
-when the owner signs in, with the owner's interactive token (not
-elevated):
+**One scheduled task**, "Mount bridge at sign-in (started for
+rusty-photon)", runs 30 s after the owner signs in, in the owner's
+session with the owner's interactive token (not elevated). It runs
+[start-mount-bridge.ps1](start-mount-bridge.ps1), kept in the account's
+`%LOCALAPPDATA%\ASCOM Remote`, which starts the two programs in order:
 
-| Task | Starts | Delay after sign-in |
-|---|---|---|
-| APCC Pro at sign-in (started for rusty-photon) | `AstroPhysicsCommandCenter.exe` | 30 s |
-| ASCOM Remote Server at sign-in (started for rusty-photon) | Remote Server's 32-bit build | 60 s |
+1. APCC Pro, which connects to the mount when it starts (its
+   AutoConnect setting);
+2. once APCC's REST API accepts a connection on `127.0.0.1:60001`,
+   where the driver reaches it, Remote Server.
 
-APCC connects to the mount when it starts (its AutoConnect setting).
+The order matters because Remote Server connects the driver as it
+starts, and the driver gives up on an APCC that has not answered
+within its connect timeout, 15 s in its settings. APCC took 5 s from
+its start to its REST API at 21:41 and 14 s at 22:43. The script waits
+10 minutes at most, starts nothing more after that, and writes each
+step to `mount-bridge-start.log` in Remote Server's log folder.
+
 Remote Server is started as its 32-bit build: the 64-bit build reads
 its `RunAs64Bit` setting, `false`, and starts the 32-bit build in its
 place.
@@ -92,14 +100,26 @@ It has no `guiding` block yet; stage G7 adds one.
    ones APCC polls ([mount-snapshots.txt](mount-snapshots.txt)). Before
    anything started, the mount read Dec +89°59′58.9″, its status string
    starting `P`, and its right ascension advanced with the clock:
-   parked, not tracking. Its clock was correct.
-2. **APCC.** Started, it connected to the mount and set the mount's
-   date and time, which had drifted 4.9 s. Its log shows it polling the
-   mount's status, setting the guide rate (`:RG2#`), sending a few other
-   short commands once as it connected and `:SPC` every few seconds
-   after. The mount read as before.
+   parked, not tracking. Its clock was 4.9 s off.
+2. **APCC.** APCC started three times on the night: in session 0 at
+   21:41 (§ Session 0), in the owner's session at 21:58 by hand, and
+   at 22:43 by the sign-in task, from a stopped chain. Each time it
+   connected to the mount, and the first set the mount's date and time.
+   Its logs of all three show it polling the mount's status, setting
+   the guide rate (`:RG2#`), sending a few other short commands once as
+   it connected and `:SPC` every few seconds after. Around the first
+   and the third ([mount-snapshots.txt](mount-snapshots.txt)), the
+   mount's Dec, pier side and status read as before, and its right
+   ascension still advanced with the clock. Its reported azimuth
+   changed once, from 0°02′39″ to 0°00′09″, after APCC's first
+   connect, and not after the third. Its Dec held it 1.1″ from the
+   pole throughout, where the azimuth of where it points can change by
+   a few arcseconds at most, so that change is in what the mount
+   computes, not where it points.
 3. **The driver's connect.** Remote Server created the driver and set
-   `Connected = True` as it started. On the parked mount the driver
+   `Connected = True` as it started, at 21:59 and again at 22:43, when
+   the sign-in task's ordered start left the mount as it was
+   ([mount-snapshots.txt](mount-snapshots.txt)). On the parked mount the driver
    sent the long-format toggle (`:U#`), the guide rate 1.0× (`:RG2#`),
    a time sync to APCC (`:*TIMESYNC,1#`) and `:B1#`, and otherwise only
    status reads ([driver-connect.txt](driver-connect.txt)). It logged
@@ -152,10 +172,12 @@ session needs them too.
   the mount is off Alpaca until the owner signs in. Windows did not
   sign the owner in after the restart of 2026-11-26: the owner's
   session then began with a Remote Desktop logon 48 s after the boot.
-- **The sign-in trigger has not fired yet.** The two tasks were started
-  by hand in the owner's signed-in session, which runs their actions as
-  their trigger would. The trigger itself first fires at the owner's
-  next sign-in.
+- **The sign-in trigger has not fired yet.** The task was started by
+  hand in the owner's signed-in session, from a stopped chain, which
+  runs its action as its trigger would: APCC at 22:43:39, its REST API
+  accepting at 22:43:53, Remote Server and the driver at 22:43:53, the
+  driver connected at 22:43:55. The trigger itself first fires at the
+  owner's next sign-in.
 - **The driver's connect on an unparked mount that is not tracking is
   not observed**, and it is held for the owner. Remote Server makes
   that connect at every sign-in, whatever the mount is doing, so if the

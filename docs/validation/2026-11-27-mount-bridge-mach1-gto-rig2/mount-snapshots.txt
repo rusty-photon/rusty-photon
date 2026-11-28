@@ -1,5 +1,5 @@
 mount-snapshot.ps1 as run on rig2, its output, with the rig's local time (CST)
-of each run from the Get-Date that followed it.
+of each run from a Get-Date beside it.
 
 == 21:40:56, before APCC, the driver or Remote Server started
 :GR#   07:31:35.64#
@@ -26,3 +26,25 @@ of each run from the Get-Date that followed it.
 :GD#   +89*59:58.9#
 :GOS#  P99000261P000039#
 :GL#   22:02:18.77#
+
+== 22:43:38, with APCC, Remote Server and the driver stopped, before the
+   sign-in task's ordered start
+:GR#   08:34:28.25#
+:GD#   +89*59:58.9#
+:GA#   +31*32:51.0#
+:GZ#   +00*00:08.7#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   22:43:38.71#
+:GC#   11/27/26#
+
+== 22:44:03, after the ordered start: APCC, then Remote Server and the
+   driver's connect
+:GR#   08:34:53.01#
+:GD#   +89*59:58.9#
+:GA#   +31*32:51.0#
+:GZ#   +00*00:08.7#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   22:44:03.41#
+:GC#   11/27/26#
