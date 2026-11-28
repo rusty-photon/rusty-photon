@@ -880,6 +880,13 @@ it also serves a client that has to be configured first, with no band
 port: every tool provider a suite starts before rp (calibrator-flats',
 focus-model's, and session-runner's focus-model) names rp's relay.
 
+The same relay stands in for a service that is down from the start and
+comes up later at the address its client was given. A band port held with
+nothing listening until then is the same race, since another process can
+take it first: planetarium-bridge's "rp is unreachable" names a relay that
+drops every connection instead, and "the stub rp comes up at the
+configured rp address" starts the stub on port 0 behind it.
+
 #### 5.2 Entry Point Structure
 
 Each service's BDD tests follow this structure:
