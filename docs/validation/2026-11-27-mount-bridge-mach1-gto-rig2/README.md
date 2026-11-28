@@ -60,8 +60,11 @@ its four prefixes only with a reservation for the owner's account:
 SetNetworkPermissions elevated, which prompts.
 
 **One scheduled task**, "Mount bridge at sign-in (started for
-rusty-photon)", runs 30 s after the owner signs in, in the owner's
-session with the owner's interactive token (not elevated). It runs
+rusty-photon)", runs in the owner's session with the owner's
+interactive token (not elevated). Its trigger, 30 s after the owner
+signs in, is disabled until the driver's connect on an unparked mount
+that is not tracking has been watched (§ What this leaves), so the
+task is run by hand when the bridge is wanted. It runs
 [start-mount-bridge.ps1](start-mount-bridge.ps1), kept in the account's
 `%LOCALAPPDATA%\ASCOM Remote`, which starts the two programs in order:
 
@@ -132,8 +135,8 @@ It has no `guiding` block yet; stage G7 adds one.
    driver restores is the mount's own or one the driver kept, and the
    driver's release notes for 5.60.16 say a tracking state it restores
    can unpark an AP mount. Remote Server connects the driver each time
-   it starts, at every sign-in, so § What this leaves holds that case
-   for the owner.
+   it starts, so § What this leaves holds that case for the owner, and
+   the task's sign-in trigger is disabled until it has been watched.
 4. **The mount over Alpaca.** [alpaca-read.ps1](alpaca-read.ps1) read
    the server's device list and 30 properties of Telescope 0, every one
    a `GET` ([alpaca-reads.txt](alpaca-reads.txt)): `Connected` true,
@@ -169,22 +172,30 @@ session needs them too.
 
 - **The bridge needs the owner's session signed in.** Disconnected is
   enough. After a sign-out, or a restart that nobody signs in after,
-  the mount is off Alpaca until the owner signs in. Windows did not
-  sign the owner in after the restart of 2026-11-26: the owner's
-  session then began with a Remote Desktop logon 48 s after the boot.
-- **The sign-in trigger has not fired yet.** The task was started by
-  hand in the owner's signed-in session, from a stopped chain, which
-  runs its action as its trigger would: APCC at 22:43:39, its REST API
-  accepting at 22:43:53, Remote Server and the driver at 22:43:53, the
-  driver connected at 22:43:55. The trigger itself first fires at the
-  owner's next sign-in.
+  the mount is off Alpaca until the owner signs in and the task is run.
+  Windows did not sign the owner in after the restart of 2026-11-26:
+  the owner's session then began with a Remote Desktop logon 48 s after
+  the boot.
 - **The driver's connect on an unparked mount that is not tracking is
   not observed**, and it is held for the owner. Remote Server makes
-  that connect at every sign-in, whatever the mount is doing, so if the
-  driver restores a tracking state it kept, a sign-in could start the
-  mount tracking or unpark it (project tenet 3). Settling it means
-  watching one such connect, which leaves the mount unparked with its
-  tracking off first.
+  that connect each time it starts, whatever the mount is doing, so if
+  the driver restores a tracking state it kept, a start of the bridge
+  could start the mount tracking or unpark it (project tenet 3). The
+  owner chose on 2026-11-27 to keep the task's sign-in trigger disabled
+  until one such connect has been watched, which means leaving the
+  mount unparked with its tracking off first. Until then the task is
+  run by hand, in the owner's session, with the mount parked or
+  tracking.
+- **The sign-in trigger has never fired.** The task's action was run by
+  hand in the owner's signed-in session, from a stopped chain: APCC at
+  22:43:39, its REST API accepting at 22:43:53, Remote Server and the
+  driver at 22:43:53, the driver connected at 22:43:55.
+- **A mount that is off or unreachable when the task runs leaves the
+  bridge down.** The driver's one connect gives up after its 15 s
+  timeout, and Remote Server then reports the mount unavailable until
+  Remote Server is stopped and the task is run again (the script starts
+  no second copy). The owner chose on 2026-11-27 to leave it so: the
+  Mach 1 has stayed powered since 2026-11-22.
 - **APCC in the session means APCC by hand stays as it was**: its
   window is the owner's to use, and a second copy must not be opened.
 - **While the owner's session is signed in, rig2's mount is `rp`'s to
