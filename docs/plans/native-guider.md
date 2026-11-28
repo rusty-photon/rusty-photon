@@ -4,7 +4,7 @@
 **Parent design docs:** [`docs/workspace.md`](../workspace.md#project-tenets) (project tenets), [`docs/services/guider.md`](../services/guider.md), [ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md), [`docs/services/rp.md`](../services/rp.md), [`docs/services/phd2-guider.md`](https://github.com/rusty-photon/rusty-photon/blob/865fe440e74ebc305269774bac4d9b9ac9da44f1/docs/services/phd2-guider.md), [`docs/plans/optical-trains.md`](optical-trains.md), [`docs/plans/daily-power-cycle.md`](daily-power-cycle.md)
 
 > **Status:** decided on 2026-11-12. Stages G0, G6, G1, G2, G3 and G4
-> are merged, stage G5 is in progress, and no other stage has started. The owner read this study and settled its
+> are merged, stages G5 and G7a are in progress, and G7 has not started. The owner read this study and settled its
 > main questions: rusty-photon builds a native guider as a standalone
 > service that is an Alpaca client, and drops PHD2
 > ([ADR-024](../decisions/024-native-guider-as-a-standalone-alpaca-client-service.md)).
@@ -901,14 +901,17 @@ follows what G0 changes. G2 is merged: the guider's core guides
 measurement held its guide stars through an hour recorded on rig2
 (decision 15), within the replay's tolerance. G4 is merged: the
 `guider` service is built and packaged, and `rp`'s guiding runs against
-it and the simulator's devices in CI. G5 is in progress, and no other
-stage has started. No stage measures the guider
+it and the simulator's devices in CI. G5 is in progress. G7a is in
+progress: rig2's mount answers over Alpaca through ASCOM Remote Server
+in the owner's desktop session, and `rp` there binds it (decision 13).
+G7 has not started. No stage measures the guider
 against PHD2, and no new work is started for PHD2 (decisions 6 and 12).
 
 The stages run in the order of the table. G6 comes right after G0, as
 the owner settled on 2026-11-14 (decision 11): PHD2's pieces leave the
 tree, and `rp` speaks the native contract, before the guider is built.
-G7a is the stage decision 13 adds.
+G7a is the stage decision 13 adds. It needs nothing of G5, and runs
+beside it.
 
 | Gate | Work | Passes when | Status |
 |---|---|---|---|
@@ -919,8 +922,8 @@ G7a is the stage decision 13 adds.
 | **G3** | Replay: record guide-camera frames on sky on rig2 through `qhy-camera`, the mount tracking and nothing guiding, and run the measurement over them. The owner points rig2's mount and starts it tracking, since nothing of the workspace reaches it before G7a (decision 15). Two pull requests, in this order. **The replay:** [`guide-replay`](../crates/guide-replay.md), the recorder `record.ps1` beside it, and the tolerance, stated before the recording. **The recording:** an hour of the QHY5III678M binned 2 × 2, its validation record with the replay's report, and frames cropped from it that a test replays in CI | The measurement holds its guide stars through the recording, and the stars' offsets agree with one another frame by frame within [`guide-replay`'s tolerance](../crates/guide-replay.md#the-report): at least four guide stars, no frame lost while its stars are there, each star's scatter at most 0.5 px of the binned frame on each axis, and at most one deviation in 1,000 at 2 px or more from its star's mean | Merged 2026-11-24. The replay merged 2026-11-22: [stage G3, the replay](https://github.com/rusty-photon/rusty-photon/pull/1865), with the measurement's position rule: [a star where the others place it](https://github.com/rusty-photon/rusty-photon/pull/1867). The recording merged 2026-11-24: [stage G3, the recording](https://github.com/rusty-photon/rusty-photon/pull/1878). The hour on rig2 of 2026-11-22 is within the tolerance: 8 guide stars usable in all 1,441 frames, each scattering 0.11 px at most ([its record](../validation/2026-11-22-guide-replay-qhy5iii678m-rig2/README.md)) |
 | **G4** | The `guider` service as [`guider.md`](../services/guider.md) specifies it: Alpaca clients, the HTTP API, the guide log, the setup page, packaging. It serves the contract `crates/rp-guider` holds since G6, and where building it changes that contract, `rp` changes with it. Eight pull requests, in this order. **The simulator's devices:** [`guide-simulator-alpaca`](../crates/guide-simulator-alpaca.md), `guide-simulator`'s mount and sky behind an Alpaca Camera and an Alpaca Telescope on the wall clock, which the service's scenarios script. **The service:** `services/guider` with its configuration validated at load, its lifecycle and state directory, its device clients and their poll, `GET /api/v1/devices`, `/health` and `guider doctor`. **The loop:** the camera loop and the sensor handling, `loop`, `star/reselect` and `guiding/stop`, the requests' turns, the metrics window, `stats` and `frame/latest`, and the camera's stop reasons. **The calibration:** the run states, the mount check and the pulses, `calibrate` and the calibration store, and the mount's stop reasons. **Guiding:** `guiding/start`, pause and resume, dither and its abort, settling, the statistics and the running totals, and the runaway and calibration stops. **The guide log**, in PHD2's format, tested against the logs G0 kept. **The setup page and the workspace:** the setup page, the packages and their units on the three platforms, doctor's catalog and its client-target joins, sentinel's list and the other hand-kept lists. **`rp` against the service:** a feature of `rp`'s runs its guiding tools, its check of the guider's devices, its watch, the guide camera guard, a frame's guiding block and the safety stop against the service and the simulator's devices. The double keeps the guiding scenarios that script what the service cannot be made to give on demand: a refusal of each code, a guider that stops answering or times out, the requests it received and the figures it settles with | BDD green against the simulator's devices, and `rp`'s feature against the service green beside its scenarios against the double; ConformU is not applicable | Merged 2026-11-28. The simulator's devices merged 2026-11-24: [stage G4, the simulator's devices](https://github.com/rusty-photon/rusty-photon/pull/1880). The service merged 2026-11-25: [stage G4, the service](https://github.com/rusty-photon/rusty-photon/pull/1887). The loop merged 2026-11-25: [stage G4, the loop](https://github.com/rusty-photon/rusty-photon/pull/1896). The calibration merged 2026-11-25: [stage G4, the calibration](https://github.com/rusty-photon/rusty-photon/pull/1899). Guiding merged 2026-11-26: [stage G4, guiding](https://github.com/rusty-photon/rusty-photon/pull/1905). The guide log merged 2026-11-26: [stage G4, the guide log](https://github.com/rusty-photon/rusty-photon/pull/1914). The setup page and the workspace merged 2026-11-27: [stage G4, the setup page and the workspace](https://github.com/rusty-photon/rusty-photon/pull/1934). `rp` against the service merged 2026-11-28: [stage G4, `rp` against the service](https://github.com/rusty-photon/rusty-photon/pull/1937) |
 | **G5** | pier1 on sky under `rp`: calibrate, guide and dither, in the evaluation sessions and the unattended night of § 9. With the guider guiding, the guide-focus walk that [focus-model.md](focus-model.md) § S7 parks here (owner, 2026-11-22): `focus_train {shared: true}` on the guiding train sweeps the EAF through the main camera, then the Scops OAG's focuser by `rp`'s guide-metric `auto_focus`. pier1's guiding train first gains the `auto_focus` block that sweep reads. Five steps, in this order, each recorded under [`docs/validation/`](../validation/README.md) with any fix it turns up. **Bring-up:** a build later than G4 on pier1, with what the later steps need that pier1 lacks ([focus-model.md](focus-model.md) § S7 lists what it read from pier1): the `guider` package installed with its devices, the QHY5III715C under `qhy-camera` and the GTi, and the guiding train's focal length; `session-runner` installed, for the unattended night; `focus-model` installed, registered in `rp.json`'s `plugins` and configured for both trains, with a sweep it can size for the main train (the train's `aperture_mm` and the EAF's `microns_per_step`, or `step_size` and `half_width` in `focus-model.json`). `rp`'s guiding block points at the guider in place of `phd2-guider`, the `phd2-guider` package, which no build later than G6 carries, is removed with its units, and the guiding train gains its `auto_focus` block. `guider doctor` passes and `rp`'s check of the guider's devices passes. **First light:** a calibration and guiding on sky, settling `mount.min_pulse` and the control values [`guider.md`](../services/guider.md) leaves to this stage. **The evaluation session** of § 9, with a dither and its settle. **The unattended night** of § 9. **The guide-focus walk** | The acceptance list in § 9, and the walk returns both steps, the EAF's capture sweep and the OAG focuser's guide-metric sweep | In progress |
-| **G7a** | rig2's mount over Alpaca: an Alpaca bridge in front of the vendor's ASCOM driver, and a mount entry for it in `rp` on rig2. Which bridge is not verified, nor whether the COM driver runs with nobody logged on | The mount answers over Alpaca with nobody logged on. If it does not, the question returns to the owner (decision 13) | Not started |
-| **G7** | rig2 on sky under `rp`, the guider running as a Windows service with nobody logged on | The acceptance list in § 9 | Not started |
+| **G7a** | rig2's mount over Alpaca: ASCOM Remote Server in front of the Astro-Physics V2 ASCOM driver, which reaches the Mach 1 GTO through APCC Pro, the two programs started in the owner's desktop session at sign-in; and a mount entry for it in `rp` on rig2 | The mount answers over Alpaca with the owner's session signed in, and `rp` on rig2 binds it (decision 13) | In progress. Both hold, checked on 2026-11-27 ([record](../validation/2026-11-27-mount-bridge-mach1-gto-rig2/README.md)), and the parked mount stayed parked through the connects. Remote Server does not run with nobody logged on |
+| **G7** | rig2 on sky under `rp`, the guider running as a Windows service and its mount served through G7a's bridge in the owner's signed-in session | The acceptance list in § 9 | Not started |
 
 **The guide camera changes hands on rig2.** PHD2 opened the guide
 camera through the vendor SDK built into it, and on rig2 the camera was
@@ -940,13 +943,13 @@ the owner has settled what each of them asked.
    nothing, rig2's PHD2 is not brought back to compare with, and the
    acceptance in § 9 is on the images.
 2. **G7 needs rig2's mount served over Alpaca, and known to `rp`.** The
-   guider is an Alpaca client. rig2's mount is reached through a COM
-   driver, and `rp` there has no mount entry. Before G7, something
-   serves the Astro-Physics mount as an Alpaca Telescope, and `rp` on
-   rig2 gains its mount. The owner settled on 2026-11-14 to try a
-   bridge in front of the vendor's ASCOM driver first (decision 13):
-   that is stage G7a. A driver of this workspace for the mount is the
-   other way, and no stage holds it.
+   guider is an Alpaca client, and rig2's mount is reached through a
+   COM driver. Stage G7a serves it as an Alpaca Telescope through a
+   bridge in front of the vendor's ASCOM driver, in the owner's desktop
+   session, and gives `rp` on rig2 its mount (decision 13). A driver of
+   this workspace for Astro-Physics mounts is what serves the mount
+   with nobody logged on; the owner means to build one, and no stage
+   holds it.
 3. **The switch at G6 takes guiding from neither rig** (decision 11).
    rig2 does not guide under `rp`, and no on-sky guiding under `rp` is
    on record for pier1. pier1's `rp` configuration points guiding at
@@ -1065,7 +1068,8 @@ owner settled decisions 6 and 12 on 2026-11-14, on what G0 found, and
 decisions 3, 5 and 11 the same day. Decision 13 is new with G0 and was
 settled with them. Decision 14 arose while G6's code was written, and
 the owner settled it on 2026-11-15. Decision 15 arose when G3 started,
-and the owner settled it on 2026-11-22.
+and the owner settled it on 2026-11-22. The owner revised decision 13
+on 2026-11-27, on what G7a found.
 
 1. **Build a native guider?** Or stay with PHD2 (E0, E1), or adopt
    INDIGO's agent (E3). **Settled: a native guider is built.**
@@ -1147,10 +1151,20 @@ and the owner settled it on 2026-11-22.
     rig2's mount is reached through a COM driver (§ Staging, "What G0
     changes"). **Settled on 2026-11-14: a bridge first.** Stage G7a
     puts an Alpaca bridge in front of the vendor's ASCOM driver on
-    rig2, and it passes when the mount answers over Alpaca with nobody
-    logged on. Which bridge, and whether the COM driver runs with
-    nobody logged on, are not verified. If the stage fails, the
-    question returns to the owner.
+    rig2. **Revised on 2026-11-27, on what G7a found: the bridge runs
+    in the owner's desktop session.** The bridge is ASCOM Remote
+    Server, which the ASCOM Platform installs, and it does not run
+    with nobody logged on. A scheduled task that runs it under the
+    owner's account with nobody logged on gives it an administrator's
+    token, and Remote Server's warning that it runs as an administrator
+    is a message box, which throws there. With a
+    basic user's token the driver's COM server does not complete its
+    activation. So Remote Server and APCC Pro, through which the
+    driver reaches the mount, start in the owner's session at sign-in,
+    and G7a passes when the mount answers over Alpaca with that session
+    signed in and `rp` on rig2 binds it. Serving the mount with nobody
+    logged on is for a driver of this workspace for Astro-Physics
+    mounts, which the owner means to build and no stage holds.
 14. **Who keeps `rp`'s captures through the guide camera and the
     guider's runs apart.** Both are Alpaca clients of the guide camera
     through the one driver that serves it, and the camera has one
@@ -1185,11 +1199,10 @@ and the owner settled it on 2026-11-22.
 
 ## Not verified
 
-- Which Astro-Physics mount rig2 has, and how its ASCOM driver reaches
-  it. Whether anything on rig2 serves that mount over Alpaca: its ASCOM
-  registry lists the Device Hub and JustAHub hub drivers beside the
-  Astro-Physics driver, and G0 did not establish what they serve. Which
-  application drove PHD2 through its event server there in 2025.
+- What the Device Hub and JustAHub hub drivers in rig2's ASCOM registry
+  serve, and which application drove PHD2 through its event server
+  there in 2025. Which mount rig2 has and how its ASCOM driver reaches
+  it, which G0 left open, G7a found on 2026-11-27 (§ Staging).
 - Whether pier1's guide camera has an ST4 cable to the GTi, and whether
   PHD2 ran on pier1 before the three sessions its logs hold.
 - Sustained guide cadence through any camera service; the cause of the

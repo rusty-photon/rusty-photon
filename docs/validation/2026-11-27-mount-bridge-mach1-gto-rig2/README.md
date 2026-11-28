@@ -1,0 +1,155 @@
+# rig2's mount over Alpaca: ASCOM Remote Server in front of the Astro-Physics driver, 2026-11-27
+
+The native guider's stage G7a
+([the plan](../../plans/native-guider.md#staging), decision 13) puts an
+Alpaca bridge in front of the vendor's ASCOM driver for rig2's mount,
+and gives `rp` on rig2 a mount entry for it.
+
+**The mount answers over Alpaca, and `rp` binds it.** ASCOM Remote
+Server serves the Astro-Physics V2 driver as Telescope 0 on
+`http://127.0.0.1:11190`. Both it and APCC Pro, through which the
+driver reaches the mount, run in the owner's desktop session. That is
+the stage's condition as the owner revised it on the night: the bridge
+could not be made to run with nobody logged on (§ Session 0, below).
+
+This is the fourth kind of record [the index](../README.md) names: a
+check a plan's stage asks for on a rig. Its evidence is the scripts as
+run and their output, the driver's log of its connect
+([driver-connect.txt](driver-connect.txt), the lines that send a
+command or report a state), and `rp`'s log.
+No ConformU run was made: its Telescope tests slew the mount, and they
+cannot be deselected (see
+[hardware-validation.md](../../skills/hardware-validation.md#install-and-run)).
+
+## What was tested
+
+| | |
+|---|---|
+| Rig | rig2: Windows 11 Pro 25H2 x64 (build 26200), ASCOM Platform 7.1 Update 3 (7.1.3.4851) |
+| Mount | Astro-Physics Mach 1 GTO, GTOCP4 controller, firmware `VCP4-P02-17`, on the observatory's Ethernet. Parked at Park 3, pointing at the pole, throughout |
+| Mount software | APCC Pro 1.9.8.21 (Astro-Physics Command Center), connected to the mount over TCP, with its REST API on port 60001. The Astro-Physics V2 ASCOM driver 5.60.17 (`AstroPhysicsV2.Telescope`, a 32-bit COM local server), set to reach the mount through APCC's REST API |
+| Bridge | ASCOM Remote Server 7.0.1.36689, the 32-bit build the Platform installs (`C:\Program Files\ASCOM\RemoteServer\32bit\RemoteServer.exe`) |
+| `rp` | The nightly suite MSI `0.1.0+nightly.202611071139.g21bfe94`, installed on 2026-11-07, as in the [guide camera's record](../2026-11-17-qhy-camera-qhy5iii678m-windows/README.md) |
+| Time | 2026-11-28 03:40 to 04:05 UTC (21:40 to 22:05 at the rig), the roof open |
+
+## How the rig is set up
+
+**Remote Server's settings**, which it keeps in the registry of the
+account it runs as (`HKCU\Software\ASCOM Remote`). The rest keep
+Remote Server's defaults.
+
+| Setting | Value | Why |
+|---|---|---|
+| Server IP Address, Port Number | `127.0.0.1`, `11190` | `rp` and the guider run on the same host. Its default port, 11111, is `filemonitor`'s, and 11190 is outside the ports the workspace hands out |
+| Server Auto Connect, Start With API Enabled | `True`, `True` (the defaults) | Remote Server serves nothing until it has created and connected its drivers, and this does both as it starts |
+| Management Interface Enabled | `True` | `rp` and the guider read `GET /management/v1/configureddevices` on every connect |
+| Alpaca Discovery Enabled | `False` | No client of the bridge finds its devices by discovery |
+| Check For Updates, Check For Pre-release Updates | `False`, `False` | No one is there to answer an update prompt |
+| Server Log Folder, Maximum Retained Files, Maximum File Size | The account's `%LOCALAPPDATA%\ASCOM Remote\Logs`, `5`, `50` MB | The folder it had is in the account's synced Documents folder, and with one retained file the log grows without end |
+| Served device 0 | Telescope, `AstroPhysicsV2.Telescope`, device number 0, description "Astro-Physics Mach 1 GTO" | Remote Server minted its UniqueID, `7159159E-BEFF-4370-A997-AF8F43FBCC45`, on its first start |
+| Allow Connected Set False (device 0) | `False` | A client that disconnects does not disconnect the driver, so `rp` going away cannot take the mount from the guider. Remote Server answers it and leaves the driver connected |
+
+**URL reservations.** Remote Server runs unelevated, so http.sys takes
+its four prefixes only with a reservation for the owner's account:
+`http://127.0.0.1:11190/api/`, `/server/`, `/management/` and `/setup/`
+(`netsh http add urlacl`). Without them it would try to run ASCOM's
+SetNetworkPermissions elevated, which prompts.
+
+**Two scheduled tasks** start the two programs in the owner's session
+when the owner signs in, with the owner's interactive token (not
+elevated):
+
+| Task | Starts | Delay after sign-in |
+|---|---|---|
+| APCC Pro at sign-in (started for rusty-photon) | `AstroPhysicsCommandCenter.exe` | 30 s |
+| ASCOM Remote Server at sign-in (started for rusty-photon) | Remote Server's 32-bit build | 60 s |
+
+APCC connects to the mount when it starts (its AutoConnect setting).
+Remote Server is started as its 32-bit build: the 64-bit build reads
+its `RunAs64Bit` setting, `false`, and starts the 32-bit build in its
+place.
+
+**`rp`'s mount entry**, added to `rp.json`'s `equipment` block:
+
+```json
+"mount": {
+  "alpaca_url": "http://127.0.0.1:11190",
+  "device_number": 0,
+  "unique_id": "7159159E-BEFF-4370-A997-AF8F43FBCC45"
+}
+```
+
+It has no `guiding` block yet; stage G7 adds one.
+
+## What was run, and what it showed
+
+1. **The mount before.** [mount-snapshot.ps1](mount-snapshot.ps1) sends
+   read-only LX200 get commands to the mount's own web interface, the
+   ones APCC polls. Before anything started, the mount read Dec
+   +89°59′58.9″, altitude 31.5°, its status string starting `P`, and
+   its right ascension advanced with the clock: parked, not tracking.
+   Its clock was correct.
+2. **APCC.** Started, it connected to the mount and set the mount's
+   date and time, which had drifted 4.9 s. Its log shows it polling the
+   mount's status, setting the guide rate (`:RG2#`), sending a few other
+   short commands once as it connected and `:SPC` every few seconds
+   after. The mount read as before.
+3. **The driver's connect.** Remote Server created the driver and set
+   `Connected = True` as it started. On the parked mount the driver
+   sent the long-format toggle (`:U#`), the guide rate 1.0× (`:RG2#`),
+   a time sync to APCC (`:*TIMESYNC,1#`) and `:B1#`, and otherwise only
+   status reads ([driver-connect.txt](driver-connect.txt)). It logged
+   "Completed move to parked position" without sending a move. The
+   mount stayed parked. The driver's log of 2026-11-22, a connect with
+   the mount unparked and tracking, shows it re-sending the tracking
+   rate the mount already had (`:RT3#`, "Restoring tracking state =
+   1"). The driver's release notes for 5.60.16 say a tracking state it
+   restores can unpark an AP mount, so a connect is only known to
+   leave a parked mount parked when nothing is restored, as here.
+4. **The mount over Alpaca.** [alpaca-read.ps1](alpaca-read.ps1) read
+   the server's device list and 30 properties of Telescope 0, every one
+   a `GET` ([alpaca-reads.txt](alpaca-reads.txt)): `Connected` true,
+   `AtPark` true, `Tracking` false, `Slewing` false, `CanPulseGuide`
+   true, both guide rates 0.004178°/s (15.04″/s, 1.0× sidereal),
+   `SideOfPier` 1 (pierWest), `InterfaceVersion` 2. The three site
+   values are replaced by a placeholder in the file, and they are
+   the lines the privacy scrub touched.
+5. **`rp`.** Restarted with its mount entry, `rp` bound it, the pin
+   matching ([rp-binding.txt](rp-binding.txt)), and its check of the
+   mount's site against its own passed. The only command the driver
+   logged from it is `SET Connected = True`, which Remote Server passed
+   to a driver already connected. The mount stayed parked.
+
+## Session 0
+
+The stage first asked for the mount to answer with nobody logged on.
+The chain was run as scheduled tasks under the owner's account, by
+S4U, in session 0, and it failed at the bridge:
+
+| Piece | In session 0 |
+|---|---|
+| APCC Pro | Ran, connected to the mount and served its REST API |
+| The driver | Ran when started by a full administrator's token, connected through APCC, and left the parked mount parked |
+| Remote Server, the task's own token | An S4U task's token is a full administrator's whatever its run level (`whoami /groups` from such a task: Administrators enabled, High integrity). Remote Server created and connected the driver and started its listener, then warned that it runs as an administrator with a message box. In session 0 that throws, and Remote Server's handler for it throws in turn, which ended the process |
+| Remote Server, a basic-user token (`runas /trustlevel:0x20000`) | Administrators deny-only, so no warning. But the driver's COM server would not start for it: Windows' default launch permission names SYSTEM, Administrators and INTERACTIVE, and a batch logon has none of them (DCOM event 10016). With a launch permission for the owner added to the driver's AppID, COM started the driver's process, but the driver never created the object Remote Server asked for: its log stops where it would, and Remote Server's request had not returned 2 minutes later, when both were stopped |
+
+The launch permission, the S4U tasks and the session-0 APCC were
+removed afterwards; the URL reservations stay, since the desktop
+session needs them too.
+
+## What this leaves
+
+- **The bridge needs the owner's session signed in.** Disconnected is
+  enough. After a sign-out, or a restart that nobody signs in after,
+  the mount is off Alpaca until the owner signs in. Windows did not
+  sign the owner in after the restart of 2026-11-26: the owner's
+  session then began with a Remote Desktop logon 48 s after the boot.
+- **The sign-in trigger has not fired yet.** The two tasks were started
+  by hand in the owner's signed-in session, which runs their actions as
+  their trigger would. The trigger itself first fires at the owner's
+  next sign-in.
+- **APCC in the session means APCC by hand stays as it was**: its
+  window is the owner's to use, and a second copy must not be opened.
+- **rig2's mount is now `rp`'s to park.** When the roof file reads
+  closed, `rp` parks the mount through the bridge, and APCC parks it at
+  Park 3, which the owner confirmed is roof-safe.
