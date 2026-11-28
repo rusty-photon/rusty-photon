@@ -97,6 +97,9 @@ pub struct FocusModelWorld {
     pub filter_wavelengths_nm: Vec<(String, f64)>,
     /// `optical_trains[].aperture_mm` for the train the scenario adds.
     pub aperture_mm_for_train: Option<f64>,
+    /// The aperture the scenario configures in place of the reference
+    /// train's, for a train that has one.
+    pub configured_aperture_mm: Option<f64>,
     /// `optical_trains[].obstruction_mm` for the train the scenario
     /// adds, when the scenario configures one.
     pub obstruction_mm_for_train: Option<f64>,
@@ -152,6 +155,7 @@ impl Default for FocusModelWorld {
             focuser_microns_per_step: None,
             filter_wavelengths_nm: Vec::new(),
             aperture_mm_for_train: None,
+            configured_aperture_mm: None,
             obstruction_mm_for_train: None,
             data_dir: None,
             rp_relay: None,

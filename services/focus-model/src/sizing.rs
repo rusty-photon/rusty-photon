@@ -118,14 +118,34 @@ fn missing(train_id: &str, fact: &str) -> FocusModelError {
     ))
 }
 
-/// `value.ceil()` as a step count of at least 1.
+/// Millionths of a step in a step: the resolution a count of steps is
+/// worked to before it is rounded up.
+const MILLIONTHS_PER_STEP: f64 = 1_000_000.0;
+
+/// A count of steps to the nearest millionth of a step.
+///
+/// The facts a count is derived from are decimals — 560 nm, 0.5 µm a
+/// step, the 4.88 of the critical focus zone — that binary floating
+/// point carries inexactly, so a count that is whole in them computes
+/// a hair above or below it: a zone of exactly 854 steps computes as
+/// 854.0000000000001. A millionth of a step is far finer than any
+/// focuser moves and far coarser than that residue. A count past
+/// about 1.8 × 10³⁰² steps, whose millionths overflow, reads as
+/// infinite, and one under half a millionth as 0.
+fn to_millionths(steps: f64) -> f64 {
+    (steps * MILLIONTHS_PER_STEP).round() / MILLIONTHS_PER_STEP
+}
+
+/// `value`, worked to a millionth of a step, rounded up to a step
+/// count of at least 1: floating-point residue above a whole count
+/// does not make it one step more.
 fn ceil_steps(value: f64) -> i32 {
     #[expect(
         clippy::as_conversions,
         clippy::cast_possible_truncation,
         reason = "`f64` to `i32` has no total spelling; `as` saturates at the rails and maps NaN to 0, and the max below lifts both into the valid range"
     )]
-    let steps = value.ceil() as i32;
+    let steps = to_millionths(value).ceil() as i32;
     steps.max(1)
 }
 
@@ -192,9 +212,13 @@ pub fn plan_sweep(
     let pixel_size_um = Optics::positive(optics.pixel_size_um);
     // Each derivation is filtered as well as its inputs: a focal ratio
     // finite on its own can square to infinity, and a sweep sized from
-    // that would report one point rather than name the geometry.
+    // that would report one point rather than name the geometry. The
+    // zone is worked to a millionth of a step first, so the report and
+    // everything halved from it carry no floating-point residue.
     let cfz_steps = match (n, microns_per_step) {
-        (Some(n), Some(microns)) => Some(critical_focus_zone_um(wavelength_nm, n) / microns),
+        (Some(n), Some(microns)) => Some(to_millionths(
+            critical_focus_zone_um(wavelength_nm, n) / microns,
+        )),
         _ => None,
     }
     .filter(|steps| steps.is_finite() && *steps > 0.0);
@@ -445,6 +469,49 @@ mod tests {
             plan.points, 7,
             "the floor leaves seven positions, not the nine asked for"
         );
+    }
+
+    /// A zone that is a whole number of steps in the facts' decimals
+    /// floors the step at exactly half of it, though binary floating
+    /// point computes each a hair above: 854.0000000000001 and
+    /// 1586.0000000000002.
+    #[test]
+    fn a_critical_focus_zone_of_whole_steps_floors_the_step_at_exactly_half_of_it() {
+        // (wavelength nm, focal ratio, µm per step, zone, floor)
+        for (wavelength_nm, focal_ratio, microns_per_step, zone, floor) in [
+            (560.0, 12.5, 0.5, 854.0, 427),
+            (650.0, 10.0, 0.2, 1586.0, 793),
+        ] {
+            let optics = Optics {
+                focal_ratio: Some(focal_ratio),
+                microns_per_step: Some(microns_per_step),
+                ..reference_optics()
+            };
+            let plan = plan_sweep(
+                "main",
+                &optics,
+                &train(),
+                &sweep(),
+                Some(wavelength_nm),
+                None,
+            )
+            .unwrap();
+            assert_eq!(plan.cfz_steps, Some(zone), "{plan:?}");
+            assert_eq!(plan.step_size, floor, "{plan:?}");
+        }
+    }
+
+    #[test]
+    fn the_critical_focus_zone_is_reported_without_floating_point_residue() {
+        // 4.88 × 0.55 × 5² / 2.5 computes as 26.840000000000003.
+        let plan = plan_sweep("main", &reference_optics(), &train(), &sweep(), None, None).unwrap();
+        assert_eq!(plan.cfz_steps, Some(26.84));
+    }
+
+    #[test]
+    fn a_ceiling_absorbs_floating_point_residue_and_not_a_millionth_of_a_step() {
+        assert_eq!(ceil_steps(427.000_000_000_000_06), 427);
+        assert_eq!(ceil_steps(427.000_001), 428);
     }
 
     #[test]

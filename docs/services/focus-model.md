@@ -636,6 +636,17 @@ measured through another camera or focuser describes this one — and a
 train with no record at all. Each refusal names its threshold and what
 the record does hold, and writes nothing.
 
+The span is measured to a thousandth of a degree, and it is that span
+the threshold is held against, the result reports and the record
+keeps. A probe's reading is a short decimal — tenths of a degree, or
+an `f32` widened to `f64`, as the ZWO EAF's is — which binary floating
+point carries inexactly, so the difference of two readings carries a
+residue: 5.1 − 2.1 computes as 2.9999999999999996, and an EAF's
+8.03 − 5.03 as 2.999999523162842. To the thousandth, readings that
+span 3 °C in their own decimals span 3 °C and meet a 3 °C threshold.
+Readings less than half a thousandth apart span 0 °C, which every
+threshold refuses.
+
 Like the other writers it takes the provider's focus claim: a sweep in
 flight is about to append the run the fit would want, and
 `determine_filter_offsets` is about to write the very offsets that put
@@ -877,7 +888,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | The train changed mid-procedure | `train 'main' changed under the procedure: the camera was 'qhy600' and is 'asi2600'; what it measured are differences through the rig it started on, and no offset is written from them` |
 | `calibrate_temperature` with too few runs to fit | `a coefficient needs 5 runs (min_calibration_runs) and train 'main' has 3: of the 12 recorded, 7 did not confirm and 2 carried no temperature reading` |
 | `calibrate_temperature` over too narrow a span | `a coefficient needs a temperature span of 3 °C (min_calibration_span_c) and the 6 runs of train 'main' span 1.4 °C` |
-| `calibrate_temperature` on runs no line fits | `the 5 runs of train 'main' do not fit a line: their temperatures lie too close together to give a finite coefficient`; readings far enough apart instead give `… span no finite range` or `… lie too far apart for the sums a line is fitted from` |
+| `calibrate_temperature` on runs no line fits — readings far enough apart that no probe reports them | `the 5 runs of train 'main' do not fit a line: their temperatures span no finite range`, or `… lie too far apart for the sums a line is fitted from` |
 | `calibrate_temperature` on a stale record | `train 'main' has a stale focus model: camera_id changed from qhy600 to asi2600; no run measured through the old rig fits this one` |
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
@@ -984,7 +995,16 @@ focal ratio to size from either.
 The step is the width that gives
 `sweep.points` samples (default 9) across the sweep, floored at half a
 critical focus zone because samples closer together than that measure
-the same focus. `sweep.seeing_fwhm_arcsec` (default 2.5) stands in for
+the same focus. Every count of steps is worked to a millionth of a
+step before it is rounded up, and `cfz_steps` is reported to that
+resolution: the facts are decimals — 560 nm, 0.5 µm a step, the 4.88
+of the zone itself — which binary floating point carries inexactly, so
+a count that is whole in them can compute a hair above it. At f/12.5,
+560 nm and 0.5 µm a step the zone is exactly 854 steps and computes as
+854.0000000000001, which a bare ceiling would take to a floor of 428
+instead of 427. A millionth of a step is far finer than any focuser
+moves and far coarser than that residue.
+`sweep.seeing_fwhm_arcsec` (default 2.5) stands in for
 the focused HFR until the record has one for the filter. Every name in
 the block is a field of `get_train_info.optics`; a train's
 `step_size` and `half_width` in the config override the derived values
@@ -1043,7 +1063,11 @@ sweep's samples and the predicted start are approached from the same
 side. A prediction closer to the current position than half a critical
 focus zone — `min_prediction_move` steps (default 5) when the optics
 are unknown — is not moved to, because the two positions are the same
-focus (`skipped: "within 13 steps of the current position"`); one
+focus (`skipped: "within 14 steps of the current position"` on the
+reference rig of [Sweep sizing](#sweep-sizing), whose half zone is
+13.42 steps). The half zone is rounded up to whole steps, which keeps
+the comparison exact: a move of whole steps is shorter than 13.42
+steps exactly when it is shorter than 14. One
 outside the focuser's bounds is not moved to either (`skipped:
 "outside the focuser's bounds [0, 60000]"`). The sweep then runs from
 the current position.
@@ -1641,7 +1665,8 @@ train's block pins a detection threshold no simulator frame can clear
 `not_enough_stars`; the scenarios assert what that path exercises: the
 tools appear in the catalog ungated; `get_sweep_plan` derives the
 worked example's numbers from the optics, the obstructed train's
-narrower sweep among them, takes the focuser's `StepSize`
+narrower sweep among them, floors the step at exactly half a critical
+focus zone of a whole number of steps, takes the focuser's `StepSize`
 when the config sets none, reports `mixed` and `configured` for
 overrides, and names the missing fact, and on a train whose wheel `rp`
 cannot reach refuses the preview of the filter in the path, naming the
@@ -1656,7 +1681,8 @@ bracketed by `focus_started` and `focus_failed`; a configured
 recorded, because a threshold judges a fit and a starless sweep has
 none; a filter argument
 moves the wheel and an unknown one is refused; a seeded record predicts
-the start and a stale one is reported, predicts nothing and is reset by
+the start, a prediction closer than half a critical focus zone is not
+moved to, and a stale record is reported, predicts nothing and is reset by
 the run, whether its camera or its aperture moved on, while a record
 that holds no optics stays fresh and takes the train's on its next
 run; a `temperature_sensor` on the simulator's train, whose focuser
@@ -1677,8 +1703,10 @@ every sweep being starless — runs a round and its closing sweep,
 records all three, restores the filter it started on and fails naming
 how many sweeps did not confirm; and `calibrate_temperature` fits a
 seeded record's runs, writes the coefficient `get_focus_model` then reports,
-and refuses a history too short and one too narrow in temperature,
-naming each threshold.
+fits runs whose readings span exactly the threshold — in tenths of a
+degree, or as an EAF's `f32` widened — reporting that span as the
+readings show it, and refuses a history too short and one too narrow
+in temperature, naming each threshold.
 
 `guide_training.feature` runs training runs on a guiding train. Its
 camera is the simulator's camera, a roster camera of `rp`'s like any
@@ -1715,7 +1743,9 @@ credential — and that `tools/list` answers with no `rp` running.
   sensor compared as written and read as the train's own focuser on a
   record that predates it — the identity filling in on a write, reset.
 - Sizing: the worked example, the blur constant from the obstruction
-  ratio, the CFZ floor on the step, the wavelength
+  ratio, the CFZ floor on the step — exact on a zone of whole steps,
+  `cfz_steps` reported without residue — a ceiling that absorbs
+  floating-point residue and not a millionth of a step, the wavelength
   fallback, the override sources, the missing-fact error.
 - Prediction: each term present and absent, the same-filter fallback,
   the half-CFZ and bounds skips, rounding.
@@ -1740,7 +1770,9 @@ credential — and that `tools/list` answers with no `rp` running.
   side — the
   attempts log of a run that shifted, repeated, ran out of attempts or
   of grid, the wing slope.
-- Workflow, against a `mockall` rig: the resolution errors, the filter
+- Workflow, against a `mockall` rig: the resolution errors, the
+  smallest prediction worth moving to — half a critical focus zone
+  rounded up, the configured floor beneath it — the filter
   switch, the sweep plan's refusal of a wheel it cannot read — a
   cancellation staying one — and a named filter's plan reading no
   wheel, the guard on failure and cancellation, the guiding
@@ -1782,6 +1814,9 @@ credential — and that `tools/list` answers with no `rp` running.
 - Calibration, over a seeded record: the slope and the residual of a
   known line, the runs a fit leaves out and why, two filters put on
   one scale by their offsets, one filter needing none, each refusal
-  naming its threshold, and a refusal leaving the record untouched.
+  naming its threshold, a span of exactly the threshold in tenths of a
+  degree or in widened `f32` readings fitted and written to the
+  thousandth, readings a hair apart spanning nothing under any
+  threshold, and a refusal leaving the record untouched.
 - Tools: the result shapes and the error text for the argument-level
   refusals.
