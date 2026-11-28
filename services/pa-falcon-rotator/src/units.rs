@@ -275,9 +275,11 @@ mod tests {
 
     #[test]
     fn a_sync_offset_is_held_to_a_hundredth() {
-        // 37.50 - 142.30 is 255.20000000000005 in binary.
-        let offset = SkyDegrees::new(37.50) - MechanicalDegrees::new(142.30);
-        assert_eq!(offset.value(), 255.2);
+        // In binary, 172.97 - 147.84 is 25.129999999999995, and
+        // 100.00 - 147.84 wraps to 312.15999999999997.
+        let mech = MechanicalDegrees::new(147.84);
+        assert_eq!((SkyDegrees::new(172.97) - mech).value(), 25.13);
+        assert_eq!((SkyDegrees::new(100.00) - mech).value(), 312.16);
         assert_eq!(SyncOffset::new(12.345).value(), 12.35);
     }
 
