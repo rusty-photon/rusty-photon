@@ -587,8 +587,8 @@ try-import %workspace%/ci-remote.bazelrc
 # client's kernel refuses (RFC 5961). The server's build ends, completed or
 # interrupted, and the server goes idle, while the client waits on a
 # connection whose server end is gone. bazel.yml's macOS leg lengthens TCP's
-# retransmit slop so that those retransmissions outlast the bursts. The
-# captures and the measurements are in
+# retransmit slop for the build so that those retransmissions outlast the
+# bursts. The captures and the measurements are in
 # https://github.com/rusty-photon/rusty-photon/issues/765.
 #
 # The two settings below guard the cache client against hangs of its own.

@@ -284,13 +284,12 @@ export function packets(text) {
 /**
  * The lines of `netstat -s -p tcp` that count the wedge's chain, trimmed:
  * retransmit timeouts, the connections they dropped, the packets dropped
- * for low memory, and the resets the kernel refused, with the challenge
- * ACKs it sent for them. macOS's netstat prints its count of min-MSS drops
- * under the same label as those challenge ACKs, on the line after them, so
- * the bad resets are what count the refused resets alone.
+ * for low memory, and the resets the kernel refused (its bad resets). The
+ * challenge ACKs sent for those resets are left out: macOS's netstat
+ * prints its count of min-MSS drops under the same label, on the next line.
  */
 export function tcpCounters(text) {
-  const counted = /retransmit timeouts?$|dropped by rexmit timeout$|dropped due to low memory$|bad resets?$|challenge ACKs? sent due to unexpected RST$/;
+  const counted = /retransmit timeouts?$|dropped by rexmit timeout$|dropped due to low memory$|bad resets?$/;
   return text
     .split('\n')
     .map((line) => line.trim())

@@ -280,7 +280,7 @@ jobs:
 
       - name: bazel build
         id: build
-        # macOS builds in the next step instead.
+        # macOS builds in the watched step below instead.
         if: runner.os != 'macOS'
         # Step budget: a fully cold build fits well under 30 minutes on Linux
         # and Windows, and a broken build must not eat the whole 40-minute job
@@ -311,9 +311,11 @@ jobs:
       # client waits until the step's timeout: the macOS wedge the
       # `build:macos` settings in .bazelrc describe. At 3 s the twelve last
       # about 50 s, past the waits these runners show, which reach about half
-      # a minute. The slop delays only recovery by retransmit timeout, on
-      # every connection this job makes, and changes nothing while no packet
-      # is lost.
+      # a minute. The slop delays only recovery by retransmit timeout, and
+      # changes nothing while no packet is lost. It lasts for the build
+      # alone: the step after the build puts the default back, so the test
+      # steps' loopback clients, some of them with 2 s deadlines, keep the
+      # kernel's quick recovery.
       - name: Lengthen TCP's retransmit slop (macOS)
         if: runner.os == 'macOS'
         run: sudo -n sysctl -w net.inet.tcp.rexmt_slop=3000
@@ -336,6 +338,12 @@ jobs:
         uses: ./.github/actions/bazel-stall-probe
         with:
           args: build --config=ci --config=ci-remote //...
+
+      # The kernel's default slop (TCPTV_REXMTSLOP) back, for the steps
+      # after the build (see the slop step above).
+      - name: Restore TCP's retransmit slop (macOS)
+        if: always() && runner.os == 'macOS'
+        run: sudo -n sysctl -w net.inet.tcp.rexmt_slop=200
 
       - name: bazel test (fast)
         id: fast

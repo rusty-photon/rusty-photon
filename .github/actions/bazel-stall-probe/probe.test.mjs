@@ -698,8 +698,6 @@ test('tcpCounters keeps the counts of the wedge’s chain, trimmed and in order,
   assert.equal(
     tcpCounters(stats),
     [
-      '1 challenge ACK sent due to unexpected RST',
-      '0 challenge ACKs sent due to unexpected RST',
       '1169 received packets dropped due to low memory',
       '1 bad reset',
       '72 retransmit timeouts',
