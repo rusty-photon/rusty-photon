@@ -125,9 +125,10 @@ struct SlewPlan {
     dec_delta: i32,
 }
 
-/// Validate an ASCOM `GuideRate*` setter value (deg/sec) and return
-/// the equivalent fraction of sidereal. Rejects values outside the
-/// open interval `(0, SIDEREAL_DEG_PER_SEC)`:
+/// Validate an ASCOM `GuideRate*` setter value (deg/sec), which the
+/// setter then stores as written. Rejects values outside the open
+/// interval `(0, SIDEREAL_DEG_PER_SEC)`, where the fraction of sidereal
+/// a pulse derives from the rate lies in `(0, 1)`:
 ///
 /// - `≤ 0` is non-physical (zero rate = no motion; negative = wrong
 ///   direction).
@@ -135,7 +136,7 @@ struct SlewPlan {
 ///   fraction` to zero or negative, which divides by zero in the
 ///   step-period formula. INDI's eqmod driver imposes the same upper
 ///   bound for the same reason.
-pub(super) fn validate_guide_rate(deg_per_sec: f64) -> ASCOMResult<f64> {
+pub(super) fn validate_guide_rate(deg_per_sec: f64) -> ASCOMResult<()> {
     let fraction = deg_per_sec / SIDEREAL_DEG_PER_SEC;
     if !fraction.is_finite() || fraction <= 0.0 || fraction >= 1.0 {
         return Err(ASCOMError::new(
@@ -146,7 +147,7 @@ pub(super) fn validate_guide_rate(deg_per_sec: f64) -> ASCOMResult<f64> {
             ),
         ));
     }
-    Ok(fraction)
+    Ok(())
 }
 
 /// Resolved connect-time config: the raw per-axis `park_*_ticks`

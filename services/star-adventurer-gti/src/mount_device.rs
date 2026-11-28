@@ -51,6 +51,7 @@ use tracing::debug;
 
 use crate::codec::SkywatcherCodec;
 use crate::config::{ApPark, MountConfig};
+use crate::coordinates::SIDEREAL_DEG_PER_SEC;
 use crate::manager::MountManager;
 use crate::setup::StarAdvDriver;
 
@@ -77,10 +78,10 @@ pub use park_persistence::{
 };
 pub(crate) use recovery::RecoveryPages;
 
-/// Default guide rate as a fraction of sidereal. ASCOM clients see
-/// this multiplied by `SIDEREAL_DEG_PER_SEC` through
-/// `GuideRateRightAscension` / `GuideRateDeclination`.
-const DEFAULT_GUIDE_RATE_FRACTION: f64 = 0.5;
+/// Default guide rate, deg/sec: half sidereal, what
+/// `GuideRateRightAscension` / `GuideRateDeclination` read until a client
+/// writes one.
+const DEFAULT_GUIDE_RATE_DEG_PER_SEC: f64 = 0.5 * SIDEREAL_DEG_PER_SEC;
 
 /// In-memory mirror of latched-from-the-client state (Tracking enabled,
 /// `AtPark` flag, last target). The values that come from the wire (current
@@ -125,11 +126,15 @@ struct DriverState {
     /// Dec encoder is past the pole, and a pre-flip encoder target
     /// would order a slew back through the pole).
     target_pier_side: Option<PierSide>,
-    /// `PulseGuide` rate on the RA axis as a fraction of sidereal in
-    /// `(0, 1)`. `GuideRateRightAscension` is this × `SIDEREAL_DEG_PER_SEC`.
-    /// Resets to [`DEFAULT_GUIDE_RATE_FRACTION`] on each disconnect.
-    guide_rate_ra_fraction: f64,
-    guide_rate_dec_fraction: f64,
+    /// `PulseGuide` rate on the RA axis in deg/sec, inside
+    /// `(0, SIDEREAL_DEG_PER_SEC)`, kept as the client wrote it so
+    /// `GuideRateRightAscension` reads it back unchanged; a pulse divides
+    /// it by `SIDEREAL_DEG_PER_SEC` for the fraction of sidereal its
+    /// period math takes. Resets to [`DEFAULT_GUIDE_RATE_DEG_PER_SEC`] on
+    /// each disconnect.
+    guide_rate_ra_deg_per_sec: f64,
+    /// The Dec axis' counterpart of `guide_rate_ra_deg_per_sec`.
+    guide_rate_dec_deg_per_sec: f64,
     /// Per-axis `PulseGuide` ownership. See §"`PulseGuide` lifecycle" in
     /// the design doc.
     pulse_guiding: PulseGuiding,
@@ -223,8 +228,8 @@ impl Default for DriverState {
             frame_anchored: false,
             preferred_ap_park: None,
             target_pier_side: None,
-            guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
-            guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
+            guide_rate_ra_deg_per_sec: DEFAULT_GUIDE_RATE_DEG_PER_SEC,
+            guide_rate_dec_deg_per_sec: DEFAULT_GUIDE_RATE_DEG_PER_SEC,
             pulse_guiding: PulseGuiding::IDLE,
             next_pulse_id: 0,
         }
@@ -299,7 +304,7 @@ impl DriverState {
     ///   - `pulse_guiding` — disconnect cancels every pulse (the
     ///     disconnect path does this under `axis_ownership` first; the
     ///     reset repeats it so the state is whole on its own).
-    ///   - `guide_rate_*_fraction` — re-initialise to the default,
+    ///   - `guide_rate_*_deg_per_sec` — re-initialise to the default,
     ///     matching INDI's per-session reset.
     const fn reset_for_disconnect(&mut self) {
         self.target_ra_hours = None;
@@ -310,8 +315,8 @@ impl DriverState {
         self.frame_anchored = false;
         self.preferred_ap_park = None;
         self.pulse_guiding = PulseGuiding::IDLE;
-        self.guide_rate_ra_fraction = DEFAULT_GUIDE_RATE_FRACTION;
-        self.guide_rate_dec_fraction = DEFAULT_GUIDE_RATE_FRACTION;
+        self.guide_rate_ra_deg_per_sec = DEFAULT_GUIDE_RATE_DEG_PER_SEC;
+        self.guide_rate_dec_deg_per_sec = DEFAULT_GUIDE_RATE_DEG_PER_SEC;
     }
 }
 

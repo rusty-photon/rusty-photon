@@ -686,7 +686,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | Property | Implementation |
 |---|---|
 | `RightAscension` | from current RA-axis encoder + LST + sync offset. The encoder is the background-poll sample **carried forward to the read instant** at the axis' commanded rate, so it pairs with an LST taken at the same instant — see [§Encoder samples and the read instant](#encoder-samples-and-the-read-instant) |
-| `Declination` | from current Dec-axis encoder + sync offset |
+| `Declination` | from current Dec-axis encoder + sync offset. The celestial equator reads `0.0` on either pier side, never `-0.0` — on the counterweight-up side it sits at the Dec encoder's wrap, `−180°`, which the through-the-pole reflection would otherwise turn into a negative zero |
 | `Azimuth` | derived from RA/Dec + site lat/lon + LST |
 | `Altitude` | derived as above |
 | `TargetRightAscension` | last `SlewToCoordinatesAsync` / `SlewToTargetAsync` target; `INVALID_OPERATION` if not set |
@@ -694,7 +694,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `Slewing` | `true` while either axis status (`:f`) reports running in Goto mode; cleared when both stop |
 | `Tracking` | driver-state mirror of last `Tracking` setter |
 | `TrackingRate` | always `Sidereal` in MVP |
-| `GuideRateRightAscension` | RA guide rate (deg/sec). In-memory mirror of the last `SetGuideRateRightAscension` write, default `0.5 × SIDEREAL_DEG_PER_SEC ≈ 0.00209` (i.e. fraction = 0.5 of sidereal). Re-initialised to the default on each `Connected = true`. |
+| `GuideRateRightAscension` | RA guide rate (deg/sec). In-memory mirror of the last `SetGuideRateRightAscension` write, read back exactly as written; default `0.5 × SIDEREAL_DEG_PER_SEC ≈ 0.00209` (i.e. fraction = 0.5 of sidereal). Re-initialised to the default on each `Connected = true`. |
 | `GuideRateDeclination` | Dec guide rate (deg/sec). Same shape as RA; settable independently per ASCOM. |
 | `IsPulseGuiding` | `true` if either axis has an in-flight pulse (`pulse_guiding.ra || pulse_guiding.dec`); see [§PulseGuide lifecycle](#pulseguide-lifecycle) for the per-axis flag semantics. |
 | `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command. Survives a disconnect and a reload, not a process restart — see [§What a reload keeps](#what-a-reload-keeps) |
@@ -730,7 +730,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `FindHome()` | `NOT_IMPLEMENTED` |
 | `MoveAxis(*)` | `NOT_IMPLEMENTED` |
 | `PulseGuide(direction, duration)` | rate change on the targeted axis for `duration`; returns once the new rate is on the wire, with a watcher task left to restore it. An East/West pulse on a tracking RA axis changes the step period of the running motor (`:I1`) and never stops it; every other pulse starts its axis from rest. Refuses when parked / disconnected / slewing / same-axis pulse already in flight / RA running a goto. `duration = 0` is a no-op success. See [§PulseGuide lifecycle](#pulseguide-lifecycle) for the wire paths. |
-| `SetGuideRateRightAscension(deg_per_sec)` | validate `(0, SIDEREAL_DEG_PER_SEC)` exclusive; store as fraction = `deg_per_sec / SIDEREAL_DEG_PER_SEC`. Out-of-range → `INVALID_VALUE`. |
+| `SetGuideRateRightAscension(deg_per_sec)` | validate `(0, SIDEREAL_DEG_PER_SEC)` exclusive; store `deg_per_sec` as written (a pulse derives its fraction of sidereal, `deg_per_sec / SIDEREAL_DEG_PER_SEC`, from it). Out-of-range → `INVALID_VALUE`. |
 | `SetGuideRateDeclination(deg_per_sec)` | same shape as RA. |
 | `Action(name, parameters)` | `ParkMatchesPowerUpPose` answers, read-only, whether a power cut and the next power-up leave the mount where it parks ([§`ParkMatchesPowerUpPose`](#parkmatchespoweruppose)); `ACTION_NOT_IMPLEMENTED` for every other name. No Action moves the mount: the recovery is on the mount's setup page ([§Recovery on the mount's setup page](#recovery-on-the-mounts-setup-page)). |
 
@@ -1905,13 +1905,18 @@ The 24-bit `:I` payload bounds the slowest expressible rate at
 on Dec. A guide rate below the pulsed axis' floor is rejected with
 `INVALID_VALUE`.
 
-**Guide-rate fraction validation.** Internal storage is two fractions
-in `(0.0, 1.0)` open interval (RA and Dec independently). The
+**Guide-rate fraction validation.** A pulse works with the guide rate
+as a fraction of sidereal in the `(0.0, 1.0)` open interval (RA and
+Dec independently). The
 exclusive upper bound matters: `fraction = 1.0` makes East's
 `rate_factor = 0`, which divides by zero in the period formula. INDI
 clamps at 0.9 for the same reason. ASCOM clients see deg/sec through
 `GuideRateRightAscension` / `GuideRateDeclination`; the setter
-validates `(0, SIDEREAL_DEG_PER_SEC)` and converts to fraction.
+validates `(0, SIDEREAL_DEG_PER_SEC)` and stores the deg/sec value as
+written, and each pulse divides it by `SIDEREAL_DEG_PER_SEC` for its
+fraction. Storing the fraction instead would read a rate back through
+a divide and a multiply, which changes the last bit of some values —
+`0.001125` would read `0.0011249999999999997`.
 
 ### Side-of-pier
 
@@ -1996,12 +2001,23 @@ also flips on its own while tracking. Two fields:
   first tick where `mech_HA ≥ offset`, so enabling tracking with the
   mount already past the offset fires it from wherever the mount is.
   Every position in `[offset, guard_entry)` therefore has to flip to a
-  destination outside the zone. With the shipped zone that works out
-  to `[−0.95, +0.90)`, but the conditions are evaluated against both
+  destination outside the zone. For a zone `(x, 12 − x)` that works
+  out to `[−x, x − margin)` — `[−0.95, +0.90)` with the shipped
+  zone — but the conditions are evaluated against both
   zone bounds rather than presuming the `(x, 12 − x)` shape —
   `cw_exclusion_zone` accepts any `-12 ≤ min < max ≤ 12`, and off that
   shape a presumed band both rejects reachable offsets and admits
-  unreachable ones. Fail either condition and the auto-flip does not
+  unreachable ones. The bounds are the decimal values the config
+  states: the points the rule derives — the guard entry and the
+  flipped destinations — are rounded to the nearest 10⁻⁹ h (3.6 µs)
+  before they are compared, so `−1.12 + 12` compares as `10.88`, not
+  as `f64`'s `10.879999999999999`, which lies just inside a zone that
+  ends at `10.88`; and `0.2 − 0.05` compares as `0.15`, not as
+  `0.15000000000000002`, which would leave an offset of `0.15` short
+  of the guard entry. The rounding is thousands of times finer than
+  the encoder's step (`24 h / CPR` ≈ 6.6 × 10⁻⁶ h on the GTi's RA
+  axis), so it settles only comparisons between points the mount
+  cannot tell apart. Fail either condition and the auto-flip does not
   fire late, it never fires at all, so the config is refused at load
   (and on a setup-page save) rather than leaving
   `auto_flip.enabled = true` as a setting that does nothing. The
