@@ -1,7 +1,7 @@
 # Throwaway proof, exp/ branch only, never merged: bazel.yml's job on this
-# branch, on hosted macOS (four runs) and hosted Windows (two runs), the
-# runners a pull request's CI does not reach, reading the cache anonymously
-# and uploading nothing.
+# branch, on hosted macOS (two runs), with --cache_test_results=no on the test
+# steps so that every suite executes and fetches its inputs under ci-macos's
+# `minimal`, reading the cache anonymously and uploading nothing.
 permissions:
   contents: read
 on:
@@ -31,12 +31,7 @@ jobs:
         # `${{ }}` is treated. Continuation lines therefore sit at the same
         # indent as `${{`, which is what makes YAML fold them with spaces.
         os: [macos-latest]
-        run: [1, 2, 3, 4]
-        include:
-          - os: windows-latest
-            run: 1
-          - os: windows-latest
-            run: 2
+        run: [1, 2]
     # Every falsy branch of this expression resolves to the hosted runner
     # (matrix.os) — fork PR, schedule, kill switch off, null head.repo all
     # land on the safe side. Same-repo detection compares the PR's head
@@ -321,7 +316,7 @@ jobs:
         # stay useful when something breaks.
         run: |
           # Windows: this step's trace, as in the build step.
-          bazel test --config=ci --config="$CI_OS_CONFIG" --config=ci-remote \
+          bazel test --config=ci --config="$CI_OS_CONFIG" --config=ci-remote --cache_test_results=no \
             ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-test-fast.json.gz' || '' }} \
             --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
@@ -349,7 +344,7 @@ jobs:
           # `requires-cargo`), spawning the native-SDK sim binary the "Install ZWO
           # SDK" step above provisioned. Matches the coverage config in .bazelrc.
           # Windows: this step's trace, as in the build step.
-          bazel test --config=ci --config="$CI_OS_CONFIG" --config=ci-remote \
+          bazel test --config=ci --config="$CI_OS_CONFIG" --config=ci-remote --cache_test_results=no \
             ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-test-bdd.json.gz' || '' }} \
             --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
