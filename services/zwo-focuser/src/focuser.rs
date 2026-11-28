@@ -325,7 +325,9 @@ impl Focuser for ZwoFocuser {
     async fn temperature(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
         let temp = self.on_handle(|h| h.temperature().map_err(sdk_err)).await?;
-        Ok(f64::from(temp))
+        // `EAFGetTemp` reports a C `float`: report the decimal it stands for
+        // (24.54), not its binary value (24.540000915527344) (M11).
+        Ok(rusty_photon_driver::sdk_float::to_f64(temp))
     }
 
     async fn halt(&self) -> ASCOMResult<()> {
@@ -624,11 +626,13 @@ mod tests {
         assert!(!d.is_moving().await.unwrap());
     }
 
+    /// M11: the SDK's `float` reading is reported as the decimal it stands
+    /// for, not widened bit for bit (24.540000915527344).
     #[tokio::test]
-    async fn temperature_returns_the_live_reading() {
+    async fn temperature_returns_the_live_reading_as_its_decimal() {
         let d = device(MockFocuserHandle::default());
         d.set_connected(true).await.unwrap();
-        assert_eq!(d.temperature().await.unwrap(), 20.0);
+        assert_eq!(d.temperature().await.unwrap(), 24.54);
     }
 
     #[tokio::test]

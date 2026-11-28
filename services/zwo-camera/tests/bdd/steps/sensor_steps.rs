@@ -70,11 +70,10 @@ async fn set_gain(world: &mut CameraWorld, gain: i32, _device: u32) {
 
 #[then(regex = r"^camera device (\d+) reports ElectronsPerADU as ([0-9.]+)$")]
 async fn electrons_per_adu_is(world: &mut CameraWorld, _device: u32, expected: f64) {
+    // Exact: the figure is the decimal the SDK's float stands for (ST2), so a
+    // tolerance would hide the float's binary residue it must not carry.
     let actual = world.camera().electrons_per_adu().await.unwrap();
-    assert!(
-        (actual - expected).abs() < 1e-9,
-        "expected {expected}, got {actual}"
-    );
+    assert_eq!(actual, expected, "expected {expected}, got {actual}");
 }
 
 /// What the camera holds must not move while a frame is in flight, whatever a
@@ -97,8 +96,8 @@ async fn electrons_per_adu_holds_while_exposing(
             "the exposure ended before the window did"
         );
         let actual = camera.electrons_per_adu().await.unwrap();
-        assert!(
-            (actual - expected).abs() < 1e-9,
+        assert_eq!(
+            actual, expected,
             "a gain set mid-exposure reached the camera: expected {expected}, got {actual}"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;

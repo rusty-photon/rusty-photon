@@ -4,7 +4,9 @@ Feature: Sensor geometry, type, and signal
   SVB_CAMERA_PROPERTY (G1): CameraXSize / CameraYSize in pixels and
   PixelSizeX / PixelSizeY in microns (SVBGetSensorPixelSize), with
   PixelSizeX equal to PixelSizeY because SVBony exposes a single pixel
-  size. CameraXSize / CameraYSize are the raw sensor extent aligned DOWN
+  size. SVBGetSensorPixelSize writes a C float, and PixelSizeX reports the
+  decimal that float stands for: 3.76, which the float holds only as
+  3.759999990463257. CameraXSize / CameraYSize are the raw sensor extent aligned DOWN
   so the full frame divided by every supported bin satisfies the SDK's
   width%8 / height%2 ROI rule (the simulated SV605CC's raw 3008x3008 with
   bins 1-4 reports 2976x3000) -- real-hardware ConformU takes a full frame
@@ -35,7 +37,7 @@ Feature: Sensor geometry, type, and signal
       | property    | value |
       | CameraXSize | 2976  |
       | CameraYSize | 3000  |
-    And camera device 0 reports a positive PixelSizeX
+    And camera device 0 reports PixelSizeX as 3.76
     And camera device 0 reports PixelSizeX equal to PixelSizeY
 
   Scenario: A colour sensor reports SensorType RGGB

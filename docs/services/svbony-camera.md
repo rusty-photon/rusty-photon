@@ -508,7 +508,12 @@ either: both members answer from the cache and both setters only store
   `SVB_MODE_TRIG_SOFT` when `IsTriggerCam` and start video capture once.
 - Sensor geometry from cached `SVB_CAMERA_PROPERTY` (`MaxWidth`/`MaxHeight`,
   `SVBGetSensorPixelSize`); `PixelSizeX == PixelSizeY` (a single SDK
-  pixel-size call). `CameraXSize`/`CameraYSize` report the sensor extent
+  pixel-size call). `SVBGetSensorPixelSize` writes a C `float`, and
+  `PixelSizeX`/`PixelSizeY` report the shortest decimal that reads back as
+  that `float` — the SV605CC's `3.76`, not the `float`'s exact binary value
+  `3.759999990463257`; a 2.9 µm sensor's `2.9`, not `2.9000000953674316`
+  ([`rusty-photon-driver`](../../crates/rusty-photon-driver/)'s
+  `sdk_float::to_f64`). `CameraXSize`/`CameraYSize` report the sensor extent
   **aligned down** so the full frame divided by *every* supported bin
   satisfies the width%8/height%2 ROI rule
   ([`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
@@ -2058,7 +2063,7 @@ device is there at all, so they answer throughout.
 | Property / Method | Behaviour (backed by `svbony-rs`) | Status |
 |---|---|---|
 | `CameraXSize` / `CameraYSize` | `SVB_CAMERA_PROPERTY` `MaxWidth`/`MaxHeight` aligned down so every binned full frame is a valid ROI (R4; SV605CC 3008×3008 → 2976×3000) | **Real** |
-| `PixelSizeX` / `PixelSizeY` | `SVBGetSensorPixelSize` (X == Y) | **Real** |
+| `PixelSizeX` / `PixelSizeY` | `SVBGetSensorPixelSize` (X == Y), as the decimal its C `float` stands for (3.76, not 3.759999990463257) | **Real** |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` | **Real** |
 | `CanAsymmetricBin` | `false`; never implemented, so answered at any time (step 10) | **Real** |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) | **Real** |

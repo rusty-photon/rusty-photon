@@ -748,6 +748,8 @@ pub(crate) mod mock {
         position: AtomicI32,
         moving: AtomicBool,
         reverse: AtomicBool,
+        /// The probe's reading: 24.54 °C, which a C `float` holds only as
+        /// 24.540000915527344.
         temperature: Mutex<f32>,
         /// While set, every `temperature()` call fails at the SDK, with a
         /// failure that does not mean the EAF has left.
@@ -769,7 +771,7 @@ pub(crate) mod mock {
                 position: AtomicI32::new(0),
                 moving: AtomicBool::new(false),
                 reverse: AtomicBool::new(false),
-                temperature: Mutex::new(20.0),
+                temperature: Mutex::new(24.54),
                 fail_temperature: AtomicBool::new(false),
             }
         }
