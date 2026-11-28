@@ -1796,6 +1796,14 @@ in its **Device** column with no renumbering note, and closed with
   ([record](../validation/2026-10-01-zwo-camera-asi1600mm-cool-gain-offset-linux/README.md))
   it read 4.96 at gain 0, still 4.96 straight after `Gain` was set to 200, and
   0.496 once an exposure had armed it — 4.96 / 10^(200/200).
+
+  The field is a C `float`, and the driver reports the shortest decimal that
+  reads back as that `float` — `4.96`, not the `float`'s exact binary value
+  `4.960000038146973`; `0.916` for the ASI178MM, not `0.9160000085830688`
+  ([`rusty-photon-driver`](../../crates/rusty-photon-driver/)'s
+  `sdk_float::to_f64`). The SDK's gain-0 figures are such decimals (`4.96f`,
+  `0.916f` in the library, below), and so is the ASI1600MM-Cool's figure at
+  gain 600: the `float` widens to `0.0049600000493228436` and reads `0.00496`.
 - **ST3.** `MaxADU` = **a saturation threshold chosen to be reachable** by the
   delivered data in the selected readout mode (RM2) — not `(2^BitDepth) - 1`,
   and deliberately *not* an exact upper bound on the pixel values (see *the
@@ -2038,7 +2046,7 @@ the SDK has reported removed counts as disconnected: `Connected` reads
 | `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E12) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
 | `MaxADU` | A saturation threshold chosen to be reachable, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. Where the margin applies, a sensor reaching its top code delivers one step above this; the 65535 cases are the container maximum and cannot be exceeded |
-| `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it describes the gain the camera holds: the last exposure's, or the one read at connect, catching up with a `Gain` set when the next `StartExposure` arms it (ST2) |
+| `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it describes the gain the camera holds: the last exposure's, or the one read at connect, catching up with a `Gain` set when the next `StartExposure` arms it; reported as the decimal its C `float` stands for (4.96, not 4.960000038146973) (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
 | `Gain` / `GainMin` / `GainMax` | `ASI_GAIN` control. `Gain` is the cached value the next exposure arms: seeded by a read at connect, set without reaching the camera, sent by every `StartExposure` (GO1/GO2); `INVALID_OPERATION` until a client sets one if the connect read none in range; `NOT_IMPLEMENTED` if absent |
@@ -2391,8 +2399,9 @@ client takes one exposure between setting the gain and reading the figure.
 ASI1600MM-Cool (600) gives 0.00496 and the ASI178MM (510) 0.00258 — 1000× and
 √1000× below readings taken on Windows at gain 0 (ASI1600) and gain 210
 (ASI178), which looks like a platform split and is not. Driven back to gain 0
-on Linux, the ASI1600 reports `4.960000038146973`, **bit-identical** to the
-Windows figure, and the two ratios are exactly 60.000000 dB and 30.000000 dB:
+on Linux, the ASI1600's `float` is `4.96f` (`4.960000038146973` widened bit
+for bit), **bit-identical** to the Windows figure, and the two ratios are
+exactly 60.000000 dB and 30.000000 dB:
 gain deltas to eight significant figures rather than decimal scaling.
 
 There is consequently **no plausibility check on this value, and there must not

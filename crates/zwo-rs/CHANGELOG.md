@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the default `Formatter::Rustfmt`, so the feature only pulled a second
   formatter that `bindgen` cannot build when `prettyplease` and `syn` resolve to
   mismatched majors.
+- Simulation: the simulated EAF's `temperature` reads 24.54 °C (was 20.0), a
+  reading a real EAF gave and one a C `float` holds only approximately, so a
+  driver that widens the `float` bit for bit instead of reporting the decimal it
+  stands for is caught by its tests.
 
 ### Fixed
 

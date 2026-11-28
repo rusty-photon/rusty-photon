@@ -552,6 +552,13 @@ pub const SIM_MAX_STEP: u32 = 60_000;
 #[cfg(feature = "simulation")]
 const SIM_STEPS_PER_POLL: i32 = 640;
 
+/// The simulated temperature probe's reading (`EAFGetTemp`), in °C: a reading
+/// a real EAF gave, and one a C `float` holds only approximately (its exact
+/// binary value is 24.540000915527344), so a driver that reports the `float`
+/// bit for bit instead of the decimal it stands for shows it.
+#[cfg(feature = "simulation")]
+const SIM_TEMPERATURE_C: f32 = 24.54;
+
 /// The fabricated simulated focuser. The limits mirror a real EAF unit:
 /// `EAF_INFO::MaxStep` (the ceiling, here) is 600000 while the firmware's
 /// working travel limit ([`SIM_MAX_STEP`], served via [`Focuser::max_step`])
@@ -588,7 +595,7 @@ impl Default for SimFocuserState {
             target: 0,
             moving: false,
             reverse: false,
-            temperature: 20.0,
+            temperature: SIM_TEMPERATURE_C,
             departed: false,
         }
     }
@@ -886,7 +893,7 @@ mod tests {
     fn temperature_returns_a_value() {
         let sdk = Sdk::new().unwrap();
         let focuser = sdk.open_focuser(0).unwrap();
-        assert_eq!(focuser.temperature().unwrap(), 20.0);
+        assert_eq!(focuser.temperature().unwrap(), SIM_TEMPERATURE_C);
     }
 
     #[cfg(feature = "simulation")]

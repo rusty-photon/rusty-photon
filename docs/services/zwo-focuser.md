@@ -198,7 +198,7 @@ there is no in-flight-task cancellation/invalidation machinery to build.
 | StepSize | `NOT_IMPLEMENTED` (no prior art; matches `qhy-focuser`/`pa-scops-oag`) |
 | TempComp | `false` (stubbed — see note below) |
 | TempCompAvailable | `false` |
-| Temperature | Live `EAFGetTemp` reading |
+| Temperature | Live `EAFGetTemp` reading, as the decimal its C `float` stands for (24.54, not 24.540000915527344 — see M11) |
 | Halt | `EAFStop` (freezes mid-travel) |
 | Move | Validates `0..=MaxStep` (working limit), `EAFMove` (absolute-only) |
 | InterfaceVersion | `4` (trait default) |
@@ -512,7 +512,16 @@ working limit but within the ceiling is accepted and stops at the limit.
 - **M9.** `Halt` stops an in-progress move (`EAFStop`), freezing the position
   mid-travel (not at the original target).
 - **M10.** `Halt` on an idle focuser succeeds as a no-op.
-- **M11.** `Temperature` returns the live `EAFGetTemp` reading.
+- **M11.** `Temperature` returns the live `EAFGetTemp` reading. The SDK hands
+  it over as a C `float`, and the driver reports the shortest decimal that
+  reads back as that `float` — `24.54`, not the `float`'s exact binary value
+  `24.540000915527344`
+  ([`rusty-photon-driver`](../../crates/rusty-photon-driver/)'s
+  `sdk_float::to_f64`). Clients subtract readings and compare the difference
+  against a threshold (rp's temperature watch, focus-model's calibration
+  span): widened bit for bit, two readings a degree apart, 15.55 and 16.55,
+  differ by 0.9999990463256836 and fall short of a 1 °C threshold, where the
+  decimals differ by exactly 1.
 - **M12.** `StepSize` returns `NOT_IMPLEMENTED`.
 - **M13.** `TempComp`/`TempCompAvailable` return `false`; `SetTempComp` returns
   `NOT_IMPLEMENTED`.

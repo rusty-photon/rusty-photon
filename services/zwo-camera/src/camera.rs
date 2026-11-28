@@ -1250,10 +1250,12 @@ impl Camera for ZwoCamera {
         // whatever gain the camera held at enumeration (ST2). The register is
         // the gain the last exposure armed — a `Gain` set since reaches it
         // with the next `StartExposure` (GO2), and this follows from there.
+        // The field is a C `float`: report the decimal it stands for (4.96),
+        // not its binary value (4.960000038146973).
         self.ensure_connected()?;
         self.on_handle(|h| {
             h.electrons_per_adu()
-                .map(f64::from)
+                .map(rusty_photon_driver::sdk_float::to_f64)
                 .map_err(|e| sdk_failure(&e, ASCOMError::INVALID_OPERATION))
         })
         .await
@@ -2296,20 +2298,21 @@ mod tests {
         // the value cached at enumeration. Measured on an ASI1600: 4.96 e⁻/ADU
         // at gain 0, 0.00496 at gain 600. (The mock uses the 0.1 dB law those
         // modern bodies follow; the driver itself assumes no law, since the
-        // legacy ASI120MC-S scales differently.)
+        // legacy ASI120MC-S scales differently.) The SDK's figure is a C
+        // `float`, reported as the decimal it stands for, so the comparisons
+        // are exact: widened bit for bit, 4.96 would read 4.960000038146973.
         let device = connected_device(MockCameraHandle::default().with_signal(4.96, 12));
 
         device.set_gain(0).await.unwrap();
         expose(&device).await;
         let at_zero = device.electrons_per_adu().await.unwrap();
-        assert!((at_zero - 4.96).abs() < 1e-6, "{at_zero}");
+        assert_eq!(at_zero, 4.96);
 
         // 200 gain units = 20 dB = exactly a factor of 10.
         device.set_gain(200).await.unwrap();
         expose(&device).await;
         let at_20db = device.electrons_per_adu().await.unwrap();
-        assert!((at_20db - 0.496).abs() < 1e-6, "{at_20db}");
-        assert!((at_zero / at_20db - 10.0).abs() < 1e-3);
+        assert_eq!(at_20db, 0.496);
     }
 
     /// ST2/GO2: a gain set alone reaches no camera, so the figure stays the one
@@ -2325,9 +2328,9 @@ mod tests {
         device.set_gain(200).await.unwrap();
         for _ in 0..20 {
             let figure = device.electrons_per_adu().await.unwrap();
-            assert!(
-                (figure - 4.96).abs() < 1e-6,
-                "a gain set moved ElectronsPerADU before an exposure armed it: {figure}"
+            assert_eq!(
+                figure, 4.96,
+                "a gain set moved ElectronsPerADU before an exposure armed it"
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

@@ -23,6 +23,8 @@
 //!   (docs/crates/rusty-photon-service-lifecycle.md § Restart on request).
 //! - [`discovery`] — the Alpaca UDP discovery responder, bound only when a
 //!   driver's `server.discovery_port` opts in.
+//! - [`sdk_float`] — the `f64` an ASCOM member reports for a C `float` a vendor
+//!   SDK hands over: the decimal the `float` stands for, not its binary value.
 //! - `claims` (the `claims` feature) — a camera driver's device claims at
 //!   runtime: the placeholder Camera that holds a listed device number whose
 //!   camera cannot be served, the failed USB scan's background re-scan, the
@@ -68,6 +70,7 @@ pub mod discovery;
 mod macros;
 pub mod overrides;
 pub mod restart;
+pub mod sdk_float;
 pub mod setup;
 
 pub use connection::{connected_transition, ConnectedTransition};

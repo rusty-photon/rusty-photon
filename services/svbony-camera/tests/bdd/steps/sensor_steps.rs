@@ -24,9 +24,12 @@ async fn reports_sensor_geometry(world: &mut CameraWorld, step: &Step, _device: 
     }
 }
 
-#[then(regex = r"^camera device (\d+) reports a positive PixelSizeX$")]
-async fn positive_pixel_size_x(world: &mut CameraWorld, _device: u32) {
-    assert!(world.camera().pixel_size_x().await.unwrap() > 0.0);
+#[then(regex = r"^camera device (\d+) reports PixelSizeX as ([0-9.]+)$")]
+async fn pixel_size_x_is(world: &mut CameraWorld, _device: u32, expected: f64) {
+    // Exact: the size is the decimal the SDK's float stands for, so a
+    // tolerance would hide the float's binary residue it must not carry.
+    let actual = world.camera().pixel_size_x().await.unwrap();
+    assert_eq!(actual, expected, "expected {expected}, got {actual}");
 }
 
 #[then(regex = r"^camera device (\d+) reports PixelSizeX equal to PixelSizeY$")]

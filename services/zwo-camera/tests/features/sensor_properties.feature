@@ -45,6 +45,9 @@ Feature: Sensor geometry, type, and signal
     The simulated camera is 0.25 e-/ADU at gain 0; 200 gain units is 20 dB,
     exactly a factor of ten, so the same camera reads 0.025 e-/ADU there. A
     gain set alone leaves the figure where it was until an exposure arms it.
+    The SDK hands the figure over as a C float, and ElectronsPerADU reports
+    the decimal that float stands for: 0.025, which the float holds only as
+    0.02500000037252903.
 
     When I set Gain to 0 on camera device 0
     And I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 64 NumY 48 StartX 0 StartY 0 Duration 0.01 Light true

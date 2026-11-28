@@ -1315,7 +1315,11 @@ impl Camera for SvbonyCamera {
 
     async fn pixel_size_x(&self) -> ASCOMResult<f64> {
         self.ensure_connected()?;
-        Ok(f64::from(self.sensor()?.pixel_size_um))
+        // `SVBGetSensorPixelSize` writes a C `float`: report the decimal it
+        // stands for (3.76), not its binary value (3.759999990463257).
+        Ok(rusty_photon_driver::sdk_float::to_f64(
+            self.sensor()?.pixel_size_um,
+        ))
     }
 
     async fn pixel_size_y(&self) -> ASCOMResult<f64> {
@@ -2355,6 +2359,15 @@ mod tests {
         assert_eq!(cam.camera_x_size().await.unwrap(), 2976);
         assert_eq!(cam.camera_y_size().await.unwrap(), 3000);
         assert_eq!(cam.max_adu().await.unwrap(), 65_535);
+    }
+
+    /// The SDK's `float` pixel size is reported as the decimal it stands for,
+    /// not widened bit for bit (3.759999990463257).
+    #[tokio::test]
+    async fn pixel_size_is_the_decimal_the_sdk_float_stands_for() {
+        let cam = connected_device(MockCameraHandle::default());
+        assert_eq!(cam.pixel_size_x().await.unwrap(), 3.76);
+        assert_eq!(cam.pixel_size_y().await.unwrap(), 3.76);
     }
 
     #[tokio::test]

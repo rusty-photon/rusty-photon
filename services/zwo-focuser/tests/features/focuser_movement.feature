@@ -13,7 +13,10 @@ Feature: Focuser movement
   ~640 steps-per-second travel); Halt freezes the position mid-travel. TempComp/
   TempCompAvailable/SetTempComp stay stubbed, matching qhy-focuser/
   pa-scops-oag; Temperature returns the live EAFGetTemp reading, unlike
-  pa-scops-oag which has no sensor. Every member read from the device,
+  pa-scops-oag which has no sensor. The SDK hands the reading over as a C
+  float, and Temperature reports the decimal that float stands for: the
+  simulated EAF reads 24.54, which the float holds only as
+  24.540000915527344. Every member read from the device,
   MaxStep and MaxIncrement included, needs a connection (M14); the members
   the driver fixes (Absolute, TempComp, TempCompAvailable) answer without
   one.
@@ -89,9 +92,9 @@ Feature: Focuser movement
     When I halt focuser device 0
     Then focuser device 0 reports IsMoving as false
 
-  Scenario: Temperature reports the live sensor reading
+  Scenario: Temperature reports the live sensor reading as the decimal the SDK's float stands for
     Given focuser device 0 is connected
-    Then focuser device 0 reports Temperature as 20
+    Then focuser device 0 reports Temperature as 24.54
 
   Scenario: StepSize is not implemented
     Given focuser device 0 is connected
