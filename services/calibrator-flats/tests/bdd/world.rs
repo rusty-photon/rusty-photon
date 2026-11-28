@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bdd_infra::restart_relay::RestartRelay;
 use bdd_infra::rp_harness::{
     build_calibrator_flats_config, CameraConfig, CoverCalibratorConfig, FilterWheelConfig,
     McpTestClient, OpticalTrainConfig, ReceivedEvent, RpConfigBuilder, SafetyMonitorConfig,
@@ -42,10 +43,10 @@ pub struct CalibratorFlatsWorld {
     pub safety_monitors: Vec<SafetyMonitorConfig>,
     pub optical_trains: Vec<OpticalTrainConfig>,
     pub plugin_configs: Vec<Value>,
-    /// rp's port, picked before the provider starts: the provider's
+    /// The port the provider's config names for rp: the provider's
     /// config names rp's MCP URL, and rp dials the provider at startup,
-    /// so rp cannot be started first on an ephemeral port.
-    pub rp_port: Option<u16>,
+    /// so the relay's port exists first and rp binds port 0 behind it.
+    pub rp_relay: Option<RestartRelay>,
 
     // --- calibrator-flats config building ---
     /// Per-scenario overrides layered onto
@@ -86,7 +87,7 @@ impl Default for CalibratorFlatsWorld {
             safety_monitors: Vec::new(),
             optical_trains: Vec::new(),
             plugin_configs: Vec::new(),
-            rp_port: None,
+            rp_relay: None,
             provider_overrides: Map::new(),
             store_dir: tempfile::tempdir().expect("create the scenario's store directory"),
             received_events: Arc::new(RwLock::new(Vec::new())),
@@ -216,9 +217,6 @@ impl CalibratorFlatsWorld {
         // `{night_date}` from the site's local night, so rp needs a
         // site. No mount is rostered, so any site will do.
         builder.with_site(47.6062, -122.3321);
-        if let Some(port) = self.rp_port {
-            builder.with_port(port);
-        }
         builder.build()
     }
 

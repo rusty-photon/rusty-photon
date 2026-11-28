@@ -822,9 +822,9 @@ processes whose starts coincide still walk the band together, and the connect
 probe cannot see a port the other has reserved but not yet bound, so each
 reserved port is a small race the announced-port pattern does not have.
 `bdd_infra::reserved_test_port_async()`
-is the shared helper for suites built on `bdd-infra` (calibrator-flats' suite
-pins rp's port with it so the provider's config can name rp before rp
-starts). It probes on the blocking pool, and has no synchronous form outside
+is the shared helper for suites built on `bdd-infra` (zwo-focuser's suite
+takes the port it pins on the command line from it). It probes on the
+blocking pool, and has no synchronous form outside
 the crate, because a probe is a wait
 ([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)).
 
@@ -877,7 +877,8 @@ forwards each connection to the service's current port and drops each one
 while the service is stopped: sentinel's filemonitor and session-runner's
 rp run behind one. The relay's port exists before the service starts, so
 it also serves a client that has to be configured first, with no band
-port: session-runner's focus-model provider names rp's relay.
+port: every tool provider a suite starts before rp (calibrator-flats',
+focus-model's, and session-runner's focus-model) names rp's relay.
 
 #### 5.2 Entry Point Structure
 
