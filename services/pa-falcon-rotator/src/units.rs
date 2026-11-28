@@ -36,12 +36,32 @@ pub const STEPS_PER_DEGREE: f64 = 86.6;
 
 /// Normalise a degree value into `[0.0, 360.0)`.
 ///
-/// The standard `((x % 360) + 360) % 360` so negative inputs (a
-/// `Move(delta < 0)`, or a `sky - mech` that goes negative) wrap up into the
-/// canonical range. Every constructor below funnels through this, so each
-/// angle type holds a normalised value by construction.
+/// An angle already in range is kept as it is. Only the rest go through the
+/// standard `((x % 360) + 360) % 360`, which wraps negative inputs (a
+/// `Move(delta < 0)`, or a `sky - mech` that goes negative) and sums past
+/// 360 into the canonical range: adding 360 and taking it off again is not
+/// exact in binary floating point, and would turn the device's `147.84`
+/// into `147.84000000000003`. Every constructor below funnels through this,
+/// so each angle type holds a normalised value by construction.
 fn normalise_deg(deg: f64) -> f64 {
-    ((deg % 360.0) + 360.0) % 360.0
+    if (0.0..360.0).contains(&deg) {
+        deg
+    } else {
+        ((deg % 360.0) + 360.0) % 360.0
+    }
+}
+
+/// Round an angle in `[0, 360)` to the Falcon's 1/100°, the precision of
+/// the `FA` degree field and of the `MD:nn.nn` target: the result is the
+/// double nearest the two-decimal value. One that rounds up to `360.00` is
+/// `0.00`, so the result stays in range.
+fn round_to_hundredths(deg: f64) -> f64 {
+    let rounded = (deg * 100.0).round() / 100.0;
+    if rounded >= 360.0 {
+        0.0
+    } else {
+        rounded
+    }
 }
 
 /// A mechanical angle in `[0, 360)` — the Falcon's own frame: the `FA`/`FD`
@@ -75,12 +95,12 @@ impl MechanicalDegrees {
         self.0
     }
 
-    /// Quantise to the `MD:nn.nn` wire precision (1/100°), then re-normalise
-    /// so a near-boundary value like `359.999` becomes `0.00` rather than the
-    /// out-of-range `360.00`.
+    /// Quantise to the `MD:nn.nn` wire precision (1/100°); a near-boundary
+    /// value like `359.999` becomes `0.00` rather than the out-of-range
+    /// `360.00`.
     #[must_use]
     pub fn quantise_to_wire(self) -> Self {
-        Self::new((self.0 * 100.0).round() / 100.0)
+        Self(round_to_hundredths(self.0))
     }
 
     /// Apply a relative rotation (degrees, may be negative), staying in the
@@ -124,12 +144,17 @@ impl SyncOffset {
     }
 }
 
-/// `mech + offset = sky` — lift a mechanical angle into the sky frame.
+/// `mech + offset = sky` — lift a mechanical angle into the sky frame, at
+/// the device's 1/100°. The sum of two decimal fractions is rarely exact in
+/// binary, and the offset can carry finer digits than the device resolves
+/// (a `Sync` to an arbitrary angle), so the sky angle is rounded to the
+/// precision the mechanical one has. This is what `Position` and
+/// `TargetPosition` report.
 impl Add<SyncOffset> for MechanicalDegrees {
     type Output = SkyDegrees;
 
     fn add(self, offset: SyncOffset) -> SkyDegrees {
-        SkyDegrees::new(self.0 + offset.0)
+        SkyDegrees(round_to_hundredths(normalise_deg(self.0 + offset.0)))
     }
 }
 
@@ -213,6 +238,17 @@ mod tests {
     }
 
     #[test]
+    fn an_angle_in_range_is_kept_exactly() {
+        // Each of these came back perturbed when every value went through
+        // `((x % 360) + 360) % 360`: 147.84 as 147.84000000000003.
+        for deg in [147.84, 12.3, 0.01, 200.07, 359.99, 0.0] {
+            assert_eq!(MechanicalDegrees::new(deg).value(), deg);
+            assert_eq!(SkyDegrees::new(deg).value(), deg);
+            assert_eq!(SyncOffset::new(deg).value(), deg);
+        }
+    }
+
+    #[test]
     fn offset_zero_is_zero() {
         assert!((SyncOffset::ZERO.value()).abs() < EPS);
         assert_eq!(SyncOffset::default(), SyncOffset::ZERO);
@@ -230,6 +266,16 @@ mod tests {
                 - 142.30)
                 .abs()
                 < EPS
+        );
+    }
+
+    #[test]
+    fn quantise_lands_exactly_on_the_two_decimal_value() {
+        assert_eq!(
+            MechanicalDegrees::new(102.840_000_000_003)
+                .quantise_to_wire()
+                .value(),
+            102.84
         );
     }
 
@@ -259,6 +305,23 @@ mod tests {
         // 142.30 + 255.20 = 397.50 → 37.50
         let sky = MechanicalDegrees::new(142.30) + SyncOffset::new(255.20);
         assert!((sky.value() - 37.50).abs() < EPS);
+    }
+
+    #[test]
+    fn mech_plus_offset_is_the_sky_angle_to_a_hundredth_exactly() {
+        // Unrounded, these sums read 37.50000000000006, 172.97000000000003
+        // and, past 360 and wrapped, 187.91000000000008.
+        for (mech, sky) in [(142.30, 37.50), (147.84, 172.97), (200.07, 187.91)] {
+            let mech = MechanicalDegrees::new(mech);
+            let offset = SkyDegrees::new(sky) - mech;
+            assert_eq!((mech + offset).value(), sky);
+        }
+    }
+
+    #[test]
+    fn mech_plus_offset_rounding_up_to_360_is_zero() {
+        let sky = MechanicalDegrees::new(359.99) + SyncOffset::new(0.006);
+        assert_eq!(sky.value(), 0.0);
     }
 
     #[test]
