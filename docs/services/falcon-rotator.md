@@ -140,8 +140,8 @@ A sky angle therefore can't be used where a mechanical one is expected, and the 
 |---|---|
 | `CanReverse` | `true` (always) |
 | `IsMoving` | Issues `FA`, returns `FA.is_moving == 1`. Always fresh from the device. |
-| `Position` | Issues `FA`, returns `(FA.position_in_deg + sync_offset) mod 360`. |
-| `MechanicalPosition` | Issues `FA`, returns `FA.position_in_deg` normalised to `[0, 360)`. |
+| `Position` | Issues `FA`, returns `(FA.position_in_deg + sync_offset) mod 360`, rounded to the device's 1/100° (see [Position normalisation](#position-normalisation)). |
+| `MechanicalPosition` | Issues `FA`, returns `FA.position_in_deg` exactly as the device reports it, already in `[0, 360)`. |
 | `TargetPosition` | If a target is stored, returns it: the sky-coordinate target of the last `Move*`, held in `FalconManager::target_position: Mutex<Option<SkyDegrees>>` and kept after the move completes (see [Move target storage](#move-target-storage)). Otherwise (no move requested yet, or the last one was halted) returns the current `Position`. Treating "where I am" as the implicit target when no target is stored keeps ConformU happy and matches the dominant convention among ASCOM rotator drivers. |
 | `Reverse` (get) | Issues `FA`, returns `FA.motor_reverse`. |
 | `Reverse` (set) | EEPROM-wear-aware: issues `FA` first, only writes `FN:b` if the requested value differs from the device's current value. See [Reverse semantics](#reverse-semantics--eeprom-persistence). |
@@ -150,7 +150,7 @@ A sky angle therefore can't be used where a mechanical one is expected, and the 
 | `Move(delta)` | Relative move: issues `FA`, then `MD:<(MechanicalPosition + delta) mod 360>`. ASCOM defines `Move` in **sky** coordinates; the sky angle is the mechanical one plus `sync_offset`, so moving it by `delta` moves the mechanical angle by the same `delta` and the offset cancels. |
 | `MoveAbsolute(skyDeg)` | `target_mechanical = (skyDeg - sync_offset) mod 360`, then `MD:<target_mechanical>`. |
 | `MoveMechanical(mechDeg)` | Wire command: `MD:<mechDeg mod 360>` directly — `sync_offset` is **not** applied to the wire value. Internal `target_position` is still stored in sky coordinates (`mechDeg + sync_offset`) so subsequent `TargetPosition` reads stay in the same frame regardless of which `Move*` variant set them. |
-| `Sync(skyDeg)` | `sync_offset = (skyDeg - MechanicalPosition) mod 360`. **Driver-side only.** The Falcon's `SD` command is *not* used here: ASCOM Sync must leave `MechanicalPosition` unchanged, but `SD` rewrites the device's stored counter. |
+| `Sync(skyDeg)` | `sync_offset = (skyDeg - MechanicalPosition) mod 360`, rounded to 1/100° (see [Position normalisation](#position-normalisation)). **Driver-side only.** The Falcon's `SD` command is *not* used here: ASCOM Sync must leave `MechanicalPosition` unchanged, but `SD` rewrites the device's stored counter. |
 
 All command issuance flows through the device's held `Session<FalconCodec>` — devices borrow it via an internal `with_session` helper, which short-circuits to `NotConnected` if the session slot is empty.
 
@@ -169,7 +169,7 @@ ASCOM also requires that "the sync offset must persist across driver starts and 
 ```
 
 - **`Sync` writes the record before it returns.** `Sync` computes the new offset, replaces the record atomically (a synced temp file renamed over it) and only then puts the offset in force. A write that fails fails the `Sync` with `INVALID_OPERATION`, naming the file, and leaves the offset in force as it was: `Position` never reports an offset that a restart would lose. Reads never wait on the write: they report the offset in force until the assignment, and a second `Sync` waits for the first to finish.
-- **Start and reload read it.** No record means no `Sync` yet: the offset is zero and `Position` equals `MechanicalPosition`. A record that cannot be read or does not parse is logged at `warn!` and the offset starts at zero; the record stays as it is until the next `Sync` replaces it.
+- **Start and reload read it,** rounding the offset to 1/100° as `Sync` does, so a record written with finer digits reads back at the device's precision. No record means no `Sync` yet: the offset is zero and `Position` equals `MechanicalPosition`. A record that cannot be read or does not parse is logged at `warn!` and the offset starts at zero; the record stays as it is until the next `Sync` replaces it.
 - **Only `Sync` changes the offset.** A disconnect, a reconnect or a reload leaves it alone.
 - **The record belongs to the config file, not to the rotator.** A different Falcon run on the same config file starts with the offset the last one was synced to, until a `Sync` sets it afresh.
 
@@ -186,7 +186,7 @@ The binary always resolves a config file, so it always keeps the record. A libra
 
 The Falcon's `is_moving` flag is the authoritative completion signal. We deliberately do **not** compare `FA.position_in_deg` to `target_position` for completion — angular comparison would have to handle backlash, overshoot, and wraparound, and the device already tells us the answer.
 
-> **Note on storage frame.** Storing the **sky** target (not mechanical) means `TargetPosition` reads are stable across mid-flight syncs (rare in practice, but possible if a client misbehaves). The driver applies the `sync_offset` once at write time to compute the mechanical `MD:` argument. Reads don't re-apply the offset, so the value the client gets back is the same value it asked for.
+> **Note on storage frame.** Storing the **sky** target (not mechanical) means `TargetPosition` reads are stable across mid-flight syncs (rare in practice, but possible if a client misbehaves). The driver applies the `sync_offset` once at write time to compute the mechanical `MD:` argument. Reads don't re-apply the offset, so the value the client gets back is the value it asked for, to the device's 1/100°: a `MoveAbsolute(147.84)` reads back `147.84` exactly, and a `MoveAbsolute(180.004)` reads back `180.0`, the target the device was sent.
 
 ### Reverse semantics — EEPROM persistence
 
@@ -199,7 +199,12 @@ The extra `FA` per set is a one-roundtrip cost (~30 ms), paid only when an ASCOM
 
 ### Position normalisation
 
-All angles exposed to ASCOM clients are normalised to `[0.0, 360.0)`. The normalisation rule is the standard `((x % 360.0) + 360.0) % 360.0` to handle negative deltas from `Move(delta < 0)`.
+All angles exposed to ASCOM clients are normalised to `[0.0, 360.0)` and are exact at the device's 1/100°: each is the double nearest its two-decimal value, with no floating-point residue. ASCOM sets no precision for a rotator's angles (they are degrees, as doubles), so the driver reports the precision the device has — the `FA` degree field carries two decimals and `MD:` takes two.
+
+- **An angle already in range is kept as it is,** except that a negative zero becomes plain zero, so a `MoveAbsolute(-0.0)` sends `MD:0.00`, not `MD:-0.00`. Only one outside `[0, 360)` — a negative delta from `Move(delta < 0)`, a `sky − mech` that goes negative, a sum past 360 — goes through the standard `((x % 360.0) + 360.0) % 360.0`. Applied to every value, that rule perturbs in-range ones: adding 360 and taking it off again is not exact in binary, and turns the device's `147.84` into `147.84000000000003`. So `MechanicalPosition` is the `FA` reading itself, and before any `Sync`, `Position` equals it exactly, as ASCOM requires ("If Sync() has never been called, Position must be equal to MechanicalPosition").
+- **The sync offset is held at 1/100°.** `Sync` rounds `skyDeg − MechanicalPosition` to a hundredth, and so does reading the record. The mechanical angle is two-decimal, so with a two-decimal offset every sky angle and every mechanical target derived from one is two-decimal too, up to binary residue far below a hundredth. Each then rounds back to the value it came from: `MoveAbsolute` to the `Position` read commands the mechanical angle the rotator is at, and `TargetPosition` reads back the angle asked for. An offset with finer digits would round twice on that round trip, and one whose sub-hundredth part is a tie at 0.005 (a `Sync(112.345)` at `100.00`) would send `MD:100.01` and read back `112.36`. The cost: a `Sync(100.004)` reads back as `100.00`, a third of a motor step (`StepSize` is `0.01155`) from the value synced to.
+- **A sky angle is rounded to 1/100°.** `Position` and `TargetPosition` are the mechanical angle plus the sync offset, wrapped into range and then rounded, which clears the residue of adding two decimal fractions in binary; one that rounds up to `360.00` reads `0.00`. Wrapping comes before rounding, because a wrap applied after it brings the residue back.
+- **A mechanical target is quantised to the `MD:nn.nn` wire precision** before it is sent, and the stored `TargetPosition` is the sky angle of that quantised target (see [Move target storage](#move-target-storage)).
 
 ### `limit_detect` handling
 

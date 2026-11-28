@@ -14,6 +14,7 @@ use ascom_alpaca::api::{Telescope, TypedDevice};
 use ascom_alpaca::ASCOMErrorCode;
 use ascom_alpaca::Client as AlpacaClient;
 use bdd_infra::doctor_smoke::{DoctorSmokeState, DoctorSmokeWorld};
+use bdd_infra::restart_relay::RestartRelay;
 use bdd_infra::setup_pages::{self, SetupPagesState, SetupPagesWorld};
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -114,6 +115,10 @@ pub struct BridgeWorld {
     pub telescope: Option<Arc<dyn Telescope>>,
     pub temp_dir: Option<TempDir>,
     pub stub_rp: Option<StubRp>,
+    /// The address the rp-unreachable scenarios configure for rp, held
+    /// from "rp is unreachable" until the stub rp comes up behind it, so
+    /// no other process can take it in between.
+    pub rp_relay: Option<RestartRelay>,
     /// Staged config and captured output of the shared doctor smoke — it
     /// runs the binary's `doctor` subcommand, never a server.
     pub doctor_smoke: DoctorSmokeState,
@@ -159,16 +164,6 @@ impl BridgeWorld {
     /// it survives a bridge restart but never a scenario boundary).
     pub fn spool_path(&mut self) -> PathBuf {
         self.temp_dir().path().join("spool.jsonl")
-    }
-
-    /// The port of the configured rp URL — where the "rp comes back up"
-    /// step must re-bind the stub.
-    pub fn configured_rp_port(&self) -> u16 {
-        let url = self.rp_url.as_ref().expect("no rp URL configured");
-        url.strip_prefix("http://127.0.0.1:")
-            .and_then(|rest| rest.split('/').next())
-            .and_then(|port| port.parse().ok())
-            .expect("rp URL is not the harness shape http://127.0.0.1:PORT/mcp")
     }
 
     /// The service-specific half of a bridge config — everything but the
@@ -458,27 +453,14 @@ pub fn ascom_code(name: &str) -> u16 {
     }
 }
 
-/// A URL where nothing listens — the "rp is unreachable" fixture.
-///
-/// Unlike [`dead_rp_url`], this port must be one the scenario can later
-/// bind: "the stub rp comes up at the configured rp address" starts a stub
-/// on it, and concurrent scenarios must not share it. So it is reserved
-/// with `bdd_infra::reserved_test_port_async` (testing.md §5.1), which
-/// probes off the poll loop (§5.7).
-pub async fn unreachable_rp_url() -> String {
-    let port = bdd_infra::reserved_test_port_async().await;
-    format!("http://127.0.0.1:{port}/mcp")
-}
-
 /// The port of [`dead_rp_url`], which no scenario can bring rp up on: port 1
 /// is reserved, nothing on a test host listens there, and the bridge's own
 /// config tests use it for their dead URL.
-pub const DEAD_RP_PORT: u16 = 1;
+const DEAD_RP_PORT: u16 = 1;
 
 /// The rp URL of a scenario that never brings rp up, and of the doctor and
-/// TLS/auth smokes. It needs no probe, and none of these binds a stub on
-/// it: a scenario that does says "rp is unreachable" and gets
-/// [`unreachable_rp_url`] instead.
+/// TLS/auth smokes. None of these brings a stub up behind it: a scenario
+/// that does says "rp is unreachable" and gets a relay's address instead.
 fn dead_rp_url() -> String {
     format!("http://127.0.0.1:{DEAD_RP_PORT}/mcp")
 }

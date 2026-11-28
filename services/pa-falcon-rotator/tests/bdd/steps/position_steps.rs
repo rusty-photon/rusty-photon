@@ -69,19 +69,13 @@ async fn mechanical_position_should_be(world: &mut FalconRotatorWorld, expected:
     let actual = world
         .mechanical_position_result
         .expect("no MechanicalPosition captured");
-    assert!(
-        (actual - expected).abs() < 1e-6,
-        "expected {expected}°, got {actual}°"
-    );
+    assert_eq!(actual, expected, "the angle must be exact");
 }
 
 #[then(expr = "Position should be {float} degrees")]
 async fn position_should_be(world: &mut FalconRotatorWorld, expected: f64) {
     let actual = world.position_result.expect("no Position captured");
-    assert!(
-        (actual - expected).abs() < 1e-6,
-        "expected {expected}°, got {actual}°"
-    );
+    assert_eq!(actual, expected, "the angle must be exact");
 }
 
 #[then(expr = "TargetPosition should be {float} degrees")]
@@ -89,10 +83,7 @@ async fn target_position_should_be(world: &mut FalconRotatorWorld, expected: f64
     let actual = world
         .target_position_result
         .expect("no TargetPosition captured");
-    assert!(
-        (actual - expected).abs() < 1e-6,
-        "expected {expected}°, got {actual}°"
-    );
+    assert_eq!(actual, expected, "the angle must be exact");
 }
 
 #[then("an FA command should have been issued")]

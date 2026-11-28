@@ -3,6 +3,10 @@ Feature: Driver-side Sync
   leaving MechanicalPosition unchanged. The Falcon's SD command rewrites the
   device's stored counter, which would change MechanicalPosition on the next
   FA read — so the driver tracks the offset in software and never issues SD.
+  The offset is held at the device's 1/100°, like the mechanical angle it
+  joins to the sky: a Sync to an angle with finer digits reads back to a
+  hundredth, and MoveAbsolute to the Position read commands the mechanical
+  angle the rotator is at.
 
   ASCOM requires the offset to persist across driver starts, so the driver
   keeps it in a record beside its config file, named after it: config.json
@@ -27,6 +31,18 @@ Feature: Driver-side Sync
     And I read Position
     Then Position should be 37.50 degrees
 
+  Scenario: A move to the Position read after a Sync to a finer angle commands where the rotator is
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And the rotator reports mechanical position 100.00 degrees
+    And I call Sync with 112.345
+    And I read Position
+    Then Position should be 112.35 degrees
+    When I call MoveAbsolute with 112.35
+    Then MD:100.00 should have been sent
+    When I read TargetPosition
+    Then TargetPosition should be 112.35 degrees
+
   Scenario: The sync offset survives the last client's disconnect
     Given a running pa-falcon-rotator service
     When I connect the rotator
@@ -44,6 +60,14 @@ Feature: Driver-side Sync
     Then MechanicalPosition should be 0.00 degrees
     When I call Sync with 37.50
     Then the record config.sync-offset.json beside the config holds sync_offset_deg 37.50
+
+  Scenario: The record holds the offset to the device's 1/100°
+    Given a running pa-falcon-rotator process
+    When I connect the rotator
+    And I read MechanicalPosition
+    Then MechanicalPosition should be 0.00 degrees
+    When I call Sync with 12.345
+    Then the record config.sync-offset.json beside the config holds sync_offset_deg 12.35
 
   Scenario: The sync offset survives a restart of the service
     Given a running pa-falcon-rotator process

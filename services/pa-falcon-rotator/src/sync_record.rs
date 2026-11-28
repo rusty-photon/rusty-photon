@@ -121,6 +121,17 @@ mod tests {
     }
 
     #[test]
+    fn a_record_with_finer_digits_reads_back_to_a_hundredth() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.sync-offset.json");
+        std::fs::write(&path, "{\"sync_offset_deg\": 255.20000000000005}").unwrap();
+        let ReadRecord::Offset(offset) = read(&path) else {
+            panic!("expected an offset");
+        };
+        assert_eq!(offset.value(), 255.2);
+    }
+
+    #[test]
     fn the_record_holds_the_offset_under_its_documented_key() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.sync-offset.json");
