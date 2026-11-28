@@ -474,14 +474,14 @@ async fn resume_note(client: &dyn rp_guider::GuiderClient) -> String {
 
 /// Shortest angular distance between two sky angles, folded to
 /// `[0°, 180°]` — a rotator delta never exceeds a half turn by
-/// shortest path.
+/// shortest path — and rounded to 0.01°. The difference of two decimal
+/// angles carries binary residue: 8.05 − 3.05 computes as
+/// 5.000000000000001, which the calibration decision would read as
+/// above a 5° threshold (rp.md § Rotator Tool Details).
 fn angular_delta_deg(a: f64, b: f64) -> f64 {
     let d = (a - b).abs() % 360.0;
-    if d > 180.0 {
-        360.0 - d
-    } else {
-        d
-    }
+    let folded = if d > 180.0 { 360.0 - d } else { d };
+    (folded * 100.0).round() / 100.0
 }
 
 impl McpHandler {
@@ -612,10 +612,20 @@ mod tests {
             (90.0, 90.0, 0.0),
         ] {
             let delta = angular_delta_deg(a, b);
-            assert!(
-                (delta - expected).abs() < 1e-9,
-                "delta({a}, {b}) = {delta}, expected {expected}"
-            );
+            assert_eq!(delta, expected, "delta({a}, {b})");
+        }
+    }
+
+    #[test]
+    fn angular_delta_is_exact_to_a_hundredth() {
+        // Unrounded, these read 5.000000000000001, 4.189999999999998 and
+        // 19.99000000000001.
+        for (a, b, expected) in [
+            (3.05, 8.05, 5.0),
+            (152.0, 147.81, 4.19),
+            (10.0, 350.01, 19.99),
+        ] {
+            assert_eq!(angular_delta_deg(a, b), expected, "delta({a}, {b})");
         }
     }
 }

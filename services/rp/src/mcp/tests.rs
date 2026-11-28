@@ -8655,6 +8655,31 @@ async fn ladder_at_or_below_the_threshold_reselects_and_resumes() {
     );
 }
 
+/// A turn of exactly the threshold keeps the calibrations: 3.05° to
+/// 8.05° is 5° to the hundredth, though the bare difference computes as
+/// 5.000000000000001. The guider has no stop, clear or start expected,
+/// so any of them fails the test.
+#[tokio::test]
+async fn ladder_a_turn_of_exactly_the_threshold_keeps_the_calibrations() {
+    let rot = MockRotator {
+        position_value: std::sync::Mutex::new(3.05),
+        ..Default::default()
+    };
+    let handler = ladder_handler(rot, |mock| {
+        expect_guiding_and_pause(mock);
+        mock.expect_reselect_star()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Paused));
+        mock.expect_resume_guiding()
+            .times(1)
+            .returning(|| Ok(rp_guider::GuiderState::Guiding));
+    });
+    let ladder = ladder_result(&handler, 8.05).await;
+    assert_eq!(ladder["delta_deg"], 5.0);
+    assert_eq!(ladder["calibration_cleared"], false);
+    assert_eq!(ladder["guiding_restarted"], false);
+}
+
 #[tokio::test]
 async fn ladder_resume_failure_at_or_below_the_threshold_is_a_hard_error() {
     let handler = ladder_handler(MockRotator::default(), |mock| {
