@@ -3,7 +3,8 @@
 [`guide-simulator`](guide-simulator.md)'s mount and sky behind an
 ASCOM Alpaca Camera and an ASCOM Alpaca Telescope, on the wall clock. The
 `guider` service's BDD scenarios run the service against these devices
-([guider.md § Testing](../services/guider.md#testing)): the camera's frames
+([guider.md § Testing](../services/guider.md#testing)), and so does one
+feature of `rp`'s, with `rp` connecting them as on a rig: the camera's frames
 show the stars where the simulated mount points, and the guider's pulses
 move them. A scenario scripts the devices from the test process: it parks
 the mount, makes the camera fail its frames or stop answering, and reads
@@ -150,4 +151,7 @@ runner does not outlast it.
 ## Consumers
 
 The `guider` service's BDD scenarios, as
-[guider.md § Testing](../services/guider.md#testing) designs them.
+[guider.md § Testing](../services/guider.md#testing) designs them, and
+`rp`'s `guider_service.feature`, which runs the `guider` binary against
+these devices with `rp` as their client
+([rp.md § BDD Tests](../services/rp.md#bdd-tests-cucumber)).

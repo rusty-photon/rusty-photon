@@ -25,6 +25,8 @@ use cucumber::World;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use crate::steps::guider_service_steps::GuiderService;
+
 /// One raw `/mcp` response, as captured by the transport probes
 /// (`steps::mcp_transport_steps`).
 #[derive(Debug, Clone)]
@@ -94,6 +96,9 @@ pub struct RpWorld {
     /// Handle to the in-process stub guider server (same lifecycle
     /// rationale as `plate_solver_stub`).
     pub guider_stub: Option<GuiderStub>,
+    /// The guider binary and the simulated devices it guides, in place of
+    /// the stub (`guider_service.feature`).
+    pub guider_service: Option<GuiderService>,
     /// Optional `(latitude_degrees, longitude_degrees)` site for
     /// ephemeris-driven scenarios; emitted as the `site` block in
     /// the generated rp config. Used by `target_catalog`,

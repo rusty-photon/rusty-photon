@@ -19,6 +19,7 @@ guider is a standalone service.
 [`docs/plans/native-guider.md`](../plans/native-guider.md) holds the
 evidence and orders the work in stages G0 to G7. `rp`'s side of the
 contract below is built, and tested against a double of this API
+and against the service itself
 ([rp.md § Guider Service](rp.md#guider-service)).
 
 Four properties shape the design:
@@ -72,7 +73,7 @@ guider serves nothing for it, and refuses no request on its account.
 | `rp-guider` | Library crate | The HTTP contract of this document: request and response types, the error codes, and the client `rp` uses |
 | `guider` | Service, port 11129 | The Alpaca clients, the loop that drives the core, the states and the statistics, the HTTP API, the setup page, the calibration store and the guide log. The states sequence frames, pulses and requests, which is I/O, and the statistics are a window and running sums over the core's step errors |
 | `guide-simulator` | Test-infrastructure crate | A mount model and a star renderer in simulated time: drift, periodic error, backlash, pulse granularity and seeing, with the stars moving as the pulses say |
-| `guide-simulator-alpaca` | Test-infrastructure crate | `guide-simulator` behind an Alpaca Camera and an Alpaca Telescope on the wall clock, scripted by the service's scenarios |
+| `guide-simulator-alpaca` | Test-infrastructure crate | `guide-simulator` behind an Alpaca Camera and an Alpaca Telescope on the wall clock, scripted by the service's scenarios and by `rp`'s against the service |
 
 ### Alpaca members used
 
@@ -1804,6 +1805,14 @@ verifiers take that `503` as proof that the service serves
   scenarios at once for each CPU it may run on: more would starve the
   simulated devices, and every bound a scenario configures would race
   the machine.
+- **`rp` against the service.** `rp`'s `guider_service.feature` starts
+  this binary against the same devices, with `rp` as their client: it
+  connects them, and its mount and guiding train's camera are the
+  simulated ones. `rp`'s tools, its check of the devices, its watch,
+  the guide camera guard, a frame's guiding block and the safety stop
+  meet a run of the service's own
+  ([rp.md § BDD Tests](rp.md#bdd-tests-cucumber)). `rp`'s other guiding
+  features run against `bdd-infra`'s double of the API.
 - **The guide log.** Fixture tests, as [Guide log](#guide-log) says.
 - **The setup page.** `setup_pages.feature` holds the page to
   [Setup page](#setup-page) through the shared steps every service's

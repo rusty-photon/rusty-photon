@@ -5333,7 +5333,8 @@ capture through the guide camera, a guiding train's
 rotate-while-guiding ladder
 ([Rotator Tool Details](#rotator-tool-details)) and the sidecar's
 `guiding` block ([Rig state](#rig-state)). Its scenarios run against
-`bdd-infra`'s double of the contract
+`bdd-infra`'s double of the contract, and `guider_service.feature`
+runs `rp` against the guider service itself and simulated devices
 (§ [BDD Tests](#bdd-tests-cucumber)). `rp` speaks one guider contract
 and has no backend selector.
 
@@ -9132,6 +9133,24 @@ Behavioral specifications for `rp`'s responsibilities:
   ladder; `guide_metric_focus.feature` the metric `auto_focus` and the
   guide focus watch; and `guide_focus.feature` what the sweep refuses
   before it reads the guider, and a steady guide focus watch
+- Guiding against the guider service itself (`guider_service.feature`):
+  the `guider` binary guiding `guide-simulator-alpaca`'s camera and
+  mount ([guider.md § Testing](guider.md#testing)), with `rp`'s mount
+  the simulated mount and its guiding train's camera the simulated
+  camera, which `rp` connects as on a rig. A start calibrates, settles
+  and answers the guider's own figures; the check refuses a guider
+  that guides on a camera other than the guiding train's;
+  `get_guiding_stats`, pause and resume, a dither and a stop reach the
+  guider's run; the watch reports the guider's own stop when the mount
+  slews and a loss when the stars leave the frame; the guide camera
+  guard refuses a capture through the guide camera while the guider
+  guides; a frame of another camera records the guide error over its
+  exposure; the safety stop ends the guider's run and parks the mount;
+  and a start the guider refuses reaches the caller with its code.
+  These scenarios hold the guider's figures to how they relate, not to
+  values. The stub stays for what the service cannot be made to give
+  on demand: a refusal of each code, a guider that stops answering or
+  times out, the requests it received, and the figures it settles with
 - Power failure recovery (`startup_recovery.feature`: derived
   progress survives an rp restart on disk — see § What Survives an rp
   Restart; the end-to-end restart of a run against a real engine lives
