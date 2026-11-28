@@ -51,10 +51,17 @@ Feature: Movement
     And the rotator reports mechanical position 0.00 degrees
     And the driver-side sync offset is 45.00 degrees
     # Non-zero offset so a buggy impl that stored the mechanical target
-    # (135.00) instead of the sky target (180.00) is caught.
-    And I call MoveAbsolute with 180.00
+    # (102.84) instead of the sky target (147.84) is caught.
+    And I call MoveAbsolute with 147.84
     And I read TargetPosition
-    Then TargetPosition should be 180.00 degrees
+    Then TargetPosition should be 147.84 degrees
+
+  Scenario: MoveAbsolute to negative zero sends MD:0.00
+    Given a running pa-falcon-rotator service
+    When I connect the rotator
+    And the rotator reports mechanical position 90.00 degrees
+    And I call MoveAbsolute with -0.00
+    Then MD:0.00 should have been sent
 
   Scenario Outline: MoveAbsolute rejects non-finite angles with INVALID_VALUE
     Given a running pa-falcon-rotator service
