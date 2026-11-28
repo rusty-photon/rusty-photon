@@ -135,6 +135,10 @@ require-sh = true
 bdd-infra = { workspace = true, features = ["rp-harness", "tls-auth", "setup-pages"] }
 cucumber = { workspace = true }
 derive_more = { workspace = true }
+# guider_service.feature runs the guider binary against these simulated
+# devices.
+guide-simulator = { workspace = true }
+guide-simulator-alpaca = { workspace = true }
 libc = { workspace = true }
 mockall = { workspace = true }
 # Re-declared in dev-deps with the `mock` feature so unit tests can

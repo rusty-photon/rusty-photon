@@ -676,7 +676,7 @@ async fn mount_unparked_on_simulator(world: &mut RpWorld) {
 
 // --- Helpers --------------------------------------------------------
 
-async fn call_guider_tool(world: &mut RpWorld, tool: &str, params: Map<String, Value>) {
+pub async fn call_guider_tool(world: &mut RpWorld, tool: &str, params: Map<String, Value>) {
     ensure_mcp_client(world).await;
 
     let result = world.mcp().call_tool(tool, Value::Object(params)).await;
@@ -688,7 +688,7 @@ async fn call_guider_tool(world: &mut RpWorld, tool: &str, params: Map<String, V
     world.last_tool_result = Some(result);
 }
 
-const fn last_guider_result(world: &RpWorld) -> &Value {
+pub const fn last_guider_result(world: &RpWorld) -> &Value {
     world
         .last_guider_result
         .as_ref()

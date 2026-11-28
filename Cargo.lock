@@ -4432,6 +4432,8 @@ dependencies = [
  "clap",
  "cucumber",
  "derive_more",
+ "guide-simulator",
+ "guide-simulator-alpaca",
  "hostname",
  "humantime",
  "humantime-serde",

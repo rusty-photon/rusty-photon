@@ -167,6 +167,19 @@ fn document_at_is_a_number(world: &mut RpWorld, pointer: String) {
     );
 }
 
+#[then(expr = "the document at {string} should be a number of at least {int}")]
+fn document_at_is_at_least(world: &mut RpWorld, pointer: String, minimum: u64) {
+    let body = document_body(world);
+    let value = document_value(body, &pointer);
+    let actual = value.as_f64().unwrap_or_else(|| {
+        panic!("expected a number at {pointer}, got {value} (document: {body})")
+    });
+    assert!(
+        actual >= minimum as f64,
+        "expected at least {minimum} at {pointer}, got {actual} (document: {body})"
+    );
+}
+
 /// A reading the simulator settles to, within the tolerance its own
 /// arithmetic leaves.
 #[then(expr = "the document at {string} should be {float} within {float}")]
