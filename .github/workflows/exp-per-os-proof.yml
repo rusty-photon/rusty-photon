@@ -1,0 +1,489 @@
+# Throwaway proof, exp/ branch only, never merged: bazel.yml's job on this
+# branch, on hosted macOS (four runs) and hosted Windows (two runs), the
+# runners a pull request's CI does not reach, reading the cache anonymously
+# and uploading nothing.
+permissions:
+  contents: read
+on:
+  push:
+    branches: [exp/per-os-ci-configs-proof]
+name: exp-per-os-proof
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is not a PR gate. It has no pool venue, so it stays on hosted
+        # runners where it is the slowest leg by a wide margin — it decides
+        # when a PR goes green while Linux and Windows have long finished. It
+        # still runs on push-to-main and on the nightly schedule, so a
+        # macOS-only break turns main red within minutes of a merge, and the
+        # hosted macOS cache keeps being written. A red push tells nobody; the
+        # alarm is the nightly's, whose failure opens the `macos-nightly`
+        # tracking issue (notify-macos-failure below).
+        #
+        # Computed with `fromJSON` rather than a job-level `if`: a job-level
+        # `if` that reads the `matrix` context is not a skipped job, it is a
+        # startup failure for the whole workflow file.
+        # Folded so this evaluates as ONE line: unlike `runs-on`, which takes
+        # the expression's value as-is, a matrix value has to come back as a
+        # JSON array, so it is not worth finding out how a newline inside the
+        # `${{ }}` is treated. Continuation lines therefore sit at the same
+        # indent as `${{`, which is what makes YAML fold them with spaces.
+        os: [macos-latest]
+        run: [1, 2, 3, 4]
+        include:
+          - os: windows-latest
+            run: 1
+          - os: windows-latest
+            run: 2
+    # Every falsy branch of this expression resolves to the hosted runner
+    # (matrix.os) — fork PR, schedule, kill switch off, null head.repo all
+    # land on the safe side. Same-repo detection compares the PR's head
+    # repository to this repository; a fork can only reach the pool by
+    # editing this file, which the fork-PR approval checkpoint reviews
+    # (docs/skills/proxmox-runner-pool.md § Security Model). macOS has no
+    # pool venue and always falls through.
+    #
+    # The trusted-event test is spelled out once per OS rather than factored
+    # out: `runs-on` is evaluated before the job exists, so neither the `env`
+    # context nor a job output is available to hold it. Keep the two copies
+    # identical — a divergence here is a security boundary moving.
+    # tools/rusty-photon-ci/src/pool_routing.rs holds every copy, these and
+    # the other workflows', to the reviewed clauses, so `bazel test //...`
+    # fails on one.
+    runs-on: ${{ matrix.os }}
+    name: bazel / ${{ matrix.os }} run ${{ matrix.run }}
+    # Bazel's action-graph change detection figures out which targets actually
+    # changed and only rebuilds those; everything else is a cache hit.
+    #
+    # 40-min timeout: the OmniSim-backed BDD suites run in parallel and
+    # rp:bdd is sharded on every OS (each test process spawns a private
+    # OmniSim), so the BDD step is bounded by the slowest shard; 40 leaves
+    # generous headroom for a cold-cache first run.
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The remote cache (Cloudflare Worker + R2; see tools/bazel-cache-worker)
+      # is public-READ / token-WRITE. Only push-to-main and the nightly schedule
+      # — which run from the default branch — get the write token, so they
+      # populate the cache from trusted code. PRs (including forks, which get
+      # no secrets at all) read anonymously and never write, which prevents
+      # cache poisoning. The remote-cache action below configures the cache
+      # for every job (reads are anonymous, so even fork PRs get a warm cache)
+      # and only gives Bazel the write token, and uploads, when
+      # CACHE_WRITE_TOKEN is non-empty.
+      CACHE_WRITE_TOKEN: ""
+      # LAN cache write credential, pool jobs only — the same trusted-code
+      # gating as CACHE_WRITE_TOKEN above but for the LAN bazel-remote the
+      # pool runners read (see docs/skills/proxmox-runner-pool.md). Only
+      # push-to-main writes; PR jobs on the pool read anonymously. The
+      # credential deliberately does NOT live on the runner VM: any job on a
+      # self-hosted runner can read the machine's filesystem, so a standing
+      # credential there would hand cache-poisoning ability to whatever runs.
+      LAN_CACHE_WRITE_AUTH: ""
+      # Kill switch for routing Bazel repository downloads through the LAN
+      # cache's Remote Asset API ('on' = enabled; see the mask step and the
+      # remote-cache action). A repo variable, not a workflow constant,
+      # because the ORDER matters: the NAS side (bazel-remote's asset API
+      # flag + published gRPC port) must be live before this flips on — with
+      # the switch on and the gRPC endpoint unreachable, Bazel fails the
+      # build outright at the first remote action (capabilities query),
+      # unlike the HTTP cache path where an outage degrades to a cache-less
+      # run. Flipping it off returns every pool job to the HTTP path with no
+      # commit and no template rebuild.
+      RP_LAN_ASSET_API: ${{ vars.RP_LAN_ASSET_API }}
+      # The CI values that differ by platform (.bazelrc's ci-linux, ci-macos
+      # and ci-windows), which every Bazel step names after --config=ci. They
+      # are not left to build:macos or build:windows: a platform config takes
+      # rc-file priority, and --config=ci on the command line outranks it
+      # (.bazelrc's CI section says why).
+      CI_OS_CONFIG: ${{ matrix.os == 'macos-latest' && 'ci-macos' || matrix.os == 'windows-latest' && 'ci-windows' || 'ci-linux' }}
+    steps:
+      # The pool runner's .env supplies RP_LAN_CACHE_URL (a LAN address —
+      # operator infrastructure, masked so it cannot appear in public logs).
+      # Deliberately unconditional: a no-op on hosted runners (the var is
+      # empty there), and not gated on runner.environment so the masking
+      # cannot be skipped by a context quirk.
+      #
+      # When RP_LAN_ASSET_API is 'on', also derive the same cache host's gRPC
+      # endpoint (bazel-remote serves gRPC on 9092; the port here must match
+      # what the NAS app publishes on the runner VLAN) and hand it to the
+      # remote-cache action and the Bazel steps via GITHUB_ENV. gRPC error
+      # strings print a bare host or host:port with no scheme, which the
+      # full-URL mask would not catch, so those spellings are masked as well —
+      # before anything can log them.
+      - name: Mask runner-provided cache endpoint
+        run: |
+          if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
+            echo "::add-mask::$RP_LAN_CACHE_URL"
+            if [[ "${RP_LAN_ASSET_API:-}" == "on" ]]; then
+              host="${RP_LAN_CACHE_URL#*://}"; host="${host%%/*}"; host="${host%%:*}"
+              echo "::add-mask::$host"
+              echo "::add-mask::${host}:9092"
+              echo "::add-mask::grpc://${host}:9092"
+              echo "RP_LAN_CACHE_GRPC_URL=grpc://${host}:9092" >> "$GITHUB_ENV"
+            fi
+          fi
+
+      - uses: actions/checkout@v7
+
+      # The remote cache for this job's venue and credentials, which every
+      # Bazel step below reads as --config=ci-remote.
+      - name: Configure the remote cache
+        uses: ./.github/actions/remote-cache
+
+      # MSVC cl.exe (VS 2022 17.7+) respects the LongPathsEnabled
+      # registry key, removing the 260-char MAX_PATH ceiling for include
+      # resolution. aws-lc-sys's vendored C source uses deep relative
+      # includes (../../../../third_party/...) whose intermediate
+      # un-normalised paths exceed 260 chars inside Bazel's runfiles tree.
+      # The short --output_base below still helps because shorter paths
+      # are faster to normalise, but the registry key is what actually
+      # unblocks cl.exe.
+      # Deliberately NOT gated on runner.environment like the install steps
+      # below: it downloads nothing, is idempotent, and costs a fraction of a
+      # second. The pool template already sets both, so on the pool this is
+      # purely a guard against template drift silently reintroducing the
+      # 260-char ceiling.
+      - name: Enable long paths (Windows MAX_PATH workaround)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1
+          git config --system core.longpaths true
+
+      # No Windows Defender exclusion step, on either venue: GitHub's Windows
+      # runner images ship with Defender real-time protection disabled and
+      # C:\ / D:\ excluded at the image level (actions/runner-images
+      # Configure-WindowsDefender.ps1), and the pool template has the Defender
+      # feature removed outright (Tamper Protection blocks the Set-MpPreference
+      # route on Server 2025). Add-MpPreference exclusions here would be a
+      # no-op — Defender cannot be the cause of Windows file-access flakiness
+      # on these runners, and transient-denial suspicions belong at the
+      # Bazel/OS layer (see the process_wrapper_read_retry rules_rust patch in
+      # MODULE.bazel).
+
+      # Using --output_base=C:/b eliminates the workspace-hash
+      # subdirectory and saves ~50 characters vs the default, against
+      # Windows' 260-character MAX_PATH, which rules_rust does not handle
+      # systematically (rules_rust issue 1120,
+      # https://github.com/bazelbuild/rules_rust/issues/1120). .bazelrc
+      # already imports user.bazelrc via try-import, so this takes effect on
+      # the next bazel invocation.
+      # Also load-bearing on the pool, for a second reason: C:\b is the
+      # output base the Windows template pre-warmed its external repos into,
+      # so dropping this step would send every clone back to a cold fetch.
+      - name: Shorten Bazel output base (Windows)
+        if: runner.os == 'Windows'
+        run: echo 'startup --output_base=C:/b' > user.bazelrc
+
+      # The provisioning steps below are hosted-only: both pool templates
+      # ship lld (Linux), bazelisk, OmniSim, Pebble, and both camera SDKs at
+      # the same pins, and re-downloading them per ephemeral clone would
+      # defeat the pool's zero-WAN property. COUPLING: bumping a pin in any
+      # of these steps requires rebuilding BOTH runner templates — see
+      # docs/skills/proxmox-runner-pool.md for the procedure.
+      - name: Install lld
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lld >/dev/null
+
+      - name: Setup bazelisk
+        if: runner.environment == 'github-hosted'
+        uses: bazelbuild/setup-bazelisk@v3
+        with:
+          bazelisk-version: 1.28.1
+
+      - name: Verify bazel version
+        run: bazel --version
+
+      # The BDD suites tagged resources:omnisim spawn the ASCOM Alpaca
+      # simulator. The Cargo workflows install it via the same composite
+      # action.
+      - name: Install ASCOM OmniSim
+        if: runner.environment == 'github-hosted'
+        uses: ./.github/actions/install-omnisim
+      - name: Install Pebble
+        if: runner.environment == 'github-hosted'
+        uses: ./.github/actions/install-pebble
+
+      # qhy-camera links the proprietary QHYCCD SDK + libusb; `bazel build //...`
+      # compiles libqhyccd-sys on every OS, so provision both.
+      # Linux: the action stages the libs into /usr/local/lib (build.rs's env-free
+      # search path) + apt libusb. macOS: SDK extracts into $GITHUB_WORKSPACE
+      # (build.rs reads it via the GITHUB_WORKSPACE forwarded in .bazelrc) + brew
+      # libusb. Windows: SDK into $GITHUB_WORKSPACE/sdk_win64_<ver> (bundles libusb).
+      # On the Windows pool venue the SDK is installed once, machine-wide, and
+      # located by QHYCCD_SDK_DIR instead — build.rs prefers that over the
+      # GITHUB_WORKSPACE fallback, and .bazelrc forwards it through
+      # strict_action_env. It is unset on hosted runners, so their action keys
+      # are unchanged.
+      - name: Install libusb (qhy-camera, Linux)
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libusb-1.0-0-dev
+          version: 1.0
+      - name: Install libusb (qhy-camera, macOS)
+        if: runner.os == 'macOS'
+        run: brew install libusb
+      - name: Install QHYCCD SDK (qhy-camera)
+        if: runner.environment == 'github-hosted'
+        uses: ivonnyssen/qhyccd-sdk-install@v4
+        with:
+          version: "26.06.04"
+      # zwo-camera links the native ZWO ASI/EFW SDK (zwo-rs -> libzwo-sys), so
+      # //... cannot build, link, or run it without the SDK on the link path.
+      # Provision it on every OS, exactly like OmniSim above: this build always
+      # covers the whole graph, and an unrelated change can still invalidate
+      # zwo-camera's cached link action, so the SDK must always be present. The composite action also installs libclang for
+      # bindgen and forwards LIBCLANG_PATH / ZWO_SDK_LIB_DIR (consumed under
+      # .bazelrc's strict_action_env on macOS / Windows). See
+      # services/zwo-camera/BUILD.bazel and docs/services/zwo-camera.md.
+      - name: Install ZWO SDK
+        if: runner.environment == 'github-hosted'
+        uses: ./.github/actions/install-zwo-sdk
+
+      - name: bazel build
+        id: build
+        # macOS builds in the watched step below instead.
+        if: runner.os != 'macOS'
+        # Step budget: a fully cold build fits well under 30 minutes on Linux
+        # and Windows, and a broken build must not eat the whole 40-minute job
+        # budget (the tests after this step need ~10).
+        timeout-minutes: 30
+        run: |
+          # --keep_going comes from `.bazelrc`'s `build:remote-cache-base`,
+          # for every OS: it surfaces every failing target instead of stopping
+          # at the first, and lets a remote-cache eviction retry invalidate
+          # every broken action per attempt, so a PR build converges on an
+          # eviction wave. No need to set it here too.
+          # Windows: keep this step's trace for the profile artifact uploaded
+          # below (what it records: build:profile in .bazelrc). Bazel resolves
+          # a relative --profile against the workspace root.
+          bazel build --config=ci --config="$CI_OS_CONFIG" --config=ci-remote \
+            ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-build.json.gz' || '' }} \
+            //...
+
+      # macOS: a longer TCP retransmit slop, so that the Bazel client's
+      # loopback connection to its server outlasts the kernel's bursts of
+      # packet loss. On the hosted runners with 7 GiB the kernel runs short
+      # of mbufs during the build's cache downloads and drops loopback
+      # packets for seconds at a time. Loopback's retransmit timer starts
+      # from about 30 ms, so at the default slop of 200 ms the twelve
+      # retransmissions the kernel allows last about 18 s. A longer burst
+      # makes the server's kernel drop the connection and reset it at a
+      # sequence number the client's kernel refuses (RFC 5961), and the
+      # client waits until the step's timeout: the macOS wedge .bazelrc's
+      # passage on it describes. At 3 s the twelve last
+      # about 50 s, past the waits these runners show, which reach about half
+      # a minute. The slop delays only recovery by retransmit timeout, and
+      # changes nothing while no packet is lost. It lasts for the build
+      # alone: the step after the build puts the default back, so the test
+      # steps' loopback clients, some of them with 2 s deadlines, keep the
+      # kernel's quick recovery.
+      - name: Lengthen TCP's retransmit slop (macOS)
+        if: runner.os == 'macOS'
+        run: sudo -n sysctl -w net.inet.tcp.rexmt_slop=3000
+
+      # The same build on macOS, under the stall probe. macOS runners
+      # intermittently wedge: the build goes silent mid-build and dies at
+      # this step's timeout (.bazelrc's passage on the macOS wedge says what
+      # is known of it). When the build prints nothing for five minutes, the
+      # probe dumps what the wedge leaves to read while it lasts: the
+      # server's threads and logs, the connections to the cache and between
+      # the Bazel client and its server, each change to the latter and the
+      # packets that crossed it since before the build, the client's stacks,
+      # the kernel's network buffers and TCP's retransmission and drop
+      # counters. It retries and stops nothing, so a wedge still ends at the
+      # 30-minute timeout, as it would without it.
+      - name: bazel build (macOS, watched for a stall)
+        id: build-macos
+        if: runner.os == 'macOS'
+        timeout-minutes: 30
+        uses: ./.github/actions/bazel-stall-probe
+        with:
+          args: build --config=ci --config=ci-macos --config=ci-remote //...
+
+      # The kernel's default slop (TCPTV_REXMTSLOP) back, for the steps
+      # after the build (see the slop step above).
+      - name: Restore TCP's retransmit slop (macOS)
+        if: always() && runner.os == 'macOS'
+        run: sudo -n sysctl -w net.inet.tcp.rexmt_slop=200
+
+      - name: bazel test (fast)
+        id: fast
+        # The .bazelrc default filter includes bdd (for the local loop);
+        # exclude it here explicitly to keep the fast unit + integration
+        # pass separate from BDD, so log output and failure attribution
+        # stay useful when something breaks.
+        run: |
+          # Windows: this step's trace, as in the build step.
+          bazel test --config=ci --config="$CI_OS_CONFIG" --config=ci-remote \
+            ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-test-fast.json.gz' || '' }} \
+            --test_tag_filters=-requires-cargo,-bdd,-conformu //...
+
+      - name: bazel test (BDD)
+        id: bdd
+        # BDD cucumber tests spawn service binaries and take 30-150s each;
+        # run them explicitly in their own step. They need OMNISIM_PATH (the
+        # install-omnisim action's pinned binary path, consumed by
+        # `bdd_infra::rp_harness::OmniSimHandle::start`), forwarded via
+        # `--test_env=OMNISIM_PATH` — which lives in `.bazelrc` `build:ci` so it
+        # applies to every step and the flag never changes mid-run (a changing
+        # --test_env discards Bazel's analysis cache; see .bazelrc for the why).
+        # --spawn_strategy=local (bypasses the sandbox, so the BDD-spawned
+        # OmniSim can bind ports and the sandbox teardown cannot park rp:bdd
+        # after a scenario) and --remote_timeout=15 both live in `.bazelrc`.
+        # --test_output=all surfaces rp:bdd's BDD-TRACE per-scenario breadcrumbs
+        # even on a passing run (services/rp/tests/bdd.rs).
+        run: |
+          # `bdd,-requires-cargo`: run every bdd-tagged suite, minus the
+          # cargo-shelling bdd-infra unit tests (the only `requires-cargo`
+          # users). //services/qhy-camera:bdd IS included — it spawns the
+          # simulation-backed driver (no real InitQHYCCDResource / USB
+          # enumeration; see services/qhy-camera/BUILD.bazel + Cargo.toml).
+          # //services/zwo-camera:bdd RUNS here too — `bdd`-tagged (not
+          # `requires-cargo`), spawning the native-SDK sim binary the "Install ZWO
+          # SDK" step above provisioned. Matches the coverage config in .bazelrc.
+          # Windows: this step's trace, as in the build step.
+          bazel test --config=ci --config="$CI_OS_CONFIG" --config=ci-remote \
+            ${{ runner.os == 'Windows' && '--config=profile --profile=bazel-profile-test-bdd.json.gz' || '' }} \
+            --test_tag_filters=bdd,-requires-cargo \
+            --test_output=all \
+            //...
+
+      # --test_output=all makes this job's log ~46k lines, and tail-limited
+      # readers (the GitHub MCP job-log tool returns the last 5,000) miss a
+      # suite that failed early in the step — a shard, a timeout — entirely.
+      # Keep each suite's own log, per shard, so a red
+      # BDD step can be read as files. `bazel-out/*/testlogs` rather than the
+      # `bazel-testlogs` convenience link: the glob covers every OS's config
+      # dir (k8-, x64_windows-, darwin_arm64-fastbuild) through one pattern.
+      # Suffixed with the attempt so a re-run's upload never collides with the
+      # first attempt's.
+      - name: Upload BDD test logs
+        if: failure() && steps.bdd.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bdd-testlogs-${{ matrix.os }}-run-${{ matrix.run }}-attempt-${{ github.run_attempt }}
+          path: |
+            bazel-out/*/testlogs/**/test.log
+            bazel-out/*/testlogs/**/test.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      # The Windows build step on a PR made entirely of cache hits has taken
+      # anything from one minute to five, with nothing in the log to say why,
+      # and on the pool the clone that ran it is destroyed with the job. Keep
+      # every Bazel step's trace, on success as well as failure: a slow green
+      # run is the case worth reading, set against a fast one. `always()`
+      # keeps a failed run's traces too; a step killed outright (a timeout)
+      # can leave its trace unwritten, and the warning below says so.
+      - name: Upload Bazel profiles (Windows)
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bazel-profiles-${{ matrix.os }}-run-${{ matrix.run }}-attempt-${{ github.run_attempt }}
+          path: bazel-profile-*.json.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Where a doc test's dependency paths actually live decides whether the
+      # runfiles-manifest resolver can reach them at all: argv elements go
+      # through RF() in the generated .ps1, but Bazel spills a long argument
+      # list into a params file, and the writer copies THAT through with only
+      # the exec-root prefixes stripped. The spill threshold is per-OS and the
+      # Windows argv is the longest, so this can differ from what a local Linux
+      # run shows. Reported on every Windows run, not just failures: a doc test
+      # that silently moves from argv to the params file would otherwise look
+      # exactly like the resolver working.
+      - name: Report doc-test argument routing (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $scripts = Get-Item -Path 'bazel-out/x64_windows-fastbuild/bin/*/*/*.rustdoc_test.ps1' -ErrorAction SilentlyContinue
+          if (-not $scripts) { Write-Output 'no rustdoc_test runner scripts found'; return }
+          foreach ($script in $scripts) {
+            Write-Output "=== $($script.Name) ==="
+            $body = Get-Content -LiteralPath $script.FullName -Raw
+            $inArgv = ([regex]::Matches($body, "--extern=[^=']+=")).Count
+            $ldirs = ([regex]::Matches($body, "-L[a-z]*=")).Count
+            Write-Output ("  argv: --extern={0} -L={1}" -f $inArgv, $ldirs)
+            $params = $script.FullName -replace '\.rustdoc_test\.ps1$', '.rustdoc_opt_params'
+            if (-not (Test-Path -LiteralPath $params)) {
+              Write-Output '  params file: (absent)'
+              continue
+            }
+            $text = Get-Content -LiteralPath $params -Raw
+            if ($text -eq 'unused') {
+              Write-Output '  params file: unused - the whole argv went through RF()'
+            } else {
+              $spilled = ([regex]::Matches($text, '--extern=[^=\r\n]+=')).Count
+              Write-Output ("  params file: SPILLED, --extern={0} -L={1} - these BYPASS RF()" -f `
+                $spilled, ([regex]::Matches($text, '-L[a-z]*=')).Count)
+            }
+          }
+
+      # Windows post-mortem for the rust_doc_test dependency-resolution family
+      # (E0463 "can't find crate" / "extern location does not exist"): a doc
+      # test is the only kind of target that reads dependency rlibs out of a
+      # RUNFILES TREE at test time, and every failure in this family is that
+      # tree disagreeing with the manifest it was built from. rustdoc cannot
+      # tell the three possible causes apart -- it reports a dangling entry, an
+      # absent one, and one whose stat transiently failed with the same two
+      # messages -- so dump the state directly: the `_main\external` link the
+      # generated runner creates, and for every .rlib the manifest names, both
+      # spellings of it. Cheap and silent unless something is actually wrong.
+      # Only after a build or test failure.
+      - name: Dump doc-test runfiles state (Windows diagnostic)
+        if: >-
+          ${{ !cancelled() && runner.os == 'Windows'
+          && (steps.build.outcome == 'failure'
+              || steps.fast.outcome == 'failure'
+              || steps.bdd.outcome == 'failure') }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Globbed, not -Recurse: bazel-out is enormous and walking into the
+          # runfiles trees themselves would dominate the step's runtime.
+          $trees = Get-Item -Path 'bazel-out/x64_windows-fastbuild/bin/*/*/*.rustdoc_test.bat.runfiles' -ErrorAction SilentlyContinue
+          if (-not $trees) { Write-Output 'no rustdoc_test runfiles trees found'; return }
+          foreach ($tree in $trees) {
+            Write-Output "=== $($tree.FullName) ==="
+            $ext = Join-Path $tree.FullName '_main\external'
+            $link = Get-Item -LiteralPath $ext -Force -ErrorAction SilentlyContinue
+            if ($link) {
+              Write-Output ("  _main\external: linkType={0} target={1} attrs={2}" -f $link.LinkType, $link.Target, $link.Attributes)
+            } else {
+              Write-Output '  _main\external: MISSING (the runner creates it; rlib paths resolve through it)'
+            }
+            $mf = "$($tree.FullName)_manifest"
+            if (-not (Test-Path -LiteralPath $mf)) { Write-Output "  manifest MISSING: $mf"; continue }
+            $checked = 0
+            $bad = 0
+            foreach ($line in Get-Content -LiteralPath $mf) {
+              $sep = $line.IndexOf(' ')
+              if ($sep -lt 1) { continue }
+              $key = $line.Substring(0, $sep)
+              $target = $line.Substring($sep + 1)
+              if (-not $key.EndsWith('.rlib')) { continue }
+              $checked++
+              $treePath = Join-Path $tree.FullName $key
+              $targetOk = Test-Path -LiteralPath $target
+              $treeOk = Test-Path -LiteralPath $treePath
+              if ($targetOk -and $treeOk) { continue }
+              $bad++
+              $entry = Get-Item -LiteralPath $treePath -Force -ErrorAction SilentlyContinue
+              Write-Output ("  UNREACHABLE {0}" -f $key)
+              Write-Output ("    manifest target: exists={0} path={1}" -f $targetOk, $target)
+              Write-Output ("    runfiles entry : exists={0} linkType={1} target={2} pathLen={3}" -f `
+                $treeOk, $(if ($entry) { $entry.LinkType } else { '(no entry)' }), `
+                $(if ($entry) { $entry.Target } else { '' }), $treePath.Length)
+            }
+            Write-Output ("  rlibs in manifest={0} unreachable={1}" -f $checked, $bad)
+          }
+
