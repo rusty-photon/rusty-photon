@@ -14,6 +14,7 @@
 
 use std::time::Duration;
 
+use bdd_infra::restart_relay::RestartRelay;
 use bdd_infra::rp_harness::{
     build_calibrator_flats_config, start_rp, write_temp_config_file, CameraConfig,
     CoverCalibratorConfig, FilterWheelConfig, McpTestClient, OmniSimHandle, OpticalTrainConfig,
@@ -500,16 +501,13 @@ async fn configure_rig(world: &mut CalibratorFlatsWorld, wheel: bool) {
     });
 }
 
-/// Start calibrator-flats, then rp with it registered. rp's port is
-/// reserved first (testing.md §5.1: a band port probed by connect, never
-/// a bind-and-drop) so the provider's config can name rp's MCP URL
+/// Start calibrator-flats, then rp with it registered. rp's relay starts
+/// first (testing.md §5.1) so the provider's config can name rp's MCP URL
 /// before rp exists.
 async fn start_provider_then_rp(world: &mut CalibratorFlatsWorld) {
-    let rp_port = bdd_infra::reserved_test_port_async().await;
-    world.rp_port = Some(rp_port);
-
+    let relay = RestartRelay::start().await;
     let mut config = build_calibrator_flats_config(
-        &format!("http://127.0.0.1:{rp_port}/mcp"),
+        &format!("{}/mcp", relay.base_url()),
         &world.store_path_string(),
     );
     for (key, value) in &world.provider_overrides {
@@ -531,7 +529,10 @@ async fn start_provider_then_rp(world: &mut CalibratorFlatsWorld) {
     }));
 
     let rp_config = world.build_rp_config();
-    world.rp = Some(start_rp(&rp_config).await);
+    let rp = start_rp(&rp_config).await;
+    relay.forward_to(rp.port());
+    world.rp_relay = Some(relay);
+    world.rp = Some(rp);
     assert!(
         world.wait_for_rp_healthy().await,
         "rp did not become healthy within timeout"

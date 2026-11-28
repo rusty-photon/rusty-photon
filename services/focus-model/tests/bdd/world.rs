@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bdd_infra::restart_relay::RestartRelay;
 use bdd_infra::rp_harness::{
     CameraConfig, FilterWheelConfig, FocuserConfig, GuiderConfig, GuiderStub, McpTestClient,
     MountConfig, OpticalTrainConfig, ReceivedEvent, RpConfigBuilder, WebhookReceiver,
@@ -101,10 +102,10 @@ pub struct FocusModelWorld {
     pub obstruction_mm_for_train: Option<f64>,
     /// rp's `data_directory`, when the scenario pins a fresh one.
     pub data_dir: Option<tempfile::TempDir>,
-    /// rp's port, picked before the provider starts: the provider's
+    /// The port the provider's config names for rp: the provider's
     /// config names rp's MCP URL, and rp dials the provider at startup,
-    /// so rp cannot be started first on an ephemeral port.
-    pub rp_port: Option<u16>,
+    /// so the relay's port exists first and rp binds port 0 behind it.
+    pub rp_relay: Option<RestartRelay>,
 
     // --- focus-model config building ---
     /// Per-scenario top-level overrides layered onto
@@ -153,7 +154,7 @@ impl Default for FocusModelWorld {
             aperture_mm_for_train: None,
             obstruction_mm_for_train: None,
             data_dir: None,
-            rp_port: None,
+            rp_relay: None,
             provider_overrides: Map::new(),
             train_overrides: Vec::new(),
             store_dir: tempfile::tempdir().expect("create the scenario's store directory"),
@@ -296,9 +297,6 @@ impl FocusModelWorld {
         // rosters that mount, and rp refuses to start on a mount whose
         // site disagrees with the configured one.
         builder.with_site(SIMULATOR_SITE.0, SIMULATOR_SITE.1);
-        if let Some(port) = self.rp_port {
-            builder.with_port(port);
-        }
         builder.build()
     }
 
