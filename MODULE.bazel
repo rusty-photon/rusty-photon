@@ -150,10 +150,9 @@ node.toolchain(node_version = "24.20.0")
 #    entry as a DANGLING symlink
 #    (file=false symlink=true len=0, parent dir real) which no amount of
 #    retrying in process_wrapper (patch 4) can outlast, while the manifest's
-#    execroot target is a real file — `build:windows
-#    --remote_download_outputs=all` wins over build:ci's `toplevel` because
-#    --enable_platform_specific_config appends platform lines last (see
-#    .bazelrc), so every output is materialized even on remote-cache hits.
+#    execroot target is a real file: Windows CI downloads every output
+#    (`ci-windows`'s `--remote_download_outputs=all` in .bazelrc), so every
+#    output is materialized even on remote-cache hits.
 #
 #    The flake has a MAIN-REPO leg too: when the build script belongs to a
 #    first-party path dependency (libqhyccd-sys), its

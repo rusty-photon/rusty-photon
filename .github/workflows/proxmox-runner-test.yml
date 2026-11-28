@@ -50,7 +50,7 @@ jobs:
       - name: bazel build
         timeout-minutes: 30
         run: |
-          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          FLAGS=(--config=ci --config=ci-linux --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
@@ -58,7 +58,7 @@ jobs:
 
       - name: bazel test (fast)
         run: |
-          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          FLAGS=(--config=ci --config=ci-linux --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
@@ -67,7 +67,7 @@ jobs:
 
       - name: bazel test (BDD)
         run: |
-          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          FLAGS=(--config=ci --config=ci-linux --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
@@ -154,7 +154,7 @@ jobs:
       - name: bazel build
         timeout-minutes: 30
         run: |
-          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          FLAGS=(--config=ci --config=ci-windows --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
@@ -162,7 +162,7 @@ jobs:
 
       - name: bazel test (fast)
         run: |
-          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          FLAGS=(--config=ci --config=ci-windows --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
@@ -171,7 +171,7 @@ jobs:
 
       - name: bazel test (BDD)
         run: |
-          FLAGS=(--config=ci --config=remote-cache --remote_upload_local_results=false)
+          FLAGS=(--config=ci --config=ci-windows --config=remote-cache --remote_upload_local_results=false)
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
