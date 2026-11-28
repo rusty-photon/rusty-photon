@@ -14,9 +14,13 @@ could not be made to run with nobody logged on (§ Session 0, below).
 
 This is the fourth kind of record [the index](../README.md) names: a
 check a plan's stage asks for on a rig. Its evidence is the scripts as
-run and their output, the driver's log of its connect
+run and their output ([mount-snapshots.txt](mount-snapshots.txt),
+[alpaca-reads.txt](alpaca-reads.txt)), the driver's log of its connect
 ([driver-connect.txt](driver-connect.txt), the lines that send a
-command or report a state), and `rp`'s log.
+command or report a state), `rp`'s log and the session-0 attempts'
+output ([session-0.txt](session-0.txt)). APCC's own log stays on the
+rig: it holds the mount's network address and APCC's licence exchange
+with the mount.
 No ConformU run was made: its Telescope tests slew the mount, and they
 cannot be deselected (see
 [hardware-validation.md](../../skills/hardware-validation.md#install-and-run)).
@@ -85,10 +89,10 @@ It has no `guiding` block yet; stage G7 adds one.
 
 1. **The mount before.** [mount-snapshot.ps1](mount-snapshot.ps1) sends
    read-only LX200 get commands to the mount's own web interface, the
-   ones APCC polls. Before anything started, the mount read Dec
-   +89°59′58.9″, altitude 31.5°, its status string starting `P`, and
-   its right ascension advanced with the clock: parked, not tracking.
-   Its clock was correct.
+   ones APCC polls ([mount-snapshots.txt](mount-snapshots.txt)). Before
+   anything started, the mount read Dec +89°59′58.9″, its status string
+   starting `P`, and its right ascension advanced with the clock:
+   parked, not tracking. Its clock was correct.
 2. **APCC.** Started, it connected to the mount and set the mount's
    date and time, which had drifted 4.9 s. Its log shows it polling the
    mount's status, setting the guide rate (`:RG2#`), sending a few other
@@ -100,23 +104,27 @@ It has no `guiding` block yet; stage G7 adds one.
    a time sync to APCC (`:*TIMESYNC,1#`) and `:B1#`, and otherwise only
    status reads ([driver-connect.txt](driver-connect.txt)). It logged
    "Completed move to parked position" without sending a move. The
-   mount stayed parked. The driver's log of 2026-11-22, a connect with
-   the mount unparked and tracking, shows it re-sending the tracking
-   rate the mount already had (`:RT3#`, "Restoring tracking state =
-   1"). The driver's release notes for 5.60.16 say a tracking state it
-   restores can unpark an AP mount, so a connect is only known to
-   leave a parked mount parked when nothing is restored, as here.
+   mount stayed parked. Its log of 2026-11-22, a connect with the mount
+   unparked and tracking, shows it sending a tracking rate (`:RT3#`)
+   while logging "Restoring tracking state = 1", with the mount tracking
+   before and after. A connect with the mount unparked and not tracking
+   has not been observed: the logs do not show whether the state the
+   driver restores is the mount's own or one the driver kept, and the
+   driver's release notes for 5.60.16 say a tracking state it restores
+   can unpark an AP mount. Remote Server connects the driver each time
+   it starts, at every sign-in, so § What this leaves holds that case
+   for the owner.
 4. **The mount over Alpaca.** [alpaca-read.ps1](alpaca-read.ps1) read
    the server's device list and 30 properties of Telescope 0, every one
    a `GET` ([alpaca-reads.txt](alpaca-reads.txt)): `Connected` true,
    `AtPark` true, `Tracking` false, `Slewing` false, `CanPulseGuide`
    true, both guide rates 0.004178°/s (15.04″/s, 1.0× sidereal),
-   `SideOfPier` 1 (pierWest), `InterfaceVersion` 2. The three site
-   values are replaced by a placeholder in the file, and they are
-   the lines the privacy scrub touched.
+   `SideOfPier` 1 (pierWest), `InterfaceVersion` 2. The reads were made
+   at 04:04:23 UTC.
 5. **`rp`.** Restarted with its mount entry, `rp` bound it, the pin
-   matching ([rp-binding.txt](rp-binding.txt)), and its check of the
-   mount's site against its own passed. The only command the driver
+   matching ([rp-binding.txt](rp-binding.txt)). It logged no site
+   mismatch, for which it refuses a mount's connect: the mount's site
+   agrees with `rp`'s within 0.01°. The only command the driver
    logged from it is `SET Connected = True`, which Remote Server passed
    to a driver already connected. The mount stayed parked.
 
@@ -148,8 +156,18 @@ session needs them too.
   by hand in the owner's signed-in session, which runs their actions as
   their trigger would. The trigger itself first fires at the owner's
   next sign-in.
+- **The driver's connect on an unparked mount that is not tracking is
+  not observed**, and it is held for the owner. Remote Server makes
+  that connect at every sign-in, whatever the mount is doing, so if the
+  driver restores a tracking state it kept, a sign-in could start the
+  mount tracking or unpark it (project tenet 3). Settling it means
+  watching one such connect, which leaves the mount unparked with its
+  tracking off first.
 - **APCC in the session means APCC by hand stays as it was**: its
   window is the owner's to use, and a second copy must not be opened.
-- **rig2's mount is now `rp`'s to park.** When the roof file reads
-  closed, `rp` parks the mount through the bridge, and APCC parks it at
-  Park 3, which the owner confirmed is roof-safe.
+- **While the owner's session is signed in, rig2's mount is `rp`'s to
+  park.** When the roof file reads closed, `rp` parks the mount through
+  the bridge, and APCC parks it at Park 3, which the owner confirmed is
+  roof-safe. With the session gone, the bridge and APCC are gone too:
+  `rp`'s park finds no mount and fails, and nothing of the workspace
+  parks it before the roof closes.

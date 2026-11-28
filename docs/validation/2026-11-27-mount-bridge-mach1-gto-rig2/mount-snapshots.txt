@@ -1,0 +1,28 @@
+mount-snapshot.ps1 as run on rig2, its output, with the rig's local time (CST)
+of each run from the Get-Date that followed it.
+
+== 21:40:56, before APCC, the driver or Remote Server started
+:GR#   07:31:35.64#
+:GD#   +89*59:58.9#
+:GA#   +31*32:50.9#
+:GZ#   +00*02:39.0#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   21:40:51.40#
+:GC#   11/27/26#
+
+== 21:42:14, after APCC connected to the mount
+:GR#   07:32:53.83#
+:GD#   +89*59:58.9#
+:GA#   +31*32:51.0#
+:GZ#   +00*00:08.7#
+:pS#   West#
+:GOS#  P99000261P000039#
+:GL#   21:42:14.36#
+:GC#   11/27/26#
+
+== 22:02:18, after rp bound the mount (the run's output filtered to these four lines)
+:GR#   07:53:01.53#
+:GD#   +89*59:58.9#
+:GOS#  P99000261P000039#
+:GL#   22:02:18.77#
